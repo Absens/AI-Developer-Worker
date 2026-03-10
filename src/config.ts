@@ -55,7 +55,7 @@ const parseCodexSandbox = (
   );
 };
 
-const parseStringArray = (input?: string): string[] => {
+const parseStringArray = (input: string | undefined, key: string): string[] => {
   if (!input?.trim()) {
     return [];
   }
@@ -65,12 +65,12 @@ const parseStringArray = (input?: string): string[] => {
     parsed = JSON.parse(input);
   } catch (error) {
     throw new ConfigurationError(
-      `CODEX_EXEC_ARGS_JSON must be valid JSON. ${(error as Error).message}`,
+      `${key} must be valid JSON. ${(error as Error).message}`,
     );
   }
 
   if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
-    throw new ConfigurationError("CODEX_EXEC_ARGS_JSON must be a JSON array of strings.");
+    throw new ConfigurationError(`${key} must be a JSON array of strings.`);
   }
 
   return parsed.map((entry) => entry.trim()).filter(Boolean);
@@ -184,10 +184,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     pollIntervalMs: pollIntervalMinutes * 60 * 1000,
     codexHome: env.CODEX_HOME?.trim() || join(homedir(), ".codex"),
     codexCliCommand: env.CODEX_CLI_COMMAND?.trim() || "codex",
+    codexCliArgs: parseStringArray(env.CODEX_CLI_ARGS_JSON, "CODEX_CLI_ARGS_JSON"),
     ...(env.CODEX_MODEL?.trim() ? { codexModel: env.CODEX_MODEL.trim() } : {}),
     ...(env.CODEX_PROFILE?.trim() ? { codexProfile: env.CODEX_PROFILE.trim() } : {}),
     codexSandbox: parseCodexSandbox(env.CODEX_SANDBOX),
-    codexExecArgs: parseStringArray(env.CODEX_EXEC_ARGS_JSON),
+    codexExecArgs: parseStringArray(env.CODEX_EXEC_ARGS_JSON, "CODEX_EXEC_ARGS_JSON"),
     codexQuestionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
     maxFixAttempts: parsePositiveInt(
       requireEnv(env, "MAX_FIX_ATTEMPTS"),

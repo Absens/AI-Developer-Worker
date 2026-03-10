@@ -1,7 +1,7 @@
 import type { AppConfig } from "../../models/types.js";
 import { ConfigurationError } from "../../utils/errors.js";
 import { Logger } from "../../utils/logger.js";
-import { runShellCommand } from "../../utils/shell.js";
+import { runCommand } from "../../utils/shell.js";
 
 export const getCodexShellEnv = (
   config: AppConfig,
@@ -23,9 +23,12 @@ export const assertCodexAuthenticated = async (
   logger.info("Checking Codex authentication status.", {
     codexHome: config.codexHome,
     command: config.codexCliCommand,
+    args: [...config.codexCliArgs, "login", "status"],
   });
 
-  const result = await runShellCommand(`${config.codexCliCommand} login status`, {
+  const result = await runCommand({
+    command: config.codexCliCommand,
+    args: [...config.codexCliArgs, "login", "status"],
     cwd: config.repoPath,
     env: getCodexShellEnv(config),
   });

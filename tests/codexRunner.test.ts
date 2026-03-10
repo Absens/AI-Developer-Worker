@@ -16,7 +16,11 @@ const createTempDir = (): string => {
   return path;
 };
 
-const createConfig = (repoPath: string, codexCliCommand: string): AppConfig => ({
+const createConfig = (
+  repoPath: string,
+  codexCliCommand: string,
+  codexCliArgs: string[] = [],
+): AppConfig => ({
   trackerToken: "tracker-token",
   trackerOrgHeader: "X-Cloud-Org-ID",
   trackerOrgId: "org-id",
@@ -39,6 +43,7 @@ const createConfig = (repoPath: string, codexCliCommand: string): AppConfig => (
   pollIntervalMs: 30 * 60 * 1000,
   codexHome: "/codex-home",
   codexCliCommand,
+  codexCliArgs,
   codexSandbox: "workspace-write",
   codexExecArgs: [],
   codexQuestionMarker: "AI_QUESTION:",
@@ -79,7 +84,7 @@ describe("CliCodexRunner", () => {
     );
 
     const runner = new CliCodexRunner(
-      createConfig(tempDir, `node "${scriptPath}"`),
+      createConfig(tempDir, "node", [scriptPath]),
       new Logger(),
     );
     const execution = await runner.runInitial("Implement this change.");
@@ -109,7 +114,7 @@ describe("CliCodexRunner", () => {
     );
 
     const runner = new CliCodexRunner(
-      createConfig(tempDir, `node "${scriptPath}"`),
+      createConfig(tempDir, "node", [scriptPath]),
       new Logger(),
     );
     const execution = await runner.runInitial("Implement this change.");

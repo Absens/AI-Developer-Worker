@@ -29,6 +29,7 @@ export interface AppConfig {
   pollIntervalMs: number;
   codexHome: string;
   codexCliCommand: string;
+  codexCliArgs: string[];
   codexModel?: string;
   codexProfile?: string;
   codexSandbox: "read-only" | "workspace-write" | "danger-full-access";

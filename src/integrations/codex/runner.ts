@@ -26,44 +26,6 @@ interface CodexEvent {
   error?: { message?: string };
 }
 
-const parseCommandTokens = (command: string): string[] => {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-
-  for (const char of command.trim()) {
-    if (quote) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-
-    if (/\s/.test(char)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-
-    current += char;
-  }
-
-  if (current) {
-    tokens.push(current);
-  }
-
-  return tokens;
-};
-
 const parseJsonlOutput = (stdout: string): { threadId?: string; errors: string[] } => {
   const errors: string[] = [];
   let threadId: string | undefined;
@@ -151,22 +113,15 @@ export class CliCodexRunner implements CodexRunner {
       if (input.mode === "resume" && input.threadId) {
         args.push("resume", input.threadId);
       }
-      const commandTokens = parseCommandTokens(this.config.codexCliCommand);
-      const [command, ...prefixArgs] = commandTokens;
-
-      if (!command) {
-        throw new Error("CODEX_CLI_COMMAND must not be empty.");
-      }
-
       this.logger.info("Running Codex command.", {
-        command,
-        args: [...prefixArgs, ...args],
+        command: this.config.codexCliCommand,
+        args: [...this.config.codexCliArgs, ...args],
         mode: input.mode,
       });
 
       const process = await runCommand({
-        command,
-        args: [...prefixArgs, ...args],
+        command: this.config.codexCliCommand,
+        args: [...this.config.codexCliArgs, ...args],
         cwd: this.config.repoPath,
         stdin: input.prompt,
         env: getCodexShellEnv(this.config),

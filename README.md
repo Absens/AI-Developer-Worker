@@ -58,6 +58,7 @@ Common optional values:
 - `POLL_INTERVAL_MINUTES=30`
 - `CODEX_HOME=/codex-home`
 - `CODEX_CLI_COMMAND=codex`
+- `CODEX_CLI_ARGS_JSON=[]`
 - `CODEX_SANDBOX=danger-full-access`
 - `CODEX_MODEL=...`
 - `CODEX_PROFILE=...`
@@ -68,6 +69,7 @@ Common optional values:
 
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
+- Codex CLI update procedure and compatibility checks: [docs/CODEX_CLI_UPDATE_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/CODEX_CLI_UPDATE_RUNBOOK.md)
 - Compose example: [compose.example.yaml](/C:/Users/gabba/projects/developer/compose.example.yaml)
 - Contributor conventions: [AGENTS.md](/C:/Users/gabba/projects/developer/AGENTS.md)
 

@@ -36,6 +36,7 @@ const createConfig = (trackerApiBaseUrl: string, overrides: Partial<AppConfig> =
   pollIntervalMs: 30 * 60 * 1000,
   codexHome: "/codex-home",
   codexCliCommand: "codex",
+  codexCliArgs: [],
   codexSandbox: "workspace-write",
   codexExecArgs: [],
   codexQuestionMarker: "AI_QUESTION:",

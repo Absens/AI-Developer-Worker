@@ -39,6 +39,7 @@ const createBaseConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   pollIntervalMs: 30 * 60 * 1000,
   codexHome: "/codex-home",
   codexCliCommand: "codex",
+  codexCliArgs: [],
   codexSandbox: "workspace-write",
   codexExecArgs: [],
   codexQuestionMarker: "AI_QUESTION:",
@@ -85,7 +86,8 @@ describe("codex auth", () => {
       assertCodexAuthenticated(
         createBaseConfig({
           codexHome: "/dedicated-codex-home",
-          codexCliCommand: `node "${scriptPath}"`,
+          codexCliCommand: "node",
+          codexCliArgs: [scriptPath],
         }),
         new Logger(),
       ),
@@ -107,7 +109,8 @@ describe("codex auth", () => {
     await expect(
       assertCodexAuthenticated(
         createBaseConfig({
-          codexCliCommand: `node "${scriptPath}"`,
+          codexCliCommand: "node",
+          codexCliArgs: [scriptPath],
         }),
         new Logger(),
       ),

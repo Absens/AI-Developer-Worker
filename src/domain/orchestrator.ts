@@ -169,6 +169,7 @@ export class WorkerOrchestrator {
     comments: CommentWithMetadata[],
   ): Promise<CycleOutcome> {
     let shouldResumeAfterAnswer = false;
+    let activeThreadId: string | undefined;
     if (issue.logicalStatus === "open") {
       await this.tracker.transition(issue.key, "in_progress");
       await this.tracker.addComment(
@@ -227,6 +228,7 @@ export class WorkerOrchestrator {
         latestQuestion.metadata.threadId
           ? await this.runResumeWithFallback(issue, comments, latestQuestion.metadata.threadId)
           : await this.codex.runInitial(buildInitialPrompt(issue, comments));
+      activeThreadId = execution.threadId ?? latestQuestion?.metadata.threadId;
       if (execution.question) {
         await this.pauseForAnswer(issue, execution.question, execution.threadId);
         return "waiting";
@@ -258,11 +260,15 @@ export class WorkerOrchestrator {
       this.logger.warn("Validation failed, asking Codex to apply a fix.", {
         issueKey: issue.key,
         attempt,
+        threadId: activeThreadId,
       });
 
-      const execution = await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
+      const execution = activeThreadId
+        ? await this.codex.runResume(activeThreadId, buildFixPrompt(issue, validation.diagnostic))
+        : await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
+      activeThreadId = execution.threadId ?? activeThreadId;
       if (execution.question) {
-        await this.pauseForAnswer(issue, execution.question, execution.threadId);
+        await this.pauseForAnswer(issue, execution.question, execution.threadId ?? activeThreadId);
         return "waiting";
       }
 

@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import { WorkerOrchestrator } from "../src/domain/orchestrator.js";
 import {
@@ -20,7 +24,15 @@ import type {
 } from "../src/models/types.js";
 import { Logger } from "../src/utils/logger.js";
 
-const createConfig = (repoPath: string): AppConfig => ({
+const cleanupPaths: string[] = [];
+
+const createTempDir = (): string => {
+  const path = mkdtempSync(join(tmpdir(), "orchestrator-test-"));
+  cleanupPaths.push(path);
+  return path;
+};
+
+const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): AppConfig => ({
   trackerToken: "tracker-token",
   trackerOrgHeader: "X-Cloud-Org-ID",
   trackerOrgId: "org-id",
@@ -43,6 +55,7 @@ const createConfig = (repoPath: string): AppConfig => ({
   pollIntervalMs: 30 * 60 * 1000,
   codexHome: "/codex-home",
   codexCliCommand: "codex",
+  codexCliArgs: [],
   codexSandbox: "workspace-write",
   codexExecArgs: [],
   codexQuestionMarker: "AI_QUESTION:",
@@ -51,6 +64,7 @@ const createConfig = (repoPath: string): AppConfig => ({
   testCommand: `node -e "process.exit(0)"`,
   lintCommand: `node -e "process.exit(0)"`,
   runOnce: false,
+  ...overrides,
 });
 
 class FakeTrackerClient implements TrackerClient {
@@ -211,6 +225,15 @@ class FakeCodexRunner implements CodexRunner {
 }
 
 describe("WorkerOrchestrator", () => {
+  afterEach(() => {
+    while (cleanupPaths.length > 0) {
+      const path = cleanupPaths.pop();
+      if (path) {
+        rmSync(path, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("processes the earliest free open issue and creates a merge request", async () => {
     const tracker = new FakeTrackerClient(
       [
@@ -512,5 +535,102 @@ describe("WorkerOrchestrator", () => {
     expect(outcome).toBe("processed");
     expect(codex.resumeCalls).toHaveLength(1);
     expect(initialCalls).toBe(1);
+  });
+
+  it("reuses the current thread for validation fix attempts", async () => {
+    const tempDir = createTempDir();
+    const failOnceScriptPath = join(tempDir, "fail-once.cjs");
+    const lintScriptPath = join(tempDir, "lint.cjs");
+    writeFileSync(
+      failOnceScriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const marker = path.join(process.cwd(), '.test-once-marker');",
+        "if (!fs.existsSync(marker)) {",
+        "  fs.writeFileSync(marker, '1', 'utf8');",
+        "  process.exit(1);",
+        "}",
+        "process.exit(0);",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      lintScriptPath,
+      "process.exit(0);\n",
+      "utf8",
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-6",
+          title: "Fix in same session",
+          description: "Keep the same thread while fixing tests",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      {
+        "DEV-6": [],
+      },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    let fixAttempt = 0;
+    const codex = new FakeCodexRunner(
+      () => {
+        git.uncommittedChanges = true;
+        git.diffFromBase = true;
+        return {
+          process: {
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          },
+          finalMessage: "Initial implementation",
+          threadId: "thread-fix-1",
+        };
+      },
+      () => {
+        fixAttempt += 1;
+        if (fixAttempt === 1) {
+          return {
+            process: {
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+            },
+            finalMessage: "Applied fix",
+            threadId: "thread-fix-1",
+          };
+        }
+
+        return {
+          process: {
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          },
+        };
+      },
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(tempDir, {
+        testCommand: `node "${failOnceScriptPath}"`,
+        lintCommand: `node "${lintScriptPath}"`,
+      }),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(codex.resumeCalls).toHaveLength(1);
+    expect(codex.resumeCalls[0]?.threadId).toBe("thread-fix-1");
   });
 });
