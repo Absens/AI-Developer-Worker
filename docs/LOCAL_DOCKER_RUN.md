@@ -1,5 +1,7 @@
 # Local Docker Runbook
 
+This document explains behavior, prerequisites, and failure modes for local Docker runs on any platform. If you are on Windows and want copy-paste PowerShell commands, use [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md).
+
 ## Short answer
 
 If you just build the image and run the container without preparation, it will not reliably work immediately.
@@ -204,3 +206,5 @@ For local bring-up, do this in order:
 4. Run the container once with `WORKER_RUN_ONCE=true`.
 5. Inspect logs.
 6. Switch to continuous run only after the one-shot run succeeds.
+
+For the exact Windows PowerShell command sequence, see [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md).

@@ -1,18 +1,10 @@
 # Windows PowerShell Quickstart
 
-## What to expect
+This document is the Windows command companion to [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md). Use the local Docker runbook for detailed behavior, prerequisites, and failure analysis.
 
-The container does not perform OAuth login by itself.
+## Before you start
 
-It will work immediately only if:
-
-1. `codex login status` works on the host.
-2. You mount a writable authenticated `CODEX_HOME` into the container.
-3. You mount a real git clone into `/workspace/project`.
-4. `.env` contains valid Tracker and GitLab settings.
-5. `CODEX_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are valid for the mounted project.
-
-If those prerequisites are missing, startup will fail early, usually before the worker touches Tracker.
+Make sure the prerequisites from [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md) are satisfied. Most importantly: host Codex auth must already exist, `.env` must be valid, and the mounted target repo must be a working git clone with push access.
 
 ## Copy-paste steps
 
