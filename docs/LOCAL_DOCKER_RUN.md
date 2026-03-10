@@ -61,7 +61,7 @@ Create `.env` from `.env.example` and set:
 - GitLab credentials
 - `TRACKER_STATUS_MAP`
 - `CODEX_CLI_COMMAND`
-- `CODEX_SANDBOX`
+- `CODEX_SANDBOX` (recommended: `danger-full-access` for this worker)
 - `TEST_COMMAND`
 - `LINT_COMMAND`
 - `WORKER_ID`

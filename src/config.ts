@@ -39,7 +39,7 @@ const parseCodexSandbox = (
 ): "read-only" | "workspace-write" | "danger-full-access" => {
   const normalized = input?.trim();
   if (!normalized) {
-    return "workspace-write";
+    return "danger-full-access";
   }
 
   if (

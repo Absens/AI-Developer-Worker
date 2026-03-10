@@ -58,7 +58,7 @@ Common optional values:
 - `POLL_INTERVAL_MINUTES=30`
 - `CODEX_HOME=/codex-home`
 - `CODEX_CLI_COMMAND=codex`
-- `CODEX_SANDBOX=workspace-write`
+- `CODEX_SANDBOX=danger-full-access`
 - `CODEX_MODEL=...`
 - `CODEX_PROFILE=...`
 - `CODEX_EXEC_ARGS_JSON=[]`

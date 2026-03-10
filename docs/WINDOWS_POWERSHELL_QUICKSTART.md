@@ -63,7 +63,7 @@ Minimum fields to verify:
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
 - `CODEX_CLI_COMMAND`
-- `CODEX_SANDBOX`
+- `CODEX_SANDBOX` (recommended: `danger-full-access`)
 - `TEST_COMMAND`
 - `LINT_COMMAND`
 - `WORKER_ID`

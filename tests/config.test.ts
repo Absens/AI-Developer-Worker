@@ -48,7 +48,7 @@ describe("config", () => {
     expect(config.runOnce).toBe(false);
     expect(config.codexHome).toBe(join(homedir(), ".codex"));
     expect(config.codexCliCommand).toBe("codex");
-    expect(config.codexSandbox).toBe("workspace-write");
+    expect(config.codexSandbox).toBe("danger-full-access");
     expect(config.codexExecArgs).toEqual([]);
   });
 
