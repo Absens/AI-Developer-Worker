@@ -11,8 +11,11 @@ export interface TrackerStatusConfig {
   transition?: string;
 }
 
+export type TrackerOrgHeader = "X-Org-ID" | "X-Cloud-Org-ID";
+
 export interface AppConfig {
   trackerToken: string;
+  trackerOrgHeader: TrackerOrgHeader;
   trackerOrgId: string;
   trackerTag: string;
   trackerStatusMap: Record<LogicalStatus, TrackerStatusConfig>;

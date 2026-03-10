@@ -38,6 +38,7 @@ describe("config", () => {
     });
 
     expect(config.trackerTag).toBe("ai_dev");
+    expect(config.trackerOrgHeader).toBe("X-Cloud-Org-ID");
     expect(config.trackerApiBaseUrl).toBe("https://api.tracker.yandex.net/v3");
     expect(config.repoPath).toBe("/workspace/project");
     expect(config.baseBranch).toBe("main");
@@ -54,6 +55,7 @@ describe("config", () => {
     const config = loadConfig({
       TRACKER_TOKEN: "tracker-token",
       TRACKER_ORG_ID: "org-id",
+      TRACKER_ORG_HEADER: "x-org-id",
       TRACKER_STATUS_MAP: STATUS_MAP,
       GITLAB_URL: "https://gitlab.example.com/",
       GITLAB_TOKEN: "gitlab-token",
@@ -67,5 +69,6 @@ describe("config", () => {
 
     expect(config.codexHome).toBe("/codex-home");
     expect(config.codexCliCommand).toBe("/usr/local/bin/codex");
+    expect(config.trackerOrgHeader).toBe("X-Org-ID");
   });
 });

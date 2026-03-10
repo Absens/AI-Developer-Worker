@@ -57,6 +57,7 @@ codex login --device-auth
 Create `.env` from `.env.example` and set:
 
 - Tracker credentials
+- `TRACKER_ORG_HEADER`
 - GitLab credentials
 - `TRACKER_STATUS_MAP`
 - `CODEX_COMMAND`
@@ -69,6 +70,8 @@ At minimum, verify that:
 - `CODEX_COMMAND` actually works in non-interactive mode
 - `TEST_COMMAND` exists in the mounted target repo
 - `LINT_COMMAND` exists in the mounted target repo
+
+For `TRACKER_STATUS_MAP`, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
 
 ### 3. Prepare the project mount
 

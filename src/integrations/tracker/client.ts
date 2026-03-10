@@ -11,6 +11,8 @@ import { Logger } from "../../utils/logger.js";
 import { withRetry } from "../../utils/retry.js";
 import { decorateComments } from "./commentProtocol.js";
 
+const DEFAULT_PAGE_SIZE = 100;
+
 interface TrackerRequestOptions {
   method?: string;
   query?: Record<string, string | number>;
@@ -30,6 +32,31 @@ interface TrackerSearchResponseItem {
   };
 }
 
+interface TrackerTransitionResponseItem {
+  id?: string;
+  key?: string;
+  display?: string;
+  to?: {
+    key?: string;
+    display?: string;
+  };
+}
+
+interface TrackerTransition {
+  id: string;
+  key?: string;
+  display?: string;
+  toKey?: string;
+  toDisplay?: string;
+}
+
+interface TrackerCollectionResponse<T> {
+  values?: T[];
+  comments?: T[];
+  transitions?: T[];
+  items?: T[];
+}
+
 const normalize = (value?: string): string =>
   value?.trim().toLowerCase() ?? "";
 
@@ -47,6 +74,33 @@ const buildIssue = (
   statusDisplay: issue.status?.display,
   logicalStatus,
 });
+
+const buildTransition = (
+  transition: TrackerTransitionResponseItem,
+): TrackerTransition | undefined => {
+  const id = transition.id?.trim();
+  if (!id) {
+    return undefined;
+  }
+
+  return {
+    id,
+    key: transition.key?.trim(),
+    display: transition.display?.trim(),
+    toKey: transition.to?.key?.trim(),
+    toDisplay: transition.to?.display?.trim(),
+  };
+};
+
+const extractCollection = <T>(
+  response: T[] | TrackerCollectionResponse<T>,
+): T[] => {
+  if (Array.isArray(response)) {
+    return response;
+  }
+
+  return response.values ?? response.comments ?? response.transitions ?? response.items ?? [];
+};
 
 export class YandexTrackerClient implements TrackerClient {
   constructor(
@@ -96,15 +150,7 @@ export class YandexTrackerClient implements TrackerClient {
   }
 
   async getComments(issueKey: string): Promise<CommentWithMetadata[]> {
-    const response = await this.request<
-      TrackerComment[] | { values?: TrackerComment[]; comments?: TrackerComment[] }
-    >(`/issues/${issueKey}/comments`, {
-      query: { perPage: 100 },
-    });
-
-    const comments = Array.isArray(response)
-      ? response
-      : response.values ?? response.comments ?? [];
+    const comments = await this.fetchAllPages<TrackerComment>(`/issues/${issueKey}/comments`);
 
     return decorateComments(
       comments.map((comment: any) => ({
@@ -130,12 +176,7 @@ export class YandexTrackerClient implements TrackerClient {
   }
 
   async transition(issueKey: string, targetStatus: LogicalStatus): Promise<void> {
-    const transition = this.config.trackerStatusMap[targetStatus].transition;
-    if (!transition) {
-      throw new ConfigurationError(
-        `No transition configured for logical status: ${targetStatus}`,
-      );
-    }
+    const transition = await this.resolveTransition(issueKey, targetStatus);
 
     await this.request(`/issues/${issueKey}/transitions/${transition}/_execute`, {
       method: "POST",
@@ -143,19 +184,100 @@ export class YandexTrackerClient implements TrackerClient {
   }
 
   private async searchIssuesByTag(): Promise<TrackerSearchResponseItem[]> {
-    const result = await this.request<TrackerSearchResponseItem[]>("/issues/_search", {
+    const result = await this.fetchAllPages<TrackerSearchResponseItem>("/issues/_search", {
       method: "POST",
-      query: {
-        perPage: 100,
-      },
       body: {
         query: `tag: "${this.config.trackerTag}"`,
-        order: "+createdAt",
       },
     });
 
     this.logger.info("Fetched tracker candidates.", { count: result.length });
     return result;
+  }
+
+  private async fetchAllPages<T>(
+    path: string,
+    options: TrackerRequestOptions = {},
+  ): Promise<T[]> {
+    const perPage = Number(options.query?.perPage ?? DEFAULT_PAGE_SIZE);
+    const items: T[] = [];
+
+    for (let page = 1; ; page += 1) {
+      const response = await this.request<T[] | TrackerCollectionResponse<T>>(path, {
+        ...options,
+        query: {
+          ...(options.query ?? {}),
+          page,
+          perPage,
+        },
+      });
+      const pageItems = extractCollection(response);
+      items.push(...pageItems);
+
+      if (pageItems.length < perPage) {
+        return items;
+      }
+    }
+  }
+
+  private async getTransitions(issueKey: string): Promise<TrackerTransition[]> {
+    const response = await this.request<
+      TrackerTransitionResponseItem[] | TrackerCollectionResponse<TrackerTransitionResponseItem>
+    >(`/issues/${issueKey}/transitions`);
+
+    return extractCollection(response)
+      .map(buildTransition)
+      .filter((transition): transition is TrackerTransition => transition !== undefined);
+  }
+
+  private async resolveTransition(
+    issueKey: string,
+    targetStatus: LogicalStatus,
+  ): Promise<string> {
+    const transitions = await this.getTransitions(issueKey);
+    const statusConfig = this.config.trackerStatusMap[targetStatus];
+    const transitionHint = normalize(statusConfig.transition);
+    const statusMatchers = statusConfig.statuses.map(normalize);
+
+    const byHint = transitionHint
+      ? transitions.find((transition) =>
+          getTransitionCandidates(transition).includes(transitionHint),
+        )
+      : undefined;
+
+    if (byHint) {
+      return byHint.id;
+    }
+
+    const byStatus = transitions.find((transition) =>
+      getTransitionCandidates(transition).some((candidate) =>
+        statusMatchers.includes(candidate),
+      ),
+    );
+
+    if (byStatus) {
+      return byStatus.id;
+    }
+
+    const availableTransitions = transitions
+      .map((transition) =>
+        [
+          `id=${transition.id}`,
+          transition.key ? `key=${transition.key}` : undefined,
+          transition.display ? `display=${transition.display}` : undefined,
+          transition.toKey ? `to.key=${transition.toKey}` : undefined,
+          transition.toDisplay ? `to.display=${transition.toDisplay}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      )
+      .join("; ");
+
+    throw new ConfigurationError(
+      `No tracker transition found for logical status ${targetStatus}. Available transitions: ${
+        availableTransitions || "none"
+      }`,
+    );
   }
 
   private async request<T>(
@@ -173,13 +295,21 @@ export class YandexTrackerClient implements TrackerClient {
           method: options.method ?? "GET",
           headers: {
             Authorization: `OAuth ${this.config.trackerToken}`,
-            "X-Cloud-Org-Id": this.config.trackerOrgId,
+            [this.config.trackerOrgHeader]: this.config.trackerOrgId,
             "Content-Type": "application/json",
           },
-          body: options.body === undefined ? null : JSON.stringify(options.body),
+          body: options.body === undefined ? undefined : JSON.stringify(options.body),
         }).catch((error) => {
           throw new TemporaryIntegrationError(`Tracker request failed: ${path}`, error);
         });
+
+        if (response.status === 429) {
+          throw new TemporaryIntegrationError(
+            `Tracker rate limit error for ${path}`,
+            undefined,
+            parseRetryAfterMs(response.headers.get("Retry-After")),
+          );
+        }
 
         if (response.status >= 500) {
           throw new TemporaryIntegrationError(
@@ -212,4 +342,33 @@ const sortIssues = (left: TrackerIssue, right: TrackerIssue): number => {
   const leftTimestamp = left.createdAt || left.updatedAt || "";
   const rightTimestamp = right.createdAt || right.updatedAt || "";
   return leftTimestamp.localeCompare(rightTimestamp);
+};
+
+const getTransitionCandidates = (transition: TrackerTransition): string[] =>
+  [
+    transition.id,
+    transition.key,
+    transition.display,
+    transition.toKey,
+    transition.toDisplay,
+  ]
+    .map((value) => normalize(value))
+    .filter(Boolean);
+
+const parseRetryAfterMs = (value: string | null): number | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const seconds = Number.parseInt(value, 10);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds) * 1000;
+  }
+
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return undefined;
+  }
+
+  return Math.max(0, timestamp - Date.now());
 };

@@ -1,4 +1,5 @@
 import { Logger } from "./logger.js";
+import { TemporaryIntegrationError } from "./errors.js";
 
 export interface RetryOptions {
   retries: number;
@@ -30,15 +31,20 @@ export const withRetry = async <T>(
         throw error;
       }
 
+      const retryDelayMs =
+        error instanceof TemporaryIntegrationError && error.retryAfterMs !== undefined
+          ? error.retryAfterMs
+          : delayMs;
+
       options.logger?.warn("Retrying operation after transient failure.", {
         label: options.label,
         attempt,
-        delayMs,
+        delayMs: retryDelayMs,
         error: error instanceof Error ? error.message : String(error),
       });
 
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs *= factor;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      delayMs = Math.max(delayMs, retryDelayMs) * factor;
     }
   }
 };

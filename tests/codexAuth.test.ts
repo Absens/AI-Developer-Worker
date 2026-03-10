@@ -18,6 +18,7 @@ const createTempDir = (): string => {
 
 const createBaseConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   trackerToken: "tracker-token",
+  trackerOrgHeader: "X-Cloud-Org-ID",
   trackerOrgId: "org-id",
   trackerTag: "ai_dev",
   trackerStatusMap: {

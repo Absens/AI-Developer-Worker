@@ -63,6 +63,51 @@ const startMockServer = async () => {
       return;
     }
 
+    if (method === "GET" && url.pathname === "/tracker/v3/issues/DEV-100/transitions") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify([
+          {
+            id: "start",
+            key: "start",
+            display: "Start progress",
+            to: {
+              key: "inProgress",
+              display: "In Progress",
+            },
+          },
+          {
+            id: "review",
+            key: "review",
+            display: "Send to review",
+            to: {
+              key: "review",
+              display: "Review",
+            },
+          },
+          {
+            id: "wait",
+            key: "wait",
+            display: "Wait for answer",
+            to: {
+              key: "waiting",
+              display: "Waiting",
+            },
+          },
+          {
+            id: "fail",
+            key: "fail",
+            display: "Fail",
+            to: {
+              key: "failed",
+              display: "Failed",
+            },
+          },
+        ]),
+      );
+      return;
+    }
+
     if (method === "GET" && url.pathname === "/tracker/v3/issues/DEV-100/comments") {
       response.setHeader("Content-Type", "application/json");
       response.end(

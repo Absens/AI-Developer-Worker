@@ -1,10 +1,12 @@
 export class TemporaryIntegrationError extends Error {
   override readonly cause?: unknown;
+  readonly retryAfterMs?: number;
 
-  constructor(message: string, cause?: unknown) {
+  constructor(message: string, cause?: unknown, retryAfterMs?: number) {
     super(message);
     this.name = "TemporaryIntegrationError";
     this.cause = cause;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 

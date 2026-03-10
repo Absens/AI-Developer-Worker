@@ -1,7 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { AppConfig, LogicalStatus, TrackerStatusConfig } from "./models/types.js";
+import type {
+  AppConfig,
+  LogicalStatus,
+  TrackerOrgHeader,
+  TrackerStatusConfig,
+} from "./models/types.js";
 import { ConfigurationError } from "./utils/errors.js";
 
 const LOGICAL_STATUSES: LogicalStatus[] = [
@@ -27,6 +32,25 @@ const parsePositiveInt = (input: string, key: string): number => {
     throw new ConfigurationError(`${key} must be a positive integer.`);
   }
   return value;
+};
+
+const parseTrackerOrgHeader = (input?: string): TrackerOrgHeader => {
+  const normalized = input?.trim().toLowerCase();
+  if (!normalized) {
+    return "X-Cloud-Org-ID";
+  }
+
+  if (normalized === "x-org-id") {
+    return "X-Org-ID";
+  }
+
+  if (normalized === "x-cloud-org-id") {
+    return "X-Cloud-Org-ID";
+  }
+
+  throw new ConfigurationError(
+    "TRACKER_ORG_HEADER must be either X-Org-ID or X-Cloud-Org-ID.",
+  );
 };
 
 const normalizeStatusConfig = (
@@ -102,6 +126,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
 
   return {
     trackerToken: requireEnv(env, "TRACKER_TOKEN"),
+    trackerOrgHeader: parseTrackerOrgHeader(env.TRACKER_ORG_HEADER),
     trackerOrgId: requireEnv(env, "TRACKER_ORG_ID"),
     trackerTag: env.TRACKER_TAG?.trim() || "ai_dev",
     trackerStatusMap,

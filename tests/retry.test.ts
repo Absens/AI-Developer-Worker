@@ -24,4 +24,25 @@ describe("withRetry", () => {
     expect(result).toBe("ok");
     expect(attempts).toBe(3);
   });
+
+  it("uses retryAfterMs from temporary errors", async () => {
+    let attempts = 0;
+
+    const result = await withRetry(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new TemporaryIntegrationError("rate-limited", undefined, 0);
+        }
+        return "ok";
+      },
+      {
+        retries: 2,
+        delayMs: 50,
+      },
+    );
+
+    expect(result).toBe("ok");
+    expect(attempts).toBe(2);
+  });
 });
