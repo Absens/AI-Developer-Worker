@@ -2,6 +2,19 @@
 
 Single-process Node.js/TypeScript worker that polls Yandex Tracker, applies changes through `codex-cli`, validates the target repository, and opens or reuses a GitLab Merge Request.
 
+## Quick start
+
+The shortest practical path is:
+
+1. Log into `codex` on the host and verify `codex login status`.
+2. Fill in [.env.example](/C:/Users/gabba/projects/developer/.env.example) as `.env`.
+3. Build the image: `docker build -t ai-developer-worker .`
+4. Create and bootstrap a dedicated Docker volume for Codex auth.
+5. Run the worker once with `WORKER_RUN_ONCE=true`.
+6. If the one-shot run succeeds, switch to the continuous worker run.
+
+If you skip step 4, the container usually will not start successfully, because the worker now checks `codex login status` on startup and fails fast if `CODEX_HOME` is missing or not authenticated.
+
 ## What it does
 
 For each cycle the worker:
@@ -118,6 +131,13 @@ npm run test:smoke
 
 This verifies the real git flow, Tracker comments/status transitions, MR creation, and idempotent worker wiring without calling external systems.
 
+## Documentation map
+
+- Overview and configuration: [README.md](/C:/Users/gabba/projects/developer/README.md)
+- Local Docker behavior and bring-up: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
+- Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
+- Compose example: [compose.example.yaml](/C:/Users/gabba/projects/developer/compose.example.yaml)
+
 ## Codex authentication in Docker
 
 The worker expects `codex-cli` to already be logged in. It does not initiate OAuth during task processing.
@@ -215,5 +235,7 @@ docker run --rm \
 An example Compose file is available in [compose.example.yaml](/C:/Users/gabba/projects/developer/compose.example.yaml).
 
 A practical step-by-step local run guide is in [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md).
+
+A Windows/PowerShell copy-paste guide is in [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md).
 
 The container installs `git`, `curl`, `jq`, `ripgrep`, and `@openai/codex`.

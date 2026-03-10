@@ -5,8 +5,9 @@ services:
       - .env
     environment:
       CODEX_HOME: /codex-home
+      REPO_PATH: /workspace/project
     volumes:
-      - ./project:/workspace/project
+      - "${TARGET_REPO_PATH}:/workspace/project"
       - codex-home:/codex-home
 
 volumes:
