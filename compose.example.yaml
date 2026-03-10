@@ -1,0 +1,13 @@
+services:
+  worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      CODEX_HOME: /codex-home
+    volumes:
+      - ./project:/workspace/project
+      - codex-home:/codex-home
+
+volumes:
+  codex-home:
