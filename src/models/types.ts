@@ -29,7 +29,10 @@ export interface AppConfig {
   pollIntervalMs: number;
   codexHome: string;
   codexCliCommand: string;
-  codexCommand: string;
+  codexModel?: string;
+  codexProfile?: string;
+  codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
+  codexExecArgs: string[];
   codexQuestionMarker: string;
   maxFixAttempts: number;
   workerId: string;
@@ -66,6 +69,7 @@ export interface ParsedServiceComment {
   state?: LogicalStatus;
   details?: string;
   question?: string;
+  threadId?: string;
   url?: string;
   branch?: string;
 }
@@ -137,10 +141,13 @@ export interface GitLabService {
 
 export interface CodexExecution {
   process: ProcessResult;
+  finalMessage?: string;
+  threadId?: string;
   question?: string;
 }
 
 export interface CodexRunner {
   runInitial(prompt: string): Promise<CodexExecution>;
   runFix(prompt: string): Promise<CodexExecution>;
+  runResume(threadId: string, prompt: string): Promise<CodexExecution>;
 }

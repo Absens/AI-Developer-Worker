@@ -34,6 +34,48 @@ const parsePositiveInt = (input: string, key: string): number => {
   return value;
 };
 
+const parseCodexSandbox = (
+  input?: string,
+): "read-only" | "workspace-write" | "danger-full-access" => {
+  const normalized = input?.trim();
+  if (!normalized) {
+    return "workspace-write";
+  }
+
+  if (
+    normalized === "read-only" ||
+    normalized === "workspace-write" ||
+    normalized === "danger-full-access"
+  ) {
+    return normalized;
+  }
+
+  throw new ConfigurationError(
+    "CODEX_SANDBOX must be one of: read-only, workspace-write, danger-full-access.",
+  );
+};
+
+const parseStringArray = (input?: string): string[] => {
+  if (!input?.trim()) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch (error) {
+    throw new ConfigurationError(
+      `CODEX_EXEC_ARGS_JSON must be valid JSON. ${(error as Error).message}`,
+    );
+  }
+
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
+    throw new ConfigurationError("CODEX_EXEC_ARGS_JSON must be a JSON array of strings.");
+  }
+
+  return parsed.map((entry) => entry.trim()).filter(Boolean);
+};
+
 const parseTrackerOrgHeader = (input?: string): TrackerOrgHeader => {
   const normalized = input?.trim().toLowerCase();
   if (!normalized) {
@@ -142,7 +184,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     pollIntervalMs: pollIntervalMinutes * 60 * 1000,
     codexHome: env.CODEX_HOME?.trim() || join(homedir(), ".codex"),
     codexCliCommand: env.CODEX_CLI_COMMAND?.trim() || "codex",
-    codexCommand: requireEnv(env, "CODEX_COMMAND"),
+    ...(env.CODEX_MODEL?.trim() ? { codexModel: env.CODEX_MODEL.trim() } : {}),
+    ...(env.CODEX_PROFILE?.trim() ? { codexProfile: env.CODEX_PROFILE.trim() } : {}),
+    codexSandbox: parseCodexSandbox(env.CODEX_SANDBOX),
+    codexExecArgs: parseStringArray(env.CODEX_EXEC_ARGS_JSON),
     codexQuestionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
     maxFixAttempts: parsePositiveInt(
       requireEnv(env, "MAX_FIX_ATTEMPTS"),

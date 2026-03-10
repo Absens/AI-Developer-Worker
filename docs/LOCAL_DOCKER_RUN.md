@@ -12,7 +12,7 @@ It will start successfully only if all of the following are already true:
 2. The target repository is mounted into `/workspace/project`.
 3. Tracker and GitLab credentials are present in `.env`.
 4. Git inside the mounted project can fetch, commit, and push.
-5. `CODEX_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are valid for the target project.
+5. `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are valid for the target project.
 
 If `CODEX_HOME` is missing or not authenticated, the worker now fails fast on startup before touching Tracker.
 
@@ -60,14 +60,15 @@ Create `.env` from `.env.example` and set:
 - `TRACKER_ORG_HEADER`
 - GitLab credentials
 - `TRACKER_STATUS_MAP`
-- `CODEX_COMMAND`
+- `CODEX_CLI_COMMAND`
+- `CODEX_SANDBOX`
 - `TEST_COMMAND`
 - `LINT_COMMAND`
 - `WORKER_ID`
 
 At minimum, verify that:
 
-- `CODEX_COMMAND` actually works in non-interactive mode
+- `CODEX_CLI_COMMAND exec --json` actually works in non-interactive mode
 - `TEST_COMMAND` exists in the mounted target repo
 - `LINT_COMMAND` exists in the mounted target repo
 
@@ -168,7 +169,7 @@ It will not work immediately if at least one of these is missing:
 - no repo mounted into `/workspace/project`
 - wrong `.env`
 - wrong `TRACKER_STATUS_MAP`
-- broken `CODEX_COMMAND`
+- broken `CODEX_CLI_COMMAND`
 - missing `TEST_COMMAND` or `LINT_COMMAND`
 - no git push access from inside the mounted repo
 

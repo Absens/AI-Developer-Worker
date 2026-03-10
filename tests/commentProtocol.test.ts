@@ -4,6 +4,7 @@ import {
   findFirstHumanReplyAfter,
   formatMergeRequestComment,
   formatQuestionComment,
+  formatQuestionCommentWithThreadId,
   formatStatusComment,
   parseServiceComment,
 } from "../src/integrations/tracker/commentProtocol.js";
@@ -25,6 +26,16 @@ describe("comment protocol", () => {
       kind: "AI QUESTION",
       worker: "worker-1",
       question: "Need access?",
+    });
+    expect(
+      parseServiceComment(
+        formatQuestionCommentWithThreadId("worker-1", "Need access?", "thread-123"),
+      ),
+    ).toEqual({
+      kind: "AI QUESTION",
+      worker: "worker-1",
+      question: "Need access?",
+      threadId: "thread-123",
     });
 
     expect(

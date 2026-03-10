@@ -52,7 +52,7 @@ Requirements:
 3. Implement the solution.
 4. Run project tests.
 5. Follow the existing architecture and coding style.
-6. If critical business context is missing, output one line starting with AI_QUESTION: and then the question text.`;
+6. If critical business context is missing, reply with exactly one line that starts with AI_QUESTION: followed by the question text, and do not include any other text.`;
 
 export const buildFixPrompt = (
   issue: TrackerIssue,
@@ -68,4 +68,32 @@ ${diagnostic}
 Requirements:
 1. Modify only what is necessary to resolve the validation issues.
 2. Keep the existing task context and architecture intact.
-3. If critical business context is missing, output one line starting with AI_QUESTION: and then the question text.`;
+3. If critical business context is missing, reply with exactly one line that starts with AI_QUESTION: followed by the question text, and do not include any other text.`;
+
+export const buildResumePrompt = (
+  issue: TrackerIssue,
+  comments: CommentWithMetadata[],
+): string => {
+  const latestQuestion = findLatestQuestionComment(comments);
+  const answer = latestQuestion
+    ? findFirstHumanReplyAfter(comments, latestQuestion.createdAt)
+    : undefined;
+
+  return `Continue the existing Codex session for task ${issue.key}.
+Title: ${issue.title}
+
+Original description:
+${issue.description || "No description."}
+
+Latest AI question:
+${latestQuestion?.metadata.question ?? "No previous question recorded."}
+
+Human answer:
+${answer?.text ?? "No answer provided."}
+
+Requirements:
+1. Continue from the existing session context instead of restarting analysis from scratch.
+2. Use the human answer to complete the task.
+3. If critical business context is still missing, reply with exactly one line that starts with AI_QUESTION: followed by the question text, and do not include any other text.
+4. If enough context is available, continue implementation and validation work.`;
+};

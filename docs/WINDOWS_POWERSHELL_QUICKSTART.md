@@ -62,7 +62,8 @@ Minimum fields to verify:
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
-- `CODEX_COMMAND`
+- `CODEX_CLI_COMMAND`
+- `CODEX_SANDBOX`
 - `TEST_COMMAND`
 - `LINT_COMMAND`
 - `WORKER_ID`
@@ -98,7 +99,7 @@ Use this first run to confirm:
 - GitLab config is valid
 - the mounted project path is correct
 - git credentials inside that mounted repo work
-- `CODEX_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are correct
+- `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are correct
 
 ### 9. Continuous run
 

@@ -1,5 +1,6 @@
 import type {
   AppConfig,
+  CodexExecution,
   CodexRunner,
   CommentWithMetadata,
   GitLabService,
@@ -15,10 +16,10 @@ import {
   findLatestQuestionComment,
   findLatestStatusComment,
   formatMergeRequestComment,
-  formatQuestionComment,
+  formatQuestionCommentWithThreadId,
   formatStatusComment,
 } from "../integrations/tracker/commentProtocol.js";
-import { buildFixPrompt, buildInitialPrompt } from "./promptBuilder.js";
+import { buildFixPrompt, buildInitialPrompt, buildResumePrompt } from "./promptBuilder.js";
 import {
   PermanentTaskError,
   TemporaryIntegrationError,
@@ -167,6 +168,7 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
   ): Promise<CycleOutcome> {
+    let shouldResumeAfterAnswer = false;
     if (issue.logicalStatus === "open") {
       await this.tracker.transition(issue.key, "in_progress");
       await this.tracker.addComment(
@@ -204,6 +206,7 @@ export class WorkerOrchestrator {
       );
       issue.logicalStatus = "in_progress";
       comments = await this.tracker.getComments(issue.key);
+      shouldResumeAfterAnswer = true;
     }
 
     const branch = await this.git.checkoutTaskBranch(issue.key);
@@ -217,9 +220,15 @@ export class WorkerOrchestrator {
     }
 
     if (!hasUncommittedChanges && !hasCommittedDiff) {
-      const execution = await this.codex.runInitial(buildInitialPrompt(issue, comments));
+      const latestQuestion = findLatestQuestionComment(comments);
+      const execution =
+        shouldResumeAfterAnswer &&
+        latestQuestion?.metadata.worker === this.config.workerId &&
+        latestQuestion.metadata.threadId
+          ? await this.runResumeWithFallback(issue, comments, latestQuestion.metadata.threadId)
+          : await this.codex.runInitial(buildInitialPrompt(issue, comments));
       if (execution.question) {
-        await this.pauseForAnswer(issue, execution.question);
+        await this.pauseForAnswer(issue, execution.question, execution.threadId);
         return "waiting";
       }
 
@@ -253,7 +262,7 @@ export class WorkerOrchestrator {
 
       const execution = await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
       if (execution.question) {
-        await this.pauseForAnswer(issue, execution.question);
+        await this.pauseForAnswer(issue, execution.question, execution.threadId);
         return "waiting";
       }
 
@@ -276,10 +285,33 @@ export class WorkerOrchestrator {
     return "processed";
   }
 
-  private async pauseForAnswer(issue: TrackerIssue, question: string): Promise<void> {
+  private async runResumeWithFallback(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+    threadId: string,
+  ): Promise<CodexExecution> {
+    const execution = await this.codex.runResume(threadId, buildResumePrompt(issue, comments));
+    if (execution.process.exitCode === 0) {
+      return execution;
+    }
+
+    this.logger.warn("Codex resume failed, falling back to a fresh session.", {
+      issueKey: issue.key,
+      threadId,
+      exitCode: execution.process.exitCode,
+      stderr: execution.process.stderr,
+    });
+    return this.codex.runInitial(buildInitialPrompt(issue, comments));
+  }
+
+  private async pauseForAnswer(
+    issue: TrackerIssue,
+    question: string,
+    threadId?: string,
+  ): Promise<void> {
     await this.tracker.addComment(
       issue.key,
-      formatQuestionComment(this.config.workerId, question),
+      formatQuestionCommentWithThreadId(this.config.workerId, question, threadId),
     );
     await this.tracker.transition(issue.key, "waiting_for_answer");
     await this.tracker.addComment(

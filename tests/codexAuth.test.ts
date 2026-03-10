@@ -39,7 +39,8 @@ const createBaseConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   pollIntervalMs: 30 * 60 * 1000,
   codexHome: "/codex-home",
   codexCliCommand: "codex",
-  codexCommand: "codex exec",
+  codexSandbox: "workspace-write",
+  codexExecArgs: [],
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
   workerId: "worker-1",
@@ -111,5 +112,21 @@ describe("codex auth", () => {
         new Logger(),
       ),
     ).rejects.toThrow(/Codex CLI is not authenticated/);
+  });
+
+  it("passes preflight when OPENAI_API_KEY is present", async () => {
+    const original = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-test";
+    try {
+      await expect(
+        assertCodexAuthenticated(createBaseConfig(), new Logger()),
+      ).resolves.toBeUndefined();
+    } finally {
+      if (original === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = original;
+      }
+    }
   });
 });

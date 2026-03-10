@@ -43,6 +43,15 @@ export const formatQuestionComment = (worker: string, question: string): string 
 worker=${worker}
 question=${question}`;
 
+export const formatQuestionCommentWithThreadId = (
+  worker: string,
+  question: string,
+  threadId?: string,
+): string =>
+  `${QUESTION_PREFIX}
+worker=${worker}
+question=${question}${threadId ? `\nthreadId=${threadId}` : ""}`;
+
 export const formatMergeRequestComment = (
   worker: string,
   url: string,
@@ -78,6 +87,7 @@ export const parseServiceComment = (
       kind: "AI QUESTION",
       worker: parsed.worker,
       question: parsed.question,
+      threadId: parsed.threadId,
     };
   }
 

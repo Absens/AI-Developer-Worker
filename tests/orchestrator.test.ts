@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { WorkerOrchestrator } from "../src/domain/orchestrator.js";
-import { formatStatusComment, parseServiceComment } from "../src/integrations/tracker/commentProtocol.js";
+import {
+  formatQuestionCommentWithThreadId,
+  formatStatusComment,
+  parseServiceComment,
+} from "../src/integrations/tracker/commentProtocol.js";
 import type {
   AppConfig,
   CodexExecution,
@@ -39,7 +43,8 @@ const createConfig = (repoPath: string): AppConfig => ({
   pollIntervalMs: 30 * 60 * 1000,
   codexHome: "/codex-home",
   codexCliCommand: "codex",
-  codexCommand: "codex exec",
+  codexSandbox: "workspace-write",
+  codexExecArgs: [],
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
   workerId: "worker-1",
@@ -169,8 +174,20 @@ class FakeGitLabService implements GitLabService {
 }
 
 class FakeCodexRunner implements CodexRunner {
+  readonly resumeCalls: Array<{ threadId: string; prompt: string }> = [];
+
   constructor(
     private readonly onInitial: () => CodexExecution | Promise<CodexExecution>,
+    private readonly onResume: (
+      threadId: string,
+      prompt: string,
+    ) => CodexExecution | Promise<CodexExecution> = () => ({
+      process: {
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      },
+    }),
   ) {}
 
   runInitial(): Promise<CodexExecution> {
@@ -185,6 +202,11 @@ class FakeCodexRunner implements CodexRunner {
         exitCode: 0,
       },
     });
+  }
+
+  runResume(threadId: string, prompt: string): Promise<CodexExecution> {
+    this.resumeCalls.push({ threadId, prompt });
+    return Promise.resolve(this.onResume(threadId, prompt));
   }
 }
 
@@ -278,11 +300,13 @@ describe("WorkerOrchestrator", () => {
     const gitlab = new FakeGitLabService();
     const codex = new FakeCodexRunner(() => ({
       process: {
-        stdout: "AI_QUESTION: Which API variant should be used?",
+        stdout: "",
         stderr: "",
         exitCode: 0,
       },
+      finalMessage: "AI_QUESTION: Which API variant should be used?",
       question: "Which API variant should be used?",
+      threadId: "thread-123",
     }));
     const orchestrator = new WorkerOrchestrator(
       createConfig(process.cwd()),
@@ -300,6 +324,193 @@ describe("WorkerOrchestrator", () => {
       { issueKey: "DEV-3", target: "in_progress" },
       { issueKey: "DEV-3", target: "waiting_for_answer" },
     ]);
-    expect(tracker.addedComments.some((entry) => entry.text.startsWith("AI QUESTION:"))).toBe(true);
+    expect(
+      tracker.addedComments.some((entry) => entry.text.includes("threadId=thread-123")),
+    ).toBe(true);
+  });
+
+  it("resumes the prior Codex session after a human answer", async () => {
+    const questionText = formatQuestionCommentWithThreadId(
+      "worker-1",
+      "Which API variant should be used?",
+      "thread-123",
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-4",
+          title: "Resume task",
+          description: "Continue after answer",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "waiting_for_answer",
+        },
+      ],
+      {
+        "DEV-4": [
+          {
+            id: "1",
+            text: questionText,
+            createdAt: "2026-03-10T11:00:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(questionText),
+          },
+          {
+            id: "2",
+            text: "Use the v2 endpoint.",
+            createdAt: "2026-03-10T11:05:00.000Z",
+            isSystem: false,
+          },
+          {
+            id: "3",
+            text: formatStatusComment(
+              "worker-1",
+              "waiting_for_answer",
+              "Waiting for human clarification.",
+            ),
+            createdAt: "2026-03-10T11:06:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(
+              formatStatusComment(
+                "worker-1",
+                "waiting_for_answer",
+                "Waiting for human clarification.",
+              ),
+            ),
+          },
+        ],
+      },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(
+      () => ({
+        process: {
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        },
+      }),
+      () => {
+        git.uncommittedChanges = true;
+        git.diffFromBase = true;
+        return {
+          process: {
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          },
+          finalMessage: "Resumed successfully",
+        };
+      },
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(codex.resumeCalls).toHaveLength(1);
+    expect(codex.resumeCalls[0]?.threadId).toBe("thread-123");
+    expect(codex.resumeCalls[0]?.prompt).toContain("Use the v2 endpoint.");
+  });
+
+  it("falls back to a fresh Codex session when resume fails", async () => {
+    const questionText = formatQuestionCommentWithThreadId(
+      "worker-1",
+      "Which API variant should be used?",
+      "thread-123",
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-5",
+          title: "Resume fallback task",
+          description: "Fallback after resume failure",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "waiting_for_answer",
+        },
+      ],
+      {
+        "DEV-5": [
+          {
+            id: "1",
+            text: questionText,
+            createdAt: "2026-03-10T11:00:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(questionText),
+          },
+          {
+            id: "2",
+            text: "Use the v2 endpoint.",
+            createdAt: "2026-03-10T11:05:00.000Z",
+            isSystem: false,
+          },
+          {
+            id: "3",
+            text: formatStatusComment(
+              "worker-1",
+              "waiting_for_answer",
+              "Waiting for human clarification.",
+            ),
+            createdAt: "2026-03-10T11:06:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(
+              formatStatusComment(
+                "worker-1",
+                "waiting_for_answer",
+                "Waiting for human clarification.",
+              ),
+            ),
+          },
+        ],
+      },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    let initialCalls = 0;
+    const codex = new FakeCodexRunner(
+      () => {
+        initialCalls += 1;
+        git.uncommittedChanges = true;
+        git.diffFromBase = true;
+        return {
+          process: {
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          },
+          finalMessage: "Fresh session fallback",
+        };
+      },
+      () => ({
+        process: {
+          stdout: "",
+          stderr: "resume failed",
+          exitCode: 1,
+        },
+      }),
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(codex.resumeCalls).toHaveLength(1);
+    expect(initialCalls).toBe(1);
   });
 });

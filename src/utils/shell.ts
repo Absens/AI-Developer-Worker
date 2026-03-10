@@ -9,6 +9,11 @@ export interface ShellOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+export interface CommandOptions extends ShellOptions {
+  command: string;
+  args: string[];
+}
+
 export const runShellCommand = async (
   command: string,
   options: ShellOptions,
@@ -32,6 +37,43 @@ export const runShellCommand = async (
     });
     child.on("error", (error) => {
       reject(new TemporaryIntegrationError(`Failed to execute: ${command}`, error));
+    });
+    child.on("close", (code) => {
+      resolve({
+        stdout,
+        stderr,
+        exitCode: code ?? 1,
+      });
+    });
+
+    if (options.stdin) {
+      child.stdin.write(options.stdin);
+    }
+    child.stdin.end();
+  });
+
+export const runCommand = async (
+  options: CommandOptions,
+): Promise<ProcessResult> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(options.command, options.args, {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      shell: false,
+      stdio: "pipe",
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      reject(new TemporaryIntegrationError(`Failed to execute: ${options.command}`, error));
     });
     child.on("close", (code) => {
       resolve({

@@ -15,6 +15,11 @@ export const assertCodexAuthenticated = async (
   config: AppConfig,
   logger: Logger,
 ): Promise<void> => {
+  if (process.env.CODEX_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim()) {
+    logger.info("Using API key authentication for Codex CLI.");
+    return;
+  }
+
   logger.info("Checking Codex authentication status.", {
     codexHome: config.codexHome,
     command: config.codexCliCommand,
@@ -26,9 +31,8 @@ export const assertCodexAuthenticated = async (
   });
 
   const combinedOutput = `${result.stdout}\n${result.stderr}`.trim();
-  const loggedIn = combinedOutput.includes("Logged in");
 
-  if (result.exitCode !== 0 || !loggedIn) {
+  if (result.exitCode !== 0) {
     throw new ConfigurationError(
       [
         `Codex CLI is not authenticated for CODEX_HOME=${config.codexHome}.`,

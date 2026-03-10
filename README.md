@@ -10,10 +10,10 @@ For each cycle the worker:
 2. Otherwise selects the earliest eligible Tracker issue with tag `TRACKER_TAG`.
 3. Moves the issue through logical statuses from `TRACKER_STATUS_MAP`.
 4. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone.
-5. Runs `CODEX_COMMAND`, then tests and lint.
+5. Runs structured `codex exec`, then tests and lint.
 6. Commits, pushes, publishes an MR, and updates Tracker comments/status.
 
-If Codex needs business clarification, it emits `AI_QUESTION:` and the worker moves the task to `waiting_for_answer`.
+If Codex needs business clarification, it returns exactly one `AI_QUESTION:` line, the worker stores the Codex `threadId`, and later resumes that session after a human answer.
 
 ## Quick Start
 
@@ -47,7 +47,6 @@ Required:
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
-- `CODEX_COMMAND`
 - `MAX_FIX_ATTEMPTS`
 - `WORKER_ID`
 
@@ -59,6 +58,10 @@ Common optional values:
 - `POLL_INTERVAL_MINUTES=30`
 - `CODEX_HOME=/codex-home`
 - `CODEX_CLI_COMMAND=codex`
+- `CODEX_SANDBOX=workspace-write`
+- `CODEX_MODEL=...`
+- `CODEX_PROFILE=...`
+- `CODEX_EXEC_ARGS_JSON=[]`
 - `WORKER_RUN_ONCE=true|false`
 
 ## Documentation Map

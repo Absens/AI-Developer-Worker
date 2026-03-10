@@ -32,7 +32,6 @@ describe("config", () => {
       GITLAB_URL: "https://gitlab.example.com/",
       GITLAB_TOKEN: "gitlab-token",
       GITLAB_PROJECT_ID: "123",
-      CODEX_COMMAND: "codex exec",
       MAX_FIX_ATTEMPTS: "2",
       WORKER_ID: "worker-1",
     });
@@ -49,6 +48,8 @@ describe("config", () => {
     expect(config.runOnce).toBe(false);
     expect(config.codexHome).toBe(join(homedir(), ".codex"));
     expect(config.codexCliCommand).toBe("codex");
+    expect(config.codexSandbox).toBe("workspace-write");
+    expect(config.codexExecArgs).toEqual([]);
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
@@ -62,13 +63,52 @@ describe("config", () => {
       GITLAB_PROJECT_ID: "123",
       CODEX_HOME: "/codex-home",
       CODEX_CLI_COMMAND: "/usr/local/bin/codex",
-      CODEX_COMMAND: "/usr/local/bin/codex exec --skip-git-repo-check",
+      CODEX_MODEL: "gpt-5-codex",
+      CODEX_PROFILE: "ci",
+      CODEX_SANDBOX: "danger-full-access",
+      CODEX_EXEC_ARGS_JSON: "[\"--search\",\"--add-dir\",\"/tmp/shared\"]",
       MAX_FIX_ATTEMPTS: "2",
       WORKER_ID: "worker-1",
     });
 
     expect(config.codexHome).toBe("/codex-home");
     expect(config.codexCliCommand).toBe("/usr/local/bin/codex");
+    expect(config.codexModel).toBe("gpt-5-codex");
+    expect(config.codexProfile).toBe("ci");
+    expect(config.codexSandbox).toBe("danger-full-access");
+    expect(config.codexExecArgs).toEqual(["--search", "--add-dir", "/tmp/shared"]);
     expect(config.trackerOrgHeader).toBe("X-Org-ID");
+  });
+
+  it("rejects invalid CODEX_SANDBOX", () => {
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP: STATUS_MAP,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        CODEX_SANDBOX: "sandboxed",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/CODEX_SANDBOX/);
+  });
+
+  it("rejects invalid CODEX_EXEC_ARGS_JSON", () => {
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP: STATUS_MAP,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        CODEX_EXEC_ARGS_JSON: "{\"bad\":true}",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/CODEX_EXEC_ARGS_JSON/);
   });
 });
