@@ -37,6 +37,7 @@ describe("config", () => {
     });
 
     expect(config.trackerTag).toBe("ai_dev");
+    expect(config.trackerDefaultQueue).toBe("FRONTEND");
     expect(config.trackerOrgHeader).toBe("X-Cloud-Org-ID");
     expect(config.trackerApiBaseUrl).toBe("https://api.tracker.yandex.net/v3");
     expect(config.repoPath).toBe("/workspace/project");
@@ -80,6 +81,7 @@ describe("config", () => {
     expect(config.codexProfile).toBe("ci");
     expect(config.codexSandbox).toBe("danger-full-access");
     expect(config.codexExecArgs).toEqual(["--search", "--add-dir", "/tmp/shared"]);
+    expect(config.trackerDefaultQueue).toBe("FRONTEND");
     expect(config.trackerOrgHeader).toBe("X-Org-ID");
   });
 

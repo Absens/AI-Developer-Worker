@@ -60,6 +60,9 @@ interface TrackerCollectionResponse<T> {
 const normalize = (value?: string): string =>
   value?.trim().toLowerCase() ?? "";
 
+const escapeTrackerQueryValue = (value: string): string =>
+  value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
 const buildIssue = (
   issue: TrackerSearchResponseItem,
   logicalStatus?: LogicalStatus,
@@ -187,7 +190,7 @@ export class YandexTrackerClient implements TrackerClient {
     const result = await this.fetchAllPages<TrackerSearchResponseItem>("/issues/_search", {
       method: "POST",
       body: {
-        query: `tag: "${this.config.trackerTag}"`,
+        query: `"Queue": "${escapeTrackerQueryValue(this.config.trackerDefaultQueue)}" AND "Tags": "${escapeTrackerQueryValue(this.config.trackerTag)}"`,
       },
     });
 

@@ -170,6 +170,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     trackerToken: requireEnv(env, "TRACKER_TOKEN"),
     trackerOrgHeader: parseTrackerOrgHeader(env.TRACKER_ORG_HEADER),
     trackerOrgId: requireEnv(env, "TRACKER_ORG_ID"),
+    trackerDefaultQueue: env.TRACKER_DEFAULT_QUEUE?.trim() || "FRONTEND",
     trackerTag: env.TRACKER_TAG?.trim() || "ai_dev",
     trackerStatusMap,
     trackerApiBaseUrl:

@@ -40,6 +40,7 @@ const startMockServer = async () => {
   const trackerComments: Array<{ text: string }> = [];
   const transitions: string[] = [];
   const mergeRequests: Array<{ sourceBranch: string; web_url: string; title: string }> = [];
+  const searchBodies: any[] = [];
   const issue = {
     id: "1",
     key: "DEV-100",
@@ -58,6 +59,7 @@ const startMockServer = async () => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
     if (method === "POST" && url.pathname === "/tracker/v3/issues/_search") {
+      searchBodies.push(await readJsonBody(request));
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify([issue]));
       return;
@@ -216,6 +218,7 @@ const startMockServer = async () => {
     trackerComments,
     transitions,
     mergeRequests,
+    searchBodies,
   };
 };
 
@@ -279,6 +282,7 @@ describe("worker smoke", () => {
       const env = {
         TRACKER_TOKEN: "tracker-token",
         TRACKER_ORG_ID: "org-id",
+        TRACKER_DEFAULT_QUEUE: "FRONTEND",
         TRACKER_TAG: "ai_dev",
         TRACKER_API_BASE_URL: `http://127.0.0.1:${mockServer.port}/tracker/v3`,
         TRACKER_STATUS_MAP: STATUS_MAP,
@@ -306,6 +310,10 @@ describe("worker smoke", () => {
       );
       expect(runGit(["branch", "--show-current"], repoPath)).toBe("feature/ai-task-DEV-100");
       expect(runGit(["rev-list", "--count", "main..HEAD"], repoPath)).toBe("1");
+      expect(mockServer.searchBodies).toEqual([
+        { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
+        { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
+      ]);
       expect(mockServer.transitions).toEqual(["start", "review"]);
       expect(mockServer.mergeRequests).toHaveLength(1);
       expect(

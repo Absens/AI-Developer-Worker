@@ -7,7 +7,7 @@ Single-process Node.js/TypeScript worker that polls Yandex Tracker, runs `codex-
 For each cycle the worker:
 
 1. Restores an unfinished task for the current `WORKER_ID`, if one exists.
-2. Otherwise selects the earliest eligible Tracker issue with tag `TRACKER_TAG`.
+2. Otherwise selects the earliest eligible Tracker issue from queue `TRACKER_DEFAULT_QUEUE` with tag `TRACKER_TAG`.
 3. Moves the issue through logical statuses from `TRACKER_STATUS_MAP`.
 4. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone.
 5. Runs structured `codex exec`, then tests and lint.
@@ -53,6 +53,7 @@ Required:
 Common optional values:
 
 - `TRACKER_TAG=ai_dev`
+- `TRACKER_DEFAULT_QUEUE=FRONTEND`
 - `REPO_PATH=/workspace/project`
 - `BASE_BRANCH=main`
 - `POLL_INTERVAL_MINUTES=30`

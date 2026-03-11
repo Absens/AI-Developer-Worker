@@ -36,6 +36,7 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   trackerToken: "tracker-token",
   trackerOrgHeader: "X-Cloud-Org-ID",
   trackerOrgId: "org-id",
+  trackerDefaultQueue: "FRONTEND",
   trackerTag: "ai_dev",
   trackerStatusMap: {
     open: { statuses: ["Open"] },

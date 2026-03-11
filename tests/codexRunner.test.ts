@@ -24,6 +24,7 @@ const createConfig = (
   trackerToken: "tracker-token",
   trackerOrgHeader: "X-Cloud-Org-ID",
   trackerOrgId: "org-id",
+  trackerDefaultQueue: "FRONTEND",
   trackerTag: "ai_dev",
   trackerStatusMap: {
     open: { statuses: ["Open"] },

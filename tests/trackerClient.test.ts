@@ -24,6 +24,7 @@ const createConfig = (trackerApiBaseUrl: string, overrides: Partial<AppConfig> =
   trackerToken: "tracker-token",
   trackerOrgHeader: "X-Cloud-Org-ID",
   trackerOrgId: "org-id",
+  trackerDefaultQueue: "FRONTEND",
   trackerTag: "ai_dev",
   trackerStatusMap: STATUS_MAP,
   trackerApiBaseUrl,
@@ -175,7 +176,10 @@ describe("YandexTrackerClient", () => {
     expect(foundComments).toHaveLength(101);
     expect(seenSearchPages).toEqual([1, 2]);
     expect(seenCommentPages).toEqual([1, 2]);
-    expect(searchBodies).toEqual([{ query: 'tag: "ai_dev"' }, { query: 'tag: "ai_dev"' }]);
+    expect(searchBodies).toEqual([
+      { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
+      { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
+    ]);
     expect(seenHeaders.every((headers) => headers.org === "org-id")).toBe(true);
     expect(seenHeaders.every((headers) => headers.cloudOrg === undefined)).toBe(true);
   });

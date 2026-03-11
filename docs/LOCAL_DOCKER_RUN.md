@@ -58,6 +58,7 @@ Create `.env` from `.env.example` and set:
 
 - Tracker credentials
 - `TRACKER_ORG_HEADER`
+- `TRACKER_DEFAULT_QUEUE`
 - GitLab credentials
 - `TRACKER_STATUS_MAP`
 - `CODEX_CLI_COMMAND`

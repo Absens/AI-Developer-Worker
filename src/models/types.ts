@@ -17,6 +17,7 @@ export interface AppConfig {
   trackerToken: string;
   trackerOrgHeader: TrackerOrgHeader;
   trackerOrgId: string;
+  trackerDefaultQueue: string;
   trackerTag: string;
   trackerStatusMap: Record<LogicalStatus, TrackerStatusConfig>;
   trackerApiBaseUrl: string;
