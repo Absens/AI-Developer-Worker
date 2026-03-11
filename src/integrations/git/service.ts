@@ -49,6 +49,7 @@ export class RepositoryGitService implements GitService {
 
   async assertRepositoryReady(): Promise<void> {
     await this.ensureRepositoryPrepared();
+    await this.ensureCommitIdentity();
     const remoteList = await this.run("git remote -v");
     if (remoteList.exitCode === 0) {
       this.logger.info("Detected repository remotes.", {
@@ -193,6 +194,23 @@ export class RepositoryGitService implements GitService {
 
     this.remoteAuthEnv = this.buildRemoteAuthEnv(desiredFetchUrl);
     this.repositoryPrepared = true;
+  }
+
+  private async ensureCommitIdentity(): Promise<void> {
+    const result = await this.run("git var GIT_AUTHOR_IDENT");
+    if (result.exitCode === 0) {
+      return;
+    }
+
+    throw new ConfigurationError(
+      [
+        "Git commit identity is not configured for the mounted repository.",
+        "Set git user.name and user.email in that repository, or provide GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL to the worker environment.",
+        (result.stderr || result.stdout).trim(),
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
 
   private async getRemoteUrl(remoteName: string, push = false): Promise<string> {

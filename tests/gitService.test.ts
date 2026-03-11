@@ -71,6 +71,11 @@ describe("RepositoryGitService", () => {
       })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({
+        stdout: "AI Worker <worker@example.com> 1 +0000\n",
+        stderr: "",
+        exitCode: 0,
+      })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
 
@@ -84,7 +89,7 @@ describe("RepositoryGitService", () => {
       expect.objectContaining({ cwd: "/workspace/project" }),
     );
     expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
-      6,
+      7,
       "git fetch --all --prune",
       expect.objectContaining({
         cwd: "/workspace/project",
@@ -107,6 +112,11 @@ describe("RepositoryGitService", () => {
         stderr: "",
         exitCode: 0,
       })
+      .mockResolvedValueOnce({
+        stdout: "AI Worker <worker@example.com> 1 +0000\n",
+        stderr: "",
+        exitCode: 0,
+      })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
 
@@ -117,6 +127,31 @@ describe("RepositoryGitService", () => {
     expect(hoisted.runShellCommand).not.toHaveBeenCalledWith(
       expect.stringContaining("git remote set-url origin"),
       expect.anything(),
+    );
+  });
+
+  it("fails fast when git author identity is missing", async () => {
+    hoisted.runShellCommand
+      .mockResolvedValueOnce({
+        stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Author identity unknown",
+        exitCode: 128,
+      });
+
+    const service = new RepositoryGitService(createConfig(), new Logger());
+
+    await expect(service.assertRepositoryReady()).rejects.toThrow(
+      /GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL|git user\.name and user\.email/,
     );
   });
 });

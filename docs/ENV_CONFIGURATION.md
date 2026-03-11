@@ -44,6 +44,8 @@ For Tracker statuses, the repository already includes an example file at [config
 | `GITLAB_URL` | Yes | None | Use the base URL of your GitLab instance, for example `https://gitlab.example.com`. Do not append `/api/v4`; the client adds that part itself. |
 | `GITLAB_TOKEN` | Yes | None | Create a GitLab access token that can read and create merge requests in the target project. For one repository, prefer a GitLab project access token over a personal token. The token must be valid for `GET` and `POST` calls to `/api/v4/projects/:id/merge_requests`, so in practice give it `api` scope and repository write access for that project. |
 | `GITLAB_PROJECT_ID` | Yes | None | Use the numeric or URL-encoded project ID accepted by the GitLab REST API. You can copy it from the project page or query it through the GitLab API once you know the project path. |
+| `GIT_AUTHOR_NAME` | No | None | Optional git commit author name for the worker process. Use this in Docker if the mounted repository does not already have `git config user.name` set. |
+| `GIT_AUTHOR_EMAIL` | No | None | Optional git commit author email for the worker process. Use this in Docker if the mounted repository does not already have `git config user.email` set. |
 | `REPO_PATH` | No | `/workspace/project` | Keep the default in Docker. Override only if the worker should use another local checkout path. |
 | `BASE_BRANCH` | No | `main` | Set the branch that feature branches and merge requests should target. |
 | `POLL_INTERVAL_MINUTES` | No | `30` | Choose how often the worker polls Tracker. Must be a positive integer. |
@@ -189,6 +191,28 @@ curl --header "PRIVATE-TOKEN: <token>" \
 ```
 
 If that request succeeds, the same token shape should work for the worker's read path. You should also verify it can create a merge request in your environment before relying on it in production.
+
+## Git commit identity inside Docker
+
+The worker can fetch and push with repository credentials and still fail later on `git commit` if git author identity is missing in the mounted checkout. This usually appears as `Author identity unknown` and a fallback host like `root@container-id.(none)`.
+
+Use one of these approaches:
+
+1. Configure the mounted repository itself:
+
+```bash
+git -C /path/to/repo config user.name "AI Worker"
+git -C /path/to/repo config user.email "ai-worker@example.com"
+```
+
+2. Or pass identity through the worker environment:
+
+```env
+GIT_AUTHOR_NAME=AI Worker
+GIT_AUTHOR_EMAIL=ai-worker@example.com
+```
+
+The worker startup now checks `git var GIT_AUTHOR_IDENT`, so this misconfiguration should fail fast before task processing starts.
 
 ## Recommended validation flow
 
