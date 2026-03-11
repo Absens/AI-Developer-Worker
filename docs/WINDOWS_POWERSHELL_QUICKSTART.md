@@ -116,7 +116,7 @@ docker run --rm `
 
 ## Compose option
 
-You can also use [compose.example.yaml](/C:/Users/gabba/projects/developer/compose.example.yaml). Set `TARGET_REPO_PATH` in `.env` first, then run:
+You can also use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml). Set `TARGET_REPO_PATH` in `.env` first, then run:
 
 Use slash-style path syntax there, for example:
 
@@ -125,7 +125,7 @@ TARGET_REPO_PATH=C:/work/my-project
 ```
 
 ```powershell
-docker compose -f compose.example.yaml up --build
+docker compose up --build
 ```
 
 For a one-shot run, override `WORKER_RUN_ONCE=true` in `.env` before starting Compose.

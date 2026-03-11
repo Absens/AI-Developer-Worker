@@ -10,7 +10,7 @@
     "bootstrap:codex-home": "node scripts/bootstrap-codex-home.mjs",
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx src/index.ts",
+    "dev": "node --env-file=.env --import tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:smoke": "vitest run tests/worker.smoke.test.ts",

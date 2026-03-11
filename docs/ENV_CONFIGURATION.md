@@ -110,7 +110,7 @@ These are not part of the main runtime config object, but they are still read di
 
 | Variable | Where it is used | Purpose |
 | --- | --- | --- |
-| `TARGET_REPO_PATH` | [compose.example.yaml](/C:/Users/gabba/projects/developer/compose.example.yaml) | Host path mounted into `/workspace/project` when you run through Docker Compose. |
+| `TARGET_REPO_PATH` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host path mounted into `/workspace/project` when you run through Docker Compose. |
 | `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | If set, the worker skips `codex login status` and assumes API key based Codex auth. |
 | `OPENAI_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | Same behavior as `CODEX_API_KEY`; accepted as an alternative auth source for Codex CLI. |
 | `SOURCE_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Source directory copied by the bootstrap script. Defaults to the current user's `~/.codex`. |

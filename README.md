@@ -34,7 +34,7 @@ The container does not perform OAuth login on startup. If `CODEX_HOME` is missin
 - `npm test` run the full Vitest suite
 - `npm run test:smoke` run the end-to-end smoke harness
 - `npm run build` build production output into `dist/`
-- `npm run dev` start the worker with `tsx`
+- `npm run dev` start the worker with `tsx` and load `.env`
 - `npm run bootstrap:codex-home` copy an existing Codex auth directory into a target path or mounted volume
 
 ## Key Configuration
@@ -72,7 +72,7 @@ Common optional values:
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
 - Codex CLI update procedure and compatibility checks: [docs/CODEX_CLI_UPDATE_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/CODEX_CLI_UPDATE_RUNBOOK.md)
-- Compose example: [compose.example.yaml](/C:/Users/gabba/projects/developer/compose.example.yaml)
+- Compose file: [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml)
 - Contributor conventions: [AGENTS.md](/C:/Users/gabba/projects/developer/AGENTS.md)
 
 ## Notes
