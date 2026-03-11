@@ -2,7 +2,14 @@ import { buildApplication } from "./app.js";
 import { Logger } from "./utils/logger.js";
 
 const main = async (): Promise<void> => {
-  const { config, orchestrator, logger, assertCodexAuthenticated } = buildApplication();
+  const {
+    config,
+    orchestrator,
+    logger,
+    assertCodexAuthenticated,
+    assertRepositoryReady,
+  } = buildApplication();
+  await assertRepositoryReady();
   await assertCodexAuthenticated();
   if (config.runOnce) {
     await orchestrator.runOnce();

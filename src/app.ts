@@ -27,6 +27,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     logger,
     config,
     orchestrator,
+    assertRepositoryReady: () => git.assertRepositoryReady(),
     assertCodexAuthenticated: () => assertCodexAuthenticated(config, logger),
   };
 };

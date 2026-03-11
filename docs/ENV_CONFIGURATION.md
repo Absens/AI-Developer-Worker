@@ -42,7 +42,7 @@ For Tracker statuses, the repository already includes an example file at [config
 | `TRACKER_API_BASE_URL` | No | `https://api.tracker.yandex.net/v3` | Keep the default unless you are using a non-standard Tracker endpoint or a test stub. |
 | `TRACKER_STATUS_MAP_FILE` | Yes | None | Path to a JSON file that maps the worker logical states to your real Tracker statuses. The `statuses` values in that file must exactly match the issue state names visible in Tracker. |
 | `GITLAB_URL` | Yes | None | Use the base URL of your GitLab instance, for example `https://gitlab.example.com`. Do not append `/api/v4`; the client adds that part itself. |
-| `GITLAB_TOKEN` | Yes | None | Create a GitLab access token for a user or bot that can read and create merge requests in the target project. From the code, the token must be valid for `GET` and `POST` calls to `/api/v4/projects/:id/merge_requests`. In practice, use a token with API access to that project. |
+| `GITLAB_TOKEN` | Yes | None | Create a GitLab access token that can read and create merge requests in the target project. For one repository, prefer a GitLab project access token over a personal token. The token must be valid for `GET` and `POST` calls to `/api/v4/projects/:id/merge_requests`, so in practice give it `api` scope and repository write access for that project. |
 | `GITLAB_PROJECT_ID` | Yes | None | Use the numeric or URL-encoded project ID accepted by the GitLab REST API. You can copy it from the project page or query it through the GitLab API once you know the project path. |
 | `REPO_PATH` | No | `/workspace/project` | Keep the default in Docker. Override only if the worker should use another local checkout path. |
 | `BASE_BRANCH` | No | `main` | Set the branch that feature branches and merge requests should target. |
@@ -129,6 +129,16 @@ Example:
 GITLAB_URL=https://gitlab.example.com
 ```
 
+### `GITLAB_TOKEN`
+
+Recommended choice:
+
+1. Use a project access token when the worker should touch only one repository.
+2. Use a personal access token only when the worker must work across multiple projects and a project token is too narrow.
+3. Keep the token in both `GITLAB_TOKEN` and `GIT_REPOSITORY_TOKEN` if you want the same credential to be used for GitLab API calls and git fetch/push over HTTPS.
+
+For Git over HTTPS, this worker defaults `GIT_REPOSITORY_USERNAME` to `oauth2`. Keep that value for GitLab PAT, project access token, or group access token unless your GitLab instance requires another non-empty username.
+
 ### `GITLAB_PROJECT_ID`
 
 Use one of these sources:
@@ -141,6 +151,25 @@ Use one of these sources:
 curl --header "PRIVATE-TOKEN: <token>" \
   "https://gitlab.example.com/api/v4/projects/<url-encoded-group%2Fproject>"
 ```
+
+## Example for `platform/client-application`
+
+If the worker should operate on `https://repo.tools-indigolab.ru/platform/client-application.git`, the `.env` fragment should look like this:
+
+```env
+GITLAB_URL=https://repo.tools-indigolab.ru
+GITLAB_TOKEN=your-project-access-token
+GITLAB_PROJECT_ID=platform%2Fclient-application
+GIT_REMOTE_NAME=origin
+GIT_REPOSITORY_TOKEN=your-project-access-token
+GIT_REPOSITORY_USERNAME=oauth2
+GIT_REPOSITORY_URL=https://repo.tools-indigolab.ru/platform/client-application.git
+TARGET_REPO_PATH=C:/Users/gabba/projects/client-application
+REPO_PATH=/workspace/project
+BASE_BRANCH=main
+```
+
+`GITLAB_PROJECT_ID` can be either the numeric project ID from GitLab UI or the URL-encoded path `platform%2Fclient-application`.
 
 Then take the `id` from the response.
 

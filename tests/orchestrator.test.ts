@@ -50,6 +50,9 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   gitlabUrl: "https://gitlab.example.com",
   gitlabToken: "token",
   gitlabProjectId: "1",
+  gitRemoteName: "origin",
+  gitRepositoryToken: "token",
+  gitRepositoryUsername: "oauth2",
   repoPath,
   baseBranch: "main",
   pollIntervalMinutes: 30,
@@ -131,6 +134,10 @@ class FakeGitService implements GitService {
   diffFromBase = false;
   commits: string[] = [];
   pushes: string[] = [];
+
+  async assertRepositoryReady(): Promise<void> {
+    return;
+  }
 
   async getCurrentBranch(): Promise<string> {
     return this.currentBranch;
@@ -633,5 +640,107 @@ describe("WorkerOrchestrator", () => {
     expect(outcome).toBe("processed");
     expect(codex.resumeCalls).toHaveLength(1);
     expect(codex.resumeCalls[0]?.threadId).toBe("thread-fix-1");
+  });
+
+  it("does not resume failed tasks parked in need-info tracker state", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-7",
+          title: "Failed task",
+          description: "Should not resume",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "waiting_for_answer",
+        },
+      ],
+      {
+        "DEV-7": [
+          {
+            id: "1",
+            text: formatStatusComment("worker-1", "failed", "git auth failed"),
+            createdAt: "2026-03-10T11:00:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(
+              formatStatusComment("worker-1", "failed", "git auth failed"),
+            ),
+          },
+        ],
+      },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(() => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+    }));
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("idle");
+  });
+
+  it("falls back to waiting_for_answer when failed transition is unavailable", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-8",
+          title: "Broken git auth",
+          description: "Should move to need-info fallback",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      {
+        "DEV-8": [],
+      },
+    );
+    tracker.transition = async (issueKey: string, targetStatus: LogicalStatus): Promise<void> => {
+      tracker.transitions.push({ issueKey, target: targetStatus });
+      if (targetStatus === "failed") {
+        throw new Error("No tracker transition found for logical status failed");
+      }
+      const issue = tracker.issues.find((entry) => entry.key === issueKey);
+      if (issue) {
+        issue.logicalStatus = targetStatus;
+      }
+    };
+
+    const git = new FakeGitService();
+    git.checkoutTaskBranch = async () => {
+      throw new Error("git auth failed");
+    };
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(() => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+    }));
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-8", target: "in_progress" },
+      { issueKey: "DEV-8", target: "failed" },
+      { issueKey: "DEV-8", target: "waiting_for_answer" },
+    ]);
+    expect(
+      tracker.addedComments.some((entry) => entry.text.includes("Automation failed for DEV-8")),
+    ).toBe(true);
   });
 });

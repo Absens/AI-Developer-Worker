@@ -15,8 +15,7 @@
     "transition": "inReview"
   },
   "failed": {
-    "statuses": ["cancelled", "Отменено"],
-    "transition": "cancelled"
+    "statuses": ["cancelled", "Отменено"]
   },
   "done": {
     "statuses": ["resolved", "Решен"],

@@ -197,6 +197,13 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     gitlabUrl: requireEnv(env, "GITLAB_URL").replace(/\/+$/, ""),
     gitlabToken: requireEnv(env, "GITLAB_TOKEN"),
     gitlabProjectId: requireEnv(env, "GITLAB_PROJECT_ID"),
+    gitRemoteName: env.GIT_REMOTE_NAME?.trim() || "origin",
+    gitRepositoryToken:
+      env.GIT_REPOSITORY_TOKEN?.trim() || requireEnv(env, "GITLAB_TOKEN"),
+    gitRepositoryUsername: env.GIT_REPOSITORY_USERNAME?.trim() || "oauth2",
+    ...(env.GIT_REPOSITORY_URL?.trim()
+      ? { gitRepositoryUrl: env.GIT_REPOSITORY_URL.trim() }
+      : {}),
     repoPath: env.REPO_PATH?.trim() || "/workspace/project",
     baseBranch: env.BASE_BRANCH?.trim() || "main",
     pollIntervalMinutes,

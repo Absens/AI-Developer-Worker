@@ -13,7 +13,7 @@ const STATUS_MAP = JSON.stringify({
   in_progress: { statuses: ["In Progress"], transition: "start" },
   waiting_for_answer: { statuses: ["Waiting"], transition: "wait" },
   review: { statuses: ["Review"], transition: "review" },
-  failed: { statuses: ["Failed"], transition: "fail" },
+  failed: { statuses: ["Failed"] },
   done: { statuses: ["Done"], transition: "done" },
 });
 

@@ -45,6 +45,11 @@ Set these fields carefully:
 
 - `HOST_CODEX_HOME`
 - `TARGET_REPO_PATH`
+- `GITLAB_URL`
+- `GITLAB_TOKEN`
+- `GITLAB_PROJECT_ID`
+- `GIT_REPOSITORY_TOKEN`
+- `GIT_REPOSITORY_URL`
 
 Minimum fields to verify:
 
@@ -76,6 +81,16 @@ $TargetRepo = "C:\ABSOLUTE\PATH\TO\YOUR\PROJECT"
 ```
 
 This must be a real git clone with working fetch/pull/push credentials.
+
+For GitLab repositories that currently use an SSH remote, set:
+
+```env
+GIT_REPOSITORY_TOKEN=your-project-access-token
+GIT_REPOSITORY_USERNAME=oauth2
+GIT_REPOSITORY_URL=https://repo.tools-indigolab.ru/platform/client-application.git
+```
+
+The worker will rewrite `origin` from SSH to HTTPS on startup and use that token for `fetch`, `pull`, and `push`.
 
 ### 8. First run: one-shot
 

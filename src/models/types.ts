@@ -24,6 +24,10 @@ export interface AppConfig {
   gitlabUrl: string;
   gitlabToken: string;
   gitlabProjectId: string;
+  gitRemoteName: string;
+  gitRepositoryToken: string;
+  gitRepositoryUsername: string;
+  gitRepositoryUrl?: string;
   repoPath: string;
   baseBranch: string;
   pollIntervalMinutes: number;
@@ -120,6 +124,7 @@ export interface TrackerClient {
 }
 
 export interface GitService {
+  assertRepositoryReady(): Promise<void>;
   getCurrentBranch(): Promise<string>;
   hasChanges(): Promise<boolean>;
   hasDiffFromBase(): Promise<boolean>;

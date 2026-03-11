@@ -101,7 +101,11 @@ export class WorkerOrchestrator {
     for (const issue of issues) {
       const comments = await this.tracker.getComments(issue.key);
       const latestStatus = findLatestStatusComment(comments);
-      if (latestStatus?.worker === this.config.workerId) {
+      if (
+        latestStatus?.worker === this.config.workerId &&
+        latestStatus.state !== undefined &&
+        ACTIVE_STATES.includes(latestStatus.state)
+      ) {
         return { issue, comments };
       }
     }
@@ -431,7 +435,15 @@ export class WorkerOrchestrator {
       issue.key,
       `Automation failed for ${issue.key}.\n\n${diagnostic}`,
     );
-    await this.tracker.transition(issue.key, "failed");
+    try {
+      await this.tracker.transition(issue.key, "failed");
+    } catch (error) {
+      this.logger.warn("Failed to move issue into failed state. Falling back to waiting state.", {
+        issueKey: issue.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.tracker.transition(issue.key, "waiting_for_answer");
+    }
     await this.tracker.addComment(
       issue.key,
       formatStatusComment(this.config.workerId, "failed", diagnostic),

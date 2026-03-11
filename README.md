@@ -47,6 +47,8 @@ Required:
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
+- `GIT_REMOTE_NAME=origin` by default
+- optional `GIT_REPOSITORY_TOKEN` and `GIT_REPOSITORY_URL` for HTTPS git auth bootstrap
 - `MAX_FIX_ATTEMPTS`
 - `WORKER_ID`
 
@@ -80,4 +82,5 @@ Common optional values:
 
 - Prefer a dedicated writable Docker volume for `CODEX_HOME` over binding the host `~/.codex` directly.
 - The worker expects the mounted target repository to already have working git fetch/pull/push credentials.
+- If the mounted repository still uses an SSH remote, the worker can rewrite `origin` to HTTPS and use `GIT_REPOSITORY_TOKEN` or `GITLAB_TOKEN` for git auth.
 - The container installs `git`, `curl`, `jq`, `ripgrep`, and `@openai/codex`.
