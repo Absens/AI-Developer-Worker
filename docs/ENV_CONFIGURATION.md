@@ -110,6 +110,7 @@ These are not part of the main runtime config object, but they are still read di
 
 | Variable | Where it is used | Purpose |
 | --- | --- | --- |
+| `HOST_CODEX_HOME` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host Codex auth directory mounted read-only into `/host-codex` so Compose can auto-bootstrap `/codex-home` on first start. |
 | `TARGET_REPO_PATH` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host path mounted into `/workspace/project` when you run through Docker Compose. |
 | `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | If set, the worker skips `codex login status` and assumes API key based Codex auth. |
 | `OPENAI_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | Same behavior as `CODEX_API_KEY`; accepted as an alternative auth source for Codex CLI. |

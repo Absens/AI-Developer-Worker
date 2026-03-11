@@ -5,9 +5,11 @@ services:
       - .env
     environment:
       CODEX_HOME: /codex-home
+      HOST_CODEX_HOME_MOUNT: /host-codex
       REPO_PATH: /workspace/project
     volumes:
-      - "${TARGET_REPO_PATH}:/workspace/project"
+      - "${HOST_CODEX_HOME:?Set HOST_CODEX_HOME in .env}:/host-codex:ro"
+      - "${TARGET_REPO_PATH:?Set TARGET_REPO_PATH in .env}:/workspace/project"
       - codex-home:/codex-home
 
 volumes:

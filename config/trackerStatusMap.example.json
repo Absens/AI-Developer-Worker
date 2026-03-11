@@ -1,25 +1,25 @@
 {
   "open": {
-    "statuses": ["Open"]
+    "statuses": ["open", "Открыт", "new", "Новый"]
   },
   "in_progress": {
-    "statuses": ["In Progress"],
-    "transition": "start"
+    "statuses": ["inProgress", "В работе"],
+    "transition": "inProgress"
   },
   "waiting_for_answer": {
-    "statuses": ["Waiting for answer"],
-    "transition": "need-info"
+    "statuses": ["needInfo", "Требуется информация"],
+    "transition": "needInfo"
   },
   "review": {
-    "statuses": ["In Review"],
-    "transition": "review"
+    "statuses": ["inReview", "Ревью"],
+    "transition": "inReview"
   },
   "failed": {
-    "statuses": ["Failed"],
-    "transition": "fail"
+    "statuses": ["cancelled", "Отменено"],
+    "transition": "cancelled"
   },
   "done": {
-    "statuses": ["Done"],
-    "transition": "done"
+    "statuses": ["resolved", "Решен"],
+    "transition": "resolved"
   }
 }

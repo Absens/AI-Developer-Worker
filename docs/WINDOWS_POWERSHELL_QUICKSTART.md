@@ -34,24 +34,17 @@ docker build -t ai-developer-worker .
 docker volume create codex-home
 ```
 
-### 5. Copy current host Codex auth into that volume
-
-```powershell
-docker run --rm `
-  -v "${env:USERPROFILE}\.codex:/host-codex:ro" `
-  -v "codex-home:/codex-home" `
-  -e SOURCE_CODEX_HOME=/host-codex `
-  -e TARGET_CODEX_HOME=/codex-home `
-  ai-developer-worker `
-  node scripts/bootstrap-codex-home.mjs
-```
-
-### 6. Create `.env`
+### 5. Create `.env`
 
 ```powershell
 Copy-Item .env.example .env
 notepad .env
 ```
+
+Set these fields carefully:
+
+- `HOST_CODEX_HOME`
+- `TARGET_REPO_PATH`
 
 Minimum fields to verify:
 
@@ -72,7 +65,9 @@ Minimum fields to verify:
 
 For `TRACKER_STATUS_MAP_FILE`, use a path to a JSON file. In that file, `statuses` should match the real Tracker states. `transition` is only a hint used to find an allowed workflow transition.
 
-### 7. Set the path to the target project
+With Compose, the worker now copies auth automatically from `HOST_CODEX_HOME` into the named Docker volume on the first start if `/codex-home/auth.json` is missing.
+
+### 6. Set the path to the target project
 
 Replace this path with the repository the worker should modify:
 
@@ -116,11 +111,12 @@ docker run --rm `
 
 ## Compose option
 
-You can also use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml). Set `TARGET_REPO_PATH` in `.env` first, then run:
+You can also use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml). Set both `HOST_CODEX_HOME` and `TARGET_REPO_PATH` in `.env` first, then run:
 
 Use slash-style path syntax there, for example:
 
 ```env
+HOST_CODEX_HOME=C:/Users/your-user/.codex
 TARGET_REPO_PATH=C:/work/my-project
 ```
 

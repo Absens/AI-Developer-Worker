@@ -116,6 +116,8 @@ docker run --rm \
 
 This is the recommended path because the container gets its own writable Codex state instead of mutating the host state directly.
 
+If you use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml), this bootstrap step is automated. Set `HOST_CODEX_HOME` in `.env`, and on first `docker compose up` the container copies auth from the host mount into the named `codex-home` volume before starting the worker.
+
 ## First local test
 
 Run one cycle first:
