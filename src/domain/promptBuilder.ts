@@ -1,8 +1,21 @@
-import type { CommentWithMetadata, TrackerIssue } from "../models/types.js";
+import type {
+  CommentWithMetadata,
+  HumanTaskCommand,
+  TrackerIssue,
+} from "../models/types.js";
 import {
-  findFirstHumanReplyAfter,
+  findHumanCommentsAfter,
+  findLatestHumanTaskCommandAfter,
   findLatestQuestionComment,
 } from "../integrations/tracker/commentProtocol.js";
+
+const CLARIFICATION_SCHEMA = `{
+  "summary": "short summary of what is unclear",
+  "blockingReason": "why implementation cannot proceed safely",
+  "question": "single direct question to the human",
+  "options": ["A: option one", "B: option two"],
+  "resumeHint": "Reply with /resume A or /resume freeform: <your answer>."
+}`;
 
 const formatHumanComments = (comments: CommentWithMetadata[]): string => {
   const relevant = comments.filter((comment) => !comment.metadata && !comment.isSystem);
@@ -18,20 +31,67 @@ const formatHumanComments = (comments: CommentWithMetadata[]): string => {
     .join("\n");
 };
 
-const formatQuestionAnswerHistory = (comments: CommentWithMetadata[]): string => {
-  const latestQuestion = findLatestQuestionComment(comments);
-  if (!latestQuestion?.metadata.question) {
-    return "No previous AI questions.";
+const formatDiscussionTail = (
+  comments: CommentWithMetadata[],
+  sinceTimestamp: string,
+): string => {
+  const discussion = findHumanCommentsAfter(comments, sinceTimestamp);
+  if (discussion.length === 0) {
+    return "No human comments after the latest AI clarification.";
   }
 
-  const answer = findFirstHumanReplyAfter(comments, latestQuestion.createdAt);
+  return discussion
+    .map(
+      (comment) =>
+        `- ${comment.createdAt} ${comment.author ? `[${comment.author}] ` : ""}${comment.text}`,
+    )
+    .join("\n");
+};
+
+const formatClarificationHistory = (comments: CommentWithMetadata[]): string => {
+  const latestQuestion = findLatestQuestionComment(comments);
+  if (!latestQuestion?.metadata.question) {
+    return "No previous AI clarifications.";
+  }
+
+  const latestCommand = findLatestHumanTaskCommandAfter(
+    comments,
+    latestQuestion.createdAt,
+  );
+
   return [
+    `Summary: ${latestQuestion.metadata.summary ?? latestQuestion.metadata.question}`,
     `Question: ${latestQuestion.metadata.question}`,
-    `Answer: ${answer?.text ?? "No answer yet."}`,
+    `Blocking reason: ${latestQuestion.metadata.blockingReason ?? "Not recorded."}`,
+    latestQuestion.metadata.options && latestQuestion.metadata.options.length > 0
+      ? `Options: ${latestQuestion.metadata.options.join(" | ")}`
+      : "Options: none recorded",
+    latestCommand
+      ? `Latest command: ${latestCommand.rawText}`
+      : "Latest command: no explicit resume command",
+    "Discussion tail:",
+    formatDiscussionTail(comments, latestQuestion.createdAt),
   ].join("\n");
 };
 
-export const buildInitialPrompt = (
+const formatResumeCommand = (command: HumanTaskCommand): string =>
+  [
+    `Command: ${command.type}`,
+    command.choice ? `Choice: ${command.choice}` : "",
+    command.freeform ? `Freeform: ${command.freeform}` : "",
+    `Raw: ${command.rawText}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+const buildClarificationInstruction = (): string => [
+  'If critical business context is missing, reply with exactly one line that starts with AI_QUESTION: followed by a compact JSON object.',
+  "The JSON object must match this schema exactly:",
+  CLARIFICATION_SCHEMA,
+  "Do not add markdown fences, explanations, or any extra text around that one-line response.",
+].join("\n");
+
+export const buildAnalysisPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
 ): string => `Task: ${issue.key}
@@ -43,8 +103,35 @@ ${issue.description || "No description."}
 Additional context:
 ${formatHumanComments(comments)}
 
-Previous AI Q/A:
-${formatQuestionAnswerHistory(comments)}
+Previous clarification history:
+${formatClarificationHistory(comments)}
+
+Mode: analysis-only
+
+Requirements:
+1. Analyze the task and repository context only.
+2. Do not modify files, do not create files, do not run formatters, and do not perform implementation work.
+3. If the task is clear enough to implement safely, reply with exactly READY_FOR_IMPLEMENTATION and nothing else.
+4. If the task is ambiguous, reply with exactly one AI_QUESTION line using the clarification JSON contract below.
+5. Offer 2 to 4 mutually exclusive options when possible.
+6. Make the question human-friendly and specific to the blocker.
+
+${buildClarificationInstruction()}`;
+
+export const buildImplementationPrompt = (
+  issue: TrackerIssue,
+  comments: CommentWithMetadata[],
+): string => `Task: ${issue.key}
+Title: ${issue.title}
+
+Description:
+${issue.description || "No description."}
+
+Additional context:
+${formatHumanComments(comments)}
+
+Clarification history:
+${formatClarificationHistory(comments)}
 
 Requirements:
 1. Analyze the repository.
@@ -52,7 +139,9 @@ Requirements:
 3. Implement the solution.
 4. Run project tests.
 5. Follow the existing architecture and coding style.
-6. If critical business context is missing, reply with exactly one line that starts with AI_QUESTION: followed by the question text, and do not include any other text.`;
+6. If critical business context is missing, stop and ask for clarification using the exact AI_QUESTION JSON contract below.
+
+${buildClarificationInstruction()}`;
 
 export const buildFixPrompt = (
   issue: TrackerIssue,
@@ -68,16 +157,16 @@ ${diagnostic}
 Requirements:
 1. Modify only what is necessary to resolve the validation issues.
 2. Keep the existing task context and architecture intact.
-3. If critical business context is missing, reply with exactly one line that starts with AI_QUESTION: followed by the question text, and do not include any other text.`;
+3. If critical business context is missing, stop and ask for clarification using the exact AI_QUESTION JSON contract below.
+
+${buildClarificationInstruction()}`;
 
 export const buildResumePrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
+  command: HumanTaskCommand,
 ): string => {
   const latestQuestion = findLatestQuestionComment(comments);
-  const answer = latestQuestion
-    ? findFirstHumanReplyAfter(comments, latestQuestion.createdAt)
-    : undefined;
 
   return `Continue the existing Codex session for task ${issue.key}.
 Title: ${issue.title}
@@ -85,15 +174,21 @@ Title: ${issue.title}
 Original description:
 ${issue.description || "No description."}
 
-Latest AI question:
-${latestQuestion?.metadata.question ?? "No previous question recorded."}
+Latest AI clarification:
+${formatClarificationHistory(comments)}
 
-Human answer:
-${answer?.text ?? "No answer provided."}
+Explicit human command:
+${formatResumeCommand(command)}
 
 Requirements:
 1. Continue from the existing session context instead of restarting analysis from scratch.
-2. Use the human answer to complete the task.
-3. If critical business context is still missing, reply with exactly one line that starts with AI_QUESTION: followed by the question text, and do not include any other text.
-4. If enough context is available, continue implementation and validation work.`;
+2. Treat the explicit human command as authoritative.
+3. Use the discussion tail after the latest AI clarification as additional context.
+4. If critical business context is still missing, stop and ask for clarification using the exact AI_QUESTION JSON contract below.
+5. If enough context is available, continue implementation and validation work.
+
+Latest question timestamp:
+${latestQuestion?.createdAt ?? "unknown"}
+
+${buildClarificationInstruction()}`;
 };

@@ -1,25 +1,34 @@
 import type {
   AppConfig,
+  ClarificationQuestion,
   CodexExecution,
   CodexRunner,
   CommentWithMetadata,
   GitLabService,
   GitService,
+  HumanTaskCommand,
   LogicalStatus,
   MergeRequestInfo,
+  TaskAnalysisResult,
   TrackerClient,
   TrackerIssue,
   ValidationResult,
 } from "../models/types.js";
 import {
-  findFirstHumanReplyAfter,
+  findHumanCommentsAfter,
+  findLatestHumanTaskCommandAfter,
   findLatestQuestionComment,
   findLatestStatusComment,
   formatMergeRequestComment,
   formatQuestionCommentWithThreadId,
   formatStatusComment,
 } from "../integrations/tracker/commentProtocol.js";
-import { buildFixPrompt, buildInitialPrompt, buildResumePrompt } from "./promptBuilder.js";
+import {
+  buildAnalysisPrompt,
+  buildFixPrompt,
+  buildImplementationPrompt,
+  buildResumePrompt,
+} from "./promptBuilder.js";
 import {
   PermanentTaskError,
   TemporaryIntegrationError,
@@ -30,10 +39,24 @@ import { sleep } from "../utils/sleep.js";
 
 type CycleOutcome = "processed" | "idle" | "waiting";
 
+interface ResumeContext {
+  questionComment: CommentWithMetadata & { metadata: NonNullable<CommentWithMetadata["metadata"]> };
+  command: HumanTaskCommand;
+}
+
 const ACTIVE_STATES: LogicalStatus[] = ["in_progress", "waiting_for_answer"];
+const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
 
 const isValidationSuccessful = (validation: ValidationResult): boolean =>
   validation.changed && validation.testsPassed && validation.lintPassed;
+
+const isResumableStatus = (
+  latestStatus: ReturnType<typeof findLatestStatusComment>,
+): boolean =>
+  latestStatus !== undefined &&
+  latestStatus.state !== undefined &&
+  ACTIVE_STATES.includes(latestStatus.state) &&
+  latestStatus.waitingReason !== "failure_recovery";
 
 const buildCommandDiagnostic = (
   label: string,
@@ -103,8 +126,7 @@ export class WorkerOrchestrator {
       const latestStatus = findLatestStatusComment(comments);
       if (
         latestStatus?.worker === this.config.workerId &&
-        latestStatus.state !== undefined &&
-        ACTIVE_STATES.includes(latestStatus.state)
+        isResumableStatus(latestStatus)
       ) {
         return { issue, comments };
       }
@@ -136,11 +158,7 @@ export class WorkerOrchestrator {
       return false;
     }
 
-    return (
-      latestStatus.worker !== this.config.workerId &&
-      latestStatus.state !== undefined &&
-      ACTIVE_STATES.includes(latestStatus.state)
-    );
+    return latestStatus.worker !== this.config.workerId && isResumableStatus(latestStatus);
   }
 
   private async handleIssue(
@@ -172,8 +190,9 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
   ): Promise<CycleOutcome> {
-    let shouldResumeAfterAnswer = false;
+    let resumeContext: ResumeContext | undefined;
     let activeThreadId: string | undefined;
+
     if (issue.logicalStatus === "open") {
       await this.tracker.transition(issue.key, "in_progress");
       await this.tracker.addComment(
@@ -184,34 +203,30 @@ export class WorkerOrchestrator {
     }
 
     if (issue.logicalStatus === "waiting_for_answer") {
-      const latestQuestion = findLatestQuestionComment(comments);
-      if (!latestQuestion || latestQuestion.metadata.worker !== this.config.workerId) {
-        this.logger.warn("Task is waiting for answer, but no matching AI question was found.", {
-          issueKey: issue.key,
-        });
+      resumeContext = this.resolveResumeContext(issue, comments);
+      if (!resumeContext) {
         return "waiting";
       }
 
-      const answer = findFirstHumanReplyAfter(comments, latestQuestion.createdAt);
-      if (!answer) {
-        this.logger.info("Task is still waiting for a human answer.", {
-          issueKey: issue.key,
-        });
-        return "waiting";
-      }
-
+      activeThreadId = resumeContext.questionComment.metadata.threadId;
       await this.tracker.transition(issue.key, "in_progress");
       await this.tracker.addComment(
         issue.key,
         formatStatusComment(
           this.config.workerId,
           "in_progress",
-          "Human answer received. Resuming task processing.",
+          "Explicit resume command received. Resuming task processing.",
         ),
       );
       issue.logicalStatus = "in_progress";
       comments = await this.tracker.getComments(issue.key);
-      shouldResumeAfterAnswer = true;
+    } else {
+      const analysis = await this.runAnalysis(issue, comments);
+      activeThreadId = analysis.threadId;
+      if (analysis.status === "clarification_required" && analysis.clarification) {
+        await this.pauseForClarification(issue, analysis.clarification, activeThreadId);
+        return "waiting";
+      }
     }
 
     const branch = await this.git.checkoutTaskBranch(issue.key);
@@ -225,21 +240,31 @@ export class WorkerOrchestrator {
     }
 
     if (!hasUncommittedChanges && !hasCommittedDiff) {
-      const latestQuestion = findLatestQuestionComment(comments);
-      const execution =
-        shouldResumeAfterAnswer &&
-        latestQuestion?.metadata.worker === this.config.workerId &&
-        latestQuestion.metadata.threadId
-          ? await this.runResumeWithFallback(issue, comments, latestQuestion.metadata.threadId)
-          : await this.codex.runInitial(buildInitialPrompt(issue, comments));
-      activeThreadId = execution.threadId ?? latestQuestion?.metadata.threadId;
-      if (execution.question) {
-        await this.pauseForAnswer(issue, execution.question, execution.threadId);
+      const implementationPrompt = buildImplementationPrompt(issue, comments);
+      const execution = resumeContext
+        ? await this.runResumeOrInitial(
+            issue,
+            activeThreadId,
+            buildResumePrompt(issue, comments, resumeContext.command),
+            implementationPrompt,
+          )
+        : activeThreadId
+          ? await this.runResumeOrInitial(
+              issue,
+              activeThreadId,
+              implementationPrompt,
+              implementationPrompt,
+            )
+          : await this.codex.runInitial(implementationPrompt);
+
+      activeThreadId = execution.threadId ?? activeThreadId;
+      if (execution.clarification) {
+        await this.pauseForClarification(issue, execution.clarification, activeThreadId);
         return "waiting";
       }
 
       if (execution.process.exitCode !== 0) {
-        this.logger.warn("Codex initial run exited with non-zero code.", {
+        this.logger.warn("Codex implementation run exited with non-zero code.", {
           issueKey: issue.key,
           exitCode: execution.process.exitCode,
         });
@@ -271,8 +296,8 @@ export class WorkerOrchestrator {
         ? await this.codex.runResume(activeThreadId, buildFixPrompt(issue, validation.diagnostic))
         : await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
       activeThreadId = execution.threadId ?? activeThreadId;
-      if (execution.question) {
-        await this.pauseForAnswer(issue, execution.question, execution.threadId ?? activeThreadId);
+      if (execution.clarification) {
+        await this.pauseForClarification(issue, execution.clarification, activeThreadId);
         return "waiting";
       }
 
@@ -295,13 +320,93 @@ export class WorkerOrchestrator {
     return "processed";
   }
 
-  private async runResumeWithFallback(
+  private resolveResumeContext(
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
-    threadId: string,
+  ): ResumeContext | undefined {
+    const latestQuestion = findLatestQuestionComment(comments);
+    if (!latestQuestion || latestQuestion.metadata.worker !== this.config.workerId) {
+      this.logger.warn("Task is waiting for answer, but no matching AI question was found.", {
+        issueKey: issue.key,
+      });
+      return undefined;
+    }
+
+    const humanComments = findHumanCommentsAfter(comments, latestQuestion.createdAt);
+    if (humanComments.length === 0) {
+      this.logger.info("Task is still waiting for a human answer.", {
+        issueKey: issue.key,
+      });
+      return undefined;
+    }
+
+    const command = findLatestHumanTaskCommandAfter(comments, latestQuestion.createdAt);
+    if (!command) {
+      this.logger.info("Human comments received, but no explicit /resume command was found.", {
+        issueKey: issue.key,
+      });
+      return undefined;
+    }
+
+    if (command.type !== "resume") {
+      this.logger.info("Latest human command does not resume task execution.", {
+        issueKey: issue.key,
+        command: command.type,
+      });
+      return undefined;
+    }
+
+    return {
+      questionComment: latestQuestion,
+      command,
+    };
+  }
+
+  private async runAnalysis(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+  ): Promise<TaskAnalysisResult> {
+    const execution = await this.codex.runInitial(buildAnalysisPrompt(issue, comments));
+    if (execution.clarification) {
+      return {
+        status: "clarification_required",
+        clarification: execution.clarification,
+        threadId: execution.threadId,
+      };
+    }
+
+    const finalMessage = execution.finalMessage?.trim();
+    if (execution.process.exitCode !== 0 && finalMessage !== ANALYSIS_READY_MARKER) {
+      throw new PermanentTaskError(
+        execution.process.stderr.trim() || "Codex analysis stage failed.",
+      );
+    }
+
+    if (finalMessage && finalMessage !== ANALYSIS_READY_MARKER) {
+      this.logger.warn("Analysis stage returned unexpected final message, treating task as ready.", {
+        issueKey: issue.key,
+        finalMessage,
+      });
+    }
+
+    return {
+      status: "ready",
+      threadId: execution.threadId,
+    };
+  }
+
+  private async runResumeOrInitial(
+    issue: TrackerIssue,
+    threadId: string | undefined,
+    resumePrompt: string,
+    fallbackPrompt: string,
   ): Promise<CodexExecution> {
-    const execution = await this.codex.runResume(threadId, buildResumePrompt(issue, comments));
-    if (execution.process.exitCode === 0) {
+    if (!threadId) {
+      return this.codex.runInitial(fallbackPrompt);
+    }
+
+    const execution = await this.codex.runResume(threadId, resumePrompt);
+    if (execution.process.exitCode === 0 || execution.clarification) {
       return execution;
     }
 
@@ -311,17 +416,17 @@ export class WorkerOrchestrator {
       exitCode: execution.process.exitCode,
       stderr: execution.process.stderr,
     });
-    return this.codex.runInitial(buildInitialPrompt(issue, comments));
+    return this.codex.runInitial(fallbackPrompt);
   }
 
-  private async pauseForAnswer(
+  private async pauseForClarification(
     issue: TrackerIssue,
-    question: string,
+    clarification: ClarificationQuestion,
     threadId?: string,
   ): Promise<void> {
     await this.tracker.addComment(
       issue.key,
-      formatQuestionCommentWithThreadId(this.config.workerId, question, threadId),
+      formatQuestionCommentWithThreadId(this.config.workerId, clarification, threadId),
     );
     await this.tracker.transition(issue.key, "waiting_for_answer");
     await this.tracker.addComment(
@@ -329,7 +434,8 @@ export class WorkerOrchestrator {
       formatStatusComment(
         this.config.workerId,
         "waiting_for_answer",
-        "Waiting for human clarification.",
+        "Waiting for explicit /resume command after clarification.",
+        "clarification",
       ),
     );
   }
@@ -437,16 +543,25 @@ export class WorkerOrchestrator {
     );
     try {
       await this.tracker.transition(issue.key, "failed");
+      await this.tracker.addComment(
+        issue.key,
+        formatStatusComment(this.config.workerId, "failed", diagnostic),
+      );
     } catch (error) {
       this.logger.warn("Failed to move issue into failed state. Falling back to waiting state.", {
         issueKey: issue.key,
         error: error instanceof Error ? error.message : String(error),
       });
       await this.tracker.transition(issue.key, "waiting_for_answer");
+      await this.tracker.addComment(
+        issue.key,
+        formatStatusComment(
+          this.config.workerId,
+          "waiting_for_answer",
+          "Waiting for manual intervention after automation failure.",
+          "failure_recovery",
+        ),
+      );
     }
-    await this.tracker.addComment(
-      issue.key,
-      formatStatusComment(this.config.workerId, "failed", diagnostic),
-    );
   }
 }

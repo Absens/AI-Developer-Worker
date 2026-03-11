@@ -85,7 +85,7 @@ afterEach(() => {
 });
 
 describe("CliCodexRunner", () => {
-  it("parses thread id and final AI question from structured exec output", async () => {
+  it("parses thread id and structured AI clarification from exec output", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");
     writeFileSync(
@@ -96,7 +96,7 @@ describe("CliCodexRunner", () => {
         "const outputIndex = args.indexOf('--output-last-message');",
         "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
         "if (outputPath) {",
-        "  fs.writeFileSync(outputPath, 'AI_QUESTION: Which API variant should be used?\\n', 'utf8');",
+        "  fs.writeFileSync(outputPath, 'AI_QUESTION: {\"summary\":\"Need API decision\",\"blockingReason\":\"Implementation depends on the endpoint contract\",\"question\":\"Which API variant should be used?\",\"options\":[\"A: use v1\",\"B: use v2\"],\"resumeHint\":\"Reply with /resume A or /resume B.\"}\\n', 'utf8');",
         "}",
         "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-123' }) + '\\n');",
         "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }) + '\\n');",
@@ -113,6 +113,13 @@ describe("CliCodexRunner", () => {
     expect(execution.threadId).toBe("thread-123");
     expect(execution.finalMessage).toContain("AI_QUESTION:");
     expect(execution.question).toBe("Which API variant should be used?");
+    expect(execution.clarification).toEqual({
+      summary: "Need API decision",
+      blockingReason: "Implementation depends on the endpoint contract",
+      question: "Which API variant should be used?",
+      options: ["A: use v1", "B: use v2"],
+      resumeHint: "Reply with /resume A or /resume B.",
+    });
   });
 
   it("does not treat stderr noise as an AI question", async () => {

@@ -2,40 +2,68 @@ import { describe, expect, it } from "vitest";
 
 import {
   findFirstHumanReplyAfter,
+  findLatestHumanTaskCommandAfter,
   formatMergeRequestComment,
   formatQuestionComment,
   formatQuestionCommentWithThreadId,
   formatStatusComment,
+  parseHumanTaskCommand,
   parseServiceComment,
 } from "../src/integrations/tracker/commentProtocol.js";
-import type { CommentWithMetadata } from "../src/models/types.js";
+import type { ClarificationQuestion, CommentWithMetadata } from "../src/models/types.js";
+
+const clarification: ClarificationQuestion = {
+  summary: "Need a decision about the API variant.",
+  blockingReason: "The implementation differs depending on the endpoint contract.",
+  question: "Which API variant should be used?",
+  options: ["A: use v1", "B: use v2"],
+  resumeHint: "Reply with /resume A or /resume B.",
+};
 
 describe("comment protocol", () => {
   it("formats and parses AI STATUS comments", () => {
-    const text = formatStatusComment("worker-1", "in_progress", "Started");
+    const text = formatStatusComment(
+      "worker-1",
+      "waiting_for_answer",
+      "Waiting for explicit /resume command after clarification.",
+      "clarification",
+    );
     expect(parseServiceComment(text)).toEqual({
       kind: "AI STATUS",
       worker: "worker-1",
-      state: "in_progress",
-      details: "Started",
+      state: "waiting_for_answer",
+      details: "Waiting for explicit /resume command after clarification.",
+      waitingReason: "clarification",
     });
   });
 
-  it("formats AI QUESTION and AI MR comments", () => {
-    expect(parseServiceComment(formatQuestionComment("worker-1", "Need access?"))).toEqual({
+  it("formats and parses structured AI QUESTION and AI MR comments", () => {
+    expect(parseServiceComment(formatQuestionComment("worker-1", clarification))).toEqual({
       kind: "AI QUESTION",
       worker: "worker-1",
-      question: "Need access?",
+      mode: "clarification",
+      waitingReason: "clarification",
+      question: "Which API variant should be used?",
+      summary: "Need a decision about the API variant.",
+      blockingReason: "The implementation differs depending on the endpoint contract.",
+      options: ["A: use v1", "B: use v2"],
+      resumeHint: "Reply with /resume A or /resume B.",
     });
     expect(
       parseServiceComment(
-        formatQuestionCommentWithThreadId("worker-1", "Need access?", "thread-123"),
+        formatQuestionCommentWithThreadId("worker-1", clarification, "thread-123"),
       ),
     ).toEqual({
       kind: "AI QUESTION",
       worker: "worker-1",
-      question: "Need access?",
       threadId: "thread-123",
+      mode: "clarification",
+      waitingReason: "clarification",
+      question: "Which API variant should be used?",
+      summary: "Need a decision about the API variant.",
+      blockingReason: "The implementation differs depending on the endpoint contract.",
+      options: ["A: use v1", "B: use v2"],
+      resumeHint: "Reply with /resume A or /resume B.",
     });
 
     expect(
@@ -50,16 +78,58 @@ describe("comment protocol", () => {
     });
   });
 
-  it("finds the first human reply after an AI question", () => {
+  it("parses human task commands and finds the latest resume command", () => {
+    expect(parseHumanTaskCommand("/resume A")).toEqual({
+      type: "resume",
+      rawText: "/resume A",
+      choice: "A",
+    });
+    expect(parseHumanTaskCommand("/resume freeform: use the v2 endpoint")).toEqual({
+      type: "resume",
+      rawText: "/resume freeform: use the v2 endpoint",
+      freeform: "use the v2 endpoint",
+    });
+
     const comments: CommentWithMetadata[] = [
       {
         id: "1",
-        text: formatQuestionComment("worker-1", "Which endpoint should be used?"),
+        text: formatQuestionComment("worker-1", clarification),
         createdAt: "2026-03-10T10:00:00.000Z",
         isSystem: false,
-        metadata: parseServiceComment(
-          formatQuestionComment("worker-1", "Which endpoint should be used?"),
-        ),
+        metadata: parseServiceComment(formatQuestionComment("worker-1", clarification)),
+      },
+      {
+        id: "2",
+        text: "I think v2 is safer.",
+        createdAt: "2026-03-10T10:05:00.000Z",
+        isSystem: false,
+      },
+      {
+        id: "3",
+        text: "/resume B",
+        createdAt: "2026-03-10T10:06:00.000Z",
+        isSystem: false,
+      },
+    ];
+
+    expect(
+      findLatestHumanTaskCommandAfter(comments, "2026-03-10T10:00:00.000Z"),
+    ).toEqual({
+      type: "resume",
+      rawText: "/resume B",
+      choice: "B",
+    });
+  });
+
+  it("finds the first human reply after an AI question", () => {
+    const questionText = formatQuestionComment("worker-1", clarification);
+    const comments: CommentWithMetadata[] = [
+      {
+        id: "1",
+        text: questionText,
+        createdAt: "2026-03-10T10:00:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(questionText),
       },
       {
         id: "2",

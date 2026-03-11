@@ -69,6 +69,23 @@ export interface TrackerComment {
 }
 
 export type ServiceCommentKind = "AI STATUS" | "AI QUESTION" | "AI MR";
+export type ClarificationMode = "clarification";
+export type WaitingReason = "clarification" | "failure_recovery" | "manual_hold";
+
+export interface ClarificationQuestion {
+  summary: string;
+  blockingReason: string;
+  question: string;
+  options: string[];
+  resumeHint: string;
+}
+
+export interface HumanTaskCommand {
+  type: "resume" | "skip" | "cancel";
+  rawText: string;
+  choice?: string;
+  freeform?: string;
+}
 
 export interface ParsedServiceComment {
   kind: ServiceCommentKind;
@@ -79,6 +96,12 @@ export interface ParsedServiceComment {
   threadId?: string;
   url?: string;
   branch?: string;
+  mode?: ClarificationMode;
+  summary?: string;
+  blockingReason?: string;
+  options?: string[];
+  resumeHint?: string;
+  waitingReason?: WaitingReason;
 }
 
 export interface CommentWithMetadata extends TrackerComment {
@@ -152,10 +175,17 @@ export interface CodexExecution {
   finalMessage?: string;
   threadId?: string;
   question?: string;
+  clarification?: ClarificationQuestion;
 }
 
 export interface CodexRunner {
   runInitial(prompt: string): Promise<CodexExecution>;
   runFix(prompt: string): Promise<CodexExecution>;
   runResume(threadId: string, prompt: string): Promise<CodexExecution>;
+}
+
+export interface TaskAnalysisResult {
+  status: "ready" | "clarification_required";
+  threadId?: string;
+  clarification?: ClarificationQuestion;
 }

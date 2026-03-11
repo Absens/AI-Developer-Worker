@@ -1,4 +1,9 @@
-import type { AppConfig, CodexExecution, CodexRunner } from "../../models/types.js";
+import type {
+  AppConfig,
+  ClarificationQuestion,
+  CodexExecution,
+  CodexRunner,
+} from "../../models/types.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +12,53 @@ import { Logger } from "../../utils/logger.js";
 import { runCommand } from "../../utils/shell.js";
 import { getCodexShellEnv } from "./auth.js";
 
-const extractQuestion = (message: string, marker: string): string | undefined => {
+const normalizeClarification = (
+  value: unknown,
+): ClarificationQuestion | undefined => {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  const payload = value as Record<string, unknown>;
+  const summary =
+    typeof payload.summary === "string" && payload.summary.trim() !== ""
+      ? payload.summary.trim()
+      : undefined;
+  const blockingReason =
+    typeof payload.blockingReason === "string" && payload.blockingReason.trim() !== ""
+      ? payload.blockingReason.trim()
+      : undefined;
+  const question =
+    typeof payload.question === "string" && payload.question.trim() !== ""
+      ? payload.question.trim()
+      : undefined;
+  const options = Array.isArray(payload.options)
+    ? payload.options
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean)
+    : [];
+  const resumeHint =
+    typeof payload.resumeHint === "string" && payload.resumeHint.trim() !== ""
+      ? payload.resumeHint.trim()
+      : "Reply with /resume <option> or /resume freeform: <your answer>.";
+
+  if (!summary || !blockingReason || !question) {
+    return undefined;
+  }
+
+  return {
+    summary,
+    blockingReason,
+    question,
+    options,
+    resumeHint,
+  };
+};
+
+const extractClarification = (
+  message: string,
+  marker: string,
+): ClarificationQuestion | undefined => {
   const lines = message
     .split(/\r?\n/)
     .map((entry) => entry.trim())
@@ -17,7 +68,16 @@ const extractQuestion = (message: string, marker: string): string | undefined =>
     return undefined;
   }
 
-  return lines[0].slice(marker.length).trim();
+  const payload = lines[0].slice(marker.length).trim();
+  if (!payload.startsWith("{")) {
+    return undefined;
+  }
+
+  try {
+    return normalizeClarification(JSON.parse(payload));
+  } catch {
+    return undefined;
+  }
 };
 
 interface CodexEvent {
@@ -235,7 +295,10 @@ export class CliCodexRunner implements CodexRunner {
         exitCode: process.exitCode,
       });
       const finalMessage = await readFile(lastMessagePath, "utf8").catch(() => "");
-      const question = extractQuestion(finalMessage, this.config.codexQuestionMarker);
+      const clarification = extractClarification(
+        finalMessage,
+        this.config.codexQuestionMarker,
+      );
 
       if (jsonlState.errors.length > 0) {
         this.logger.warn("Codex JSONL stream contained parseable errors.", {
@@ -254,7 +317,12 @@ export class CliCodexRunner implements CodexRunner {
         },
         ...(finalMessage ? { finalMessage } : {}),
         ...(jsonlState.threadId ? { threadId: jsonlState.threadId } : {}),
-        ...(question ? { question } : {}),
+        ...(clarification
+          ? {
+              clarification,
+              question: clarification.question,
+            }
+          : {}),
       };
     } finally {
       clearInterval(heartbeat);
