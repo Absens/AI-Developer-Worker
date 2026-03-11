@@ -43,6 +43,7 @@ const createConfig = (trackerApiBaseUrl: string, overrides: Partial<AppConfig> =
   codexCliArgs: [],
   codexSandbox: "workspace-write",
   codexExecArgs: [],
+  codexProgressLogIntervalMs: 30 * 1000,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
   workerId: "worker-1",

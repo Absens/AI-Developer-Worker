@@ -16,6 +16,22 @@ const createTempDir = (): string => {
   return path;
 };
 
+class TestLogger extends Logger {
+  readonly entries: Array<{ level: string; message: string; context?: unknown }> = [];
+
+  override info(message: string, context?: unknown): void {
+    this.entries.push({ level: "INFO", message, context });
+  }
+
+  override warn(message: string, context?: unknown): void {
+    this.entries.push({ level: "WARN", message, context });
+  }
+
+  override error(message: string, context?: unknown): void {
+    this.entries.push({ level: "ERROR", message, context });
+  }
+}
+
 const createConfig = (
   repoPath: string,
   codexCliCommand: string,
@@ -50,6 +66,7 @@ const createConfig = (
   codexCliArgs,
   codexSandbox: "workspace-write",
   codexExecArgs: [],
+  codexProgressLogIntervalMs: 30 * 1000,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
   workerId: "worker-1",
@@ -126,5 +143,59 @@ describe("CliCodexRunner", () => {
     expect(execution.threadId).toBe("thread-456");
     expect(execution.finalMessage).toContain("Implementation complete");
     expect(execution.question).toBeUndefined();
+  });
+
+  it("streams codex events and stderr lines into the logger", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-789' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 5 } }) + '\\n');",
+        "process.stderr.write('tool says hello\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logger = new TestLogger();
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      logger,
+    );
+
+    await runner.runInitial("Implement this change.");
+
+    expect(
+      logger.entries.some(
+        (entry) =>
+          entry.level === "INFO" &&
+          entry.message === "Codex event." &&
+          (entry.context as { type?: string } | undefined)?.type === "thread.started",
+      ),
+    ).toBe(true);
+    expect(
+      logger.entries.some(
+        (entry) =>
+          entry.level === "INFO" &&
+          entry.message === "Codex event." &&
+          (entry.context as { type?: string } | undefined)?.type === "turn.completed",
+      ),
+    ).toBe(true);
+    expect(
+      logger.entries.some(
+        (entry) =>
+          entry.level === "WARN" &&
+          entry.message === "Codex stderr." &&
+          (entry.context as { line?: string } | undefined)?.line === "tool says hello",
+      ),
+    ).toBe(true);
   });
 });
