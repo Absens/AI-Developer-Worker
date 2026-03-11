@@ -8,7 +8,7 @@ For each cycle the worker:
 
 1. Restores an unfinished task for the current `WORKER_ID`, if one exists.
 2. Otherwise selects the earliest eligible Tracker issue from queue `TRACKER_DEFAULT_QUEUE` with tag `TRACKER_TAG`.
-3. Moves the issue through logical statuses from `TRACKER_STATUS_MAP`.
+3. Moves the issue through logical statuses from `TRACKER_STATUS_MAP_FILE`.
 4. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone.
 5. Runs structured `codex exec`, then tests and lint.
 6. Commits, pushes, publishes an MR, and updates Tracker comments/status.
@@ -43,7 +43,7 @@ Required:
 
 - `TRACKER_TOKEN`
 - `TRACKER_ORG_ID`
-- `TRACKER_STATUS_MAP`
+- `TRACKER_STATUS_MAP_FILE`
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
@@ -68,6 +68,7 @@ Common optional values:
 
 ## Documentation Map
 
+- Environment variables and where to get them: [docs/ENV_CONFIGURATION.md](/C:/Users/gabba/projects/developer/docs/ENV_CONFIGURATION.md)
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
 - Codex CLI update procedure and compatibility checks: [docs/CODEX_CLI_UPDATE_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/CODEX_CLI_UPDATE_RUNBOOK.md)

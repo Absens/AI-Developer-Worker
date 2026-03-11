@@ -14,6 +14,7 @@ COPY package.json package-lock.json* tsconfig.json tsconfig.build.json ./
 RUN npm install
 
 COPY src ./src
+COPY config ./config
 COPY scripts ./scripts
 
 RUN npm run build

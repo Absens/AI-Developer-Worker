@@ -242,6 +242,7 @@ describe("worker smoke", () => {
     const seedPath = join(workspace, "seed");
     const repoPath = join(workspace, "project");
     const codexScriptPath = join(workspace, "codex-smoke.js");
+    const statusMapFilePath = join(workspace, "trackerStatusMap.json");
 
     runGit(["init", "--bare", remotePath], workspace);
     runGit(["init", "--initial-branch=main", seedPath], workspace);
@@ -276,6 +277,7 @@ describe("worker smoke", () => {
       ].join("\n"),
       "utf8",
     );
+    writeFileSync(statusMapFilePath, STATUS_MAP, "utf8");
 
     const mockServer = await startMockServer();
     try {
@@ -285,7 +287,7 @@ describe("worker smoke", () => {
         TRACKER_DEFAULT_QUEUE: "FRONTEND",
         TRACKER_TAG: "ai_dev",
         TRACKER_API_BASE_URL: `http://127.0.0.1:${mockServer.port}/tracker/v3`,
-        TRACKER_STATUS_MAP: STATUS_MAP,
+        TRACKER_STATUS_MAP_FILE: statusMapFilePath,
         GITLAB_URL: `http://127.0.0.1:${mockServer.port}/gitlab`,
         GITLAB_TOKEN: "gitlab-token",
         GITLAB_PROJECT_ID: "1",

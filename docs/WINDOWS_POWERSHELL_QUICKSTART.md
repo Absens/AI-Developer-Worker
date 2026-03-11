@@ -59,7 +59,7 @@ Minimum fields to verify:
 - `TRACKER_ORG_ID`
 - `TRACKER_ORG_HEADER`
 - `TRACKER_DEFAULT_QUEUE`
-- `TRACKER_STATUS_MAP`
+- `TRACKER_STATUS_MAP_FILE`
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
@@ -70,7 +70,7 @@ Minimum fields to verify:
 - `LINT_COMMAND`
 - `WORKER_ID`
 
-For `TRACKER_STATUS_MAP`, `statuses` should match the real Tracker states. `transition` is only a hint used to find an allowed workflow transition.
+For `TRACKER_STATUS_MAP_FILE`, use a path to a JSON file. In that file, `statuses` should match the real Tracker states. `transition` is only a hint used to find an allowed workflow transition.
 
 ### 7. Set the path to the target project
 

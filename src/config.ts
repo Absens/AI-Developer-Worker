@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -101,21 +102,21 @@ const normalizeStatusConfig = (
 ): TrackerStatusConfig => {
   if (typeof rawValue !== "object" || rawValue === null) {
     throw new ConfigurationError(
-      `TRACKER_STATUS_MAP.${logicalStatus} must be an object.`,
+      `Tracker status map entry "${logicalStatus}" must be an object.`,
     );
   }
 
   const value = rawValue as { statuses?: unknown; transition?: unknown };
   if (!Array.isArray(value.statuses) || value.statuses.length === 0) {
     throw new ConfigurationError(
-      `TRACKER_STATUS_MAP.${logicalStatus}.statuses must be a non-empty array.`,
+      `Tracker status map entry "${logicalStatus}.statuses" must be a non-empty array.`,
     );
   }
 
   const statuses = value.statuses.map((entry) => {
     if (typeof entry !== "string" || entry.trim() === "") {
       throw new ConfigurationError(
-        `TRACKER_STATUS_MAP.${logicalStatus}.statuses must contain strings.`,
+        `Tracker status map entry "${logicalStatus}.statuses" must contain strings.`,
       );
     }
     return entry.trim();
@@ -123,7 +124,7 @@ const normalizeStatusConfig = (
 
   if (value.transition !== undefined && typeof value.transition !== "string") {
     throw new ConfigurationError(
-      `TRACKER_STATUS_MAP.${logicalStatus}.transition must be a string.`,
+      `Tracker status map entry "${logicalStatus}.transition" must be a string.`,
     );
   }
 
@@ -141,12 +142,12 @@ export const parseStatusMap = (
     parsed = JSON.parse(rawValue);
   } catch (error) {
     throw new ConfigurationError(
-      `TRACKER_STATUS_MAP must be valid JSON. ${(error as Error).message}`,
+      `TRACKER_STATUS_MAP_FILE must contain valid JSON. ${(error as Error).message}`,
     );
   }
 
   if (typeof parsed !== "object" || parsed === null) {
-    throw new ConfigurationError("TRACKER_STATUS_MAP must be a JSON object.");
+    throw new ConfigurationError("TRACKER_STATUS_MAP_FILE must contain a JSON object.");
   }
 
   const result = {} as Record<LogicalStatus, TrackerStatusConfig>;
@@ -159,8 +160,25 @@ export const parseStatusMap = (
   return result;
 };
 
+const loadStatusMapFromFile = (
+  env: NodeJS.ProcessEnv,
+): Record<LogicalStatus, TrackerStatusConfig> => {
+  const path = requireEnv(env, "TRACKER_STATUS_MAP_FILE");
+
+  let rawValue: string;
+  try {
+    rawValue = readFileSync(path, "utf8");
+  } catch (error) {
+    throw new ConfigurationError(
+      `Unable to read TRACKER_STATUS_MAP_FILE at ${path}. ${(error as Error).message}`,
+    );
+  }
+
+  return parseStatusMap(rawValue);
+};
+
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
-  const trackerStatusMap = parseStatusMap(requireEnv(env, "TRACKER_STATUS_MAP"));
+  const trackerStatusMap = loadStatusMapFromFile(env);
   const pollIntervalMinutes = parsePositiveInt(
     env.POLL_INTERVAL_MINUTES?.trim() || "30",
     "POLL_INTERVAL_MINUTES",

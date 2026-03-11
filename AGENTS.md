@@ -38,4 +38,4 @@ Current history uses short imperative commit messages, for example `Update envir
 
 ## Security & Configuration Tips
 
-Do not commit `.env`, `.codex-home/`, or any Codex auth state. In Docker, prefer a dedicated writable `CODEX_HOME` volume over binding the host `~/.codex` directly. Validate `TRACKER_STATUS_MAP`, `CODEX_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` against the real target repository before running the worker continuously.
+Do not commit `.env`, `.codex-home/`, or any Codex auth state. In Docker, prefer a dedicated writable `CODEX_HOME` volume over binding the host `~/.codex` directly. Validate `TRACKER_STATUS_MAP_FILE`, `CODEX_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` against the real target repository before running the worker continuously.

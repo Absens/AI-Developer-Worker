@@ -1,0 +1,25 @@
+{
+  "open": {
+    "statuses": ["Open"]
+  },
+  "in_progress": {
+    "statuses": ["In Progress"],
+    "transition": "start"
+  },
+  "waiting_for_answer": {
+    "statuses": ["Waiting for answer"],
+    "transition": "need-info"
+  },
+  "review": {
+    "statuses": ["In Review"],
+    "transition": "review"
+  },
+  "failed": {
+    "statuses": ["Failed"],
+    "transition": "fail"
+  },
+  "done": {
+    "statuses": ["Done"],
+    "transition": "done"
+  }
+}

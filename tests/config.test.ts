@@ -1,7 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { loadConfig, parseStatusMap } from "../src/config.js";
 
@@ -17,6 +19,25 @@ const STATUS_MAP = JSON.stringify({
   done: { statuses: ["Done"], transition: "done" },
 });
 
+const cleanupPaths: string[] = [];
+
+const createStatusMapFile = (): string => {
+  const directory = mkdtempSync(join(tmpdir(), "ai-worker-config-"));
+  cleanupPaths.push(directory);
+  const path = join(directory, "trackerStatusMap.json");
+  writeFileSync(path, STATUS_MAP, "utf8");
+  return path;
+};
+
+afterEach(() => {
+  while (cleanupPaths.length > 0) {
+    const path = cleanupPaths.pop();
+    if (path) {
+      rmSync(path, { recursive: true, force: true });
+    }
+  }
+});
+
 describe("config", () => {
   it("parses status map", () => {
     const statusMap = parseStatusMap(STATUS_MAP);
@@ -25,10 +46,11 @@ describe("config", () => {
   });
 
   it("applies defaults", () => {
+    const statusMapFile = createStatusMapFile();
     const config = loadConfig({
       TRACKER_TOKEN: "tracker-token",
       TRACKER_ORG_ID: "org-id",
-      TRACKER_STATUS_MAP: STATUS_MAP,
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
       GITLAB_URL: "https://gitlab.example.com/",
       GITLAB_TOKEN: "gitlab-token",
       GITLAB_PROJECT_ID: "123",
@@ -55,11 +77,12 @@ describe("config", () => {
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
+    const statusMapFile = createStatusMapFile();
     const config = loadConfig({
       TRACKER_TOKEN: "tracker-token",
       TRACKER_ORG_ID: "org-id",
       TRACKER_ORG_HEADER: "x-org-id",
-      TRACKER_STATUS_MAP: STATUS_MAP,
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
       GITLAB_URL: "https://gitlab.example.com/",
       GITLAB_TOKEN: "gitlab-token",
       GITLAB_PROJECT_ID: "123",
@@ -86,11 +109,12 @@ describe("config", () => {
   });
 
   it("rejects invalid CODEX_SANDBOX", () => {
+    const statusMapFile = createStatusMapFile();
     expect(() =>
       loadConfig({
         TRACKER_TOKEN: "tracker-token",
         TRACKER_ORG_ID: "org-id",
-        TRACKER_STATUS_MAP: STATUS_MAP,
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
         GITLAB_URL: "https://gitlab.example.com/",
         GITLAB_TOKEN: "gitlab-token",
         GITLAB_PROJECT_ID: "123",
@@ -102,11 +126,12 @@ describe("config", () => {
   });
 
   it("rejects invalid CODEX_EXEC_ARGS_JSON", () => {
+    const statusMapFile = createStatusMapFile();
     expect(() =>
       loadConfig({
         TRACKER_TOKEN: "tracker-token",
         TRACKER_ORG_ID: "org-id",
-        TRACKER_STATUS_MAP: STATUS_MAP,
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
         GITLAB_URL: "https://gitlab.example.com/",
         GITLAB_TOKEN: "gitlab-token",
         GITLAB_PROJECT_ID: "123",
@@ -118,11 +143,12 @@ describe("config", () => {
   });
 
   it("rejects invalid CODEX_CLI_ARGS_JSON", () => {
+    const statusMapFile = createStatusMapFile();
     expect(() =>
       loadConfig({
         TRACKER_TOKEN: "tracker-token",
         TRACKER_ORG_ID: "org-id",
-        TRACKER_STATUS_MAP: STATUS_MAP,
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
         GITLAB_URL: "https://gitlab.example.com/",
         GITLAB_TOKEN: "gitlab-token",
         GITLAB_PROJECT_ID: "123",
@@ -131,5 +157,20 @@ describe("config", () => {
         WORKER_ID: "worker-1",
       }),
     ).toThrow(/CODEX_EXEC_ARGS_JSON|CODEX_CLI_ARGS_JSON/);
+  });
+
+  it("rejects missing status map file", () => {
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP_FILE: join(tmpdir(), "definitely-missing-status-map.json"),
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/TRACKER_STATUS_MAP_FILE/);
   });
 });

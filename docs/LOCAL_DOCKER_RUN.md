@@ -60,7 +60,7 @@ Create `.env` from `.env.example` and set:
 - `TRACKER_ORG_HEADER`
 - `TRACKER_DEFAULT_QUEUE`
 - GitLab credentials
-- `TRACKER_STATUS_MAP`
+- `TRACKER_STATUS_MAP_FILE`
 - `CODEX_CLI_COMMAND`
 - `CODEX_CLI_ARGS_JSON`
 - `CODEX_SANDBOX` (recommended: `danger-full-access` for this worker)
@@ -74,7 +74,7 @@ At minimum, verify that:
 - `TEST_COMMAND` exists in the mounted target repo
 - `LINT_COMMAND` exists in the mounted target repo
 
-For `TRACKER_STATUS_MAP`, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
+For `TRACKER_STATUS_MAP_FILE`, point to a JSON file. Inside that file, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
 
 ### 3. Prepare the project mount
 
@@ -170,7 +170,7 @@ It will not work immediately if at least one of these is missing:
 - no Codex auth inside container
 - no repo mounted into `/workspace/project`
 - wrong `.env`
-- wrong `TRACKER_STATUS_MAP`
+- wrong `TRACKER_STATUS_MAP_FILE`
 - broken `CODEX_CLI_COMMAND`
 - missing `TEST_COMMAND` or `LINT_COMMAND`
 - no git push access from inside the mounted repo
