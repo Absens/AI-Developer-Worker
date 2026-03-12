@@ -244,6 +244,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
         env.CODEX_PROGRESS_LOG_INTERVAL_SECONDS?.trim() || "30",
         "CODEX_PROGRESS_LOG_INTERVAL_SECONDS",
       ) * 1000,
+    codexLogFullEvents: parseBooleanFlag(
+      env.CODEX_LOG_FULL_EVENTS,
+      "CODEX_LOG_FULL_EVENTS",
+      false,
+    ),
     codexQuestionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
     maxFixAttempts: parsePositiveInt(
       requireEnv(env, "MAX_FIX_ATTEMPTS"),

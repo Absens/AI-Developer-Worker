@@ -78,6 +78,7 @@ describe("config", () => {
     expect(config.codexCliArgs).toEqual([]);
     expect(config.codexSandbox).toBe("danger-full-access");
     expect(config.codexExecArgs).toEqual([]);
+    expect(config.codexLogFullEvents).toBe(false);
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
@@ -108,8 +109,26 @@ describe("config", () => {
     expect(config.codexProfile).toBe("ci");
     expect(config.codexSandbox).toBe("danger-full-access");
     expect(config.codexExecArgs).toEqual(["--search", "--add-dir", "/tmp/shared"]);
+    expect(config.codexLogFullEvents).toBe(false);
     expect(config.trackerDefaultQueue).toBe("FRONTEND");
     expect(config.trackerOrgHeader).toBe("X-Org-ID");
+  });
+
+  it("accepts explicit CODEX_LOG_FULL_EVENTS=true", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      CODEX_LOG_FULL_EVENTS: "true",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.codexLogFullEvents).toBe(true);
   });
 
   it("accepts explicit repository auth overrides", () => {

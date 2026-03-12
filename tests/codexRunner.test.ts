@@ -68,6 +68,7 @@ const createConfig = (
   codexSandbox: "workspace-write",
   codexExecArgs: [],
   codexProgressLogIntervalMs: 30 * 1000,
+  codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
   workerId: "worker-1",
@@ -203,6 +204,87 @@ describe("CliCodexRunner", () => {
           entry.level === "WARN" &&
           entry.message === "Codex stderr." &&
           (entry.context as { line?: string } | undefined)?.line === "tool says hello",
+      ),
+    ).toBe(true);
+  });
+
+  it("adds a readable preview for nested event content", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Inspecting repository and preparing edits.' }] } }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logger = new TestLogger();
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      logger,
+    );
+
+    await runner.runInitial("Implement this change.");
+
+    const entry = logger.entries.find(
+      (candidate) =>
+        candidate.level === "INFO" &&
+        candidate.message === "Codex event." &&
+        (candidate.context as { type?: string } | undefined)?.type === "item.completed",
+    );
+
+    expect(entry).toBeDefined();
+    expect((entry?.context as { itemType?: string } | undefined)?.itemType).toBe("message");
+    expect((entry?.context as { itemRole?: string } | undefined)?.itemRole).toBe("assistant");
+    expect((entry?.context as { preview?: string } | undefined)?.preview).toContain(
+      "Inspecting repository and preparing edits.",
+    );
+  });
+
+  it("logs raw codex events when CODEX_LOG_FULL_EVENTS is enabled", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'item.started', item: { type: 'function_call', name: 'shell' }, call_id: 'call-1' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logger = new TestLogger();
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexLogFullEvents: true,
+      },
+      logger,
+    );
+
+    await runner.runInitial("Implement this change.");
+
+    expect(
+      logger.entries.some(
+        (entry) =>
+          entry.level === "INFO" &&
+          entry.message === "Codex raw event." &&
+          (entry.context as { event?: { call_id?: string } } | undefined)?.event?.call_id ===
+            "call-1",
       ),
     ).toBe(true);
   });

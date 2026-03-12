@@ -81,6 +81,7 @@ const extractClarification = (
 };
 
 interface CodexEvent {
+  [key: string]: unknown;
   type?: string;
   thread_id?: string;
   turn_id?: string;
@@ -103,40 +104,130 @@ const createCodexJsonlState = (): CodexJsonlState => ({
   stderrRemainder: "",
 });
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const truncateForLog = (value: string, maxLength = 240): string =>
+  value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
+
+const collectPreviewSnippets = (
+  value: unknown,
+  snippets: string[],
+  parentKey?: string,
+  depth = 0,
+): void => {
+  if (snippets.length >= 3 || depth > 6) {
+    return;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (
+      normalized &&
+      parentKey &&
+      ["text", "delta", "arguments", "message", "command", "summary", "output"].includes(
+        parentKey,
+      )
+    ) {
+      snippets.push(truncateForLog(normalized));
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectPreviewSnippets(entry, snippets, parentKey, depth + 1);
+      if (snippets.length >= 3) {
+        return;
+      }
+    }
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    collectPreviewSnippets(entry, snippets, key, depth + 1);
+    if (snippets.length >= 3) {
+      return;
+    }
+  }
+};
+
+const extractEventPreview = (event: CodexEvent): string | undefined => {
+  const snippets: string[] = [];
+  collectPreviewSnippets(event, snippets);
+  return snippets.length > 0 ? snippets.join(" | ") : undefined;
+};
+
 const summarizeEvent = (
   mode: "new" | "resume",
   event: CodexEvent,
-): Record<string, unknown> => ({
-  mode,
-  type: event.type ?? "unknown",
-  ...(event.thread_id ? { threadId: event.thread_id } : {}),
-  ...(event.turn_id ? { turnId: event.turn_id } : {}),
-  ...(event.item_id ? { itemId: event.item_id } : {}),
-  ...(event.call_id ? { callId: event.call_id } : {}),
-  ...(event.usage ? { usage: event.usage } : {}),
-  ...(event.error?.message ? { error: event.error.message } : {}),
-});
+): Record<string, unknown> => {
+  const item = isRecord(event.item) ? event.item : undefined;
+  const summary = {
+    mode,
+    type: event.type ?? "unknown",
+    ...(event.thread_id ? { threadId: event.thread_id } : {}),
+    ...(event.turn_id ? { turnId: event.turn_id } : {}),
+    ...(event.item_id ? { itemId: event.item_id } : {}),
+    ...(event.call_id ? { callId: event.call_id } : {}),
+    ...(item && typeof item.type === "string" ? { itemType: item.type } : {}),
+    ...(item && typeof item.role === "string" ? { itemRole: item.role } : {}),
+    ...(item && typeof item.status === "string" ? { itemStatus: item.status } : {}),
+    ...(item && typeof item.name === "string" ? { itemName: item.name } : {}),
+    ...(event.usage ? { usage: event.usage } : {}),
+    ...(event.error?.message ? { error: event.error.message } : {}),
+  } satisfies Record<string, unknown>;
+  const preview = extractEventPreview(event);
+
+  return {
+    ...summary,
+    ...(preview ? { preview } : {}),
+  };
+};
+
+const logParsedStdoutEvent = (
+  event: CodexEvent,
+  state: CodexJsonlState,
+  logger: Logger,
+  mode: "new" | "resume",
+  includeRawEvents: boolean,
+): void => {
+  if (event.type === "thread.started" && typeof event.thread_id === "string") {
+    state.threadId = event.thread_id;
+  }
+
+  if (
+    (event.type === "turn.failed" || event.type === "error") &&
+    event.error?.message
+  ) {
+    state.errors.push(event.error.message);
+    logger.warn("Codex event.", summarizeEvent(mode, event));
+  } else {
+    logger.info("Codex event.", summarizeEvent(mode, event));
+  }
+
+  if (includeRawEvents) {
+    logger.info("Codex raw event.", {
+      mode,
+      event,
+    });
+  }
+};
 
 const processStdoutLine = (
   line: string,
   state: CodexJsonlState,
   logger: Logger,
   mode: "new" | "resume",
+  includeRawEvents: boolean,
 ): void => {
   try {
     const event = JSON.parse(line) as CodexEvent;
-    if (event.type === "thread.started" && typeof event.thread_id === "string") {
-      state.threadId = event.thread_id;
-    }
-    if (
-      (event.type === "turn.failed" || event.type === "error") &&
-      event.error?.message
-    ) {
-      state.errors.push(event.error.message);
-      logger.warn("Codex event.", summarizeEvent(mode, event));
-      return;
-    }
-    logger.info("Codex event.", summarizeEvent(mode, event));
+    logParsedStdoutEvent(event, state, logger, mode, includeRawEvents);
   } catch {
     const message = `Failed to parse Codex JSONL event: ${line}`;
     state.errors.push(message);
@@ -173,10 +264,11 @@ const flushRemainders = (
   state: CodexJsonlState,
   logger: Logger,
   mode: "new" | "resume",
+  includeRawEvents: boolean,
 ): void => {
   const stdoutLine = state.stdoutRemainder.trim();
   if (stdoutLine) {
-    processStdoutLine(stdoutLine, state, logger, mode);
+    processStdoutLine(stdoutLine, state, logger, mode, includeRawEvents);
   }
   const stderrLine = state.stderrRemainder.trim();
   if (stderrLine) {
@@ -276,7 +368,13 @@ export class CliCodexRunner implements CodexRunner {
         env: getCodexShellEnv(this.config),
         onStdoutChunk: (chunk) => {
           consumeChunkLines(chunk, jsonlState, "stdout", (line) => {
-            processStdoutLine(line, jsonlState, this.logger, input.mode);
+            processStdoutLine(
+              line,
+              jsonlState,
+              this.logger,
+              input.mode,
+              this.config.codexLogFullEvents,
+            );
           });
         },
         onStderrChunk: (chunk) => {
@@ -288,7 +386,12 @@ export class CliCodexRunner implements CodexRunner {
           });
         },
       });
-      flushRemainders(jsonlState, this.logger, input.mode);
+      flushRemainders(
+        jsonlState,
+        this.logger,
+        input.mode,
+        this.config.codexLogFullEvents,
+      );
       this.logger.info("Codex command completed.", {
         mode: input.mode,
         elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000),

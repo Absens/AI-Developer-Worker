@@ -73,6 +73,7 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   codexSandbox: "workspace-write",
   codexExecArgs: [],
   codexProgressLogIntervalMs: 30 * 1000,
+  codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
   workerId: "worker-1",

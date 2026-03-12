@@ -43,6 +43,7 @@ export interface AppConfig {
   codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
   codexExecArgs: string[];
   codexProgressLogIntervalMs: number;
+  codexLogFullEvents: boolean;
   codexQuestionMarker: string;
   maxFixAttempts: number;
   workerId: string;
