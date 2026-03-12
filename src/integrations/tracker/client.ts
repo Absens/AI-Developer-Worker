@@ -166,7 +166,7 @@ export class YandexTrackerClient implements TrackerClient {
             : typeof comment.createdBy?.id === "string"
               ? comment.createdBy.id
               : undefined,
-        isSystem: Boolean(comment.summonees || comment.transport || comment.isSystem),
+        isSystem: comment.isSystem === true,
       })),
     );
   }

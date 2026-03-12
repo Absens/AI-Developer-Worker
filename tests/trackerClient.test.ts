@@ -189,6 +189,42 @@ describe("YandexTrackerClient", () => {
     expect(seenHeaders.every((headers) => headers.cloudOrg === undefined)).toBe(true);
   });
 
+  it("keeps regular UI reply comments as human comments even with internal transport metadata", async () => {
+    const trackerApiBaseUrl = await startServer((request, response) => {
+      const method = request.method ?? "GET";
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+      if (method === "GET" && url.pathname === "/v3/issues/DEV-003/comments") {
+        response.setHeader("Content-Type", "application/json");
+        response.end(
+          JSON.stringify({
+            comments: [
+              {
+                id: "1",
+                text: "/resume B",
+                createdAt: "2026-03-12T08:07:17.880+0000",
+                createdBy: { display: "Maxim Malyshev" },
+                transport: "internal",
+                summonees: [{ id: "worker-1" }],
+              },
+            ],
+          }),
+        );
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(`${method} ${url.pathname}`);
+    });
+
+    const client = new YandexTrackerClient(createConfig(trackerApiBaseUrl), new Logger());
+    const comments = await client.getComments("DEV-003");
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.author).toBe("Maxim Malyshev");
+    expect(comments[0]?.isSystem).toBe(false);
+  });
+
   it("resolves transitions from the issue transition list instead of using the hint as execute id", async () => {
     const requests: string[] = [];
 

@@ -20,6 +20,27 @@ const clarification: ClarificationQuestion = {
   resumeHint: "Reply with /resume A or /resume B.",
 };
 
+const quotedResumeReply = `> [В ответ на](https://tracker.yandex.ru/FRONTEND-1790#69b271f5a8bdec7429c71cbc){data-quotelink=true}
+> 
+> AI QUESTION:
+>
+> Need a decision about the API variant.
+>
+> Question: Which API variant should be used?
+> Blocking reason: The implementation differs depending on the endpoint contract.
+>
+> Options:
+>
+> - A: use v1
+> - B: use v2
+>
+> ::: html
+> To continue:
+Reply with /resume A or /resume B.
+> :::
+
+/resume B`;
+
 describe("comment protocol", () => {
   it("formats and parses AI STATUS comments", () => {
     const text = formatStatusComment(
@@ -89,6 +110,11 @@ describe("comment protocol", () => {
       rawText: "/resume freeform: use the v2 endpoint",
       freeform: "use the v2 endpoint",
     });
+    expect(parseHumanTaskCommand(quotedResumeReply)).toEqual({
+      type: "resume",
+      rawText: quotedResumeReply.trim(),
+      choice: "B",
+    });
 
     const comments: CommentWithMetadata[] = [
       {
@@ -110,13 +136,19 @@ describe("comment protocol", () => {
         createdAt: "2026-03-10T10:06:00.000Z",
         isSystem: false,
       },
+      {
+        id: "4",
+        text: quotedResumeReply,
+        createdAt: "2026-03-10T10:07:00.000Z",
+        isSystem: false,
+      },
     ];
 
     expect(
       findLatestHumanTaskCommandAfter(comments, "2026-03-10T10:00:00.000Z"),
     ).toEqual({
       type: "resume",
-      rawText: "/resume B",
+      rawText: quotedResumeReply.trim(),
       choice: "B",
     });
   });

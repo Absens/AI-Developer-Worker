@@ -403,15 +403,26 @@ export const parseHumanTaskCommand = (
   text: string,
 ): HumanTaskCommand | undefined => {
   const normalized = text.trim();
-  if (!normalized.startsWith("/")) {
+  if (!normalized.includes("/")) {
     return undefined;
   }
 
   const lines = normalized.split(/\r?\n/);
-  const firstLine = lines[0]?.trim() ?? "";
-  const remainder = lines.slice(1).join("\n").trim();
+  let commandLineIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if ((lines[index] ?? "").trim().startsWith("/")) {
+      commandLineIndex = index;
+      break;
+    }
+  }
+  if (commandLineIndex < 0) {
+    return undefined;
+  }
 
-  if (/^\/skip\b/i.test(firstLine)) {
+  const commandLine = lines[commandLineIndex]?.trim() ?? "";
+  const remainder = lines.slice(commandLineIndex + 1).join("\n").trim();
+
+  if (/^\/skip\b/i.test(commandLine)) {
     return {
       type: "skip",
       rawText: normalized,
@@ -419,7 +430,7 @@ export const parseHumanTaskCommand = (
     };
   }
 
-  if (/^\/cancel\b/i.test(firstLine)) {
+  if (/^\/cancel\b/i.test(commandLine)) {
     return {
       type: "cancel",
       rawText: normalized,
@@ -427,7 +438,7 @@ export const parseHumanTaskCommand = (
     };
   }
 
-  const resumeMatch = firstLine.match(/^\/resume(?:\s+(.+))?$/i);
+  const resumeMatch = commandLine.match(/^\/resume(?:\s+(.+))?$/i);
   if (!resumeMatch) {
     return undefined;
   }

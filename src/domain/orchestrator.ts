@@ -336,6 +336,10 @@ export class WorkerOrchestrator {
     if (humanComments.length === 0) {
       this.logger.info("Task is still waiting for a human answer.", {
         issueKey: issue.key,
+        latestQuestionCreatedAt: latestQuestion.createdAt,
+        commentsAfterQuestion: comments.filter(
+          (comment) => comment.createdAt > latestQuestion.createdAt,
+        ).length,
       });
       return undefined;
     }
@@ -344,6 +348,11 @@ export class WorkerOrchestrator {
     if (!command) {
       this.logger.info("Human comments received, but no explicit /resume command was found.", {
         issueKey: issue.key,
+        latestQuestionCreatedAt: latestQuestion.createdAt,
+        humanCommentCount: humanComments.length,
+        slashCommandCandidates: humanComments.filter((comment) =>
+          /(^|\n)\s*\/(?:resume|skip|cancel)\b/i.test(comment.text),
+        ).length,
       });
       return undefined;
     }

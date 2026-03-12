@@ -525,6 +525,111 @@ describe("WorkerOrchestrator", () => {
     expect(codex.resumeCalls[0]?.prompt).toContain("old endpoint is deprecated");
   });
 
+  it("resumes when the human reply quotes the AI question and puts /resume on the last line", async () => {
+    const questionText = formatQuestionCommentWithThreadId(
+      "worker-1",
+      clarification,
+      "thread-123",
+    );
+    const replyText = `> [In reply to](https://tracker.example.test/DEV-5#1){data-quotelink=true}
+> 
+> AI QUESTION:
+>
+> Need a decision about the API variant.
+>
+> Question: Which API variant should be used?
+> Blocking reason: Implementation differs depending on the endpoint contract.
+>
+> Options:
+>
+> - A: use v1
+> - B: use v2
+>
+> ::: html
+> To continue:
+Reply with /resume A or /resume B.
+> :::
+
+/resume B`;
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-5B",
+          title: "Resume quoted reply",
+          description: "Continue after a quoted answer",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "waiting_for_answer",
+        },
+      ],
+      {
+        "DEV-5B": [
+          {
+            id: "1",
+            text: questionText,
+            createdAt: "2026-03-10T11:00:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(questionText),
+          },
+          {
+            id: "2",
+            text: replyText,
+            createdAt: "2026-03-10T11:06:00.000Z",
+            isSystem: false,
+          },
+          {
+            id: "3",
+            text: formatStatusComment(
+              "worker-1",
+              "waiting_for_answer",
+              "Waiting for explicit /resume command after clarification.",
+              "clarification",
+            ),
+            createdAt: "2026-03-10T11:07:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(
+              formatStatusComment(
+                "worker-1",
+                "waiting_for_answer",
+                "Waiting for explicit /resume command after clarification.",
+                "clarification",
+              ),
+            ),
+          },
+        ],
+      },
+    );
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner(
+      [],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Resumed successfully",
+          };
+        },
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(codex.resumeCalls).toHaveLength(1);
+    expect(codex.resumeCalls[0]?.threadId).toBe("thread-123");
+    expect(codex.resumeCalls[0]?.prompt).toContain("Choice: B");
+  });
+
   it("falls back to a fresh implementation session when explicit resume fails", async () => {
     const questionText = formatQuestionCommentWithThreadId(
       "worker-1",
