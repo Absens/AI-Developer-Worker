@@ -66,12 +66,13 @@ describe("config", () => {
     expect(config.baseBranch).toBe("main");
     expect(config.pollIntervalMinutes).toBe(30);
     expect(config.gitlabUrl).toBe("https://gitlab.example.com");
-    expect(config.gitRemoteName).toBe("origin");
-    expect(config.gitRepositoryToken).toBe("gitlab-token");
-    expect(config.gitRepositoryUsername).toBe("oauth2");
-    expect(config.testCommand).toBe("npm test");
-    expect(config.lintCommand).toBe("npm run lint");
-    expect(config.runOnce).toBe(false);
+      expect(config.gitRemoteName).toBe("origin");
+      expect(config.gitRepositoryToken).toBe("gitlab-token");
+      expect(config.gitRepositoryUsername).toBe("oauth2");
+      expect(config.gitCommitNoVerify).toBe(true);
+      expect(config.testCommand).toBe("npm test");
+      expect(config.lintCommand).toBe("npm run lint");
+      expect(config.runOnce).toBe(false);
     expect(config.codexHome).toBe(join(homedir(), ".codex"));
     expect(config.codexCliCommand).toBe("codex");
     expect(config.codexCliArgs).toEqual([]);
@@ -134,6 +135,23 @@ describe("config", () => {
     expect(config.gitRepositoryUrl).toBe("https://gitlab.example.com/group/project.git");
   });
 
+  it("accepts explicit GIT_COMMIT_NO_VERIFY=false", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      GIT_COMMIT_NO_VERIFY: "false",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.gitCommitNoVerify).toBe(false);
+  });
+
   it("rejects invalid CODEX_SANDBOX", () => {
     const statusMapFile = createStatusMapFile();
     expect(() =>
@@ -166,6 +184,23 @@ describe("config", () => {
         WORKER_ID: "worker-1",
       }),
     ).toThrow(/CODEX_EXEC_ARGS_JSON/);
+  });
+
+  it("rejects invalid GIT_COMMIT_NO_VERIFY", () => {
+    const statusMapFile = createStatusMapFile();
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        GIT_COMMIT_NO_VERIFY: "maybe",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/GIT_COMMIT_NO_VERIFY/);
   });
 
   it("rejects invalid CODEX_CLI_ARGS_JSON", () => {

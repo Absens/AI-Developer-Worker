@@ -57,6 +57,7 @@ const createConfig = (
   gitRemoteName: "origin",
   gitRepositoryToken: "token",
   gitRepositoryUsername: "oauth2",
+  gitCommitNoVerify: true,
   repoPath,
   baseBranch: "main",
   pollIntervalMinutes: 30,

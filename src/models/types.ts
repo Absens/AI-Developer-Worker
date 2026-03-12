@@ -28,6 +28,7 @@ export interface AppConfig {
   gitRepositoryToken: string;
   gitRepositoryUsername: string;
   gitRepositoryUrl?: string;
+  gitCommitNoVerify: boolean;
   repoPath: string;
   baseBranch: string;
   pollIntervalMinutes: number;

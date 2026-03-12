@@ -35,6 +35,27 @@ const parsePositiveInt = (input: string, key: string): number => {
   return value;
 };
 
+const parseBooleanFlag = (
+  input: string | undefined,
+  key: string,
+  defaultValue: boolean,
+): boolean => {
+  const normalized = input?.trim().toLowerCase();
+  if (!normalized) {
+    return defaultValue;
+  }
+
+  if (["true", "1", "yes"].includes(normalized)) {
+    return true;
+  }
+
+  if (["false", "0", "no"].includes(normalized)) {
+    return false;
+  }
+
+  throw new ConfigurationError(`${key} must be one of: true, false, 1, 0, yes, no.`);
+};
+
 const parseCodexSandbox = (
   input?: string,
 ): "read-only" | "workspace-write" | "danger-full-access" => {
@@ -204,6 +225,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     ...(env.GIT_REPOSITORY_URL?.trim()
       ? { gitRepositoryUrl: env.GIT_REPOSITORY_URL.trim() }
       : {}),
+    gitCommitNoVerify: parseBooleanFlag(env.GIT_COMMIT_NO_VERIFY, "GIT_COMMIT_NO_VERIFY", true),
     repoPath: env.REPO_PATH?.trim() || "/workspace/project",
     baseBranch: env.BASE_BRANCH?.trim() || "main",
     pollIntervalMinutes,

@@ -37,6 +37,7 @@ const createBaseConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   gitRemoteName: "origin",
   gitRepositoryToken: "token",
   gitRepositoryUsername: "oauth2",
+  gitCommitNoVerify: true,
   repoPath: process.cwd(),
   baseBranch: "main",
   pollIntervalMinutes: 30,

@@ -46,6 +46,7 @@ For Tracker statuses, the repository already includes an example file at [config
 | `GITLAB_PROJECT_ID` | Yes | None | Use the numeric or URL-encoded project ID accepted by the GitLab REST API. You can copy it from the project page or query it through the GitLab API once you know the project path. |
 | `GIT_AUTHOR_NAME` | No | None | Optional git commit author name for the worker process. Use this in Docker if the mounted repository does not already have `git config user.name` set. |
 | `GIT_AUTHOR_EMAIL` | No | None | Optional git commit author email for the worker process. Use this in Docker if the mounted repository does not already have `git config user.email` set. |
+| `GIT_COMMIT_NO_VERIFY` | No | `true` | Controls whether worker commits use `git commit --no-verify`. Keep the default unless you intentionally want the worker to run target-repo git hooks such as `husky` or `lint-staged`. |
 | `REPO_PATH` | No | `/workspace/project` | Keep the default in Docker. Override only if the worker should use another local checkout path. |
 | `BASE_BRANCH` | No | `main` | Set the branch that feature branches and merge requests should target. |
 | `POLL_INTERVAL_MINUTES` | No | `30` | Choose how often the worker polls Tracker. Must be a positive integer. |
@@ -213,6 +214,24 @@ GIT_AUTHOR_EMAIL=ai-worker@example.com
 ```
 
 The worker startup now checks `git var GIT_AUTHOR_IDENT`, so this misconfiguration should fail fast before task processing starts.
+
+## Git hooks on worker commits
+
+The worker already validates repository state with `TEST_COMMAND` and `LINT_COMMAND`. To avoid failures caused by developer-local hook stacks inside mounted repos, worker commits default to `git commit --no-verify`.
+
+Use this default unless you intentionally want repository hooks to run inside the worker:
+
+```env
+GIT_COMMIT_NO_VERIFY=true
+```
+
+If your target repository requires its hooks even for automation, set:
+
+```env
+GIT_COMMIT_NO_VERIFY=false
+```
+
+Accepted values are `true`, `false`, `1`, `0`, `yes`, and `no`.
 
 ## Recommended validation flow
 

@@ -13,6 +13,7 @@ It will start successfully only if all of the following are already true:
 3. Tracker and GitLab credentials are present in `.env`.
 4. Git inside the mounted project can fetch, commit, and push.
 5. `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are valid for the target project.
+6. If the target repo has `husky` or other git hooks, decide whether to keep the default `GIT_COMMIT_NO_VERIFY=true`.
 
 If `CODEX_HOME` is missing or not authenticated, the worker now fails fast on startup before touching Tracker.
 
@@ -66,6 +67,7 @@ Create `.env` from `.env.example` and set:
 - `CODEX_SANDBOX` (recommended: `danger-full-access` for this worker)
 - `TEST_COMMAND`
 - `LINT_COMMAND`
+- `GIT_COMMIT_NO_VERIFY`
 - `WORKER_ID`
 
 At minimum, verify that:
@@ -73,6 +75,7 @@ At minimum, verify that:
 - `CODEX_CLI_COMMAND exec --json` actually works in non-interactive mode
 - `TEST_COMMAND` exists in the mounted target repo
 - `LINT_COMMAND` exists in the mounted target repo
+- `GIT_COMMIT_NO_VERIFY=false` only if you intentionally want repo hooks to run inside the worker
 
 For `TRACKER_STATUS_MAP_FILE`, point to a JSON file. Inside that file, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
 
@@ -182,6 +185,7 @@ Most likely first-time failure modes are:
 1. `codex login status` fails because `CODEX_HOME` is empty.
 2. `git pull` or `git push` fails because repo credentials are not set up.
 3. test/lint commands do not exist in the target project.
+4. repository git hooks assume a developer workstation environment and should be bypassed with `GIT_COMMIT_NO_VERIFY=true`.
 
 ## Direct host bind mount option
 

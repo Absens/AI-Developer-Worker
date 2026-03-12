@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -234,13 +234,14 @@ describe("worker smoke", () => {
     }
   });
 
-  it("processes a task end-to-end against mock Tracker and GitLab", async () => {
+  it("processes a task end-to-end against mock Tracker and GitLab while skipping repo hooks by default", async () => {
     const workspace = createTempWorkspace();
     cleanupPaths.push(workspace);
 
     const remotePath = join(workspace, "remote.git");
     const seedPath = join(workspace, "seed");
     const repoPath = join(workspace, "project");
+    const hooksPath = join(workspace, "hooks");
     const codexScriptPath = join(workspace, "codex-smoke.js");
     const statusMapFilePath = join(workspace, "trackerStatusMap.json");
 
@@ -258,6 +259,14 @@ describe("worker smoke", () => {
     runGit(["clone", "--branch", "main", remotePath, repoPath], workspace);
     runGit(["config", "user.email", "worker@example.com"], repoPath);
     runGit(["config", "user.name", "AI Worker"], repoPath);
+    mkdirSync(hooksPath, { recursive: true });
+    writeFileSync(
+      join(hooksPath, "pre-commit"),
+      "#!/bin/sh\necho hook should not run >&2\nexit 1\n",
+      "utf8",
+    );
+    chmodSync(join(hooksPath, "pre-commit"), 0o755);
+    runGit(["config", "core.hooksPath", hooksPath], repoPath);
 
     writeFileSync(
       codexScriptPath,
@@ -316,6 +325,7 @@ describe("worker smoke", () => {
       );
       expect(runGit(["branch", "--show-current"], repoPath)).toBe("feature/ai-task-DEV-100");
       expect(runGit(["rev-list", "--count", "main..HEAD"], repoPath)).toBe("1");
+      expect(runGit(["log", "-1", "--pretty=%s"], repoPath)).toBe("feat: implement DEV-100");
       expect(mockServer.searchBodies).toEqual([
         { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
         { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },

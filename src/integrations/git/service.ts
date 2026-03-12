@@ -132,7 +132,26 @@ export class RepositoryGitService implements GitService {
 
   async commit(message: string): Promise<void> {
     await this.ensureSuccess("git add -A");
-    await this.ensureSuccess(`git commit -m "${message.replace(/"/g, '\\"')}"`);
+    const commitCommand = this.config.gitCommitNoVerify
+      ? `git commit --no-verify -m "${message.replace(/"/g, '\\"')}"`
+      : `git commit -m "${message.replace(/"/g, '\\"')}"`;
+    this.logger.info("Creating git commit.", {
+      skipHooks: this.config.gitCommitNoVerify,
+    });
+    const result = await this.run(commitCommand);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        [
+          `Git commit failed with exit code ${result.exitCode}.`,
+          this.config.gitCommitNoVerify
+            ? "Repository hooks were skipped for this worker commit."
+            : "Repository hooks were enabled for this worker commit. Set GIT_COMMIT_NO_VERIFY=true to bypass repository hooks and rely on TEST_COMMAND/LINT_COMMAND instead.",
+          (result.stderr || result.stdout).trim(),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      );
+    }
   }
 
   async push(branch: string): Promise<void> {

@@ -66,6 +66,7 @@ Minimum fields to verify:
 - `CODEX_SANDBOX` (recommended: `danger-full-access`)
 - `TEST_COMMAND`
 - `LINT_COMMAND`
+- `GIT_COMMIT_NO_VERIFY`
 - `WORKER_ID`
 
 For `TRACKER_STATUS_MAP_FILE`, use a path to a JSON file. In that file, `statuses` should match the real Tracker states. `transition` is only a hint used to find an allowed workflow transition.
@@ -112,6 +113,7 @@ Use this first run to confirm:
 - the mounted project path is correct
 - git credentials inside that mounted repo work
 - `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are correct
+- `GIT_COMMIT_NO_VERIFY=false` only if you explicitly want repository hooks to run in the container
 
 ### 9. Continuous run
 
@@ -165,5 +167,7 @@ This is less safe than the dedicated `codex-home` volume because the container w
    the mounted repo does not have working remote credentials.
 3. tests or lint fail immediately:
    `TEST_COMMAND` or `LINT_COMMAND` do not match the target project.
+4. `git commit` fails on `husky` / `lint-staged`:
+   keep `GIT_COMMIT_NO_VERIFY=true` unless those hooks are intentionally supported in the container.
 4. Tracker/GitLab HTTP errors:
    `.env` contains wrong credentials or wrong URLs.

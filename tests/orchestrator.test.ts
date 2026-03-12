@@ -62,6 +62,7 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   gitRemoteName: "origin",
   gitRepositoryToken: "token",
   gitRepositoryUsername: "oauth2",
+  gitCommitNoVerify: true,
   repoPath,
   baseBranch: "main",
   pollIntervalMinutes: 30,
@@ -799,6 +800,69 @@ describe("WorkerOrchestrator", () => {
     ).toBe(true);
     expect(
       tracker.addedComments.some((entry) => entry.text.includes("failure_recovery")),
+    ).toBe(true);
+  });
+
+  it("surfaces commit diagnostics when publication fails during git commit", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-10",
+          title: "Commit failure",
+          description: "Surface commit diagnostics",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-10": [] },
+    );
+    const git = new FakeGitService();
+    git.commit = async () => {
+      throw new Error(
+        "Git commit failed with exit code 1.\n\nRepository hooks were enabled for this worker commit. Set GIT_COMMIT_NO_VERIFY=true to bypass repository hooks and rely on TEST_COMMAND/LINT_COMMAND instead.\n\nhusky - pre-commit script failed",
+      );
+    };
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-commit-failure",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-commit-failure",
+          };
+        },
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { gitCommitNoVerify: false }),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-10", target: "in_progress" },
+      { issueKey: "DEV-10", target: "failed" },
+    ]);
+    expect(
+      tracker.addedComments.some((entry) =>
+        entry.text.includes("Set GIT_COMMIT_NO_VERIFY=true to bypass repository hooks"),
+      ),
     ).toBe(true);
   });
 });

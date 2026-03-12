@@ -33,6 +33,7 @@ const createConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   gitRemoteName: "origin",
   gitRepositoryToken: "repo-token",
   gitRepositoryUsername: "oauth2",
+  gitCommitNoVerify: true,
   repoPath: "/workspace/project",
   baseBranch: "main",
   pollIntervalMinutes: 30,
@@ -152,6 +153,65 @@ describe("RepositoryGitService", () => {
 
     await expect(service.assertRepositoryReady()).rejects.toThrow(
       /GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL|git user\.name and user\.email/,
+    );
+  });
+
+  it("commits with --no-verify by default", async () => {
+    hoisted.runShellCommand
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+
+    const service = new RepositoryGitService(createConfig(), new Logger());
+
+    await service.commit('feat: "quoted" message');
+
+    expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
+      1,
+      "git add -A",
+      expect.objectContaining({ cwd: "/workspace/project" }),
+    );
+    expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
+      2,
+      'git commit --no-verify -m "feat: \\"quoted\\" message"',
+      expect.objectContaining({ cwd: "/workspace/project" }),
+    );
+  });
+
+  it("can enforce repository hooks for commits", async () => {
+    hoisted.runShellCommand
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+
+    const service = new RepositoryGitService(
+      createConfig({ gitCommitNoVerify: false }),
+      new Logger(),
+    );
+
+    await service.commit("feat: enforce hooks");
+
+    expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
+      2,
+      'git commit -m "feat: enforce hooks"',
+      expect.objectContaining({ cwd: "/workspace/project" }),
+    );
+  });
+
+  it("surfaces hook guidance when commit fails with hooks enabled", async () => {
+    hoisted.runShellCommand
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "husky - pre-commit script failed",
+        exitCode: 1,
+      });
+
+    const service = new RepositoryGitService(
+      createConfig({ gitCommitNoVerify: false }),
+      new Logger(),
+    );
+
+    await expect(service.commit("feat: enforce hooks")).rejects.toThrow(
+      /GIT_COMMIT_NO_VERIFY=true|Repository hooks were enabled/,
     );
   });
 });

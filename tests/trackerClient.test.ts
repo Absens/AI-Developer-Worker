@@ -34,6 +34,7 @@ const createConfig = (trackerApiBaseUrl: string, overrides: Partial<AppConfig> =
   gitRemoteName: "origin",
   gitRepositoryToken: "gitlab-token",
   gitRepositoryUsername: "oauth2",
+  gitCommitNoVerify: true,
   repoPath: process.cwd(),
   baseBranch: "main",
   pollIntervalMinutes: 30,
