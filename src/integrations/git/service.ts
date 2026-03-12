@@ -40,12 +40,15 @@ const convertRemoteToHttps = (value: string): string | null => {
 
 export class RepositoryGitService implements GitService {
   private remoteAuthEnv: NodeJS.ProcessEnv | undefined;
+  private readonly commitIdentityEnv: NodeJS.ProcessEnv | undefined;
   private repositoryPrepared = false;
 
   constructor(
     private readonly config: AppConfig,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    this.commitIdentityEnv = this.buildCommitIdentityEnv();
+  }
 
   async assertRepositoryReady(): Promise<void> {
     await this.ensureRepositoryPrepared();
@@ -216,8 +219,9 @@ export class RepositoryGitService implements GitService {
   }
 
   private async ensureCommitIdentity(): Promise<void> {
-    const result = await this.run("git var GIT_AUTHOR_IDENT");
-    if (result.exitCode === 0) {
+    const authorResult = await this.run("git var GIT_AUTHOR_IDENT");
+    const committerResult = await this.run("git var GIT_COMMITTER_IDENT");
+    if (authorResult.exitCode === 0 && committerResult.exitCode === 0) {
       return;
     }
 
@@ -225,7 +229,8 @@ export class RepositoryGitService implements GitService {
       [
         "Git commit identity is not configured for the mounted repository.",
         "Set git user.name and user.email in that repository, or provide GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL to the worker environment.",
-        (result.stderr || result.stdout).trim(),
+        (authorResult.stderr || authorResult.stdout).trim(),
+        (committerResult.stderr || committerResult.stdout).trim(),
       ]
         .filter(Boolean)
         .join(" "),
@@ -283,11 +288,27 @@ export class RepositoryGitService implements GitService {
     };
   }
 
+  private buildCommitIdentityEnv(): NodeJS.ProcessEnv | undefined {
+    if (!this.config.gitAuthorName || !this.config.gitAuthorEmail) {
+      return undefined;
+    }
+
+    return {
+      GIT_AUTHOR_NAME: this.config.gitAuthorName,
+      GIT_AUTHOR_EMAIL: this.config.gitAuthorEmail,
+      GIT_COMMITTER_NAME: this.config.gitAuthorName,
+      GIT_COMMITTER_EMAIL: this.config.gitAuthorEmail,
+    };
+  }
+
   private run(command: string, env = this.remoteAuthEnv) {
     this.logger.info("Running git command.", { command });
     return runShellCommand(command, {
       cwd: this.config.repoPath,
-      env,
+      env: {
+        ...(env ?? {}),
+        ...(this.commitIdentityEnv ?? {}),
+      },
     });
   }
 }

@@ -77,6 +77,11 @@ describe("RepositoryGitService", () => {
         stderr: "",
         exitCode: 0,
       })
+      .mockResolvedValueOnce({
+        stdout: "AI Worker <worker@example.com> 1 +0000\n",
+        stderr: "",
+        exitCode: 0,
+      })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
 
@@ -90,7 +95,7 @@ describe("RepositoryGitService", () => {
       expect.objectContaining({ cwd: "/workspace/project" }),
     );
     expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
-      7,
+      8,
       "git fetch --all --prune",
       expect.objectContaining({
         cwd: "/workspace/project",
@@ -110,6 +115,11 @@ describe("RepositoryGitService", () => {
       })
       .mockResolvedValueOnce({
         stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "AI Worker <worker@example.com> 1 +0000\n",
         stderr: "",
         exitCode: 0,
       })
@@ -147,12 +157,83 @@ describe("RepositoryGitService", () => {
         stdout: "",
         stderr: "Author identity unknown",
         exitCode: 128,
+      })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Committer identity unknown",
+        exitCode: 128,
       });
 
     const service = new RepositoryGitService(createConfig(), new Logger());
 
     await expect(service.assertRepositoryReady()).rejects.toThrow(
       /GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL|git user\.name and user\.email/,
+    );
+  });
+
+  it("uses configured git author identity for readiness checks and commits", async () => {
+    hoisted.runShellCommand
+      .mockResolvedValueOnce({
+        stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "AI Worker <ai-worker@example.com> 1 +0000\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "AI Worker <ai-worker@example.com> 1 +0000\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+
+    const service = new RepositoryGitService(
+      createConfig({
+        gitAuthorName: "AI Worker",
+        gitAuthorEmail: "ai-worker@example.com",
+      }),
+      new Logger(),
+    );
+
+    await service.assertRepositoryReady();
+    await service.commit("feat: configured identity");
+
+    expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
+      3,
+      "git var GIT_AUTHOR_IDENT",
+      expect.objectContaining({
+        cwd: "/workspace/project",
+        env: expect.objectContaining({
+          GIT_AUTHOR_NAME: "AI Worker",
+          GIT_AUTHOR_EMAIL: "ai-worker@example.com",
+          GIT_COMMITTER_NAME: "AI Worker",
+          GIT_COMMITTER_EMAIL: "ai-worker@example.com",
+        }),
+      }),
+    );
+    expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
+      8,
+      'git commit --no-verify -m "feat: configured identity"',
+      expect.objectContaining({
+        cwd: "/workspace/project",
+        env: expect.objectContaining({
+          GIT_AUTHOR_NAME: "AI Worker",
+          GIT_AUTHOR_EMAIL: "ai-worker@example.com",
+          GIT_COMMITTER_NAME: "AI Worker",
+          GIT_COMMITTER_EMAIL: "ai-worker@example.com",
+        }),
+      }),
     );
   });
 

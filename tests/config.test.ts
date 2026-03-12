@@ -135,6 +135,25 @@ describe("config", () => {
     expect(config.gitRepositoryUrl).toBe("https://gitlab.example.com/group/project.git");
   });
 
+  it("accepts explicit git author identity overrides", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      GIT_AUTHOR_NAME: "AI Worker",
+      GIT_AUTHOR_EMAIL: "ai-worker@example.com",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.gitAuthorName).toBe("AI Worker");
+    expect(config.gitAuthorEmail).toBe("ai-worker@example.com");
+  });
+
   it("accepts explicit GIT_COMMIT_NO_VERIFY=false", () => {
     const statusMapFile = createStatusMapFile();
     const config = loadConfig({

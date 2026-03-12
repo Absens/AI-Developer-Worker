@@ -226,6 +226,8 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       ? { gitRepositoryUrl: env.GIT_REPOSITORY_URL.trim() }
       : {}),
     gitCommitNoVerify: parseBooleanFlag(env.GIT_COMMIT_NO_VERIFY, "GIT_COMMIT_NO_VERIFY", true),
+    ...(env.GIT_AUTHOR_NAME?.trim() ? { gitAuthorName: env.GIT_AUTHOR_NAME.trim() } : {}),
+    ...(env.GIT_AUTHOR_EMAIL?.trim() ? { gitAuthorEmail: env.GIT_AUTHOR_EMAIL.trim() } : {}),
     repoPath: env.REPO_PATH?.trim() || "/workspace/project",
     baseBranch: env.BASE_BRANCH?.trim() || "main",
     pollIntervalMinutes,
