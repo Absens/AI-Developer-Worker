@@ -67,6 +67,7 @@ Common optional values:
 - `CODEX_MODEL=...`
 - `CODEX_PROFILE=...`
 - `CODEX_EXEC_ARGS_JSON=[]` for flags accepted by `codex exec --help`
+- `CODEX_TIMEOUT_SECONDS=1800`
 - `CODEX_PROGRESS_LOG_INTERVAL_SECONDS=30`
 - `WORKER_RUN_ONCE=true|false`
 - `HOST_CODEX_HOME=C:/Users/.../.codex` for automatic Compose bootstrap on Windows

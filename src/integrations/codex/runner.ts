@@ -114,6 +114,11 @@ const MAX_DIAGNOSTIC_LENGTH = 4_000;
 const truncateForLog = (value: string, maxLength = 240): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
 
+const formatSeconds = (milliseconds: number): string => {
+  const seconds = Math.ceil(milliseconds / 1000);
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+};
+
 const truncateForDiagnostic = (
   value: string,
   maxLength = MAX_DIAGNOSTIC_LENGTH,
@@ -394,6 +399,7 @@ export class CliCodexRunner implements CodexRunner {
         cwd: this.config.repoPath,
         stdin: input.prompt,
         env: getCodexShellEnv(this.config),
+        timeoutMs: this.config.codexTimeoutMs,
         onStdoutChunk: (chunk) => {
           consumeChunkLines(chunk, jsonlState, "stdout", (line) => {
             processStdoutLine(
@@ -424,7 +430,14 @@ export class CliCodexRunner implements CodexRunner {
         mode: input.mode,
         elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000),
         exitCode: process.exitCode,
+        ...(process.timedOut ? { timedOut: true } : {}),
       });
+      if (process.timedOut) {
+        this.logger.warn("Codex command timed out.", {
+          mode: input.mode,
+          timeout: formatSeconds(this.config.codexTimeoutMs),
+        });
+      }
       const finalMessage = await readFile(lastMessagePath, "utf8").catch(() => "");
       const clarification = extractClarification(
         finalMessage,
@@ -440,7 +453,12 @@ export class CliCodexRunner implements CodexRunner {
         });
       }
 
-      const stderr = truncateForDiagnostic(process.stderr);
+      const timeoutDiagnostic = process.timedOut
+        ? `Codex command timed out after ${formatSeconds(this.config.codexTimeoutMs)}.`
+        : "";
+      const stderr = truncateForDiagnostic(
+        [timeoutDiagnostic, process.stderr].filter(Boolean).join("\n"),
+      );
       const returnedStderr =
         process.exitCode !== 0 && jsonlState.errors.length > 0
           ? [...jsonlState.errors, stderr.trim()].filter(Boolean).join("\n")

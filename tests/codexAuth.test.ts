@@ -47,6 +47,7 @@ const createBaseConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   codexCliArgs: [],
   codexSandbox: "workspace-write",
   codexExecArgs: [],
+  codexTimeoutMs: 30 * 60 * 1000,
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",

@@ -239,6 +239,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     ...(env.CODEX_PROFILE?.trim() ? { codexProfile: env.CODEX_PROFILE.trim() } : {}),
     codexSandbox: parseCodexSandbox(env.CODEX_SANDBOX),
     codexExecArgs: parseStringArray(env.CODEX_EXEC_ARGS_JSON, "CODEX_EXEC_ARGS_JSON"),
+    codexTimeoutMs:
+      parsePositiveInt(
+        env.CODEX_TIMEOUT_SECONDS?.trim() || "1800",
+        "CODEX_TIMEOUT_SECONDS",
+      ) * 1000,
     codexProgressLogIntervalMs:
       parsePositiveInt(
         env.CODEX_PROGRESS_LOG_INTERVAL_SECONDS?.trim() || "30",

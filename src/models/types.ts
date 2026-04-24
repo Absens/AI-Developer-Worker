@@ -42,6 +42,7 @@ export interface AppConfig {
   codexProfile?: string;
   codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
   codexExecArgs: string[];
+  codexTimeoutMs: number;
   codexProgressLogIntervalMs: number;
   codexLogFullEvents: boolean;
   codexQuestionMarker: string;
@@ -123,6 +124,7 @@ export interface ProcessResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  timedOut?: boolean;
 }
 
 export interface ValidationResult {

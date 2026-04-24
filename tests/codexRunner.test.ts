@@ -67,6 +67,7 @@ const createConfig = (
   codexCliArgs,
   codexSandbox: "workspace-write",
   codexExecArgs: [],
+  codexTimeoutMs: 30 * 60 * 1000,
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
@@ -310,6 +311,41 @@ describe("CliCodexRunner", () => {
     expect(execution.process.exitCode).toBe(1);
     expect(execution.process.stderr.length).toBeLessThan(4100);
     expect(execution.process.stderr).toContain("[truncated");
+  });
+
+  it("times out long-running Codex commands", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "setInterval(() => {",
+        "  process.stdout.write('still running\\n');",
+        "}, 1000);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logger = new TestLogger();
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexTimeoutMs: 50,
+        codexProgressLogIntervalMs: 60 * 1000,
+      },
+      logger,
+    );
+
+    const execution = await runner.runInitial("Implement this change.");
+
+    expect(execution.process.timedOut).toBe(true);
+    expect(execution.process.exitCode).toBe(124);
+    expect(execution.process.stderr).toContain("Codex command timed out after 1 second.");
+    expect(
+      logger.entries.some(
+        (entry) => entry.level === "WARN" && entry.message === "Codex command timed out.",
+      ),
+    ).toBe(true);
   });
 
   it("adds a readable preview for nested event content", async () => {

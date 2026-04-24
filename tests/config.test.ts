@@ -78,6 +78,7 @@ describe("config", () => {
     expect(config.codexCliArgs).toEqual([]);
     expect(config.codexSandbox).toBe("danger-full-access");
     expect(config.codexExecArgs).toEqual([]);
+    expect(config.codexTimeoutMs).toBe(30 * 60 * 1000);
     expect(config.codexLogFullEvents).toBe(false);
   });
 
@@ -98,6 +99,7 @@ describe("config", () => {
       CODEX_PROFILE: "ci",
       CODEX_SANDBOX: "danger-full-access",
       CODEX_EXEC_ARGS_JSON: "[\"--search\",\"--add-dir\",\"/tmp/shared\"]",
+      CODEX_TIMEOUT_SECONDS: "45",
       MAX_FIX_ATTEMPTS: "2",
       WORKER_ID: "worker-1",
     });
@@ -109,6 +111,7 @@ describe("config", () => {
     expect(config.codexProfile).toBe("ci");
     expect(config.codexSandbox).toBe("danger-full-access");
     expect(config.codexExecArgs).toEqual(["--search", "--add-dir", "/tmp/shared"]);
+    expect(config.codexTimeoutMs).toBe(45 * 1000);
     expect(config.codexLogFullEvents).toBe(false);
     expect(config.trackerDefaultQueue).toBe("FRONTEND");
     expect(config.trackerOrgHeader).toBe("X-Org-ID");
@@ -222,6 +225,23 @@ describe("config", () => {
         WORKER_ID: "worker-1",
       }),
     ).toThrow(/CODEX_EXEC_ARGS_JSON/);
+  });
+
+  it("rejects invalid CODEX_TIMEOUT_SECONDS", () => {
+    const statusMapFile = createStatusMapFile();
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        CODEX_TIMEOUT_SECONDS: "0",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/CODEX_TIMEOUT_SECONDS/);
   });
 
   it("rejects invalid GIT_COMMIT_NO_VERIFY", () => {

@@ -1,5 +1,7 @@
 # Анализ проекта AI Developer Worker
 
+> Обновлено: 24 апреля 2026. Проверено по текущим `src/`, `tests/`, `package.json`, `compose.yaml`, `.env.example` и `README.md`. `npm run typecheck` и `npm test` проходят.
+
 ## Краткое описание
 
 Проект — это Node.js/TypeScript воркер, который:
@@ -9,7 +11,9 @@
 4. Создаёт Merge Request в GitLab
 5. Обновляет статус и комментарии в Tracker
 
-Архитектура чистая — есть разделение на `domain/`, `integrations/`, `utils/`, `models/`. Тестовое покрытие хорошее (unit + smoke). Docker-сценарий полностью рабочий.
+Архитектура чистая — есть разделение на `domain/`, `integrations/`, `utils/`, `models/`. Тестовое покрытие хорошее: unit-тесты, smoke-тест с реальным git-flow и локальные HTTP-моки Tracker/GitLab. Docker-сценарий рабочий.
+
+Документ в целом остаётся актуальным. Важные уточнения: часть preflight уже реализована на старте, у Codex runner появились heartbeat-логи и усечение диагностик, а HTTP-тесты стали реалистичнее, чем было описано ранее. Phase 1 reliability уже закрыта: graceful shutdown, жёсткий таймаут Codex CLI и лимиты shell-буферов реализованы 24 апреля 2026.
 
 ---
 
@@ -17,9 +21,11 @@
 
 ### 1. Graceful Shutdown (SIGTERM/SIGINT)
 
-**Проблема:** Метод [runForever()](file:///c:/Users/gabba/projects/developer/src/domain/orchestrator.ts#85-103) — бесконечный цикл `while(true)` без обработки сигналов остановки. При `docker stop` или `Ctrl+C` процесс прерывается посреди цикла, что может оставить задачу в Tracker в неконсистентном состоянии.
+**Статус:** Реализовано 24 апреля 2026. [runForever()](file:///c:/Users/gabba/projects/developer/src/domain/orchestrator.ts#L85-L139) обрабатывает `SIGINT`/`SIGTERM`, завершает текущий цикл и прерывает сон между poll-циклами.
 
-**Решение:**
+**Проблема была:** Метод `runForever()` был бесконечным циклом `while(true)` без обработки сигналов остановки. При `docker stop` или `Ctrl+C` процесс мог прерываться посреди цикла, что оставляло задачу в Tracker в неконсистентном состоянии.
+
+**Реализованное решение:**
 ```typescript
 // src/domain/orchestrator.ts
 private shuttingDown = false;
@@ -51,9 +57,11 @@ async runForever(): Promise<void> {
 
 ### 2. Таймаут для Codex CLI
 
-**Проблема:** Запуск `codex exec` в [runner.ts](file:///c:/Users/gabba/projects/developer/src/integrations/codex/runner.ts#L243-L331) не ограничен по времени. Если Codex зависнет — воркер завис навсегда.
+**Статус:** Реализовано 24 апреля 2026. Добавлен `CODEX_TIMEOUT_SECONDS` с дефолтом 1800 секунд. [runner.ts](file:///c:/Users/gabba/projects/developer/src/integrations/codex/runner.ts#L396-L463) передаёт timeout в shell runner; зависший `codex exec` завершается с `timedOut: true` и exit code `124`.
 
-**Решение:** Добавить `CODEX_TIMEOUT_SECONDS` в конфигурацию и использовать `AbortController` + `signal` в `spawn`, либо явно убивать процесс по таймауту:
+**Проблема была:** Запуск `codex exec` не был ограничен по времени. Heartbeat-логирование через `CODEX_PROGRESS_LOG_INTERVAL_SECONDS` показывало, что процесс ещё жив, но не останавливало зависание.
+
+**Реализованное решение:** Добавлен `CODEX_TIMEOUT_SECONDS`; shell runner явно завершает процесс по таймауту:
 ```typescript
 // В конфиге:
 codexTimeoutMs: parsePositiveInt(env.CODEX_TIMEOUT_SECONDS ?? "1800", "CODEX_TIMEOUT_SECONDS") * 1000,
@@ -66,9 +74,11 @@ const timeout = setTimeout(() => {
 
 ### 3. Ограничение размера stdout/stderr буферов
 
-**Проблема:** В [shell.ts](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts) stdout и stderr копятся целиком в память (`stdout += text`). Для длительных тестовых прогонов или объёмного вывода Codex это может привести к OOM.
+**Статус:** Реализовано 24 апреля 2026. [shell.ts](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts) хранит только хвост `stdout`/`stderr` с дефолтным лимитом 512 KB на поток, при этом streaming callbacks продолжают получать полные чанки.
 
-**Решение:** Ввести кольцевой буфер или ограничение на размер хранимого вывода:
+**Проблема была:** stdout и stderr копились целиком в память (`stdout += text`). В Codex runner уже было усечение диагностик до 4 KB и усечение строк логов, но общий shell-буфер оставался без лимита.
+
+**Реализованное решение:** Введено ограничение на размер хранимого вывода:
 ```typescript
 const MAX_BUFFER = 512 * 1024; // 512 KB
 // При сохранении:
@@ -81,15 +91,17 @@ if (stdout.length + text.length > MAX_BUFFER) {
 
 ## 🟡 Существенные улучшения
 
-### 4. Валидация конфигурации при старте (Preflight Check)
+### 4. Расширенная валидация конфигурации при старте (Preflight Check)
 
-**Текущее состояние:** Конфигурация загружается и проверяется формально (наличие переменных), но нет проверки реальной доступности сервисов.
+**Текущее состояние:** Частичный preflight уже реализован. При старте [index.ts](file:///c:/Users/gabba/projects/developer/src/index.ts) вызывает проверку готовности git-репозитория и [assertCodexAuthenticated()](file:///c:/Users/gabba/projects/developer/src/integrations/codex/auth.ts), поэтому воркер падает до обработки Tracker, если репозиторий не готов или Codex CLI не авторизован.
+
+Остаётся проблема: нет отдельной команды preflight и нет полной проверки реальной доступности Tracker/GitLab, корректности команд в целевом репозитории и маппинга статусов.
 
 **Рекомендация:** Добавить команду `npm run preflight` или флаг `--preflight`:
 - Проверить подключение к Tracker API (GET `/myself`)
 - Проверить подключение к GitLab API (GET `/projects/:id`)
 - Проверить наличие и permissions git remote
-- Проверить, что `testCommand` и `lintCommand` вообще запускаются в целевом репозитории
+- Проверить, что `TEST_COMMAND` и `LINT_COMMAND` вообще запускаются в целевом репозитории
 - Проверить, что trackerStatusMap корректно резолвит все логические статусы для текущей очереди
 
 ### 5. Dry-Run режим
@@ -135,7 +147,7 @@ ALERT_WEBHOOK_URL=https://hooks.slack.com/services/...
 
 ### 9. CLI-интерфейс вместо чистых env-переменных
 
-**Проблема:** Все 30+ параметров задаются через [.env](file:///c:/Users/gabba/projects/developer/.env). Это хорошо для Docker, но неудобно для локальной разработки и отладки.
+**Проблема:** Параметры задаются через [.env](file:///c:/Users/gabba/projects/developer/.env). Для Docker это нормально, и `WORKER_RUN_ONCE=true` уже закрывает базовый one-shot запуск, но для локальной разработки и отладки всё ещё не хватает CLI overrides.
 
 **Решение:** Добавить минимальный CLI парсер (например, `node:util.parseArgs`):
 ```bash
@@ -221,7 +233,9 @@ logger.info("Cycle complete.", result);
 
 ### 14. Тесты для интеграций с реальным HTTP
 
-**Текущее состояние:** Тесты используют моки. Нет интеграционных тестов с реальными API.
+**Текущее состояние:** Формулировка из прежней версии была слишком жёсткой. Сейчас есть unit-тесты интеграций, [trackerClient.test.ts](file:///c:/Users/gabba/projects/developer/tests/trackerClient.test.ts) с локальным `node:http` сервером и [worker.smoke.test.ts](file:///c:/Users/gabba/projects/developer/tests/worker.smoke.test.ts), который проходит end-to-end сценарий с mock Tracker/GitLab и реальным git-flow.
+
+Остаётся пробел: нет отдельного `npm run test:integration` с более реалистичным HTTP-контрактом, сценариями ошибок для GitLab/Tracker и, при необходимости, WireMock/MSW-фикстурами.
 
 **Рекомендация:** Добавить `npm run test:integration` с MSW (Mock Service Worker) для реалистичного HTTP-мокирования, либо Docker-based тесты с WireMock для Tracker и GitLab.
 
@@ -251,9 +265,11 @@ TRACKER_QUEUES=["FRONTEND","BACKEND","MOBILE"]
 
 ### 17. Дублирование [runShellCommand](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts#19-60) / [runCommand](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts#61-101)
 
-В [shell.ts](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts) две почти идентичные функции: [runShellCommand](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts#19-60) (запускает с `shell: true`) и [runCommand](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts#61-101) (с `shell: false`, принимает args отдельно). Логика обработки stdout/stderr полностью дублирована.
+**Статус:** Реализовано 24 апреля 2026. [shell.ts](file:///c:/Users/gabba/projects/developer/src/utils/shell.ts) теперь использует общий внутренний `runProcess()` для `runShellCommand()` и `runCommand()`.
 
-**Решение:** Объединить в одну внутреннюю функцию:
+Ранее в `shell.ts` были две почти идентичные функции: `runShellCommand()` (запускает с `shell: true`) и `runCommand()` (с `shell: false`, принимает args отдельно). Логика обработки stdout/stderr полностью дублировалась.
+
+**Реализованное решение:** Объединено в одну внутреннюю функцию:
 ```typescript
 const spawnProcess = (options: InternalSpawnOptions): Promise<ProcessResult> => { ... }
 
@@ -264,9 +280,9 @@ export const runCommand = (opts: CommandOptions) =>
   spawnProcess({ ...opts, shell: false });
 ```
 
-### 18. `any` в tracker client
+### 18. `any` в Tracker client
 
-В [client.ts:159](file:///c:/Users/gabba/projects/developer/src/integrations/tracker/client.ts#L159) используется [(comment: any)](file:///c:/Users/gabba/projects/developer/src/integrations/git/service.ts#267-274) при маппинге комментариев. Нужен явный тип `TrackerCommentResponse`.
+В [client.ts:159](file:///c:/Users/gabba/projects/developer/src/integrations/tracker/client.ts#L159) используется `(comment: any)` при маппинге комментариев. Нужен явный тип `TrackerCommentResponse`.
 
 ### 19. Нет error boundary для отдельных шагов
 
@@ -288,10 +304,10 @@ export const runCommand = (opts: CommandOptions) =>
 
 | # | Улучшение | Приоритет | Сложность | Влияние |
 |---|---|---|---|---|
-| 1 | Graceful Shutdown | 🔴 Высокий | Низкая | Надёжность |
-| 2 | Таймаут Codex CLI | 🔴 Высокий | Низкая | Надёжность |
-| 3 | Ограничение буферов | 🔴 Высокий | Низкая | Стабильность |
-| 4 | Preflight Check | 🟡 Средний | Средняя | UX оператора |
+| 1 | Graceful Shutdown | ✅ Выполнено | Низкая | Надёжность |
+| 2 | Таймаут Codex CLI | ✅ Выполнено | Низкая | Надёжность |
+| 3 | Ограничение буферов | ✅ Выполнено | Низкая | Стабильность |
+| 4 | Расширенный Preflight Check | 🟡 Средний | Средняя | UX оператора |
 | 5 | Dry-Run режим | 🟡 Средний | Средняя | Отладка |
 | 6 | Webhook-алерты | 🟡 Средний | Низкая | Наблюдаемость |
 | 7 | Метрики | 🟡 Средний | Средняя | Наблюдаемость |
@@ -301,10 +317,10 @@ export const runCommand = (opts: CommandOptions) =>
 | 11 | Docker healthcheck | 🟢 Низкий | Низкая | Ops |
 | 12 | Cycle report | 🟡 Средний | Низкая | Наблюдаемость |
 | 13 | Formatter/Linter | 🟢 Низкий | Низкая | DX |
-| 14 | Интеграционные тесты | 🟢 Низкий | Высокая | Качество |
+| 14 | Расширенные интеграционные тесты | 🟢 Низкий | Средняя | Качество |
 | 15 | Ротация веток | 🟢 Низкий | Низкая | Clean-up |
 | 16 | Множественные очереди | 🟢 Низкий | Средняя | Масштабируемость |
-| 17 | Устранение дублирования shell | 🟢 Низкий | Низкая | Код |
+| 17 | Устранение дублирования shell | ✅ Выполнено | Низкая | Код |
 | 18 | Убрать `any` | 🟢 Низкий | Низкая | Типизация |
 | 19 | Checkpoint-логирование | 🟡 Средний | Низкая | Отладка |
 
@@ -314,14 +330,14 @@ export const runCommand = (opts: CommandOptions) =>
 
 ```mermaid
 graph TD
-    A["🔴 Phase 1: Reliability"] --> B["🟡 Phase 2: Operability"]
+    A["✅ Phase 1: Reliability"] --> B["🟡 Phase 2: Operability"]
     B --> C["🟢 Phase 3: DX & Polish"]
     
     A --> A1["1. Graceful Shutdown"]
     A --> A2["2. Codex Timeout"]
     A --> A3["3. Buffer limits"]
     
-    B --> B1["4. Preflight Check"]
+    B --> B1["4. Расширенный Preflight"]
     B --> B2["5. Dry-Run"]
     B --> B3["10. Target Issue"]
     B --> B4["6. Webhooks"]

@@ -72,6 +72,7 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   codexCliArgs: [],
   codexSandbox: "workspace-write",
   codexExecArgs: [],
+  codexTimeoutMs: 30 * 60 * 1000,
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
@@ -846,6 +847,26 @@ Reply with /resume A or /resume B.
     const outcome = await orchestrator.runOnce();
 
     expect(outcome).toBe("idle");
+  });
+
+  it("stops the polling loop on SIGTERM without waiting for the poll interval", async () => {
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        pollIntervalMinutes: 60,
+        pollIntervalMs: 60 * 60 * 1000,
+      }),
+      new FakeTrackerClient([], {}),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      new FakeCodexRunner([]),
+      new Logger(),
+    );
+
+    const running = orchestrator.runForever();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("SIGTERM", "SIGTERM");
+
+    await expect(running).resolves.toBeUndefined();
   });
 
   it("falls back to waiting_for_answer with failure_recovery when failed transition is unavailable", async () => {

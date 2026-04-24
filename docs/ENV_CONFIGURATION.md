@@ -57,6 +57,7 @@ For Tracker statuses, the repository already includes an example file at [config
 | `CODEX_PROFILE` | No | None | Optional profile name from the local Codex configuration. |
 | `CODEX_SANDBOX` | No | `danger-full-access` | Choose one of `read-only`, `workspace-write`, or `danger-full-access`. |
 | `CODEX_EXEC_ARGS_JSON` | No | `[]` | JSON array of extra arguments accepted by `codex exec --help`, such as `--add-dir /workspace/shared`. Do not put launcher/global flags here. |
+| `CODEX_TIMEOUT_SECONDS` | No | `1800` | Hard timeout for one `codex exec` process. If the timeout is reached, the worker terminates that Codex process and treats the run as failed. |
 | `CODEX_LOG_FULL_EVENTS` | No | `false` | When `true`, the worker logs each raw JSONL event emitted by `codex exec --json`. Enable this for container-level debugging if the default event summaries are not enough. |
 | `CODEX_QUESTION_MARKER` | No | `AI_QUESTION:` | Keep the default unless you intentionally changed the worker comment protocol. |
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |

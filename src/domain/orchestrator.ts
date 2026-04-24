@@ -35,7 +35,6 @@ import {
 } from "../utils/errors.js";
 import { Logger } from "../utils/logger.js";
 import { runShellCommand } from "../utils/shell.js";
-import { sleep } from "../utils/sleep.js";
 
 type CycleOutcome = "processed" | "idle" | "waiting";
 
@@ -73,6 +72,9 @@ const buildCommandDiagnostic = (
     .join("\n\n");
 
 export class WorkerOrchestrator {
+  private shuttingDown = false;
+  private wakeSleep: (() => void) | undefined;
+
   constructor(
     private readonly config: AppConfig,
     private readonly tracker: TrackerClient,
@@ -83,22 +85,66 @@ export class WorkerOrchestrator {
   ) {}
 
   async runForever(): Promise<void> {
-    while (true) {
-      try {
-        const outcome = await this.runOnce();
-        if (outcome !== "processed") {
-          this.logger.info("Worker is sleeping.", {
-            pollIntervalMinutes: this.config.pollIntervalMinutes,
-          });
-          await sleep(this.config.pollIntervalMs);
-        }
-      } catch (error) {
-        this.logger.error("Worker cycle failed.", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        await sleep(this.config.pollIntervalMs);
+    this.shuttingDown = false;
+    const shutdown = (signal: NodeJS.Signals): void => {
+      if (this.shuttingDown) {
+        return;
       }
+
+      this.logger.info("Shutdown signal received, finishing current cycle.", { signal });
+      this.shuttingDown = true;
+      this.wakeSleep?.();
+    };
+
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+
+    try {
+      while (!this.shuttingDown) {
+        try {
+          const outcome = await this.runOnce();
+          if (outcome !== "processed" && !this.shuttingDown) {
+            this.logger.info("Worker is sleeping.", {
+              pollIntervalMinutes: this.config.pollIntervalMinutes,
+            });
+            await this.interruptibleSleep(this.config.pollIntervalMs);
+          }
+        } catch (error) {
+          this.logger.error("Worker cycle failed.", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (!this.shuttingDown) {
+            await this.interruptibleSleep(this.config.pollIntervalMs);
+          }
+        }
+      }
+
+      this.logger.info("Worker shut down gracefully.");
+    } finally {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      this.wakeSleep?.();
+      this.wakeSleep = undefined;
     }
+  }
+
+  private async interruptibleSleep(milliseconds: number): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let timeout: NodeJS.Timeout;
+      const wake = (): void => {
+        clearTimeout(timeout);
+        if (this.wakeSleep === wake) {
+          this.wakeSleep = undefined;
+        }
+        resolve();
+      };
+      timeout = setTimeout(wake, milliseconds);
+      this.wakeSleep = wake;
+    });
   }
 
   async runOnce(): Promise<CycleOutcome> {
