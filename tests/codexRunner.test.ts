@@ -208,6 +208,110 @@ describe("CliCodexRunner", () => {
     ).toBe(true);
   });
 
+  it("logs top-level JSONL error messages without failing successful runs", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-reconnect' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'error', message: 'Reconnecting after transient websocket failure' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logger = new TestLogger();
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      logger,
+    );
+
+    const execution = await runner.runInitial("Implement this change.");
+
+    expect(execution.process.exitCode).toBe(0);
+    expect(execution.process.stderr).not.toContain("Reconnecting after transient");
+    expect(
+      logger.entries.some(
+        (entry) =>
+          entry.level === "WARN" &&
+          entry.message === "Codex event." &&
+          (entry.context as { type?: string; error?: string } | undefined)?.type === "error" &&
+          (entry.context as { error?: string } | undefined)?.error?.includes(
+            "Reconnecting after transient",
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it("adds JSONL error messages to stderr only when Codex exits non-zero", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation failed\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'Model turn failed' } }) + '\\n');",
+        "process.exit(1);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    const execution = await runner.runInitial("Implement this change.");
+
+    expect(execution.process.exitCode).toBe(1);
+    expect(execution.process.stderr).toContain("Model turn failed");
+  });
+
+  it("truncates noisy Codex stderr diagnostics returned to the orchestrator", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation failed\\n', 'utf8');",
+        "}",
+        "process.stderr.write('x'.repeat(5000));",
+        "process.exit(1);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    const execution = await runner.runInitial("Implement this change.");
+
+    expect(execution.process.exitCode).toBe(1);
+    expect(execution.process.stderr.length).toBeLessThan(4100);
+    expect(execution.process.stderr).toContain("[truncated");
+  });
+
   it("adds a readable preview for nested event content", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

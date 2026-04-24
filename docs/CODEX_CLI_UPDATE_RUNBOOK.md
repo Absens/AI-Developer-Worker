@@ -16,7 +16,7 @@ The current integration relies on these Codex CLI behaviors:
 1. `codex login status` exits with `0` when auth is usable.
 2. `codex exec --json` emits JSONL events to `stdout`.
 3. `codex exec --output-last-message <file>` writes the final assistant message to a file.
-4. `codex exec resume <threadId>` continues a previous non-interactive thread.
+4. `codex exec resume <threadId>` continues a previous non-interactive session id emitted by `thread.started.thread_id`.
 5. `--sandbox`, `--model`, and `--profile` remain valid `codex exec` flags.
 
 If any of those contracts change, the worker may still build but fail at runtime.
@@ -49,7 +49,12 @@ Inside the built image or local environment:
 codex --version
 ```
 
-If the Docker image should use a specific release, pin it in [Dockerfile](/C:/Users/gabba/projects/developer/Dockerfile) instead of relying on the latest available version.
+The Docker image pins `@openai/codex@0.124.0` by default through `CODEX_CLI_VERSION`.
+Override that build arg only after this runbook passes:
+
+```bash
+docker build --build-arg CODEX_CLI_VERSION=<version> -t ai-developer-worker .
+```
 
 ### 2. Review upstream CLI surface before changing this repo
 
@@ -85,16 +90,22 @@ codex login status
 and, if API key auth is used:
 
 ```bash
-echo $OPENAI_API_KEY
+echo $CODEX_API_KEY
 ```
 
 The worker treats these as valid auth sources:
 
 - `CODEX_HOME` with a working Codex login
-- `OPENAI_API_KEY`
 - `CODEX_API_KEY`
 
-If upstream changes auth precedence or stops supporting one of these env vars, update [auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts).
+`OPENAI_API_KEY` alone does not skip the worker preflight. If you want to use an
+OpenAI API key through Codex CLI auth storage, persist it first:
+
+```bash
+printenv OPENAI_API_KEY | codex login --with-api-key
+```
+
+If upstream changes auth precedence or stops supporting `CODEX_API_KEY`, update [auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts).
 
 ### 4. Re-check non-interactive output format
 
@@ -109,7 +120,7 @@ Confirm:
 - `stdout` is still JSONL
 - a `thread.started` event still exposes a `thread_id`
 - the final assistant message is still written to the output file
-- error events still appear in JSON mode in a parseable form
+- error events still appear in JSON mode in a parseable form, including both nested `error.message` and top-level `message`
 
 If JSONL event names or fields changed, update [runner.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/runner.ts).
 
@@ -124,7 +135,7 @@ codex exec resume <threadId> "continue"
 If resume behavior changes, inspect:
 
 - how `threadId` is emitted in JSONL
-- whether `resume` still accepts the same positional shape
+- whether `resume` still accepts the same positional shape (`codex exec ... resume <SESSION_ID>`)
 - whether extra flags must move before or after `resume`
 
 If needed, update both [runner.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/runner.ts) and [orchestrator.ts](/C:/Users/gabba/projects/developer/src/domain/orchestrator.ts).
@@ -140,6 +151,11 @@ These env vars define the integration surface:
 - `CODEX_PROFILE`
 - `CODEX_EXEC_ARGS_JSON`
 - `CODEX_QUESTION_MARKER`
+
+`CODEX_CLI_ARGS_JSON` is for launcher/global Codex args that must appear before
+`exec`, for example `["--search","--ask-for-approval","never"]`.
+`CODEX_EXEC_ARGS_JSON` is for flags accepted by `codex exec --help`, for example
+`["--add-dir","/workspace/shared"]`.
 
 If Codex changes how launcher args or exec args should be passed, update:
 
@@ -174,6 +190,7 @@ Most Codex CLI update regressions will show up in one of these places:
 5. sandbox defaults changed and the worker unexpectedly loses write access.
 6. profile/model flags moved or changed names.
 7. the CLI starts requiring a first-run interactive setup that the container cannot satisfy.
+8. global flags such as `--search` or `--ask-for-approval` are put after `exec` and fail argument parsing.
 
 ## Practical rule
 

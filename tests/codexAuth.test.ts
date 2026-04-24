@@ -124,18 +124,58 @@ describe("codex auth", () => {
     ).rejects.toThrow(/Codex CLI is not authenticated/);
   });
 
-  it("passes preflight when OPENAI_API_KEY is present", async () => {
-    const original = process.env.OPENAI_API_KEY;
-    process.env.OPENAI_API_KEY = "sk-test";
+  it("passes preflight when CODEX_API_KEY is present", async () => {
+    const original = process.env.CODEX_API_KEY;
+    process.env.CODEX_API_KEY = "sk-test";
     try {
       await expect(
         assertCodexAuthenticated(createBaseConfig(), new Logger()),
       ).resolves.toBeUndefined();
     } finally {
       if (original === undefined) {
+        delete process.env.CODEX_API_KEY;
+      } else {
+        process.env.CODEX_API_KEY = original;
+      }
+    }
+  });
+
+  it("does not skip preflight for OPENAI_API_KEY without CODEX_API_KEY", async () => {
+    const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+    const originalCodexApiKey = process.env.CODEX_API_KEY;
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-status.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "console.log('Not logged in');",
+        "process.exit(1);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.env.OPENAI_API_KEY = "sk-test";
+    delete process.env.CODEX_API_KEY;
+    try {
+      await expect(
+        assertCodexAuthenticated(
+          createBaseConfig({
+            codexCliCommand: "node",
+            codexCliArgs: [scriptPath],
+          }),
+          new Logger(),
+        ),
+      ).rejects.toThrow(/codex login --with-api-key/);
+    } finally {
+      if (originalOpenAiApiKey === undefined) {
         delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.OPENAI_API_KEY = original;
+        process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+      }
+      if (originalCodexApiKey === undefined) {
+        delete process.env.CODEX_API_KEY;
+      } else {
+        process.env.CODEX_API_KEY = originalCodexApiKey;
       }
     }
   });

@@ -52,11 +52,11 @@ For Tracker statuses, the repository already includes an example file at [config
 | `POLL_INTERVAL_MINUTES` | No | `30` | Choose how often the worker polls Tracker. Must be a positive integer. |
 | `CODEX_HOME` | No | `~/.codex` on the current machine | Use a writable Codex auth directory. In Docker, this should usually be the mounted volume path, for example `/codex-home`. |
 | `CODEX_CLI_COMMAND` | No | `codex` | Use the executable that starts Codex CLI. Keep `codex` unless you need a wrapper launcher. |
-| `CODEX_CLI_ARGS_JSON` | No | `[]` | JSON array of arguments passed before `exec`. Keep empty for standard installs. |
+| `CODEX_CLI_ARGS_JSON` | No | `[]` | JSON array of launcher/global Codex arguments passed before `exec`. Use this for flags such as `--search` or `--ask-for-approval never`. |
 | `CODEX_MODEL` | No | None | Optional explicit Codex model name if you want reproducible runs. |
 | `CODEX_PROFILE` | No | None | Optional profile name from the local Codex configuration. |
 | `CODEX_SANDBOX` | No | `danger-full-access` | Choose one of `read-only`, `workspace-write`, or `danger-full-access`. |
-| `CODEX_EXEC_ARGS_JSON` | No | `[]` | JSON array of extra arguments passed to `codex exec`. |
+| `CODEX_EXEC_ARGS_JSON` | No | `[]` | JSON array of extra arguments accepted by `codex exec --help`, such as `--add-dir /workspace/shared`. Do not put launcher/global flags here. |
 | `CODEX_LOG_FULL_EVENTS` | No | `false` | When `true`, the worker logs each raw JSONL event emitted by `codex exec --json`. Enable this for container-level debugging if the default event summaries are not enough. |
 | `CODEX_QUESTION_MARKER` | No | `AI_QUESTION:` | Keep the default unless you intentionally changed the worker comment protocol. |
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |
@@ -116,8 +116,8 @@ These are not part of the main runtime config object, but they are still read di
 | --- | --- | --- |
 | `HOST_CODEX_HOME` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host Codex auth directory mounted read-only into `/host-codex` so Compose can auto-bootstrap `/codex-home` on first start. |
 | `TARGET_REPO_PATH` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host path mounted into `/workspace/project` when you run through Docker Compose. |
-| `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | If set, the worker skips `codex login status` and assumes API key based Codex auth. |
-| `OPENAI_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | Same behavior as `CODEX_API_KEY`; accepted as an alternative auth source for Codex CLI. |
+| `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | If set, the worker skips `codex login status` and assumes direct API-key based Codex auth. |
+| `OPENAI_API_KEY` | Operational setup | Does not skip the worker auth preflight by itself. To use it with Codex auth storage, run `printenv OPENAI_API_KEY \| codex login --with-api-key` before starting the worker. |
 | `SOURCE_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Source directory copied by the bootstrap script. Defaults to the current user's `~/.codex`. |
 | `TARGET_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Destination directory written by the bootstrap script. Defaults to `.codex-home` in the current repo. |
 
@@ -237,7 +237,7 @@ Accepted values are `true`, `false`, `1`, `0`, `yes`, and `no`.
 ## Recommended validation flow
 
 1. Fill `.env`.
-2. Run `codex login status` on the host, or set `CODEX_API_KEY` / `OPENAI_API_KEY`.
+2. Run `codex login status` on the host, set `CODEX_API_KEY`, or persist `OPENAI_API_KEY` with `printenv OPENAI_API_KEY | codex login --with-api-key`.
 3. Start the worker once with `WORKER_RUN_ONCE=true`.
 4. Fix any missing variable reported by startup.
 

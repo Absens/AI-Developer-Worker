@@ -62,14 +62,19 @@ Common optional values:
 - `POLL_INTERVAL_MINUTES=30`
 - `CODEX_HOME=/codex-home`
 - `CODEX_CLI_COMMAND=codex`
-- `CODEX_CLI_ARGS_JSON=[]`
+- `CODEX_CLI_ARGS_JSON=[]` for launcher/global Codex flags before `exec`
 - `CODEX_SANDBOX=danger-full-access`
 - `CODEX_MODEL=...`
 - `CODEX_PROFILE=...`
-- `CODEX_EXEC_ARGS_JSON=[]`
+- `CODEX_EXEC_ARGS_JSON=[]` for flags accepted by `codex exec --help`
 - `CODEX_PROGRESS_LOG_INTERVAL_SECONDS=30`
 - `WORKER_RUN_ONCE=true|false`
 - `HOST_CODEX_HOME=C:/Users/.../.codex` for automatic Compose bootstrap on Windows
+
+For Codex CLI 0.124.0, global flags such as `--search` and
+`--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example
+`["--search","--ask-for-approval","never"]`. `CODEX_EXEC_ARGS_JSON` is only
+for exec-level flags such as `["--add-dir","/workspace/shared"]`.
 
 ## Documentation Map
 
@@ -86,4 +91,5 @@ Common optional values:
 - The worker expects the mounted target repository to already have working git fetch/pull/push credentials.
 - If the mounted repository still uses an SSH remote, the worker can rewrite `origin` to HTTPS and use `GIT_REPOSITORY_TOKEN` or `GITLAB_TOKEN` for git auth.
 - The worker also needs a git author identity. Either configure `user.name` and `user.email` in the mounted repository, or pass `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` into the container.
-- The container installs `git`, `curl`, `jq`, `ripgrep`, and `@openai/codex`.
+- The container installs `git`, `curl`, `jq`, `ripgrep`, and pinned `@openai/codex@0.124.0` by default. Override with `docker build --build-arg CODEX_CLI_VERSION=<version> ...` only after running the Codex CLI update runbook.
+- `CODEX_API_KEY` can be used as a direct non-interactive auth source. If you only have `OPENAI_API_KEY`, persist it into `CODEX_HOME` first with `printenv OPENAI_API_KEY | codex login --with-api-key`.

@@ -87,6 +87,7 @@ interface CodexEvent {
   turn_id?: string;
   item_id?: string;
   call_id?: string;
+  message?: string;
   error?: { message?: string };
   usage?: Record<string, unknown>;
 }
@@ -107,8 +108,23 @@ const createCodexJsonlState = (): CodexJsonlState => ({
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const MAX_LOG_LINE_LENGTH = 1_000;
+const MAX_DIAGNOSTIC_LENGTH = 4_000;
+
 const truncateForLog = (value: string, maxLength = 240): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
+
+const truncateForDiagnostic = (
+  value: string,
+  maxLength = MAX_DIAGNOSTIC_LENGTH,
+): string => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const omittedCharacters = value.length - maxLength;
+  return `${value.slice(0, maxLength)}\n[truncated ${omittedCharacters} characters]`;
+};
 
 const collectPreviewSnippets = (
   value: unknown,
@@ -162,11 +178,23 @@ const extractEventPreview = (event: CodexEvent): string | undefined => {
   return snippets.length > 0 ? snippets.join(" | ") : undefined;
 };
 
+const extractEventErrorMessage = (event: CodexEvent): string | undefined => {
+  const message =
+    typeof event.error?.message === "string" && event.error.message.trim() !== ""
+      ? event.error.message
+      : typeof event.message === "string" && event.message.trim() !== ""
+        ? event.message
+        : undefined;
+
+  return message ? truncateForDiagnostic(message.trim()) : undefined;
+};
+
 const summarizeEvent = (
   mode: "new" | "resume",
   event: CodexEvent,
 ): Record<string, unknown> => {
   const item = isRecord(event.item) ? event.item : undefined;
+  const errorMessage = extractEventErrorMessage(event);
   const summary = {
     mode,
     type: event.type ?? "unknown",
@@ -179,7 +207,7 @@ const summarizeEvent = (
     ...(item && typeof item.status === "string" ? { itemStatus: item.status } : {}),
     ...(item && typeof item.name === "string" ? { itemName: item.name } : {}),
     ...(event.usage ? { usage: event.usage } : {}),
-    ...(event.error?.message ? { error: event.error.message } : {}),
+    ...(errorMessage ? { error: truncateForLog(errorMessage, MAX_LOG_LINE_LENGTH) } : {}),
   } satisfies Record<string, unknown>;
   const preview = extractEventPreview(event);
 
@@ -200,11 +228,11 @@ const logParsedStdoutEvent = (
     state.threadId = event.thread_id;
   }
 
-  if (
-    (event.type === "turn.failed" || event.type === "error") &&
-    event.error?.message
-  ) {
-    state.errors.push(event.error.message);
+  if (event.type === "turn.failed" || event.type === "error") {
+    const errorMessage = extractEventErrorMessage(event);
+    if (errorMessage) {
+      state.errors.push(errorMessage);
+    }
     logger.warn("Codex event.", summarizeEvent(mode, event));
   } else {
     logger.info("Codex event.", summarizeEvent(mode, event));
@@ -229,11 +257,11 @@ const processStdoutLine = (
     const event = JSON.parse(line) as CodexEvent;
     logParsedStdoutEvent(event, state, logger, mode, includeRawEvents);
   } catch {
-    const message = `Failed to parse Codex JSONL event: ${line}`;
+    const message = truncateForDiagnostic(`Failed to parse Codex JSONL event: ${line}`);
     state.errors.push(message);
     logger.warn("Failed to parse Codex JSONL event.", {
       mode,
-      line,
+      line: truncateForLog(line, MAX_LOG_LINE_LENGTH),
     });
   }
 };
@@ -274,7 +302,7 @@ const flushRemainders = (
   if (stderrLine) {
     logger.warn("Codex stderr.", {
       mode,
-      line: stderrLine,
+      line: truncateForLog(stderrLine, MAX_LOG_LINE_LENGTH),
     });
   }
   state.stdoutRemainder = "";
@@ -381,7 +409,7 @@ export class CliCodexRunner implements CodexRunner {
           consumeChunkLines(chunk, jsonlState, "stderr", (line) => {
             this.logger.warn("Codex stderr.", {
               mode: input.mode,
-              line,
+              line: truncateForLog(line, MAX_LOG_LINE_LENGTH),
             });
           });
         },
@@ -406,17 +434,22 @@ export class CliCodexRunner implements CodexRunner {
       if (jsonlState.errors.length > 0) {
         this.logger.warn("Codex JSONL stream contained parseable errors.", {
           mode: input.mode,
-          errors: jsonlState.errors,
+          errors: jsonlState.errors.map((error) =>
+            truncateForLog(error, MAX_LOG_LINE_LENGTH),
+          ),
         });
       }
+
+      const stderr = truncateForDiagnostic(process.stderr);
+      const returnedStderr =
+        process.exitCode !== 0 && jsonlState.errors.length > 0
+          ? [...jsonlState.errors, stderr.trim()].filter(Boolean).join("\n")
+          : stderr;
 
       return {
         process: {
           ...process,
-          stderr:
-            jsonlState.errors.length > 0
-              ? [process.stderr.trim(), ...jsonlState.errors].filter(Boolean).join("\n")
-              : process.stderr,
+          stderr: truncateForDiagnostic(returnedStderr),
         },
         ...(finalMessage ? { finalMessage } : {}),
         ...(jsonlState.threadId ? { threadId: jsonlState.threadId } : {}),
