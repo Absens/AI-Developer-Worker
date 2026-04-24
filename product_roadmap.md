@@ -1,464 +1,544 @@
-# Product Roadmap — AI Developer Worker
+# Product Roadmap - AI Developer Worker
+
+_Актуально на 2026-04-24._
 
 ## Видение продукта
 
-**Сейчас:** Однопроцессный воркер, который берёт задачу из Tracker → просит Codex реализовать → прогоняет тесты → создаёт MR.
+**Текущий продукт:** однопроцессный Node.js/TypeScript воркер, который берёт задачи из Yandex Tracker, запускает Codex CLI в целевом git-репозитории, валидирует изменения тестами и линтером, пушит ветку и создаёт или переиспользует GitLab Merge Request.
 
-**Куда двигаться:** Автономная платформа AI-разработки, которая встраивается в полный цикл DevOps — от декомпозиции эпиков до пост-деплой мониторинга, с обучением на обратной связи и поддержкой множественных репозиториев.
+**Целевое состояние:** self-hosted платформа AI-разработки для корпоративного DevOps-цикла: от выбора и уточнения задачи до review-итераций, quality gates, наблюдаемости, поддержки нескольких репозиториев и обучения на обратной связи.
 
----
+## Текущий baseline
 
-## Фаза 0 — Стабилизация ядра  
-*~2–3 недели*
+### Уже реализовано
 
-> [!IMPORTANT]
-> Без этих пунктов продукт нельзя эксплуатировать в production-режиме с доверием.
+- Polling Yandex Tracker по `TRACKER_DEFAULT_QUEUE` и `TRACKER_TAG`.
+- Настраиваемая карта логических статусов через `TRACKER_STATUS_MAP_FILE`: `open`, `in_progress`, `waiting_for_answer`, `review`, `failed`, `done`.
+- Восстановление активной задачи текущего `WORKER_ID` после рестарта.
+- Лёгкая координация нескольких воркеров через структурированные Tracker-комментарии `AI STATUS`.
+- Graceful shutdown для `SIGINT` и `SIGTERM`: воркер завершает текущий цикл и не ждёт полный poll interval.
+- `WORKER_RUN_ONCE=true` для одного проверочного цикла.
+- Startup checks: загрузка конфига, проверка Codex auth, готовность git-репозитория, git fetch, наличие commit identity.
+- Codex CLI runner с `codex exec --json`, `threadId`, resume-сессиями, heartbeat-логами, truncation шумных диагностик и опциональным `CODEX_LOG_FULL_EVENTS`.
+- Hard timeout для одного Codex запуска через `CODEX_TIMEOUT_SECONDS`.
+- Clarification loop: Codex может вернуть структурированный `AI_QUESTION: {...}`, воркер переводит задачу в `waiting_for_answer`, ждёт явный `/resume`, затем продолжает прежнюю Codex thread.
+- Автоисправления после проваленных `TEST_COMMAND` или `LINT_COMMAND` до `MAX_FIX_ATTEMPTS`.
+- Git flow: `feature/ai-task-{issueKey}`, sync base branch, reuse существующего MR, commit, push.
+- Git HTTPS auth bootstrap: rewrite SSH remote в HTTPS при необходимости, `GIT_REPOSITORY_TOKEN`, `GIT_REPOSITORY_USERNAME`, `GIT_REPOSITORY_URL`.
+- Worker commits по умолчанию используют `git commit --no-verify`, с возможностью включить repo hooks через `GIT_COMMIT_NO_VERIFY=false`.
+- Docker image на Node 22 с pinned `@openai/codex@0.124.0`, Compose bootstrap writable `CODEX_HOME` из host auth.
+- Unit tests и smoke test для config, Codex auth/runner, Tracker client, Git service, orchestrator, retry, shell timeout и end-to-end mock Tracker/GitLab flow.
 
-### 0.1 Graceful Shutdown
-Обработка `SIGTERM`/`SIGINT` с завершением текущего цикла до остановки. Без этого `docker stop` оставляет задачу в неконсистентном состоянии.
+### Пока не реализовано
 
-### 0.2 Codex Timeout
-Ограничение времени выполнения `codex exec`. Настройка через `CODEX_TIMEOUT_SECONDS`. Защита от зависания.
+- Явный CLI/режим `--preflight`, который проверяет Tracker, GitLab, git remote, test/lint commands и Codex без мутации задач.
+- `TARGET_ISSUE_KEY` или аналогичный режим ручного запуска конкретной задачи.
+- Обработка GitLab review discussions после создания MR.
+- Автогенерация полноценного MR description, labels, assignees и testing summary.
+- Smart commit messages и несколько логических коммитов.
+- Отдельные quality gates для typecheck, build, coverage, security и visual regression.
+- Multi-repository config и полноценная priority queue.
+- Dashboard, Prometheus metrics, alerts.
+- Абстракции для Jira/GitHub/Bitbucket/других AI engines.
 
-### 0.3 Preflight Check
-Команда `--preflight`, которая проверяет доступность Tracker API, GitLab API, валидность статус-маппинга, работоспособность git remote, запускаемость `testCommand` и `lintCommand` — до начала обработки задач.
+## Фаза 0 - Runtime Core
 
-### 0.4 Target Issue Mode
-`TARGET_ISSUE_KEY=FRONTEND-42` — явное указание задачи для обработки. Критично для отладки и ручного запуска.
+**Статус:** shipped, но нужен один завершающий operational pass.
 
----
+### 0.1 Graceful shutdown - done
 
-## Фаза 1 — Обратная связь от код-ревью  
-*~3–4 недели*
+`WorkerOrchestrator.runForever()` обрабатывает `SIGINT` и `SIGTERM`, будит текущий sleep и завершает цикл без зависания на poll interval.
 
-> Сейчас воркер создаёт MR и забывает о нём. Это самое узкое место: ревьюер оставляет замечания → никто их не обрабатывает → MR висит вечно.
+### 0.2 Codex timeout и observability - done
 
-### 1.1 Мониторинг MR-треда
+`CODEX_TIMEOUT_SECONDS` ограничивает один `codex exec`; `CODEX_PROGRESS_LOG_INTERVAL_SECONDS` даёт heartbeat; `CODEX_LOG_FULL_EVENTS=true` включает сырые JSONL events для отладки.
 
-Воркер периодически проверяет комментарии к MR через GitLab API. Если обнаруживает unresolved discussions (замечания ревьюера):
-- Парсит замечания, группирует по файлам
-- Строит промпт с контекстом diff + замечания
-- Запускает Codex для итеративного исправления
-- Пушит обновлённый код, комментирует в тред MR
+### 0.3 Startup preflight - partial
 
-```
-Новый логический статус: "fixing_review"
-Цикл: review → fixing_review → review → ... → done/merged
-```
+На старте уже проверяются:
 
-### 1.2 MR Description автогенерация
+- обязательные env vars и status map;
+- Codex auth через `codex login status` или `CODEX_API_KEY`;
+- git remote/fetch;
+- commit identity для worker commits.
 
-Вместо простого `[AI] FRONTEND-123 implementation` — генерировать:
-- **Summary** — что изменено и зачем
-- **Changed files** — группированный список с аннотациями
-- **Testing** — какие тесты прошли, какие добавлены
-- **Screenshots** — если задача визуальная (через headless browser)
+Осталось добавить отдельный safe режим без обработки задач:
 
-Это одна из самых заметных фич с точки зрения ревьюера:
-```typescript
-interface MergeRequestContent {
-  title: string;
-  description: string;  // сгенерированный markdown
-  labels: string[];
-  assignees?: number[];
-}
-```
+- `npm run preflight` или `WORKER_PREFLIGHT_ONLY=true`;
+- проверка Tracker API read/write permissions без смены статусов реальных задач;
+- проверка GitLab MR API permissions;
+- проверка, что `TEST_COMMAND` и `LINT_COMMAND` запускаются в target repo;
+- вывод единого отчёта с actionable диагностикой.
 
-### 1.3 Smart Commit Messages
+### 0.4 Target issue mode - next
 
-Вместо `feat: implement FRONTEND-123` — осмысленные conventional commits:
-- `feat(auth): add JWT token refresh on 401 response [FRONTEND-123]`
-- Если несколько логических изменений — несколько коммитов
+Добавить `TARGET_ISSUE_KEY=FRONTEND-42` для отладки и ручных прогонов:
 
----
+- брать только указанную задачу;
+- игнорировать обычный queue scan;
+- уважать worker lock и статус задачи;
+- работать вместе с `WORKER_RUN_ONCE=true`.
 
-## Фаза 2 — Декомпозиция задач  
-*~4–5 недель*
+## Фаза 1 - Review Feedback Loop
 
-> Сейчас воркер умеет обрабатывать только атомарные задачи. Крупные задачи (эпики, фичи) требуют предварительной декомпозиции, которую делает человек.
+**Срок:** 3-4 недели.
+**Цель:** закрыть самый дорогой ручной этап после создания MR.
 
-### 2.1 Анализ и декомпозиция эпика
+Сейчас воркер доводит задачу до MR и переводит Tracker в `review`. После этого review comments остаются вне автоматического цикла.
 
-Новый режим: `TASK_MODE=decompose`. Воркер получает крупную задачу и:
-1. Анализирует описание + кодовую базу
-2. Создаёт набор подзадач (sub-issues) в Tracker
-3. Расставляет зависимости между подзадачами
-4. Оценивает сложность каждой
+### 1.1 GitLab discussions monitor
 
-```
-Эпик FRONTEND-100 "Реализовать систему уведомлений"
-  → FRONTEND-101 "Создать модель Notification"
-  → FRONTEND-102 "API-эндпойнты для уведомлений" (зависит от 101)
-  → FRONTEND-103 "WebSocket-канал real-time уведомлений" (зависит от 102)
-  → FRONTEND-104 "UI-компонент NotificationBell" (зависит от 103)
-```
+Расширить `GitLabService`:
 
-### 2.2 Самооценка сложности
+- получать unresolved MR discussions;
+- отличать reviewer comments от комментариев самого воркера;
+- группировать замечания по файлам, line ranges и темам;
+- сохранять последний обработанный discussion/comment id, чтобы не повторять одну и ту же работу.
 
-Перед началом реализации воркер оценивает задачу:
-- **Confidence score** (0–100%) — насколько уверен, что справится
-- **Estimated changes** — примерное количество файлов / строк
-- **Risk factors** — что может пойти не так
+### 1.2 Review fix cycle
 
-Если confidence < порога → задача отмечается как `needs_human_decomposition`.
+Добавить цикл:
 
-### 2.3 Зависимости между задачами
-
-Воркер учитывает порядок: не берёт задачу, пока не закрыты её зависимости. Требует расширения [TrackerIssue](file:///c:/Users/gabba/projects/developer/src/models/types.ts#51-62):
-```typescript
-interface TrackerIssue {
-  // ...existing
-  blockedBy?: string[];  // issue keys
-  blocks?: string[];
-}
+```text
+review -> fixing_review -> review -> ... -> done/manual_hold
 ```
 
----
+Варианты реализации:
 
-## Фаза 3 — Мультирепозиторность и масштабирование  
-*~4–6 недель*
+- добавить логический статус `fixing_review` в status map;
+- или переиспользовать `in_progress` с `waitingReason/manual context` в structured comments.
 
-> Сейчас один воркер = один репозиторий. В командах обычно множество репозиториев.
+Критерии готовности:
 
-### 3.1 Работа с несколькими репозиториями
+- воркер видит unresolved review comments;
+- строит prompt с diff context и списком замечаний;
+- запускает Codex resume или fresh fix session;
+- прогоняет validation;
+- пушит новый commit;
+- отвечает в MR thread;
+- не зацикливается бесконечно, если review fix не проходит.
 
-Конфигурация переходит от плоского [.env](file:///c:/Users/gabba/projects/developer/.env) к YAML/JSON конфигу:
+### 1.3 MR description autogen
+
+Заменить минимальный MR title `[AI] FRONTEND-123 implementation` на содержательный MR payload:
+
+- Summary: что изменено и зачем;
+- Changed files: сгруппированный список с краткими аннотациями;
+- Testing: `TEST_COMMAND`, `LINT_COMMAND`, будущие gates;
+- Risks/Notes: ограничения и ручные действия;
+- Links: Tracker issue, branch, worker id.
+
+### 1.4 Smart commit messages
+
+Текущий commit message: `feat: implement ISSUE-KEY`.
+
+Цель:
+
+- conventional commit по области изменений;
+- issue key в конце сообщения;
+- несколько коммитов только если изменения реально независимы;
+- fallback на текущий шаблон, если Codex не дал безопасного summary.
+
+## Фаза 2 - Quality Gates и публикация
+
+**Срок:** 3-4 недели.
+**Цель:** сделать MR ближе к production-ready до появления ревьюера.
+
+### 2.1 Type check как отдельный gate
+
+Добавить:
+
+```env
+TYPE_CHECK_COMMAND=npm run typecheck
+```
+
+Порядок fail-fast:
+
+```text
+typecheck -> lint -> tests
+```
+
+Если переменная не задана, gate пропускается.
+
+### 2.2 Build verification
+
+Добавить:
+
+```env
+BUILD_COMMAND=npm run build
+```
+
+Build должен запускаться после tests/lint или как отдельная publish-проверка перед push.
+
+### 2.3 Security scan
+
+Опциональные команды:
+
+```env
+SECURITY_SCAN_COMMAND=npm audit --audit-level=high
+SAST_COMMAND=semgrep ci
+```
+
+Первый шаг - command-based interface без жёсткой привязки к конкретному сканеру.
+
+### 2.4 Coverage gate
+
+Добавить:
+
+```env
+COVERAGE_COMMAND=npm run test:coverage -- --reporter=json
+MIN_COVERAGE_PERCENT=80
+```
+
+Первый MVP может проверять только общий процент. Позже - diff coverage.
+
+### 2.5 Visual regression
+
+Для frontend-репозиториев:
+
+- headless browser screenshots;
+- before/after comparison;
+- прикрепление скриншотов или ссылок к MR.
+
+Эта фича зависит от multi-repo/project profile settings, поэтому её стоит делать после command-based gates.
+
+## Фаза 3 - Operational Control и масштабирование
+
+**Срок:** 4-6 недель.
+**Цель:** перейти от одного supervised worker к управляемому fleet.
+
+### 3.1 Multi-repository config
+
+Перейти от плоского `.env` к YAML/JSON конфигу:
+
 ```yaml
 repositories:
   - name: client-application
     repoPath: /workspace/client-app
     gitlabProjectId: "42"
     baseBranch: main
+    queues: ["FRONTEND"]
     testCommand: "npm test"
     lintCommand: "npm run lint"
-    queues: ["FRONTEND"]
-    
+    typeCheckCommand: "npm run typecheck"
+
   - name: backend-api
     repoPath: /workspace/backend
     gitlabProjectId: "43"
     baseBranch: develop
+    queues: ["BACKEND"]
     testCommand: "go test ./..."
     lintCommand: "golangci-lint run"
-    queues: ["BACKEND"]
 ```
 
-Воркер определяет целевой репозиторий по очереди задачи или по тегу.
+### 3.2 Stronger worker coordination
 
-### 3.2 Параллельные воркеры и координация
+Текущий lock через Tracker comments достаточен для MVP, но не для высокой параллельности.
 
-Несколько инстансов воркера обрабатывают задачи параллельно с distributed locking через Tracker-комментарии (уже частично реализовано через [isBusyByAnotherWorker](file:///c:/Users/gabba/projects/developer/src/domain/orchestrator.ts#155-163)). Улучшения:
-- Центральный lock-сервис (Redis / PostgreSQL) вместо polling
-- Round-robin распределение задач по воркерам
-- Health-мониторинг: если воркер «пропал» — его задачи возвращаются в пул
+Направления:
 
-### 3.3 Очередь приоритетов
+- lease/heartbeat с TTL;
+- Redis/PostgreSQL lock backend для production;
+- автоматический возврат задач в пул, если worker пропал;
+- запрет одновременной работы разных воркеров в одном repo path.
 
-Вместо простого «берём самый старый тикет»:
-- Приоритет из Tracker (critical/major/minor)
-- Кастомный вес на основе тегов/компонентов
-- SLA-aware: задачи с приближающимся дедлайном поднимаются вверх
+### 3.3 Priority queue
 
----
+Заменить простое "старейшая открытая задача" на scoring:
 
-## Фаза 4 — Контекст и память  
-*~3–4 недели*
+- Tracker priority;
+- deadline/SLA;
+- компоненты и tags;
+- confidence score;
+- manual override.
 
-> Каждый запуск Codex начинается с нуля. Воркер не помнит, какие задачи он уже делал, какие паттерны использовал, на чём спотыкался.
+## Фаза 4 - Task Routing и декомпозиция
 
-### 4.1 Knowledge Base — база знаний о проекте
+**Срок:** 4-5 недель.
+**Цель:** повысить success rate за счёт выбора подходящих задач и правильной декомпозиции.
 
-Воркер создаёт и обновляет структурированную базу знаний:
-- **Architecture map** — модули, их зависимости, точки входа
-- **Code patterns** — какие паттерны используются (DI, repository pattern, и т.д.)
-- **Past decisions** — решения из прошлых задач и ревью
-- **Known pitfalls** — на чём падали тесты, частые ошибки
+### 4.1 Confidence pre-analysis
 
-Эта база знаний передаётся Codex как дополнительный контекст при каждом запуске.
+Перед implementation воркер уже делает analysis stage. Следующий шаг - вернуть структурированную оценку:
 
-### 4.2 Обучение на ревью-фидбеке
+- confidence 0-100;
+- expected files and subsystems;
+- risk factors;
+- missing context;
+- recommended mode: implement, ask clarification, decompose, human.
 
-Когда MR мержится с изменениями от ревьюера → воркер анализирует diff между своим кодом и финальным:
-- Какие замечания были
-- Как их исправили
-- Извлечение правил: «в этом проекте предпочитают X вместо Y»
+Если confidence ниже порога, задача переводится в `waiting_for_answer` или специальный human status.
 
-Правила сохраняются и влияют на будущие промпты.
+### 4.2 Task routing
 
-### 4.3 Динамический System Prompt
+Специализированные prompt profiles:
 
-Промпт формируется не статически, а на основе:
-- Контекста задачи (типа компонента, области кода)
-- Накопленной базы знаний
-- Истории успехов/неудач в похожих задачах
-- Специфичных гайдлайнов проекта ([AGENTS.md](file:///c:/Users/gabba/projects/developer/AGENTS.md), `CONTRIBUTING.md`, `.editorconfig`)
+- frontend UI fix;
+- backend endpoint;
+- tests-only;
+- refactor;
+- dependency update;
+- documentation.
 
----
+Это дешевле и полезнее, чем сразу пытаться поддержать "любой тип задачи" одинаковым prompt.
 
-## Фаза 5 — Расширенная валидация  
-*~3–4 недели*
+### 4.3 Epic decomposition
 
-> Сейчас валидация = тесты + линтер. Для production-качества этого мало.
+Режим:
 
-### 5.1 Type Check как отдельный гейт
-
-Добавить `TYPE_CHECK_COMMAND` наравне с тестами и линтером:
-```
-TYPE_CHECK_COMMAND=npm run typecheck
-```
-Порядок: type check → lint → tests (fail-fast).
-
-### 5.2 Security Scan
-
-Интеграция с `npm audit`, `trivy`, или `semgrep`:
-- Если Codex добавил зависимость с известной уязвимостью → не принимаем
-- Если добавлен код с потенциальными security-проблемами → флагуем
-
-### 5.3 Build Verification
-
-Для проектов с билдом (frontend, Docker images) — проверка, что `npm run build` проходит после изменений:
-```
-BUILD_COMMAND=npm run build
+```env
+TASK_MODE=decompose
 ```
 
-### 5.4 Visual Regression Testing
+Воркер анализирует крупную задачу и создаёт sub-issues в Tracker:
 
-Для фронтенд-задач — опциональный headless-браузер:
-- Снимки до/после изменений
-- Сравнение через pixel-diff
-- Скриншоты прикрепляются к MR
-
-### 5.5 Coverage Gate
-
-Проверка, что покрытие тестами не упало:
-```
-MIN_COVERAGE_PERCENT=80
-COVERAGE_COMMAND=npm run test:coverage -- --reporter=json
+```text
+FRONTEND-100 Notifications
+  -> FRONTEND-101 Data model
+  -> FRONTEND-102 API integration
+  -> FRONTEND-103 Realtime channel
+  -> FRONTEND-104 NotificationBell UI
 ```
 
----
+### 4.4 Dependencies between tasks
 
-## Фаза 6 — Dashboard и наблюдаемость  
-*~4–5 недель*
+Расширить `TrackerIssue`:
 
-> Сейчас вся наблюдаемость — JSON-логи в stdout. Для оператора и менеджера это непригодно.
-
-### 6.1 Web Dashboard
-
-Минимальный веб-интерфейс:
-- Список воркеров и их статус (idle / processing / error)
-- История обработанных задач (тикет → MR → статус)
-- Текущая задача: прогресс, этап (analysis / implementation / fixing / publishing)
-- Статистика: задач в день, средняя длительность, success rate
-
-```
-┌─────────────────────────────────────────────────────┐
-│  AI Developer Dashboard                             │
-├─────────────┬───────────────────────────────────────┤
-│  Workers    │  Tasks Processed                      │
-│  ● worker-1 │  ✅ FRONT-121 → MR !342  (12m)       │
-│    idle      │  ✅ FRONT-119 → MR !340  (8m)        │
-│  ● worker-2 │  ❌ FRONT-120 → failed   (15m)       │
-│    processing│  ⏳ FRONT-122 → in progress          │
-│    FRONT-125 │                                      │
-│              │  Success Rate: 87%                   │
-│              │  Avg Duration: 11.2m                 │
-└─────────────┴───────────────────────────────────────┘
+```typescript
+interface TrackerIssue {
+  blockedBy?: string[];
+  blocks?: string[];
+}
 ```
 
-### 6.2 Prometheus Metrics
+Воркер не берёт задачу, пока её dependencies не закрыты.
 
-Экспорт метрик для Grafana:
-- `ai_developer_tasks_total{status="success|failed|waiting"}`
-- `ai_developer_codex_duration_seconds`
-- `ai_developer_fix_attempts_total`
-- `ai_developer_mr_created_total`
-- `ai_developer_queue_depth`
+## Фаза 5 - Context и Memory
 
-### 6.3 Алерты и нотификации
+**Срок:** 3-4 недели.
+**Цель:** перестать начинать каждую задачу "с нуля".
 
-Настраиваемые каналы уведомлений:
-- Slack/Telegram: задача упала, MR готов, нужен ответ на вопрос
-- Email: ежедневный digest
+### 5.1 Project knowledge base
 
----
+Структурированная база знаний по репозиторию:
 
-## Фаза 7 — Мультипровайдерность  
-*~5–6 недель*
+- architecture map;
+- entry points;
+- code patterns;
+- test strategy;
+- known pitfalls;
+- project-specific conventions.
 
-> Жёсткая привязка к Yandex Tracker + GitLab + Codex ограничивает аудиторию.
+### 5.2 Learning from review
 
-### 7.1 Абстракция Task Tracker
+После merge:
 
-Интерфейс [TrackerClient](file:///c:/Users/gabba/projects/developer/src/models/types.ts#140-149) уже абстрагирован — нужно добавить реализации:
-- **Jira Cloud / Server** — самый востребованный
-- **Linear** — популярен в стартапах
-- **GitHub Issues** — для open-source
-- **YouTrack** — в JetBrains экосистеме
+- сравнить worker branch и финальный merge diff;
+- извлечь повторяющиеся reviewer preferences;
+- обновить prompt rules для этого репозитория.
 
-### 7.2 Абстракция Git Platform
+### 5.3 Dynamic system prompt
 
-Интерфейс [GitLabService](file:///c:/Users/gabba/projects/developer/src/models/types.ts#161-172) → абстрактный `CodeReviewPlatform`:
-- **GitHub** — Pull Requests API
-- **Bitbucket** — Pull Requests API
-- **Azure DevOps** — Pull Requests API
+Prompt должен собираться из:
 
-### 7.3 Абстракция AI Engine
+- `AGENTS.md` / `CONTRIBUTING.md` / `.editorconfig`;
+- task type;
+- repo profile;
+- knowledge base;
+- прошлых failures в похожих задачах.
 
-Интерфейс [CodexRunner](file:///c:/Users/gabba/projects/developer/src/models/types.ts#181-186) → абстрактный `AICodeEngine`:
-- **Claude Code** (Anthropic) — как альтернативный бэкенд
-- **Aider** — open-source, без зависимости от API ключей
-- **OpenHands** — для self-hosted сценариев
-- **Custom LLM** — любая модель через OpenAI-compatible API
+## Фаза 6 - Dashboard и наблюдаемость
 
----
+**Срок:** 4-5 недель.
+**Цель:** дать оператору картину состояния без чтения stdout логов.
 
-## Фаза 8 — Продвинутый AI-рабочий процесс  
-*~6–8 недель*
+### 6.1 Prometheus metrics first
 
-### 8.1 Multi-step Planning
+Начать с метрик, потому что они дешевле dashboard:
 
-Вместо одного запуска Codex — управляемый pipeline:
+```text
+ai_developer_tasks_total{status}
+ai_developer_task_duration_seconds
+ai_developer_codex_duration_seconds
+ai_developer_fix_attempts_total
+ai_developer_mr_created_total
+ai_developer_queue_depth
+ai_developer_clarifications_total
 ```
-analyze → plan → implement-step-1 → validate → implement-step-2 → validate → finalize
+
+### 6.2 Web dashboard MVP
+
+Минимальные представления:
+
+- workers: idle, processing, waiting, error;
+- current task per worker;
+- recent tasks: Tracker issue -> branch -> MR -> status;
+- failure diagnostics;
+- average duration and success rate.
+
+### 6.3 Alerts
+
+Каналы:
+
+- Slack/Telegram for failed task, auth failure, queue blocked, MR ready;
+- daily digest для managers;
+- alert на repeated Codex timeouts или validation failures.
+
+## Фаза 7 - Multi-provider architecture
+
+**Срок:** 5-6 недель.
+**Цель:** снизить vendor lock-in и расширить рынок.
+
+### 7.1 Task tracker abstraction
+
+`TrackerClient` уже отделён интерфейсом. Добавить реализации:
+
+- Jira Cloud / Server;
+- Linear;
+- GitHub Issues;
+- YouTrack.
+
+### 7.2 Code review platform abstraction
+
+Текущий `GitLabService` нужно обобщить до `CodeReviewPlatform`:
+
+- GitHub Pull Requests;
+- Bitbucket Pull Requests;
+- Azure DevOps Pull Requests.
+
+### 7.3 AI engine abstraction
+
+Текущий `CodexRunner` нужно обобщить до `AICodeEngine`:
+
+- Codex CLI;
+- Claude Code;
+- Aider;
+- OpenHands;
+- OpenAI-compatible custom engine.
+
+## Фаза 8 - Advanced AI Workflow
+
+**Срок:** 6-8 недель.
+**Цель:** перейти от одного AI-запуска к управляемому engineering pipeline.
+
+### 8.1 Multi-step planning
+
+Pipeline:
+
+```text
+analyze -> plan -> implement-step -> validate -> fix -> finalize
 ```
-Каждый шаг — отдельный вызов AI с фокусированным промптом. Воркер контролирует план и прогресс.
 
-### 8.2 Самотестирование
+Оркестратор хранит план и статус каждого шага, а не просто ждёт финального Codex результата.
 
-Воркер просит Codex не только реализовать фичу, но и **написать тесты для неё**:
-1. Сначала пишет тесты (TDD-стиль)
-2. Потом реализует + фиксит до прохождения
-3. Тесты ревьюируются вместе с кодом
+### 8.2 Self-testing / TDD mode
 
-### 8.3 Контекстный RAG по кодовой базе
+Для подходящих задач:
 
-Вместо передачи всей кодовой базы — индексирование через embeddings:
-- При получении задачи — поиск релевантных файлов через similarity search
-- Передача только нужного контекста в промпт
-- Обновление индекса после каждого мержа
+1. Сначала генерировать тесты.
+2. Проверять, что они падают без реализации.
+3. Реализовывать feature.
+4. Добиваться прохождения tests/gates.
 
-### 8.4 Мультимодальные задачи
+### 8.3 RAG по кодовой базе
 
-Поддержка задач, где описание содержит:
-- **Скриншоты** (Figma mockups) → передача в vision-модель
-- **API-спецификации** (OpenAPI/Swagger) → генерация клиент/серверного кода  
-- **Диаграммы** (C4, ER) → понимание архитектурного контекста
+Индексирование репозитория:
 
----
+- embeddings для файлов и символов;
+- retrieval релевантных файлов на этапе analysis;
+- обновление индекса после merge.
 
-## Визуальный Roadmap
+### 8.4 Multimodal inputs
+
+Поддержать задачи с:
+
+- screenshots;
+- Figma links;
+- OpenAPI/Swagger specs;
+- architecture diagrams.
+
+## Визуальный roadmap
 
 ```mermaid
 gantt
-    title AI Developer Worker — Product Roadmap
-    dateFormat YYYY-MM
+    title AI Developer Worker Roadmap
+    dateFormat YYYY-MM-DD
     axisFormat %b %Y
-    
-    section Phase 0: Core Stability
-    Graceful Shutdown                :done, p0a, 2026-03, 1w
-    Codex Timeout                    :done, p0b, 2026-03, 1w
-    Preflight Check                  :p0c, after p0a, 1w
-    Target Issue Mode                :p0d, after p0a, 1w
-    
-    section Phase 1: Review Feedback Loop
-    MR Thread Monitoring             :p1a, 2026-04, 3w
-    MR Description Autogen           :p1b, after p1a, 1w
-    Smart Commit Messages            :p1c, after p1a, 1w
-    
-    section Phase 2: Task Decomposition
-    Epic Analysis & Decomposition    :p2a, 2026-05, 3w
-    Complexity Self-Assessment       :p2b, after p2a, 1w
-    Dependency Awareness             :p2c, after p2a, 2w
-    
-    section Phase 3: Multi-Repo & Scale
-    Multi-Repository Support         :p3a, 2026-06, 3w
-    Worker Coordination              :p3b, after p3a, 2w
-    Priority Queue                   :p3c, after p3a, 1w
-    
-    section Phase 4: Context & Memory
-    Project Knowledge Base           :p4a, 2026-07, 2w
-    Review Learning                  :p4b, after p4a, 2w
-    Dynamic System Prompt            :p4c, after p4b, 1w
-    
-    section Phase 5: Advanced Validation
-    Type Check + Build Verify        :p5a, 2026-08, 1w
-    Security Scan                    :p5b, after p5a, 2w
-    Coverage Gate                    :p5c, after p5a, 1w
-    Visual Regression                :p5d, after p5b, 2w
-    
-    section Phase 6: Dashboard
-    Web Dashboard MVP                :p6a, 2026-09, 3w
-    Prometheus Metrics               :p6b, after p6a, 1w
-    Alerts & Notifications           :p6c, after p6b, 1w
-    
-    section Phase 7: Multi-Provider
-    Jira Integration                 :p7a, 2026-10, 2w
-    GitHub Integration               :p7b, after p7a, 2w
-    Alternative AI Engines           :p7c, after p7b, 2w
-    
-    section Phase 8: Advanced AI
-    Multi-step Planning              :p8a, 2026-12, 3w
-    Self-Testing (TDD)               :p8b, after p8a, 2w
-    RAG over Codebase                :p8c, after p8b, 3w
+
+    section Shipped Baseline
+    Runtime core, Docker, auth, timeout       :done, p0a, 2026-03-10, 2026-04-24
+    Clarification and resume loop             :done, p0b, 2026-03-20, 2026-04-24
+
+    section Phase 0 Finish
+    Explicit preflight mode                   :p0c, 2026-04-24, 1w
+    Target issue mode                         :p0d, after p0c, 1w
+
+    section Phase 1 Review Loop
+    GitLab discussions monitor                :p1a, 2026-05-01, 2w
+    Review fix cycle                          :p1b, after p1a, 2w
+    MR description and smart commits          :p1c, after p1a, 2w
+
+    section Phase 2 Quality Gates
+    Typecheck and build gates                 :p2a, 2026-05-29, 1w
+    Security and coverage gates               :p2b, after p2a, 3w
+    Visual regression MVP                     :p2c, after p2b, 2w
+
+    section Phase 3 Operations
+    Multi-repository config                   :p3a, 2026-06-26, 3w
+    Stronger worker coordination              :p3b, after p3a, 2w
+    Priority queue                            :p3c, after p3a, 2w
+
+    section Phase 4 Routing
+    Confidence pre-analysis                   :p4a, 2026-08-07, 2w
+    Task routing                              :p4b, after p4a, 2w
+    Epic decomposition                        :p4c, after p4b, 3w
+
+    section Phase 5 Memory
+    Project knowledge base                    :p5a, 2026-09-18, 3w
+    Review learning                           :p5b, after p5a, 2w
+
+    section Phase 6 Observability
+    Prometheus metrics                        :p6a, 2026-10-16, 2w
+    Dashboard MVP                             :p6b, after p6a, 3w
+    Alerts                                    :p6c, after p6b, 1w
+
+    section Later
+    Multi-provider architecture               :p7a, 2026-11-27, 6w
+    Advanced AI workflow                      :p8a, 2027-01-08, 8w
 ```
 
----
+## Метрики успеха
 
-## Метрики успеха по фазам
+| Направление | Текущее состояние | Цель ближайшего этапа |
+| --- | --- | --- |
+| Controlled startup | Есть config/auth/git checks на старте | Отдельный preflight report без мутации задач |
+| Manual debugging | `WORKER_RUN_ONCE=true` | `TARGET_ISSUE_KEY` + one-shot run |
+| Clarification loop | Работает через `AI_QUESTION` и `/resume` | Добавить SLA/alert на долгие ожидания ответа |
+| Review loop | MR создан, дальше ручная работа | Автообработка unresolved GitLab discussions |
+| Quality gates | changed check + tests + lint | typecheck + build + optional security/coverage |
+| MR quality | Минимальный title, без description | Summary, testing, risks, links, labels |
+| Worker coordination | Structured comments lock | Lease/TTL и защита от stale locks |
+| Supported repos | Один target repo на worker config | Multi-repo config и routing |
+| Observability | JSON logs | Metrics, dashboard, alerts |
 
-| Фаза | Ключевая метрика | Текущее значение | Целевое значение |
-|---|---|---|---|
-| 0 | Uptime без ручного вмешательства | — (нет данных) | >99% за неделю |
-| 1 | % MR, смерженных без правок после ревью | ~0% (нет фидбек-лупа) | >30% |
-| 2 | Макс. сложность задачи, которую воркер берёт | Атомарная задача | Эпик с 3–5 подзадачами |
-| 3 | Количество обслуживаемых репозиториев | 1 | 5+ |
-| 4 | Success rate (MR без manual fix) | ~50% (оценка) | >70% |
-| 5 | Количество quality gates | 2 (тесты + линтер) | 5+ (types, security, build, coverage, visual) |
-| 6 | Время обнаружения проблемы оператором | Минуты–часы (чтение логов) | Секунды (алерт) |
-| 7 | Поддерживаемые экосистемы | 1 (Tracker+GitLab) | 3+ |
-| 8 | Задач в день на 1 воркер | 3–5 (оценка) | 10–15 |
+## Рекомендуемый фокус на ближайшие 90 дней
 
----
+1. Закрыть Phase 0 finish: explicit preflight и target issue mode.
+2. Реализовать GitLab review loop, потому что он напрямую сокращает ручную работу после MR.
+3. Поднять качество MR: generated description, testing summary, smart commits.
+4. Добавить command-based quality gates: typecheck и build первыми, security/coverage следующими.
+5. Начать observability с Prometheus metrics до полноценного dashboard.
 
 ## Стратегические развилки
 
-### Открытый вопрос 1: SaaS или Self-hosted?
+### Self-hosted или SaaS
 
-| Подход | За | Против |
-|---|---|---|
-| **Self-hosted (текущий)** | Полный контроль, данные внутри периметра, гибкость | Нужна инфраструктура, поддержка на пользователе |
-| **SaaS** | Onboarding за 5 минут, проще масштабировать | Секреты (tokens, код) уходят наружу; сертификация |
-| **Гибридный** | Dashboard в облаке, воркер у клиента | Сложнее архитектура, но баланс безопасности |
+Для текущей аудитории с Yandex Tracker и GitLab self-hosted остаётся базовым вариантом: код, токены и Codex auth остаются внутри инфраструктуры пользователя. SaaS имеет смысл рассматривать только после GitHub/Jira integrations и отдельной security модели.
 
-> [!TIP]
-> Для корпоративных пользователей (Yandex Tracker + on-prem GitLab) **self-hosted** — единственный реальный вариант. SaaS имеет смысл рассматривать после добавления GitHub/Jira-интеграций для более широкой аудитории.
+### Специализация или универсальность
 
-### Открытый вопрос 2: Специализация или универсальность?
+Лучший ближайший путь - task routing. Вместо одного универсального prompt для всех задач нужно выделить profiles по типам работ. Это повышает success rate без отказа от общего coverage очереди.
 
-- **Глубокая специализация** на 1–2 типах задач (frontend bug-fix, API endpoint) → выше success rate
-- **Универсальность** (любая задача из Tracker) → шире охват, но ниже качество
+### AI engine lock-in
 
-> [!IMPORTANT]
-> Рекомендация: начать с **Task Routing** — классификация задач по типам и маршрутизация к специализированным промптам. Это позволяет растить качество по категориям, не теряя в охвате.
-
-### Открытый вопрос 3: AI Engine lock-in
-
-Текущая жёсткая привязка к Codex CLI — риск. OpenAI может изменить API, ценообразование, или прекратить поддержку. 
-
-> Рекомендация: Фаза 7.3 (абстракция AI Engine) — стратегически важна, даже если не нужна прямо сейчас. Интерфейс [CodexRunner](file:///c:/Users/gabba/projects/developer/src/models/types.ts#181-186) уже абстрактный — нужно инвестировать в альтернативные реализации.
-
----
-
-## Рекомендуемый фокус (ближайшие 3 месяца)
-
-```mermaid
-graph LR
-    A["🔴 Фаза 0<br/>Стабилизация<br/>2–3 недели"] --> B["⭐ Фаза 1<br/>Обратная связь от ревью<br/>3–4 недели"]
-    B --> C["💡 Фаза 2<br/>Декомпозиция задач<br/>4–5 недель"]
-    
-    style A fill:#ff6b6b,color:#fff
-    style B fill:#ffd93d,color:#333
-    style C fill:#6bcb77,color:#fff
-```
-
-**Фаза 1 (Обратная связь от ревью)** — **самая ценная по ROI**. Сейчас воркер делает ~50% работы (пишет код), но вторые 50% (ревью-итерации, правки, описание MR) — полностью ручные. Замыкание этого цикла удваивает ценность продукта.
+Codex CLI сейчас является правильным первым engine, потому что уже интегрирован с resume, JSONL events и local repo workflow. Но интерфейс `CodexRunner` стоит расширять до engine-neutral контракта до того, как появятся сложные provider-specific assumptions.
