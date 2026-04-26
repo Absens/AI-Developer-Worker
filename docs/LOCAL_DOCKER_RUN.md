@@ -31,9 +31,10 @@ So the container does not perform OAuth login by itself. It only reuses an exist
 
 ## Recommended local setup
 
-### 1. Confirm Codex works on the host
+### 1. Confirm Codex access
 
-On the host machine:
+On the host machine, this is a quick way to confirm that Codex is installed and
+your account can authenticate:
 
 ```bash
 codex login status
@@ -52,6 +53,9 @@ or for headless flow:
 ```bash
 codex login --device-auth
 ```
+
+For the worker itself, still create a separate Docker `CODEX_HOME` and run
+`codex login` inside that volume in step 4.
 
 ### 2. Prepare `.env`
 
@@ -105,21 +109,32 @@ Create the volume:
 docker volume create codex-home
 ```
 
-Copy the current host `~/.codex` into that volume:
+Log in directly inside that volume:
 
-```bash
-docker run --rm \
-  -v /absolute/path/to/your/.codex:/host-codex:ro \
-  -v codex-home:/codex-home \
-  -e SOURCE_CODEX_HOME=/host-codex \
-  -e TARGET_CODEX_HOME=/codex-home \
-  ai-developer-worker \
-  node scripts/bootstrap-codex-home.mjs
+```powershell
+docker run --rm -it `
+  --entrypoint codex `
+  -e CODEX_HOME=/codex-home `
+  -v "codex-home:/codex-home" `
+  ai-developer-worker `
+  login --device-auth
 ```
 
-This is the recommended path because the container gets its own writable Codex state instead of mutating the host state directly.
+This lets the container use the same OpenAI account with its own independent
+Codex auth state instead of reusing a copied host `auth.json`.
 
-If you use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml), this bootstrap step is automated. Set `HOST_CODEX_HOME` in `.env`, and on first `docker compose up` the container copies auth from the host mount into the named `codex-home` volume before starting the worker.
+If you use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml), you
+can log in into the Compose volume without running the normal entrypoint:
+
+```powershell
+docker compose run --rm --entrypoint codex worker login --device-auth
+```
+
+The compose entrypoint can still bootstrap from `HOST_CODEX_HOME` when
+`/codex-home/auth.json` is missing. Treat that as a convenience for short local
+debugging, not as the preferred long-running worker auth flow. If host Codex is
+also running, a copied `auth.json` can later fail with `refresh_token_reused`.
+See [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md).
 
 ## First local test
 
@@ -161,7 +176,7 @@ docker run --rm \
 It will work immediately if:
 
 - you already have a valid `.env`,
-- you already bootstrapped `codex-home`,
+- you already initialized `codex-home` with worker-specific Codex auth,
 - your mounted project is a working git clone,
 - that clone already has valid remote auth,
 - your configured commands are correct for that project.
@@ -214,7 +229,7 @@ For local bring-up, do this in order:
 
 1. `codex login status` on the host.
 2. Fill in `.env`.
-3. Bootstrap `codex-home`.
+3. Create a dedicated `codex-home` volume and run `codex login` inside it.
 4. Run the container once with `WORKER_RUN_ONCE=true`.
 5. Inspect logs.
 6. Switch to continuous run only after the one-shot run succeeds.

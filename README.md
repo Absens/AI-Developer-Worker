@@ -17,13 +17,12 @@ If Codex needs business clarification, it returns exactly one `AI_QUESTION:` lin
 
 ## Quick Start
 
-1. Verify host auth: `codex login status`
-2. Copy [.env.example](/C:/Users/gabba/projects/developer/.env.example) to `.env` and fill in Tracker/GitLab/Codex settings
-3. Build the image: `docker build -t ai-developer-worker .`
-4. Prepare a writable authenticated `CODEX_HOME`
-5. Mount a real target git clone into `/workspace/project`
-6. First run with `WORKER_RUN_ONCE=true`
-7. Switch to continuous mode only after the one-shot run succeeds
+1. Copy [.env.example](/C:/Users/gabba/projects/developer/.env.example) to `.env` and fill in Tracker/GitLab/Codex settings
+2. Build the image: `docker build -t ai-developer-worker .`
+3. Create a dedicated Docker `CODEX_HOME` and run `codex login` inside it
+4. Mount a real target git clone into `/workspace/project`
+5. First run with `WORKER_RUN_ONCE=true`
+6. Switch to continuous mode only after the one-shot run succeeds
 
 The container does not perform OAuth login on startup. If `CODEX_HOME` is missing or unauthenticated, startup fails before the worker touches Tracker.
 
@@ -70,7 +69,7 @@ Common optional values:
 - `CODEX_TIMEOUT_SECONDS=1800`
 - `CODEX_PROGRESS_LOG_INTERVAL_SECONDS=30`
 - `WORKER_RUN_ONCE=true|false`
-- `HOST_CODEX_HOME=C:/Users/.../.codex` for automatic Compose bootstrap on Windows
+- `HOST_CODEX_HOME=C:/Users/.../.codex` for optional Compose bootstrap on Windows
 
 For Codex CLI 0.124.0, global flags such as `--search` and
 `--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example
@@ -82,6 +81,7 @@ for exec-level flags such as `["--add-dir","/workspace/shared"]`.
 - Environment variables and where to get them: [docs/ENV_CONFIGURATION.md](/C:/Users/gabba/projects/developer/docs/ENV_CONFIGURATION.md)
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
+- Codex auth troubleshooting, including `refresh_token_reused`: [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md)
 - Codex CLI update procedure and compatibility checks: [docs/CODEX_CLI_UPDATE_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/CODEX_CLI_UPDATE_RUNBOOK.md)
 - Compose file: [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml)
 - Contributor conventions: [AGENTS.md](/C:/Users/gabba/projects/developer/AGENTS.md)
@@ -89,6 +89,7 @@ for exec-level flags such as `["--add-dir","/workspace/shared"]`.
 ## Notes
 
 - Prefer a dedicated writable Docker volume for `CODEX_HOME` over binding the host `~/.codex` directly.
+- For long-running workers, log in directly inside that dedicated `CODEX_HOME`; do not rely on a copied host `auth.json` while host Codex is also running.
 - The worker expects the mounted target repository to already have working git fetch/pull/push credentials.
 - If the mounted repository still uses an SSH remote, the worker can rewrite `origin` to HTTPS and use `GIT_REPOSITORY_TOKEN` or `GITLAB_TOKEN` for git auth.
 - The worker also needs a git author identity. Either configure `user.name` and `user.email` in the mounted repository, or pass `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` into the container.

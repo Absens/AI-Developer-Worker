@@ -4,7 +4,7 @@ This document is the Windows command companion to [docs/LOCAL_DOCKER_RUN.md](/C:
 
 ## Before you start
 
-Make sure the prerequisites from [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md) are satisfied. Most importantly: host Codex auth must already exist, `.env` must be valid, and the mounted target repo must be a working git clone with push access.
+Make sure the prerequisites from [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md) are satisfied. Most importantly: the worker must have its own authenticated `CODEX_HOME`, `.env` must be valid, and the mounted target repo must be a working git clone with push access.
 
 ## Copy-paste steps
 
@@ -32,6 +32,18 @@ docker build -t ai-developer-worker .
 
 ```powershell
 docker volume create codex-home
+```
+
+Log in directly inside that volume. You can use the same OpenAI account as your
+host Codex, but the worker needs its own auth state:
+
+```powershell
+docker run --rm -it `
+  --entrypoint codex `
+  -e CODEX_HOME=/codex-home `
+  -v "codex-home:/codex-home" `
+  ai-developer-worker `
+  login --device-auth
 ```
 
 ### 5. Create `.env`
@@ -71,7 +83,11 @@ Minimum fields to verify:
 
 For `TRACKER_STATUS_MAP_FILE`, use a path to a JSON file. In that file, `statuses` should match the real Tracker states. `transition` is only a hint used to find an allowed workflow transition.
 
-With Compose, the worker now copies auth automatically from `HOST_CODEX_HOME` into the named Docker volume on the first start if `/codex-home/auth.json` is missing.
+With Compose, the worker can copy auth automatically from `HOST_CODEX_HOME`
+into the named Docker volume on the first start if `/codex-home/auth.json` is
+missing. For long-running workers, prefer logging in directly inside the worker
+volume instead. A copied host `auth.json` can become stale when host Codex is
+also running and may fail with `refresh_token_reused`.
 
 ### 6. Set the path to the target project
 
@@ -142,6 +158,15 @@ docker compose up --build
 ```
 
 For a one-shot run, override `WORKER_RUN_ONCE=true` in `.env` before starting Compose.
+
+If the Compose volume is empty or stale, initialize it directly:
+
+```powershell
+docker compose run --rm --entrypoint codex worker login --device-auth
+docker compose run --rm --entrypoint codex worker login status
+```
+
+For the `refresh_token_reused` recovery flow, see [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md).
 
 ## Direct host auth mount
 
