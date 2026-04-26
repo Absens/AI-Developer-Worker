@@ -66,13 +66,18 @@ describe("config", () => {
     expect(config.baseBranch).toBe("main");
     expect(config.pollIntervalMinutes).toBe(30);
     expect(config.gitlabUrl).toBe("https://gitlab.example.com");
-      expect(config.gitRemoteName).toBe("origin");
-      expect(config.gitRepositoryToken).toBe("gitlab-token");
-      expect(config.gitRepositoryUsername).toBe("oauth2");
-      expect(config.gitCommitNoVerify).toBe(true);
-      expect(config.testCommand).toBe("npm test");
-      expect(config.lintCommand).toBe("npm run lint");
-      expect(config.runOnce).toBe(false);
+    expect(config.gitRemoteName).toBe("origin");
+    expect(config.gitRepositoryToken).toBe("gitlab-token");
+    expect(config.gitRepositoryUsername).toBe("oauth2");
+    expect(config.gitCommitNoVerify).toBe(true);
+    expect(config.testCommand).toBe("npm test");
+    expect(config.lintCommand).toBe("npm run lint");
+    expect(config.runOnce).toBe(false);
+    expect(config.preflightOnly).toBe(false);
+    expect(config.preflightRunTargetCommands).toBe(true);
+    expect(config.trackerPreflightIssueKey).toBeUndefined();
+    expect(config.gitlabPreflightSourceBranch).toBeUndefined();
+    expect(config.targetIssueKey).toBeUndefined();
     expect(config.codexHome).toBe(join(homedir(), ".codex"));
     expect(config.codexCliCommand).toBe("codex");
     expect(config.codexCliArgs).toEqual([]);
@@ -193,6 +198,33 @@ describe("config", () => {
     expect(config.gitCommitNoVerify).toBe(false);
   });
 
+  it("accepts explicit preflight and target issue options", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      WORKER_PREFLIGHT_ONLY: "yes",
+      TRACKER_PREFLIGHT_ISSUE_KEY: "DEV-1",
+      GITLAB_PREFLIGHT_SOURCE_BRANCH: "preflight/dev-1",
+      PREFLIGHT_RUN_TARGET_COMMANDS: "no",
+      TARGET_ISSUE_KEY: "DEV-2",
+      WORKER_RUN_ONCE: "1",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.preflightOnly).toBe(true);
+    expect(config.trackerPreflightIssueKey).toBe("DEV-1");
+    expect(config.gitlabPreflightSourceBranch).toBe("preflight/dev-1");
+    expect(config.preflightRunTargetCommands).toBe(false);
+    expect(config.targetIssueKey).toBe("DEV-2");
+    expect(config.runOnce).toBe(true);
+  });
+
   it("rejects invalid CODEX_SANDBOX", () => {
     const statusMapFile = createStatusMapFile();
     expect(() =>
@@ -259,6 +291,23 @@ describe("config", () => {
         WORKER_ID: "worker-1",
       }),
     ).toThrow(/GIT_COMMIT_NO_VERIFY/);
+  });
+
+  it("rejects invalid WORKER_PREFLIGHT_ONLY", () => {
+    const statusMapFile = createStatusMapFile();
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        WORKER_PREFLIGHT_ONLY: "maybe",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/WORKER_PREFLIGHT_ONLY/);
   });
 
   it("rejects invalid CODEX_CLI_ARGS_JSON", () => {

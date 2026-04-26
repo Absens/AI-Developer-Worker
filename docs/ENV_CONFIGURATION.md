@@ -65,6 +65,54 @@ For Tracker statuses, the repository already includes an example file at [config
 | `MAX_FIX_ATTEMPTS` | Yes | None | Positive integer. Choose how many automated fix attempts the worker may perform for one task. |
 | `WORKER_ID` | Yes | None | Stable identifier for this worker instance. Use a unique value per running worker, for example `worker-1` or `gitlab-bot-prod-1`. |
 | `WORKER_RUN_ONCE` | No | `false` | Set to `true` for a single validation cycle or local smoke run. |
+| `WORKER_PREFLIGHT_ONLY` | No | `false` | Set to `true` to run only the preflight report and exit without processing Tracker issues. `npm run preflight` sets this mode automatically. |
+| `TRACKER_PREFLIGHT_ISSUE_KEY` | No | None | Optional sandbox Tracker issue key. When set, preflight verifies write permission by adding a neutral comment to this issue. When omitted, Tracker write preflight is reported as `WARN` and no write is attempted. |
+| `GITLAB_PREFLIGHT_SOURCE_BRANCH` | No | None | Optional sandbox source branch. When set, preflight finds or creates a draft/test merge request from this branch to verify MR write permission. When omitted, GitLab write preflight is reported as `WARN` and no write is attempted. |
+| `PREFLIGHT_RUN_TARGET_COMMANDS` | No | `true` | Controls whether preflight runs `TEST_COMMAND` and `LINT_COMMAND` in `REPO_PATH`. Set to `false` when those commands are too expensive for a startup check. |
+| `TARGET_ISSUE_KEY` | No | None | Manual run mode. When set, `WorkerOrchestrator.runOnce()` loads only this Tracker issue, skips the normal queue scan, and still respects structured worker locks. |
+
+## Preflight mode
+
+Run the safe preflight report with:
+
+```bash
+npm run preflight
+```
+
+or:
+
+```bash
+WORKER_PREFLIGHT_ONLY=true npm run dev
+```
+
+PowerShell:
+
+```powershell
+$env:WORKER_PREFLIGHT_ONLY = "true"
+npm run dev
+```
+
+The report always uses this order: config load, Codex auth, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Missing `TRACKER_PREFLIGHT_ISSUE_KEY` or `GITLAB_PREFLIGHT_SOURCE_BRANCH` does not fail preflight; those write checks are reported as `WARN` and no production issue or merge request is mutated.
+
+For a strict sandbox run, set both sandbox variables:
+
+```env
+TRACKER_PREFLIGHT_ISSUE_KEY=FRONTEND-42
+GITLAB_PREFLIGHT_SOURCE_BRANCH=preflight/worker-check
+```
+
+`PREFLIGHT_RUN_TARGET_COMMANDS=false` skips `TEST_COMMAND` and `LINT_COMMAND` and reports that check as `WARN`.
+
+## Target issue mode
+
+Use this mode for manual debugging of one Tracker task:
+
+```env
+TARGET_ISSUE_KEY=FRONTEND-42
+WORKER_RUN_ONCE=true
+```
+
+With `TARGET_ISSUE_KEY` set, the worker does not call the usual queue/tag candidate search. It loads the target issue directly, checks structured `AI STATUS` locks, resumes only matching `/resume` clarification flows, and avoids creating a duplicate merge request when the deterministic task branch already has an open MR.
 
 ## `TRACKER_STATUS_MAP_FILE` format
 

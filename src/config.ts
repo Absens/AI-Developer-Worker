@@ -262,6 +262,25 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     workerId: requireEnv(env, "WORKER_ID"),
     testCommand: env.TEST_COMMAND?.trim() || "npm test",
     lintCommand: env.LINT_COMMAND?.trim() || "npm run lint",
-    runOnce: env.WORKER_RUN_ONCE?.trim().toLowerCase() === "true",
+    runOnce: parseBooleanFlag(env.WORKER_RUN_ONCE, "WORKER_RUN_ONCE", false),
+    preflightOnly: parseBooleanFlag(
+      env.WORKER_PREFLIGHT_ONLY,
+      "WORKER_PREFLIGHT_ONLY",
+      false,
+    ),
+    ...(env.TRACKER_PREFLIGHT_ISSUE_KEY?.trim()
+      ? { trackerPreflightIssueKey: env.TRACKER_PREFLIGHT_ISSUE_KEY.trim() }
+      : {}),
+    ...(env.GITLAB_PREFLIGHT_SOURCE_BRANCH?.trim()
+      ? { gitlabPreflightSourceBranch: env.GITLAB_PREFLIGHT_SOURCE_BRANCH.trim() }
+      : {}),
+    preflightRunTargetCommands: parseBooleanFlag(
+      env.PREFLIGHT_RUN_TARGET_COMMANDS,
+      "PREFLIGHT_RUN_TARGET_COMMANDS",
+      true,
+    ),
+    ...(env.TARGET_ISSUE_KEY?.trim()
+      ? { targetIssueKey: env.TARGET_ISSUE_KEY.trim() }
+      : {}),
   };
 };

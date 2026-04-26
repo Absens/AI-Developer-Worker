@@ -76,6 +76,8 @@ const createConfig = (
   testCommand: "npm test",
   lintCommand: "npm run lint",
   runOnce: false,
+  preflightOnly: false,
+  preflightRunTargetCommands: true,
 });
 
 afterEach(() => {

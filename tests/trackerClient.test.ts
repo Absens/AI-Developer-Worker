@@ -53,6 +53,8 @@ const createConfig = (trackerApiBaseUrl: string, overrides: Partial<AppConfig> =
   testCommand: "npm test",
   lintCommand: "npm run lint",
   runOnce: false,
+  preflightOnly: false,
+  preflightRunTargetCommands: true,
   ...overrides,
 });
 

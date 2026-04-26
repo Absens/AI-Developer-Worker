@@ -129,6 +129,20 @@ export class YandexTrackerClient implements TrackerClient {
     return undefined;
   }
 
+  async checkReadAccess(): Promise<void> {
+    const response = await this.request<
+      TrackerSearchResponseItem[] | TrackerCollectionResponse<TrackerSearchResponseItem>
+    >("/issues/_search", {
+      method: "POST",
+      query: { page: 1, perPage: 1 },
+      body: {
+        query: `"Queue": "${escapeTrackerQueryValue(this.config.trackerDefaultQueue)}" AND "Tags": "${escapeTrackerQueryValue(this.config.trackerTag)}"`,
+      },
+    });
+
+    extractCollection(response);
+  }
+
   async findCandidateIssues(): Promise<TrackerIssue[]> {
     const issues = await this.searchIssuesByTag();
     return issues

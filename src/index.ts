@@ -1,14 +1,25 @@
 import { buildApplication } from "./app.js";
+import { formatPreflightReport, hasPreflightFailures } from "./domain/preflight.js";
 import { Logger } from "./utils/logger.js";
 
 const main = async (): Promise<void> => {
   const {
     config,
     orchestrator,
+    preflight,
     logger,
     assertCodexAuthenticated,
     assertRepositoryReady,
   } = buildApplication();
+  if (config.preflightOnly) {
+    const checks = await preflight.run();
+    console.log(formatPreflightReport(checks));
+    if (hasPreflightFailures(checks)) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   await assertRepositoryReady();
   await assertCodexAuthenticated();
   if (config.runOnce) {

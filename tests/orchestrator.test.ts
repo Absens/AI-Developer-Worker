@@ -81,29 +81,41 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   testCommand: `node -e "process.exit(0)"`,
   lintCommand: `node -e "process.exit(0)"`,
   runOnce: false,
+  preflightOnly: false,
+  preflightRunTargetCommands: true,
   ...overrides,
 });
 
 class FakeTrackerClient implements TrackerClient {
   readonly transitions: Array<{ issueKey: string; target: LogicalStatus }> = [];
   readonly addedComments: Array<{ issueKey: string; text: string }> = [];
+  candidateIssueLookups = 0;
+  ownedIssueLookups = 0;
+  getIssueCalls: string[] = [];
 
   constructor(
     readonly issues: TrackerIssue[],
     readonly commentsByIssue: Record<string, CommentWithMetadata[]>,
   ) {}
 
+  async checkReadAccess(): Promise<void> {
+    return;
+  }
+
   async findCandidateIssues(): Promise<TrackerIssue[]> {
+    this.candidateIssueLookups += 1;
     return this.issues;
   }
 
   async findOwnedIssues(statuses: LogicalStatus[]): Promise<TrackerIssue[]> {
+    this.ownedIssueLookups += 1;
     return this.issues.filter(
       (issue) => issue.logicalStatus && statuses.includes(issue.logicalStatus),
     );
   }
 
   async getIssue(issueKey: string): Promise<TrackerIssue> {
+    this.getIssueCalls.push(issueKey);
     const issue = this.issues.find((entry) => entry.key === issueKey);
     if (!issue) {
       throw new Error(`Unknown issue: ${issueKey}`);
@@ -186,9 +198,24 @@ class FakeGitService implements GitService {
 
 class FakeGitLabService implements GitLabService {
   createCalls: string[] = [];
+  findCalls: string[] = [];
+  openMergeRequestsByBranch: Record<string, MergeRequestInfo> = {};
 
-  async findOpenMergeRequestByBranch(): Promise<MergeRequestInfo | null> {
-    return null;
+  async checkReadAccess(): Promise<void> {
+    return;
+  }
+
+  async checkMergeRequestWriteAccess(sourceBranch: string): Promise<MergeRequestInfo> {
+    return this.createMergeRequest({
+      sourceBranch,
+      targetBranch: "main",
+      title: `[AI Preflight] ${sourceBranch}`,
+    });
+  }
+
+  async findOpenMergeRequestByBranch(sourceBranch: string): Promise<MergeRequestInfo | null> {
+    this.findCalls.push(sourceBranch);
+    return this.openMergeRequestsByBranch[sourceBranch] ?? null;
   }
 
   async createMergeRequest(input: {
@@ -991,5 +1018,201 @@ Reply with /resume A or /resume B.
         entry.text.includes("Set GIT_COMMIT_NO_VERIFY=true to bypass repository hooks"),
       ),
     ).toBe(true);
+  });
+
+  it("loads the configured target issue instead of scanning the queue", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-TARGET",
+          title: "Target task",
+          description: "Process only this issue",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "open",
+        },
+        {
+          id: "2",
+          key: "DEV-QUEUE",
+          title: "Queue task",
+          description: "Should not be scanned",
+          createdAt: "2026-03-10T10:02:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-TARGET": [] },
+    );
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-target",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-target",
+          };
+        },
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        targetIssueKey: "DEV-TARGET",
+        runOnce: true,
+      }),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.getIssueCalls).toEqual(["DEV-TARGET"]);
+    expect(tracker.candidateIssueLookups).toBe(0);
+    expect(tracker.ownedIssueLookups).toBe(0);
+    expect(git.commits).toEqual(["feat: implement DEV-TARGET"]);
+  });
+
+  it("does not process a target issue locked by another worker", async () => {
+    const lockComment = formatStatusComment(
+      "worker-2",
+      "in_progress",
+      "Started elsewhere.",
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-LOCKED",
+          title: "Locked task",
+          description: "Should wait",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "in_progress",
+        },
+      ],
+      {
+        "DEV-LOCKED": [
+          {
+            id: "1",
+            text: lockComment,
+            createdAt: "2026-03-10T10:01:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(lockComment),
+          },
+        ],
+      },
+    );
+    const codex = new FakeCodexRunner([]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { targetIssueKey: "DEV-LOCKED" }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("waiting");
+    expect(codex.initialCalls).toHaveLength(0);
+    expect(tracker.transitions).toEqual([]);
+    expect(tracker.candidateIssueLookups).toBe(0);
+  });
+
+  it("does not create a duplicate merge request for a target issue already in review", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-REVIEW",
+          title: "Review task",
+          description: "Already published",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "review",
+        },
+      ],
+      { "DEV-REVIEW": [] },
+    );
+    const gitlab = new FakeGitLabService();
+    gitlab.openMergeRequestsByBranch["feature/ai-task-DEV-REVIEW"] = {
+      id: 1,
+      iid: 1,
+      url: "https://gitlab.example.com/project/-/merge_requests/1",
+      title: "[AI] DEV-REVIEW implementation",
+      sourceBranch: "feature/ai-task-DEV-REVIEW",
+      targetBranch: "main",
+    };
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { targetIssueKey: "DEV-REVIEW" }),
+      tracker,
+      new FakeGitService(),
+      gitlab,
+      new FakeCodexRunner([]),
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(gitlab.findCalls).toEqual(["feature/ai-task-DEV-REVIEW"]);
+    expect(gitlab.createCalls).toEqual([]);
+    expect(tracker.transitions).toEqual([]);
+  });
+
+  it("surfaces missing target issues as a controlled failure", async () => {
+    const tracker = new FakeTrackerClient([], {});
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { targetIssueKey: "DEV-MISSING" }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      new FakeCodexRunner([]),
+      new Logger(),
+    );
+
+    await expect(orchestrator.runOnce()).rejects.toThrow(
+      /Unable to load target issue DEV-MISSING/,
+    );
+    expect(tracker.candidateIssueLookups).toBe(0);
+  });
+
+  it("rejects target issues with unsupported statuses", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-DONE",
+          title: "Done task",
+          description: "Should not process",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "done",
+        },
+      ],
+      { "DEV-DONE": [] },
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { targetIssueKey: "DEV-DONE" }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      new FakeCodexRunner([]),
+      new Logger(),
+    );
+
+    await expect(orchestrator.runOnce()).rejects.toThrow(
+      /unsupported logical status: done/,
+    );
   });
 });

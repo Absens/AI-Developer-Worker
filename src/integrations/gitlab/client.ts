@@ -29,6 +29,41 @@ export class GitLabApiClient implements GitLabService {
     private readonly logger: Logger,
   ) {}
 
+  async checkReadAccess(): Promise<void> {
+    const projectPath = `/projects/${encodeURIComponent(this.config.gitlabProjectId)}`;
+    await this.request(projectPath);
+    await this.request(`${projectPath}/merge_requests`, {
+      query: {
+        state: "opened",
+        per_page: "1",
+      },
+    });
+  }
+
+  async checkMergeRequestWriteAccess(sourceBranch: string): Promise<MergeRequestInfo> {
+    const existing = await this.findOpenMergeRequestByBranch(sourceBranch);
+    if (existing) {
+      return existing;
+    }
+
+    const response = await this.request<GitLabMergeRequestResponse>(
+      `/projects/${encodeURIComponent(this.config.gitlabProjectId)}/merge_requests`,
+      {
+        method: "POST",
+        body: {
+          source_branch: sourceBranch,
+          target_branch: this.config.baseBranch,
+          title: `[AI Preflight] ${sourceBranch}`,
+          description:
+            "Draft merge request created by the AI Developer Worker preflight check.",
+          draft: true,
+        },
+      },
+    );
+
+    return toMergeRequestInfo(response);
+  }
+
   async findOpenMergeRequestByBranch(
     sourceBranch: string,
   ): Promise<MergeRequestInfo | null> {

@@ -51,6 +51,17 @@ export interface AppConfig {
   testCommand: string;
   lintCommand: string;
   runOnce: boolean;
+  preflightOnly: boolean;
+  trackerPreflightIssueKey?: string;
+  gitlabPreflightSourceBranch?: string;
+  preflightRunTargetCommands: boolean;
+  targetIssueKey?: string;
+}
+
+export interface PreflightCheckResult {
+  name: string;
+  status: "pass" | "warn" | "fail";
+  details: string;
 }
 
 export interface TrackerIssue {
@@ -144,6 +155,7 @@ export interface MergeRequestInfo {
 }
 
 export interface TrackerClient {
+  checkReadAccess(): Promise<void>;
   findCandidateIssues(): Promise<TrackerIssue[]>;
   findOwnedIssues(statuses: LogicalStatus[]): Promise<TrackerIssue[]>;
   getIssue(issueKey: string): Promise<TrackerIssue>;
@@ -165,6 +177,8 @@ export interface GitService {
 }
 
 export interface GitLabService {
+  checkReadAccess(): Promise<void>;
+  checkMergeRequestWriteAccess(sourceBranch: string): Promise<MergeRequestInfo>;
   findOpenMergeRequestByBranch(
     sourceBranch: string,
   ): Promise<MergeRequestInfo | null>;

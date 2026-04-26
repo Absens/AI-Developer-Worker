@@ -52,6 +52,8 @@ const createConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   testCommand: "npm test",
   lintCommand: "npm run lint",
   runOnce: false,
+  preflightOnly: false,
+  preflightRunTargetCommands: true,
   ...overrides,
 });
 

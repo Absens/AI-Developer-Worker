@@ -45,6 +45,13 @@ interface ResumeContext {
 
 const ACTIVE_STATES: LogicalStatus[] = ["in_progress", "waiting_for_answer"];
 const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
+const TARGET_PROCESSABLE_STATES: LogicalStatus[] = [
+  "open",
+  "in_progress",
+  "waiting_for_answer",
+];
+
+const branchNameForIssue = (issueKey: string): string => `feature/ai-task-${issueKey}`;
 
 const isValidationSuccessful = (validation: ValidationResult): boolean =>
   validation.changed && validation.testsPassed && validation.lintPassed;
@@ -148,6 +155,10 @@ export class WorkerOrchestrator {
   }
 
   async runOnce(): Promise<CycleOutcome> {
+    if (this.config.targetIssueKey) {
+      return this.runTargetIssueCycle(this.config.targetIssueKey);
+    }
+
     const ownedTask = await this.resumeOwnedTask();
     if (ownedTask) {
       return this.handleIssue(ownedTask.issue, ownedTask.comments);
@@ -160,6 +171,67 @@ export class WorkerOrchestrator {
     }
 
     return this.handleIssue(nextTask.issue, nextTask.comments);
+  }
+
+  private async runTargetIssueCycle(issueKey: string): Promise<CycleOutcome> {
+    this.logger.info("Target issue mode enabled.", { issueKey });
+    const issue = await this.loadTargetIssue(issueKey);
+    const comments = await this.tracker.getComments(issue.key);
+
+    this.logger.info("Loaded target issue.", {
+      issueKey: issue.key,
+      logicalStatus: issue.logicalStatus,
+    });
+
+    if (this.isBusyByAnotherWorker(comments)) {
+      this.logger.info("Target issue is locked by another worker.", { issueKey: issue.key });
+      return "waiting";
+    }
+
+    if (issue.logicalStatus === "review") {
+      return this.handleTargetIssueInReview(issue);
+    }
+
+    if (!issue.logicalStatus || !TARGET_PROCESSABLE_STATES.includes(issue.logicalStatus)) {
+      throw new PermanentTaskError(
+        `Target issue ${issue.key} has unsupported logical status: ${issue.logicalStatus ?? "unknown"}.`,
+      );
+    }
+
+    return this.handleIssue(issue, comments);
+  }
+
+  private async loadTargetIssue(issueKey: string): Promise<TrackerIssue> {
+    let issue: TrackerIssue;
+    try {
+      issue = await this.tracker.getIssue(issueKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new PermanentTaskError(`Unable to load target issue ${issueKey}: ${message}`);
+    }
+
+    const logicalStatus = this.tracker.determineLogicalStatus(issue);
+    return {
+      ...issue,
+      logicalStatus,
+    };
+  }
+
+  private async handleTargetIssueInReview(issue: TrackerIssue): Promise<CycleOutcome> {
+    const branch = branchNameForIssue(issue.key);
+    const existingMr = await this.gitlab.findOpenMergeRequestByBranch(branch);
+    if (!existingMr) {
+      throw new PermanentTaskError(
+        `Target issue ${issue.key} is already in review, but no open merge request was found for ${branch}.`,
+      );
+    }
+
+    this.logger.info("Target issue is already in review with an open merge request.", {
+      issueKey: issue.key,
+      branch,
+      mergeRequestUrl: existingMr.url,
+    });
+    return "processed";
   }
 
   private async resumeOwnedTask(): Promise<{

@@ -1,6 +1,6 @@
 # Product Roadmap - AI Developer Worker
 
-_Актуально на 2026-04-24._
+_Актуально на 2026-04-26._
 
 ## Видение продукта
 
@@ -18,6 +18,8 @@ _Актуально на 2026-04-24._
 - Лёгкая координация нескольких воркеров через структурированные Tracker-комментарии `AI STATUS`.
 - Graceful shutdown для `SIGINT` и `SIGTERM`: воркер завершает текущий цикл и не ждёт полный poll interval.
 - `WORKER_RUN_ONCE=true` для одного проверочного цикла.
+- `npm run preflight` / `WORKER_PREFLIGHT_ONLY=true` для safe preflight отчёта без обработки задач.
+- `TARGET_ISSUE_KEY` для ручного запуска конкретной Tracker-задачи без обычного queue scan.
 - Startup checks: загрузка конфига, проверка Codex auth, готовность git-репозитория, git fetch, наличие commit identity.
 - Codex CLI runner с `codex exec --json`, `threadId`, resume-сессиями, heartbeat-логами, truncation шумных диагностик и опциональным `CODEX_LOG_FULL_EVENTS`.
 - Hard timeout для одного Codex запуска через `CODEX_TIMEOUT_SECONDS`.
@@ -31,8 +33,6 @@ _Актуально на 2026-04-24._
 
 ### Пока не реализовано
 
-- Явный CLI/режим `--preflight`, который проверяет Tracker, GitLab, git remote, test/lint commands и Codex без мутации задач.
-- `TARGET_ISSUE_KEY` или аналогичный режим ручного запуска конкретной задачи.
 - Обработка GitLab review discussions после создания MR.
 - Автогенерация полноценного MR description, labels, assignees и testing summary.
 - Smart commit messages и несколько логических коммитов.
@@ -43,7 +43,7 @@ _Актуально на 2026-04-24._
 
 ## Фаза 0 - Runtime Core
 
-**Статус:** shipped, но нужен один завершающий operational pass.
+**Статус:** completed.
 
 ### 0.1 Graceful shutdown - done
 
@@ -53,26 +53,22 @@ _Актуально на 2026-04-24._
 
 `CODEX_TIMEOUT_SECONDS` ограничивает один `codex exec`; `CODEX_PROGRESS_LOG_INTERVAL_SECONDS` даёт heartbeat; `CODEX_LOG_FULL_EVENTS=true` включает сырые JSONL events для отладки.
 
-### 0.3 Startup preflight - partial
+### 0.3 Startup preflight - done
 
-На старте уже проверяются:
+На старте и в явном preflight-режиме проверяются:
 
 - обязательные env vars и status map;
 - Codex auth через `codex login status` или `CODEX_API_KEY`;
 - git remote/fetch;
 - commit identity для worker commits.
+- Tracker API read/write permissions без смены статусов реальных задач;
+- GitLab MR API permissions;
+- `TEST_COMMAND` и `LINT_COMMAND` в target repo;
+- единый отчёт `PASS` / `WARN` / `FAIL`.
 
-Осталось добавить отдельный safe режим без обработки задач:
+### 0.4 Target issue mode - done
 
-- `npm run preflight` или `WORKER_PREFLIGHT_ONLY=true`;
-- проверка Tracker API read/write permissions без смены статусов реальных задач;
-- проверка GitLab MR API permissions;
-- проверка, что `TEST_COMMAND` и `LINT_COMMAND` запускаются в target repo;
-- вывод единого отчёта с actionable диагностикой.
-
-### 0.4 Target issue mode - next
-
-Добавить `TARGET_ISSUE_KEY=FRONTEND-42` для отладки и ручных прогонов:
+`TARGET_ISSUE_KEY=FRONTEND-42` поддерживает отладку и ручные прогоны:
 
 - брать только указанную задачу;
 - игнорировать обычный queue scan;
@@ -469,9 +465,9 @@ gantt
     Runtime core, Docker, auth, timeout       :done, p0a, 2026-03-10, 2026-04-24
     Clarification and resume loop             :done, p0b, 2026-03-20, 2026-04-24
 
-    section Phase 0 Finish
-    Explicit preflight mode                   :p0c, 2026-04-24, 1w
-    Target issue mode                         :p0d, after p0c, 1w
+section Phase 0 Finish
+    Explicit preflight mode                   :done, p0c, 2026-04-24, 2026-04-26
+    Target issue mode                         :done, p0d, 2026-04-26, 2026-04-26
 
     section Phase 1 Review Loop
     GitLab discussions monitor                :p1a, 2026-05-01, 2w
@@ -511,8 +507,8 @@ gantt
 
 | Направление | Текущее состояние | Цель ближайшего этапа |
 | --- | --- | --- |
-| Controlled startup | Есть config/auth/git checks на старте | Отдельный preflight report без мутации задач |
-| Manual debugging | `WORKER_RUN_ONCE=true` | `TARGET_ISSUE_KEY` + one-shot run |
+| Controlled startup | Есть config/auth/git checks и отдельный preflight report без мутации задач | Расширять checks по мере добавления gates |
+| Manual debugging | `TARGET_ISSUE_KEY` + `WORKER_RUN_ONCE=true` | Использовать режим для review loop и quality gates debugging |
 | Clarification loop | Работает через `AI_QUESTION` и `/resume` | Добавить SLA/alert на долгие ожидания ответа |
 | Review loop | MR создан, дальше ручная работа | Автообработка unresolved GitLab discussions |
 | Quality gates | changed check + tests + lint | typecheck + build + optional security/coverage |
@@ -523,11 +519,10 @@ gantt
 
 ## Рекомендуемый фокус на ближайшие 90 дней
 
-1. Закрыть Phase 0 finish: explicit preflight и target issue mode.
-2. Реализовать GitLab review loop, потому что он напрямую сокращает ручную работу после MR.
-3. Поднять качество MR: generated description, testing summary, smart commits.
-4. Добавить command-based quality gates: typecheck и build первыми, security/coverage следующими.
-5. Начать observability с Prometheus metrics до полноценного dashboard.
+1. Реализовать GitLab review loop, потому что он напрямую сокращает ручную работу после MR.
+2. Поднять качество MR: generated description, testing summary, smart commits.
+3. Добавить command-based quality gates: typecheck и build первыми, security/coverage следующими.
+4. Начать observability с Prometheus metrics до полноценного dashboard.
 
 ## Стратегические развилки
 
