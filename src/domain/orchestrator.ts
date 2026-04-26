@@ -13,6 +13,9 @@ import type {
   MergeRequestDiscussion,
   MergeRequestInfo,
   MergeRequestNote,
+  PromptProfile,
+  SubtaskDraft,
+  TaskAnalysisDecision,
   TaskAnalysisResult,
   TaskLease,
   TrackerClient,
@@ -21,10 +24,14 @@ import type {
 } from "../models/types.js";
 import {
   findHumanCommentsAfter,
+  findLatestAnalysisDecision,
+  findLatestDecompositionMetadata,
   findLatestHumanTaskCommandAfter,
   findLatestQuestionComment,
   findLatestReviewMetadata,
   findLatestStatusComment,
+  formatAnalysisComment,
+  formatDecompositionComment,
   formatReviewMetadataComment,
   formatMergeRequestComment,
   formatQuestionCommentWithThreadId,
@@ -32,6 +39,7 @@ import {
 } from "../integrations/tracker/commentProtocol.js";
 import {
   buildAnalysisPrompt,
+  buildDecompositionPrompt,
   buildFixPrompt,
   buildImplementationPrompt,
   buildReviewFixPrompt,
@@ -53,6 +61,20 @@ import {
   runQualityGates,
 } from "./qualityGates.js";
 import { withLeaseHeartbeat } from "./lockBackend.js";
+import {
+  DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
+  DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD,
+  createClarificationFromAnalysis,
+  createManualHoldAnalysisDecision,
+  createReadyAnalysisDecision,
+  parseTaskAnalysisDecision,
+} from "./analysisDecision.js";
+import {
+  formatSubtaskDescription,
+  parseDecompositionPlan,
+} from "./decomposition.js";
+import { selectPromptProfile } from "./promptProfiles.js";
+import { checkIssueDependencies } from "./dependencies.js";
 
 export type CycleOutcome = "processed" | "idle" | "waiting";
 
@@ -64,6 +86,12 @@ interface ResumeContext {
 const ACTIVE_STATES: LogicalStatus[] = ["in_progress", "waiting_for_answer"];
 const OWNED_TASK_STATES: LogicalStatus[] = [...ACTIVE_STATES, "review"];
 const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
+const DEFAULT_TASK_MODE = "auto";
+const DEFAULT_DECOMPOSITION_MAX_SUBTASKS = 8;
+const DEFAULT_DECOMPOSITION_SUBTASK_TAG = "ai_dev";
+const DEFAULT_DECOMPOSITION_TITLE_PREFIX = "[AI split]";
+const DEFAULT_TRACKER_PARENT_LINK_TYPE = "relates";
+const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
 const TARGET_PROCESSABLE_STATES: LogicalStatus[] = [
   "open",
   "in_progress",
@@ -82,7 +110,8 @@ const isResumableStatus = (
   latestStatus !== undefined &&
   latestStatus.state !== undefined &&
   ACTIVE_STATES.includes(latestStatus.state) &&
-  latestStatus.waitingReason !== "failure_recovery";
+  latestStatus.waitingReason !== "failure_recovery" &&
+  latestStatus.waitingReason !== "manual_hold";
 
 const mergeUniqueStrings = (first: string[], second: string[]): string[] => [
   ...new Set([...first, ...second]),
@@ -91,6 +120,28 @@ const mergeUniqueStrings = (first: string[], second: string[]): string[] => [
 const mergeUniqueNumbers = (first: number[], second: number[]): number[] => [
   ...new Set([...first, ...second]),
 ];
+
+const hasRepositoryPromptProfileOverrides = (
+  config: AppConfig,
+): AppConfig["promptProfiles"] | undefined => config.promptProfiles;
+
+const subtaskDependencyNotes = (
+  subtask: SubtaskDraft,
+  temporaryIdToIssueKey: Map<string, string>,
+  dependencyReasons: Array<{
+    blockedTaskTemporaryId: string;
+    blockingTaskTemporaryId: string;
+    reason: string;
+  }>,
+): string[] =>
+  dependencyReasons
+    .filter((dependency) => dependency.blockedTaskTemporaryId === subtask.temporaryId)
+    .map((dependency) => {
+      const blockingIssueKey =
+        temporaryIdToIssueKey.get(dependency.blockingTaskTemporaryId) ??
+        dependency.blockingTaskTemporaryId;
+      return `Blocked by ${blockingIssueKey}: ${dependency.reason}`;
+    });
 
 export class WorkerOrchestrator {
   private shuttingDown = false;
@@ -347,6 +398,20 @@ export class WorkerOrchestrator {
     const openIssues = issues.filter((issue) => issue.logicalStatus === "open");
 
     for (const issue of openIssues) {
+      const dependencyCheck = await checkIssueDependencies(this.tracker, issue, {
+        enforcement: this.config.dependencyEnforcement ?? true,
+        unknownStatusPolicy: this.config.dependencyUnknownStatusPolicy ?? "block",
+        blockedByLinkType:
+          this.config.trackerBlockedByLinkType ?? DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE,
+      });
+      if (!dependencyCheck.eligible) {
+        this.logger.info("Skipping issue because dependencies are not done.", {
+          issueKey: issue.key,
+          blockers: dependencyCheck.blockers,
+        });
+        continue;
+      }
+
       const comments = await this.tracker.getComments(issue.key);
       if (!this.isBusyByAnotherWorker(comments)) {
         return { issue, comments };
@@ -397,6 +462,7 @@ export class WorkerOrchestrator {
     let resumeContext: ResumeContext | undefined;
     let activeThreadId: string | undefined;
     let implementationSummary: string | undefined;
+    let analysisDecision = findLatestAnalysisDecision(comments, issue.key);
 
     if (issue.logicalStatus === "review") {
       return this.handleReviewFeedback(issue, comments);
@@ -432,12 +498,53 @@ export class WorkerOrchestrator {
     } else {
       const analysis = await this.runAnalysis(issue, comments);
       activeThreadId = analysis.threadId;
+      analysisDecision = analysis.decision;
+      if (!analysisDecision) {
+        analysisDecision = createManualHoldAnalysisDecision(
+          "Analysis did not produce a structured routing decision.",
+        );
+      }
+
+      const taskMode = this.resolveTaskMode(analysisDecision);
+      if (taskMode === "analyze_only") {
+        await this.tracker.transition(issue.key, "waiting_for_answer");
+        await this.tracker.addComment(
+          issue.key,
+          formatStatusComment(
+            this.config.workerId,
+            "waiting_for_answer",
+            "Analysis completed; TASK_MODE=analyze_only stopped before implementation.",
+            "manual_hold",
+          ),
+        );
+        return "processed";
+      }
+
+      if (taskMode === "ask_clarification") {
+        await this.pauseForClarification(
+          issue,
+          analysis.clarification ?? createClarificationFromAnalysis(analysisDecision),
+          activeThreadId,
+        );
+        return "waiting";
+      }
+
+      if (taskMode === "human") {
+        await this.pauseForManualHold(issue, analysisDecision);
+        return "waiting";
+      }
+
+      if (taskMode === "decompose") {
+        return this.runDecomposition(issue, comments, analysisDecision, activeThreadId);
+      }
+
       if (analysis.status === "clarification_required" && analysis.clarification) {
         await this.pauseForClarification(issue, analysis.clarification, activeThreadId);
         return "waiting";
       }
     }
 
+    const promptProfile = this.selectProfile(issue, analysisDecision);
     const branch = await this.git.checkoutTaskBranch(issue.key);
     const existingMr = await this.gitlab.findOpenMergeRequestByBranch(branch);
     const hasUncommittedChanges = await this.git.hasChanges();
@@ -449,7 +556,12 @@ export class WorkerOrchestrator {
     }
 
     if (!hasUncommittedChanges && !hasCommittedDiff) {
-      const implementationPrompt = buildImplementationPrompt(issue, comments);
+      const implementationPrompt = buildImplementationPrompt(
+        issue,
+        comments,
+        promptProfile,
+        analysisDecision,
+      );
       const execution = resumeContext
         ? await this.runResumeOrInitial(
             issue,
@@ -503,8 +615,13 @@ export class WorkerOrchestrator {
       });
 
       const execution = activeThreadId
-        ? await this.codex.runResume(activeThreadId, buildFixPrompt(issue, validation.diagnostic))
-        : await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
+        ? await this.codex.runResume(
+            activeThreadId,
+            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+          )
+        : await this.codex.runFix(
+            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+          );
       activeThreadId = execution.threadId ?? activeThreadId;
       if (execution.clarification) {
         await this.pauseForClarification(issue, execution.clarification, activeThreadId);
@@ -564,12 +681,20 @@ export class WorkerOrchestrator {
     const headBefore = await this.git.getHeadSha();
     const diffFromBase = await this.git.getDiffFromBase();
     const changedFiles = await this.git.getChangedFilesFromBase();
-    const prompt = buildReviewFixPrompt(issue, comments, {
-      mergeRequest,
-      discussions: pendingDiscussions,
-      changedFiles,
-      diffFromBase,
-    });
+    const analysisDecision = findLatestAnalysisDecision(comments, issue.key);
+    const promptProfile = this.selectProfile(issue, analysisDecision);
+    const prompt = buildReviewFixPrompt(
+      issue,
+      comments,
+      {
+        mergeRequest,
+        discussions: pendingDiscussions,
+        changedFiles,
+        diffFromBase,
+      },
+      promptProfile,
+      analysisDecision,
+    );
 
     let execution = await this.codex.runInitial(prompt);
     let reviewThreadId = execution.threadId;
@@ -599,9 +724,11 @@ export class WorkerOrchestrator {
       execution = reviewThreadId
         ? await this.codex.runResume(
             reviewThreadId,
-            buildFixPrompt(issue, validation.diagnostic),
+            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
           )
-        : await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
+        : await this.codex.runFix(
+            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+          );
       reviewThreadId = execution.threadId ?? reviewThreadId;
       reviewFixSummary = execution.finalMessage?.trim() ?? reviewFixSummary;
       if (execution.clarification) {
@@ -849,33 +976,146 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
   ): Promise<TaskAnalysisResult> {
+    const storedDecision = findLatestAnalysisDecision(comments, issue.key);
+    if (storedDecision) {
+      this.logger.info("Reusing stored task analysis decision.", {
+        issueKey: issue.key,
+        confidence: storedDecision.confidence,
+        recommendedMode: storedDecision.recommendedMode,
+      });
+      return {
+        status:
+          storedDecision.recommendedMode === "ask_clarification"
+            ? "clarification_required"
+            : "ready",
+        decision: storedDecision,
+      };
+    }
+
     const execution = await this.codex.runInitial(buildAnalysisPrompt(issue, comments));
+    let decision: TaskAnalysisDecision | undefined;
     if (execution.clarification) {
+      decision = {
+        confidence: Math.max(
+          0,
+          Math.min(
+            this.config.confidenceHumanThreshold ??
+              DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
+            30,
+          ),
+        ),
+        taskType: "unknown",
+        recommendedMode: "ask_clarification",
+        promptProfileId: "general",
+        expectedFiles: [],
+        expectedSubsystems: [],
+        riskFactors: [execution.clarification.blockingReason],
+        missingContext: [execution.clarification.question],
+        reasoning: "Codex analysis requested human clarification.",
+      };
+      await this.tracker.addComment(
+        issue.key,
+        formatAnalysisComment(this.config.workerId, issue.key, decision),
+      );
       return {
         status: "clarification_required",
         clarification: execution.clarification,
         threadId: execution.threadId,
+        decision,
       };
     }
 
     const finalMessage = execution.finalMessage?.trim();
-    if (execution.process.exitCode !== 0 && finalMessage !== ANALYSIS_READY_MARKER) {
-      throw new PermanentTaskError(
-        execution.process.stderr.trim() || "Codex analysis stage failed.",
-      );
-    }
-
-    if (finalMessage && finalMessage !== ANALYSIS_READY_MARKER) {
-      this.logger.warn("Analysis stage returned unexpected final message, treating task as ready.", {
-        issueKey: issue.key,
-        finalMessage,
+    if (finalMessage === ANALYSIS_READY_MARKER) {
+      decision = createReadyAnalysisDecision();
+    } else {
+      decision = parseTaskAnalysisDecision(finalMessage, {
+        implementThreshold:
+          this.config.confidenceImplementThreshold ??
+          DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD,
+        humanThreshold:
+          this.config.confidenceHumanThreshold ?? DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
       });
     }
 
+    if (!decision) {
+      const reason =
+        execution.process.exitCode !== 0
+          ? execution.process.stderr.trim() || "Codex analysis stage failed."
+          : `Codex analysis did not return valid AI_ANALYSIS output: ${
+              finalMessage || "empty response"
+            }`;
+      decision = createManualHoldAnalysisDecision(reason);
+      this.logger.warn("Analysis stage failed safely into manual hold.", {
+        issueKey: issue.key,
+        reason,
+      });
+    }
+
+    await this.tracker.addComment(
+      issue.key,
+      formatAnalysisComment(this.config.workerId, issue.key, decision),
+    );
+
     return {
-      status: "ready",
+      status:
+        decision.recommendedMode === "ask_clarification"
+          ? "clarification_required"
+          : "ready",
       threadId: execution.threadId,
+      decision,
     };
+  }
+
+  private resolveTaskMode(
+    decision: TaskAnalysisDecision,
+  ): "implement" | "ask_clarification" | "decompose" | "human" | "analyze_only" {
+    const configuredMode = this.config.taskMode ?? DEFAULT_TASK_MODE;
+    if (configuredMode === "analyze_only") {
+      return "analyze_only";
+    }
+    if (configuredMode === "implement") {
+      return "implement";
+    }
+    if (configuredMode === "decompose") {
+      return "decompose";
+    }
+    if (configuredMode === "human") {
+      return "human";
+    }
+
+    const implementThreshold =
+      this.config.confidenceImplementThreshold ??
+      DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD;
+    const humanThreshold =
+      this.config.confidenceHumanThreshold ?? DEFAULT_CONFIDENCE_HUMAN_THRESHOLD;
+    if (decision.recommendedMode === "implement" && decision.confidence < humanThreshold) {
+      return "human";
+    }
+    if (decision.recommendedMode === "implement" && decision.confidence < implementThreshold) {
+      return decision.missingContext.length > 0 ? "ask_clarification" : "human";
+    }
+
+    return decision.recommendedMode;
+  }
+
+  private selectProfile(
+    issue: TrackerIssue,
+    decision: TaskAnalysisDecision | undefined,
+  ): PromptProfile {
+    const profile = selectPromptProfile(
+      issue,
+      decision,
+      hasRepositoryPromptProfileOverrides(this.config),
+    );
+    if (decision?.promptProfileId && profile.id !== decision.promptProfileId) {
+      this.logger.warn("Unknown prompt profile from analysis; using fallback profile.", {
+        issueKey: issue.key,
+        requestedProfile: decision.promptProfileId,
+        selectedProfile: profile.id,
+      });
+    }
+    return profile;
   }
 
   private async runResumeOrInitial(
@@ -921,6 +1161,200 @@ export class WorkerOrchestrator {
         "clarification",
       ),
     );
+  }
+
+  private async pauseForManualHold(
+    issue: TrackerIssue,
+    decision: TaskAnalysisDecision,
+  ): Promise<void> {
+    await this.tracker.transition(issue.key, "waiting_for_answer");
+    await this.tracker.addComment(
+      issue.key,
+      formatStatusComment(
+        this.config.workerId,
+        "waiting_for_answer",
+        `Manual hold after analysis: ${decision.reasoning}`,
+        "manual_hold",
+      ),
+    );
+  }
+
+  private async runDecomposition(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+    analysisDecision: TaskAnalysisDecision,
+    threadId?: string,
+  ): Promise<CycleOutcome> {
+    const existing = findLatestDecompositionMetadata(comments, issue.key);
+    if (existing?.createdIssueKeys && existing.createdIssueKeys.length > 0) {
+      this.logger.info("Skipping decomposition because created sub-issues already exist.", {
+        issueKey: issue.key,
+        createdIssueKeys: existing.createdIssueKeys,
+      });
+      await this.pauseForManualHold(issue, analysisDecision);
+      return "processed";
+    }
+
+    const maxSubtasks =
+      this.config.decompositionMaxSubtasks ?? DEFAULT_DECOMPOSITION_MAX_SUBTASKS;
+    const defaultSubtaskTag =
+      this.config.decompositionDefaultSubtaskTag ?? DEFAULT_DECOMPOSITION_SUBTASK_TAG;
+    const titlePrefix =
+      this.config.decompositionSubtaskTitlePrefix ??
+      DEFAULT_DECOMPOSITION_TITLE_PREFIX;
+    const prompt = buildDecompositionPrompt(
+      issue,
+      comments,
+      {
+        maxSubtasks,
+        defaultSubtaskTag,
+        titlePrefix,
+      },
+      analysisDecision,
+    );
+    const execution = threadId
+      ? await this.codex.runResume(threadId, prompt)
+      : await this.codex.runInitial(prompt);
+    const plan = parseDecompositionPlan(execution.finalMessage, {
+      parentIssueKey: issue.key,
+      maxSubtasks,
+    });
+    if (!plan) {
+      await this.tracker.addComment(
+        issue.key,
+        formatDecompositionComment(this.config.workerId, {
+          parentIssueKey: issue.key,
+          dryRun: true,
+          summary: "Decomposition failed because Codex did not return a valid plan.",
+          warnings: [execution.process.stderr.trim() || "Invalid AI_DECOMPOSITION output."],
+        }),
+      );
+      await this.pauseForManualHold(issue, analysisDecision);
+      return "waiting";
+    }
+
+    const createIssues =
+      this.config.decompositionCreateIssues ?? true;
+    const dryRun = this.config.decompositionDryRun ?? false;
+    if (dryRun || !createIssues) {
+      await this.tracker.addComment(
+        issue.key,
+        formatDecompositionComment(this.config.workerId, {
+          parentIssueKey: issue.key,
+          dryRun: true,
+          summary: plan.summary,
+          plan,
+        }),
+      );
+      await this.pauseForManualHold(issue, analysisDecision);
+      return "processed";
+    }
+
+    if (!this.tracker.createIssue) {
+      await this.tracker.addComment(
+        issue.key,
+        formatDecompositionComment(this.config.workerId, {
+          parentIssueKey: issue.key,
+          dryRun: true,
+          summary:
+            "Decomposition create mode is enabled, but the Tracker client does not support issue creation.",
+          plan,
+          warnings: ["Tracker createIssue API is unavailable."],
+        }),
+      );
+      await this.pauseForManualHold(issue, analysisDecision);
+      return "waiting";
+    }
+
+    const parentQueue = issue.queue ?? issue.key.split("-")[0];
+    if (!parentQueue) {
+      throw new PermanentTaskError(
+        `Cannot decompose ${issue.key}: parent queue is missing.`,
+      );
+    }
+
+    const temporaryIdToIssueKey = new Map<string, string>();
+    const warnings: string[] = [];
+    for (const subtask of plan.subtasks) {
+      const queue = subtask.queue ?? parentQueue;
+      const dependencyNotes = subtaskDependencyNotes(
+        subtask,
+        temporaryIdToIssueKey,
+        plan.dependencies,
+      );
+      const created = await this.tracker.createIssue({
+        queue,
+        title: `${titlePrefix} ${subtask.title}`,
+        description: formatSubtaskDescription(issue.key, subtask, {
+          dependencyNotes,
+        }),
+        tags: [...new Set([...subtask.tags, defaultSubtaskTag])],
+      });
+      temporaryIdToIssueKey.set(subtask.temporaryId, created.key);
+
+      if (this.tracker.linkIssue) {
+        await this.tracker
+          .linkIssue({
+            sourceIssueKey: issue.key,
+            targetIssueKey: created.key,
+            linkType: this.config.trackerParentLinkType ?? DEFAULT_TRACKER_PARENT_LINK_TYPE,
+          })
+          .catch((error) => {
+            warnings.push(
+              `Unable to link ${created.key} to parent ${issue.key}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+      } else {
+        warnings.push(`Parent link for ${created.key} was not created.`);
+      }
+    }
+
+    for (const dependency of plan.dependencies) {
+      const blockedIssueKey = temporaryIdToIssueKey.get(dependency.blockedTaskTemporaryId);
+      const blockingIssueKey = temporaryIdToIssueKey.get(dependency.blockingTaskTemporaryId);
+      if (!blockedIssueKey || !blockingIssueKey) {
+        continue;
+      }
+
+      if (!this.tracker.linkIssue) {
+        warnings.push(
+          `Dependency link not created: ${blockedIssueKey} is blocked by ${blockingIssueKey}.`,
+        );
+        continue;
+      }
+
+      await this.tracker
+        .linkIssue({
+          sourceIssueKey: blockedIssueKey,
+          targetIssueKey: blockingIssueKey,
+          linkType:
+            this.config.trackerBlockedByLinkType ?? DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE,
+        })
+        .catch((error) => {
+          warnings.push(
+            `Unable to link dependency ${blockedIssueKey} -> ${blockingIssueKey}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    }
+
+    const createdIssueKeys = [...temporaryIdToIssueKey.values()];
+    await this.tracker.addComment(
+      issue.key,
+      formatDecompositionComment(this.config.workerId, {
+        parentIssueKey: issue.key,
+        createdIssueKeys,
+        dryRun: false,
+        summary: plan.summary,
+        plan,
+        warnings,
+      }),
+    );
+    await this.pauseForManualHold(issue, analysisDecision);
+    return "processed";
   }
 
   private async validateRepositoryState(): Promise<ValidationResult> {

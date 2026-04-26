@@ -6,9 +6,114 @@ export type LogicalStatus =
   | "failed"
   | "done";
 
+export type WorkerTaskMode =
+  | "auto"
+  | "implement"
+  | "decompose"
+  | "analyze_only"
+  | "human";
+
+export type TaskExecutionMode =
+  | "implement"
+  | "ask_clarification"
+  | "decompose"
+  | "human";
+
+export type TaskType =
+  | "frontend_ui_fix"
+  | "backend_endpoint"
+  | "tests_only"
+  | "refactor"
+  | "dependency_update"
+  | "documentation"
+  | "unknown";
+
+export type DependencyUnknownStatusPolicy = "block" | "warn" | "ignore";
+
 export interface TrackerStatusConfig {
   statuses: string[];
   transition?: string;
+}
+
+export interface TaskAnalysisDecision {
+  confidence: number;
+  taskType: TaskType;
+  recommendedMode: TaskExecutionMode;
+  promptProfileId: string;
+  expectedFiles: string[];
+  expectedSubsystems: string[];
+  riskFactors: string[];
+  missingContext: string[];
+  reasoning: string;
+}
+
+export interface PromptProfile {
+  id: string;
+  taskType: TaskType;
+  matchHints: string[];
+  implementationInstructions: string[];
+  validationFocus: string[];
+  riskChecklist: string[];
+}
+
+export interface PromptProfileOverrides {
+  matchHints?: string[];
+  implementationInstructions?: string[];
+  validationFocus?: string[];
+  riskChecklist?: string[];
+}
+
+export type PromptProfileOverrideMap = Record<string, PromptProfileOverrides>;
+
+export interface DecompositionPlan {
+  parentIssueKey: string;
+  summary: string;
+  subtasks: SubtaskDraft[];
+  dependencies: TaskDependencyDraft[];
+  risks: string[];
+}
+
+export interface SubtaskDraft {
+  temporaryId: string;
+  title: string;
+  description: string;
+  queue?: string;
+  tags: string[];
+  acceptanceCriteria: string[];
+  recommendedPromptProfileId: string;
+}
+
+export interface TaskDependencyDraft {
+  blockedTaskTemporaryId: string;
+  blockingTaskTemporaryId: string;
+  reason: string;
+}
+
+export interface RepositoryDecompositionConfig {
+  defaultSubtaskTag?: string;
+  subtaskTitlePrefix?: string;
+  maxSubtasks?: number;
+}
+
+export interface CreateTrackerIssueInput {
+  queue: string;
+  title: string;
+  description: string;
+  tags?: string[];
+}
+
+export interface LinkTrackerIssueInput {
+  sourceIssueKey: string;
+  targetIssueKey: string;
+  linkType: string;
+}
+
+export interface TrackerIssueLink {
+  id?: string;
+  sourceIssueKey?: string;
+  targetIssueKey: string;
+  linkType: string;
+  direction?: "inward" | "outward" | "unknown";
 }
 
 export type TrackerOrgHeader = "X-Org-ID" | "X-Cloud-Org-ID";
@@ -21,6 +126,8 @@ export interface AppConfig {
   trackerTag: string;
   trackerStatusMap: Record<LogicalStatus, TrackerStatusConfig>;
   trackerApiBaseUrl: string;
+  trackerParentLinkType?: string;
+  trackerBlockedByLinkType?: string;
   gitlabUrl: string;
   gitlabToken: string;
   gitlabProjectId: string;
@@ -66,6 +173,17 @@ export interface AppConfig {
   gitlabPreflightSourceBranch?: string;
   preflightRunTargetCommands: boolean;
   targetIssueKey?: string;
+  taskMode?: WorkerTaskMode;
+  confidenceImplementThreshold?: number;
+  confidenceHumanThreshold?: number;
+  decompositionMaxSubtasks?: number;
+  decompositionCreateIssues?: boolean;
+  decompositionDryRun?: boolean;
+  decompositionDefaultSubtaskTag?: string;
+  decompositionSubtaskTitlePrefix?: string;
+  dependencyEnforcement?: boolean;
+  dependencyUnknownStatusPolicy?: DependencyUnknownStatusPolicy;
+  promptProfiles?: PromptProfileOverrideMap;
 }
 
 export type LockBackendKind = "tracker" | "redis" | "postgres";
@@ -83,6 +201,7 @@ export interface PriorityQueueConfig {
   priorityWeights: Record<string, number>;
   tagBoosts: Record<string, number>;
   componentBoosts: Record<string, number>;
+  confidencePriorityWeight?: number;
   deadlineBoost: {
     dueToday: number;
     overdue: number;
@@ -137,6 +256,8 @@ export interface RepositoryProfile {
   visualRegressionCommand?: string;
   visualRegressionArtifactsDir?: string;
   gitRepositoryUrl?: string;
+  promptProfiles?: PromptProfileOverrideMap;
+  decomposition?: RepositoryDecompositionConfig;
 }
 
 export interface GlobalWorkerConfig {
@@ -149,6 +270,18 @@ export interface GlobalWorkerConfig {
   trackerPreflightIssueKey?: string;
   gitlabPreflightSourceBranch?: string;
   targetIssueKey?: string;
+  taskMode?: WorkerTaskMode;
+  confidenceImplementThreshold?: number;
+  confidenceHumanThreshold?: number;
+  decompositionMaxSubtasks?: number;
+  decompositionCreateIssues?: boolean;
+  decompositionDryRun?: boolean;
+  decompositionDefaultSubtaskTag?: string;
+  decompositionSubtaskTitlePrefix?: string;
+  dependencyEnforcement?: boolean;
+  dependencyUnknownStatusPolicy?: DependencyUnknownStatusPolicy;
+  trackerParentLinkType?: string;
+  trackerBlockedByLinkType?: string;
   maxFixAttempts: number;
   maxReviewFixAttempts: number;
   gitRepositoryToken: string;
@@ -189,6 +322,8 @@ export interface TrackerIssue {
   deadline?: string;
   components?: string[];
   tags?: string[];
+  blockedBy?: string[];
+  blocks?: string[];
 }
 
 export interface TrackerComment {
@@ -204,7 +339,9 @@ export type ServiceCommentKind =
   | "AI QUESTION"
   | "AI MR"
   | "AI REVIEW"
-  | "AI LEASE";
+  | "AI LEASE"
+  | "AI ANALYSIS"
+  | "AI DECOMPOSITION";
 export type ClarificationMode = "clarification";
 export type WaitingReason = "clarification" | "failure_recovery" | "manual_hold";
 export type LeaseKind = "task" | "repository";
@@ -253,6 +390,18 @@ export interface ParsedServiceComment {
   heartbeatAt?: string;
   token?: string;
   releasedAt?: string;
+  confidence?: number;
+  taskType?: TaskType;
+  recommendedMode?: TaskExecutionMode;
+  promptProfileId?: string;
+  expectedFiles?: string[];
+  expectedSubsystems?: string[];
+  riskFactors?: string[];
+  missingContext?: string[];
+  reasoning?: string;
+  parentIssueKey?: string;
+  createdIssueKeys?: string[];
+  dryRun?: boolean;
 }
 
 export interface TaskLease {
@@ -396,6 +545,9 @@ export interface TrackerClient {
   addComment(issueKey: string, text: string): Promise<void>;
   transition(issueKey: string, targetStatus: LogicalStatus): Promise<void>;
   determineLogicalStatus(issue: TrackerIssue): LogicalStatus | undefined;
+  createIssue?(input: CreateTrackerIssueInput): Promise<TrackerIssue>;
+  linkIssue?(input: LinkTrackerIssueInput): Promise<void>;
+  getIssueLinks?(issueKey: string): Promise<TrackerIssueLink[]>;
 }
 
 export interface GitService {
@@ -448,4 +600,5 @@ export interface TaskAnalysisResult {
   status: "ready" | "clarification_required";
   threadId?: string;
   clarification?: ClarificationQuestion;
+  decision?: TaskAnalysisDecision;
 }

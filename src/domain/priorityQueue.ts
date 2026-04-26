@@ -1,12 +1,15 @@
 import type {
+  CommentWithMetadata,
   PriorityQueueConfig,
   RepositoryProfile,
   TrackerIssue,
 } from "../models/types.js";
+import { findLatestAnalysisDecision } from "../integrations/tracker/commentProtocol.js";
 
 export interface CandidateIssue {
   issue: TrackerIssue;
   repository: RepositoryProfile;
+  comments?: CommentWithMetadata[];
   commentsLoadedAt?: string;
 }
 
@@ -62,6 +65,34 @@ const sumBoosts = (
 ): number =>
   (values ?? []).reduce((total, value) => total + (boosts[normalize(value)] ?? 0), 0);
 
+const hasManualOverride = (
+  issue: TrackerIssue,
+  config: PriorityQueueConfig,
+): boolean => {
+  const manualTags = config.manualOverrideTags.map(normalize);
+  return (issue.tags ?? []).map(normalize).some((tag) => manualTags.includes(tag));
+};
+
+export const confidenceScoreFromComments = (
+  issue: TrackerIssue,
+  comments: CommentWithMetadata[] | undefined,
+  config: PriorityQueueConfig,
+): number => {
+  const decision = findLatestAnalysisDecision(comments ?? [], issue.key);
+  if (!decision) {
+    return 0;
+  }
+
+  const weight = config.confidencePriorityWeight ?? 0;
+  if (hasManualOverride(issue, config)) {
+    return decision.confidence * weight;
+  }
+
+  const lowConfidenceAdjustment =
+    decision.confidence < 50 ? -(50 - decision.confidence) * weight : 0;
+  return decision.confidence * weight + lowConfidenceAdjustment;
+};
+
 export const scoreCandidate = (
   issue: TrackerIssue,
   config: PriorityQueueConfig,
@@ -72,13 +103,10 @@ export const scoreCandidate = (
   } = {},
 ): CandidateScore => {
   const now = options.now ?? new Date();
-  const normalizedTags = (issue.tags ?? []).map(normalize);
   const priority = issue.priority
     ? (config.priorityWeights[normalize(issue.priority)] ?? 0)
     : 0;
-  const manualOverride = normalizedTags.some((tag) =>
-    config.manualOverrideTags.map(normalize).includes(tag),
-  )
+  const manualOverride = hasManualOverride(issue, config)
     ? 10_000
     : 0;
   const tags = sumBoosts(issue.tags, config.tagBoosts);
@@ -135,7 +163,14 @@ export const scoreAndSortCandidates = (
   sortScoredCandidates(
     candidates.map((candidate) => ({
       ...candidate,
-      score: scoreCandidate(candidate.issue, config, { now }),
+      score: scoreCandidate(candidate.issue, config, {
+        now,
+        confidenceScore: confidenceScoreFromComments(
+          candidate.issue,
+          candidate.comments,
+          config,
+        ),
+      }),
     })),
     config,
   );

@@ -323,4 +323,31 @@ describe("FleetOrchestrator", () => {
     await expect(orchestrator.runOnce()).resolves.toBe("processed");
     expect(processed).toEqual(["backend-api:BACKEND-1"]);
   });
+
+  it("skips open tasks whose blockers are not done", async () => {
+    const frontend = repository("client-application", "FRONTEND");
+    const processed: string[] = [];
+    const orchestrator = new FleetOrchestrator(
+      config([frontend]),
+      [
+        context(
+          frontend,
+          [
+            issue("FRONTEND-0", { logicalStatus: "in_progress" }),
+            issue("FRONTEND-1", {
+              priority: "high",
+              blockedBy: ["FRONTEND-0"],
+            }),
+            issue("FRONTEND-2", { priority: "normal" }),
+          ],
+          processed,
+        ),
+      ],
+      new FakeLockBackend(),
+      new Logger(),
+    );
+
+    await expect(orchestrator.runOnce()).resolves.toBe("processed");
+    expect(processed).toEqual(["client-application:FRONTEND-2"]);
+  });
 });

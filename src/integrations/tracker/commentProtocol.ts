@@ -6,6 +6,7 @@ import type {
   LogicalStatus,
   ParsedServiceComment,
   ReviewMetadata,
+  TaskAnalysisDecision,
   TaskLease,
   TrackerComment,
   WaitingReason,
@@ -16,6 +17,8 @@ const QUESTION_PREFIX = "AI QUESTION:";
 const MR_PREFIX = "AI MR:";
 const REVIEW_PREFIX = "AI REVIEW:";
 const LEASE_PREFIX = "AI LEASE:";
+const ANALYSIS_PREFIX = "AI ANALYSIS:";
+const DECOMPOSITION_PREFIX = "AI DECOMPOSITION:";
 const JSON_BLOCK_START = "```json";
 const JSON_BLOCK_END = "```";
 const DEFAULT_RESUME_HINT =
@@ -86,6 +89,9 @@ const normalizeNumber = (value: unknown): number | undefined => {
   return value;
 };
 
+const normalizeBoolean = (value: unknown): boolean | undefined =>
+  typeof value === "boolean" ? value : undefined;
+
 const normalizeNumberArray = (value: unknown): number[] | undefined => {
   if (!Array.isArray(value)) {
     return undefined;
@@ -126,6 +132,39 @@ const parseLogicalStatus = (value: unknown): LogicalStatus | undefined => {
     value === "review" ||
     value === "failed" ||
     value === "done"
+  ) {
+    return value;
+  }
+
+  return undefined;
+};
+
+const parseTaskType = (
+  value: unknown,
+): ParsedServiceComment["taskType"] | undefined => {
+  if (
+    value === "frontend_ui_fix" ||
+    value === "backend_endpoint" ||
+    value === "tests_only" ||
+    value === "refactor" ||
+    value === "dependency_update" ||
+    value === "documentation" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+
+  return undefined;
+};
+
+const parseRecommendedMode = (
+  value: unknown,
+): ParsedServiceComment["recommendedMode"] | undefined => {
+  if (
+    value === "implement" ||
+    value === "ask_clarification" ||
+    value === "decompose" ||
+    value === "human"
   ) {
     return value;
   }
@@ -314,6 +353,58 @@ const parseStructuredServiceComment = (
         releasedAt: normalizeString(jsonPayload.releasedAt),
       };
     }
+
+    if (kind === "AI ANALYSIS") {
+      const issueKey = normalizeString(jsonPayload.issueKey);
+      const confidence = normalizeNumber(jsonPayload.confidence);
+      const taskType = parseTaskType(jsonPayload.taskType);
+      const recommendedMode = parseRecommendedMode(jsonPayload.recommendedMode);
+      const promptProfileId = normalizeString(jsonPayload.promptProfileId);
+      if (
+        !issueKey ||
+        confidence === undefined ||
+        confidence < 0 ||
+        confidence > 100 ||
+        !taskType ||
+        !recommendedMode ||
+        !promptProfileId
+      ) {
+        return undefined;
+      }
+
+      return {
+        kind,
+        worker,
+        issueKey,
+        confidence,
+        taskType,
+        recommendedMode,
+        promptProfileId,
+        expectedFiles: normalizeStringArray(jsonPayload.expectedFiles) ?? [],
+        expectedSubsystems: normalizeStringArray(jsonPayload.expectedSubsystems) ?? [],
+        riskFactors: normalizeStringArray(jsonPayload.riskFactors) ?? [],
+        missingContext: normalizeStringArray(jsonPayload.missingContext) ?? [],
+        reasoning: normalizeString(jsonPayload.reasoning),
+      };
+    }
+
+    if (kind === "AI DECOMPOSITION") {
+      const parentIssueKey = normalizeString(jsonPayload.parentIssueKey);
+      const createdIssueKeys = normalizeStringArray(jsonPayload.createdIssueKeys) ?? [];
+      const dryRun = normalizeBoolean(jsonPayload.dryRun);
+      if (!parentIssueKey || dryRun === undefined) {
+        return undefined;
+      }
+
+      return {
+        kind,
+        worker,
+        parentIssueKey,
+        createdIssueKeys,
+        dryRun,
+        details: normalizeString(jsonPayload.summary),
+      };
+    }
   }
 
   const parsed = parseKeyValueLines(body);
@@ -449,6 +540,71 @@ export const formatReviewMetadataComment = (
       .join("\n"),
   );
 
+export const formatAnalysisComment = (
+  worker: string,
+  issueKey: string,
+  decision: TaskAnalysisDecision,
+): string =>
+  buildStructuredComment(
+    ANALYSIS_PREFIX,
+    {
+      worker,
+      issueKey,
+      confidence: decision.confidence,
+      taskType: decision.taskType,
+      recommendedMode: decision.recommendedMode,
+      promptProfileId: decision.promptProfileId,
+      expectedFiles: decision.expectedFiles,
+      expectedSubsystems: decision.expectedSubsystems,
+      riskFactors: decision.riskFactors,
+      missingContext: decision.missingContext,
+      reasoning: decision.reasoning,
+    },
+    [
+      `Confidence: ${decision.confidence}`,
+      `Task type: ${decision.taskType}`,
+      `Recommended mode: ${decision.recommendedMode}`,
+      `Prompt profile: ${decision.promptProfileId}`,
+      decision.reasoning,
+    ].join("\n"),
+  );
+
+export const formatDecompositionComment = (
+  worker: string,
+  input: {
+    parentIssueKey: string;
+    createdIssueKeys?: string[];
+    dryRun: boolean;
+    summary: string;
+    plan?: unknown;
+    warnings?: string[];
+  },
+): string =>
+  buildStructuredComment(
+    DECOMPOSITION_PREFIX,
+    {
+      worker,
+      parentIssueKey: input.parentIssueKey,
+      createdIssueKeys: input.createdIssueKeys ?? [],
+      dryRun: input.dryRun,
+      summary: input.summary,
+      ...(input.plan ? { plan: input.plan } : {}),
+      ...(input.warnings && input.warnings.length > 0 ? { warnings: input.warnings } : {}),
+    },
+    [
+      input.dryRun ? "Decomposition dry run." : "Decomposition completed.",
+      input.summary,
+      input.createdIssueKeys && input.createdIssueKeys.length > 0
+        ? `Created issues: ${input.createdIssueKeys.join(", ")}`
+        : "",
+      input.warnings && input.warnings.length > 0
+        ? `Warnings: ${input.warnings.join("; ")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
 export const formatLeaseComment = (lease: TaskLease): string =>
   buildStructuredComment(
     LEASE_PREFIX,
@@ -482,7 +638,9 @@ export const parseServiceComment = (
   parseStructuredServiceComment(QUESTION_PREFIX, "AI QUESTION", text) ??
   parseStructuredServiceComment(MR_PREFIX, "AI MR", text) ??
   parseStructuredServiceComment(REVIEW_PREFIX, "AI REVIEW", text) ??
-  parseStructuredServiceComment(LEASE_PREFIX, "AI LEASE", text);
+  parseStructuredServiceComment(LEASE_PREFIX, "AI LEASE", text) ??
+  parseStructuredServiceComment(ANALYSIS_PREFIX, "AI ANALYSIS", text) ??
+  parseStructuredServiceComment(DECOMPOSITION_PREFIX, "AI DECOMPOSITION", text);
 
 export const decorateComments = (
   comments: TrackerComment[],
@@ -557,6 +715,55 @@ export const findLatestReviewMetadata = (
     ...(metadata.lastFixCommit ? { lastFixCommit: metadata.lastFixCommit } : {}),
   };
 };
+
+export const findLatestAnalysisDecision = (
+  comments: CommentWithMetadata[],
+  issueKey?: string,
+): TaskAnalysisDecision | undefined => {
+  const metadata = comments
+    .filter(
+      (comment): comment is CommentWithMetadata & { metadata: ParsedServiceComment } =>
+        comment.metadata?.kind === "AI ANALYSIS" &&
+        (issueKey === undefined || comment.metadata.issueKey === issueKey),
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .at(-1)?.metadata;
+
+  if (
+    metadata?.confidence === undefined ||
+    !metadata.taskType ||
+    !metadata.recommendedMode ||
+    !metadata.promptProfileId
+  ) {
+    return undefined;
+  }
+
+  return {
+    confidence: metadata.confidence,
+    taskType: metadata.taskType,
+    recommendedMode: metadata.recommendedMode,
+    promptProfileId: metadata.promptProfileId,
+    expectedFiles: metadata.expectedFiles ?? [],
+    expectedSubsystems: metadata.expectedSubsystems ?? [],
+    riskFactors: metadata.riskFactors ?? [],
+    missingContext: metadata.missingContext ?? [],
+    reasoning: metadata.reasoning ?? "Analysis decision restored from Tracker comment.",
+  };
+};
+
+export const findLatestDecompositionMetadata = (
+  comments: CommentWithMetadata[],
+  parentIssueKey?: string,
+): ParsedServiceComment | undefined =>
+  comments
+    .filter(
+      (comment): comment is CommentWithMetadata & { metadata: ParsedServiceComment } =>
+        comment.metadata?.kind === "AI DECOMPOSITION" &&
+        (parentIssueKey === undefined ||
+          comment.metadata.parentIssueKey === parentIssueKey),
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .at(-1)?.metadata;
 
 const leaseFromMetadata = (
   metadata: ParsedServiceComment | undefined,

@@ -66,6 +66,19 @@ For Tracker statuses, the repository already includes an example file at [config
 | `CODEX_TIMEOUT_SECONDS` | No | `1800` | Hard timeout for one `codex exec` process. If the timeout is reached, the worker terminates that Codex process and treats the run as failed. |
 | `CODEX_LOG_FULL_EVENTS` | No | `false` | When `true`, the worker logs each raw JSONL event emitted by `codex exec --json`. Enable this for container-level debugging if the default event summaries are not enough. |
 | `CODEX_QUESTION_MARKER` | No | `AI_QUESTION:` | Keep the default unless you intentionally changed the worker comment protocol. |
+| `TASK_MODE` | No | `auto` | Phase 4 routing mode. `auto` follows structured `AI_ANALYSIS`; `implement` forces implementation; `decompose` runs decomposition; `analyze_only` writes analysis metadata and stops; `human` parks tasks in manual hold. |
+| `CONFIDENCE_IMPLEMENT_THRESHOLD` | No | `70` | Minimum analysis confidence for automatic implementation in `TASK_MODE=auto`. |
+| `CONFIDENCE_HUMAN_THRESHOLD` | No | `40` | Analysis confidence below this value is routed to manual hold. |
+| `CONFIDENCE_PRIORITY_WEIGHT` | No | `2` | Multiplier used by fleet priority scoring when a task already has an `AI ANALYSIS` comment. |
+| `DECOMPOSITION_MAX_SUBTASKS` | No | `8` | Maximum number of subtasks accepted from an `AI_DECOMPOSITION` plan. |
+| `DECOMPOSITION_CREATE_ISSUES` | No | `true` | When `false`, decomposition writes a dry-run comment instead of creating Tracker issues. |
+| `DECOMPOSITION_DRY_RUN` | No | `false` | Forces decomposition to write the proposed plan only. |
+| `DECOMPOSITION_DEFAULT_SUBTASK_TAG` | No | `ai_dev` | Tag added to Tracker sub-issues created by decomposition. |
+| `DECOMPOSITION_SUBTASK_TITLE_PREFIX` | No | `[AI split]` | Prefix added to created sub-issue titles. |
+| `TRACKER_PARENT_LINK_TYPE` | No | `relates` | Tracker relationship used to link decomposition sub-issues to their parent. |
+| `TRACKER_BLOCKED_BY_LINK_TYPE` | No | `is blocked by` | Tracker relationship used for dependency links and dependency filtering. |
+| `DEPENDENCY_ENFORCEMENT` | No | `true` | When enabled, tasks with unresolved `blockedBy` dependencies are skipped before lease acquisition. |
+| `DEPENDENCY_UNKNOWN_STATUS_POLICY` | No | `block` | Policy for dependencies whose status cannot be determined: `block`, `warn`, or `ignore`. |
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |
 | `LINT_COMMAND` | No | `npm run lint` | Set the exact lint command that should run inside the mounted target repository. |
 | `TYPE_CHECK_COMMAND` | No | None | Optional typecheck gate. When set, runs before lint and tests and blocks publish on failure. |
@@ -153,6 +166,22 @@ WORKER_RUN_ONCE=true
 ```
 
 With `TARGET_ISSUE_KEY` set, the worker does not call the usual queue/tag candidate search. It loads the target issue directly, checks structured `AI STATUS` locks, resumes only matching `/resume` clarification flows, and processes unresolved GitLab review discussions when the target issue is already in `review`.
+
+## Phase 4 task routing
+
+Before implementation, Codex must now return one structured line:
+
+```text
+AI_ANALYSIS: {"confidence":82,"taskType":"frontend_ui_fix","recommendedMode":"implement","promptProfileId":"frontend_ui_fix",...}
+```
+
+The worker stores that decision as an `AI ANALYSIS:` Tracker comment and uses it for routing and restart recovery. Invalid analysis output fails safely into manual hold.
+
+`TASK_MODE=auto` applies the confidence thresholds. Low-confidence tasks below `CONFIDENCE_HUMAN_THRESHOLD` move to `waiting_for_answer` with `manual_hold`. Tasks below `CONFIDENCE_IMPLEMENT_THRESHOLD` do not start implementation unless `TASK_MODE=implement` is explicitly set.
+
+`TASK_MODE=decompose` or an analysis decision with `recommendedMode=decompose` runs the decomposition prompt. `DECOMPOSITION_DRY_RUN=true` writes the proposed plan as an `AI DECOMPOSITION:` comment without creating issues. Create mode uses Tracker issue creation plus `TRACKER_PARENT_LINK_TYPE` and `TRACKER_BLOCKED_BY_LINK_TYPE` for parent/dependency links.
+
+Dependency filtering runs before leases are acquired. The worker reads `blockedBy` issue fields and Tracker links when available; blockers must have logical status `done` unless `DEPENDENCY_UNKNOWN_STATUS_POLICY` is relaxed.
 
 ## Fleet mode
 

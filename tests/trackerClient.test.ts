@@ -367,4 +367,105 @@ describe("YandexTrackerClient", () => {
     expect(issue.key).toBe("DEV-2");
     expect(attempts).toBe(2);
   });
+
+  it("creates issues and maps issue links", async () => {
+    const requests: Array<{ method: string; path: string; body?: any }> = [];
+    const trackerApiBaseUrl = await startServer(async (request, response) => {
+      const method = request.method ?? "GET";
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const path = url.pathname;
+
+      if (method === "POST" && path === "/v3/issues") {
+        const body = await readJsonBody(request);
+        requests.push({ method, path, body });
+        response.setHeader("Content-Type", "application/json");
+        response.end(
+          JSON.stringify({
+            id: "101",
+            key: "DEV-101",
+            summary: body.summary,
+            description: body.description,
+            queue: { key: body.queue },
+            tags: body.tags,
+            status: { key: "open", display: "Open" },
+          }),
+        );
+        return;
+      }
+
+      if (method === "POST" && path === "/v3/issues/DEV-1/links") {
+        requests.push({ method, path, body: await readJsonBody(request) });
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+
+      if (method === "GET" && path === "/v3/issues/DEV-1/links") {
+        response.setHeader("Content-Type", "application/json");
+        response.end(
+          JSON.stringify([
+            {
+              id: "link-1",
+              direction: "outward",
+              relationship: { display: "is blocked by" },
+              object: { key: "DEV-0" },
+            },
+          ]),
+        );
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(`${method} ${path}`);
+    });
+
+    const client = new YandexTrackerClient(createConfig(trackerApiBaseUrl), new Logger());
+
+    const created = await client.createIssue({
+      queue: "DEV",
+      title: "Subtask",
+      description: "Subtask description",
+      tags: ["ai_dev"],
+    });
+    await client.linkIssue({
+      sourceIssueKey: "DEV-1",
+      targetIssueKey: "DEV-101",
+      linkType: "relates",
+    });
+    const links = await client.getIssueLinks("DEV-1");
+
+    expect(created).toMatchObject({
+      key: "DEV-101",
+      title: "Subtask",
+      logicalStatus: "open",
+    });
+    expect(requests).toEqual([
+      {
+        method: "POST",
+        path: "/v3/issues",
+        body: {
+          queue: "DEV",
+          summary: "Subtask",
+          description: "Subtask description",
+          tags: ["ai_dev"],
+        },
+      },
+      {
+        method: "POST",
+        path: "/v3/issues/DEV-1/links",
+        body: {
+          relationship: "relates",
+          issue: "DEV-101",
+        },
+      },
+    ]);
+    expect(links).toEqual([
+      {
+        id: "link-1",
+        targetIssueKey: "DEV-0",
+        linkType: "is blocked by",
+        direction: "outward",
+      },
+    ]);
+  });
 });

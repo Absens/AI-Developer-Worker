@@ -87,6 +87,16 @@ describe("config", () => {
     expect(config.trackerPreflightIssueKey).toBeUndefined();
     expect(config.gitlabPreflightSourceBranch).toBeUndefined();
     expect(config.targetIssueKey).toBeUndefined();
+    expect(config.taskMode).toBe("auto");
+    expect(config.confidenceImplementThreshold).toBe(70);
+    expect(config.confidenceHumanThreshold).toBe(40);
+    expect(config.decompositionMaxSubtasks).toBe(8);
+    expect(config.decompositionCreateIssues).toBe(true);
+    expect(config.decompositionDryRun).toBe(false);
+    expect(config.trackerParentLinkType).toBe("relates");
+    expect(config.trackerBlockedByLinkType).toBe("is blocked by");
+    expect(config.dependencyEnforcement).toBe(true);
+    expect(config.dependencyUnknownStatusPolicy).toBe("block");
     expect(config.codexHome).toBe(join(homedir(), ".codex"));
     expect(config.codexCliCommand).toBe("codex");
     expect(config.codexCliArgs).toEqual([]);
@@ -129,6 +139,7 @@ describe("config", () => {
     });
     expect(fleetConfig.coordination.lockBackend).toBe("tracker");
     expect(fleetConfig.priorityQueue.priorityWeights.high).toBe(400);
+    expect(fleetConfig.priorityQueue.confidencePriorityWeight).toBe(2);
   });
 
   it("parses YAML fleet config with multiple repository profiles", () => {
@@ -158,6 +169,7 @@ describe("config", () => {
         "  manualOverrideTags: [ai_priority]",
         "  tagBoosts:",
         "    urgent: 250",
+        "  confidencePriorityWeight: 3",
         "repositories:",
         "  - name: client-application",
         "    repoPath: /workspace/client-app",
@@ -167,6 +179,14 @@ describe("config", () => {
         "    tags: [ai_dev]",
         "    testCommand: npm test",
         "    lintCommand: npm run lint",
+        "    promptProfiles:",
+        "      frontend_ui_fix:",
+        "        validationFocus:",
+        "          - Check responsive behavior for touched components.",
+        "    decomposition:",
+        "      defaultSubtaskTag: ai_split",
+        "      subtaskTitlePrefix: \"[Split]\"",
+        "      maxSubtasks: 5",
         "  - name: backend-api",
         "    repoPath: /workspace/backend",
         "    gitlabProjectId: \"43\"",
@@ -193,10 +213,19 @@ describe("config", () => {
     expect(config.coordination.lockTtlMs).toBe(120 * 1000);
     expect(config.coordination.lockHeartbeatMs).toBe(10 * 1000);
     expect(config.priorityQueue.tagBoosts.urgent).toBe(250);
+    expect(config.priorityQueue.confidencePriorityWeight).toBe(3);
     expect(config.repositories.map((repo) => repo.name)).toEqual([
       "client-application",
       "backend-api",
     ]);
+    expect(config.repositories[0]?.promptProfiles?.frontend_ui_fix?.validationFocus).toEqual([
+      "Check responsive behavior for touched components.",
+    ]);
+    expect(config.repositories[0]?.decomposition).toMatchObject({
+      defaultSubtaskTag: "ai_split",
+      subtaskTitlePrefix: "[Split]",
+      maxSubtasks: 5,
+    });
     expect(config.repositories[1]).toMatchObject({
       gitlabProjectId: "43",
       queues: ["BACKEND"],

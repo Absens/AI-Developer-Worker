@@ -1,10 +1,13 @@
 import type {
   AppConfig,
   CommentWithMetadata,
+  CreateTrackerIssueInput,
+  LinkTrackerIssueInput,
   LogicalStatus,
   TrackerClient,
   TrackerComment,
   TrackerIssue,
+  TrackerIssueLink,
 } from "../../models/types.js";
 import { ConfigurationError, TemporaryIntegrationError } from "../../utils/errors.js";
 import { Logger } from "../../utils/logger.js";
@@ -44,6 +47,8 @@ interface TrackerSearchResponseItem {
     display?: string;
   }>;
   tags?: string[];
+  blockedBy?: Array<string | { key?: string; display?: string }>;
+  blocks?: Array<string | { key?: string; display?: string }>;
 }
 
 interface TrackerTransitionResponseItem {
@@ -69,6 +74,33 @@ interface TrackerCollectionResponse<T> {
   comments?: T[];
   transitions?: T[];
   items?: T[];
+}
+
+interface TrackerIssueLinkResponseItem {
+  id?: string;
+  direction?: string;
+  type?: string | {
+    key?: string;
+    display?: string;
+    inward?: string;
+    outward?: string;
+  };
+  relationship?: string | {
+    key?: string;
+    display?: string;
+  };
+  object?: {
+    key?: string;
+  };
+  issue?: {
+    key?: string;
+  };
+  linkedIssue?: {
+    key?: string;
+  };
+  target?: {
+    key?: string;
+  };
 }
 
 const normalize = (value?: string): string =>
@@ -100,6 +132,10 @@ const extractNamedValues = (
   return normalized.length > 0 ? normalized : undefined;
 };
 
+const extractIssueKeys = (
+  values: Array<string | { key?: string; display?: string }> | undefined,
+): string[] | undefined => extractNamedValues(values);
+
 const buildIssue = (
   issue: TrackerSearchResponseItem,
   logicalStatus?: LogicalStatus,
@@ -118,7 +154,54 @@ const buildIssue = (
   deadline: issue.deadline?.trim() || undefined,
   components: extractNamedValues(issue.components),
   tags: issue.tags?.map((tag) => tag.trim()).filter(Boolean),
+  blockedBy: extractIssueKeys(issue.blockedBy),
+  blocks: extractIssueKeys(issue.blocks),
 });
+
+const extractLinkType = (link: TrackerIssueLinkResponseItem): string | undefined => {
+  const relationship = extractNamedValue(link.relationship);
+  if (relationship) {
+    return relationship;
+  }
+
+  if (typeof link.type === "string") {
+    return link.type.trim() || undefined;
+  }
+
+  return (
+    link.type?.key?.trim() ||
+    link.type?.display?.trim() ||
+    link.type?.inward?.trim() ||
+    link.type?.outward?.trim() ||
+    undefined
+  );
+};
+
+const buildIssueLink = (
+  link: TrackerIssueLinkResponseItem,
+): TrackerIssueLink | undefined => {
+  const targetIssueKey =
+    link.object?.key?.trim() ||
+    link.issue?.key?.trim() ||
+    link.linkedIssue?.key?.trim() ||
+    link.target?.key?.trim();
+  const linkType = extractLinkType(link);
+  if (!targetIssueKey || !linkType) {
+    return undefined;
+  }
+
+  const direction =
+    link.direction === "inward" || link.direction === "outward"
+      ? link.direction
+      : "unknown";
+
+  return {
+    id: link.id?.trim(),
+    targetIssueKey,
+    linkType,
+    direction,
+  };
+};
 
 const buildTransition = (
   transition: TrackerTransitionResponseItem,
@@ -240,6 +323,43 @@ export class YandexTrackerClient implements TrackerClient {
     await this.request(`/issues/${issueKey}/transitions/${transition}/_execute`, {
       method: "POST",
     });
+  }
+
+  async createIssue(input: CreateTrackerIssueInput): Promise<TrackerIssue> {
+    const issue = await this.request<TrackerSearchResponseItem>("/issues", {
+      method: "POST",
+      body: {
+        queue: input.queue,
+        summary: input.title,
+        description: input.description,
+        tags: input.tags ?? [],
+      },
+    });
+    const built = buildIssue(issue);
+    return {
+      ...built,
+      logicalStatus: this.determineLogicalStatus(built),
+    };
+  }
+
+  async linkIssue(input: LinkTrackerIssueInput): Promise<void> {
+    await this.request(`/issues/${input.sourceIssueKey}/links`, {
+      method: "POST",
+      body: {
+        relationship: input.linkType,
+        issue: input.targetIssueKey,
+      },
+    });
+  }
+
+  async getIssueLinks(issueKey: string): Promise<TrackerIssueLink[]> {
+    const links = await this.fetchAllPages<TrackerIssueLinkResponseItem>(
+      `/issues/${issueKey}/links`,
+    );
+
+    return links
+      .map(buildIssueLink)
+      .filter((link): link is TrackerIssueLink => link !== undefined);
   }
 
   private async searchIssuesByTag(

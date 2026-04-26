@@ -8,10 +8,12 @@ For each cycle the worker:
 
 1. Restores an unfinished task for the current `WORKER_ID`, if one exists.
 2. Otherwise selects an eligible Tracker issue by lease-aware priority scoring. In legacy `.env` mode this uses `TRACKER_DEFAULT_QUEUE` and `TRACKER_TAG`; in fleet mode it uses repository profiles from `WORKER_CONFIG_FILE`.
-3. Moves the issue through logical statuses from `TRACKER_STATUS_MAP_FILE`.
-4. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone.
-5. Runs structured `codex exec`, then tests and lint.
-6. Commits, pushes, publishes an MR, and updates Tracker comments/status.
+3. Runs structured task analysis, stores `AI ANALYSIS:`, chooses a prompt profile, and either implements, asks for clarification, decomposes, or parks the task for manual review.
+4. Enforces `blockedBy` dependencies before acquiring leases or touching git state.
+5. Moves the issue through logical statuses from `TRACKER_STATUS_MAP_FILE`.
+6. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone when implementation is allowed.
+7. Runs structured `codex exec`, then tests and lint.
+8. Commits, pushes, publishes an MR, and updates Tracker comments/status.
 
 If Codex needs business clarification, it returns exactly one `AI_QUESTION:` line, the worker stores the Codex `threadId`, and later resumes that session after a human answer.
 
@@ -72,6 +74,10 @@ Common optional values:
 - `HOST_CODEX_HOME=C:/Users/.../.codex` for optional Compose bootstrap on Windows
 - `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` for multi-repository fleet mode
 - `LOCK_BACKEND=tracker`, `LOCK_TTL_SECONDS=900`, `LOCK_HEARTBEAT_SECONDS=60` for Tracker-comment leases
+- `TASK_MODE=auto|implement|decompose|analyze_only|human` for Phase 4 routing
+- `CONFIDENCE_IMPLEMENT_THRESHOLD=70`, `CONFIDENCE_HUMAN_THRESHOLD=40`, `CONFIDENCE_PRIORITY_WEIGHT=2`
+- `DECOMPOSITION_DRY_RUN=true` for safe epic split previews
+- `DEPENDENCY_ENFORCEMENT=true`, `DEPENDENCY_UNKNOWN_STATUS_POLICY=block` for blocked-task filtering
 
 For Codex CLI 0.124.0, global flags such as `--search` and
 `--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example

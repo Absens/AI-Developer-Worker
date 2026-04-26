@@ -3,6 +3,8 @@ import type {
   HumanTaskCommand,
   MergeRequestDiscussion,
   MergeRequestInfo,
+  PromptProfile,
+  TaskAnalysisDecision,
   TrackerIssue,
 } from "../models/types.js";
 import {
@@ -10,6 +12,7 @@ import {
   findLatestHumanTaskCommandAfter,
   findLatestQuestionComment,
 } from "../integrations/tracker/commentProtocol.js";
+import { getPromptProfile } from "./promptProfiles.js";
 
 const CLARIFICATION_SCHEMA = `{
   "summary": "short summary of what is unclear",
@@ -159,6 +162,54 @@ const buildClarificationInstruction = (): string => [
   "Do not add markdown fences, explanations, or any extra text around that one-line response.",
 ].join("\n");
 
+const formatProfileGuidance = (profile: PromptProfile | undefined): string => {
+  const resolved = profile ?? getPromptProfile("general");
+
+  return [
+    `Prompt profile: ${resolved.id}`,
+    `Task type: ${resolved.taskType}`,
+    "",
+    "Profile-specific implementation instructions:",
+    ...resolved.implementationInstructions.map((entry) => `- ${entry}`),
+    "",
+    "Validation focus:",
+    ...resolved.validationFocus.map((entry) => `- ${entry}`),
+    "",
+    "Risk checklist:",
+    ...resolved.riskChecklist.map((entry) => `- ${entry}`),
+  ].join("\n");
+};
+
+const formatAnalysisDecision = (
+  decision: TaskAnalysisDecision | undefined,
+): string => {
+  if (!decision) {
+    return "No structured analysis decision is available.";
+  }
+
+  return [
+    `Confidence: ${decision.confidence}`,
+    `Task type: ${decision.taskType}`,
+    `Recommended mode: ${decision.recommendedMode}`,
+    `Prompt profile: ${decision.promptProfileId}`,
+    `Expected files: ${
+      decision.expectedFiles.length > 0 ? decision.expectedFiles.join(", ") : "not specified"
+    }`,
+    `Expected subsystems: ${
+      decision.expectedSubsystems.length > 0
+        ? decision.expectedSubsystems.join(", ")
+        : "not specified"
+    }`,
+    `Risk factors: ${
+      decision.riskFactors.length > 0 ? decision.riskFactors.join("; ") : "none listed"
+    }`,
+    `Missing context: ${
+      decision.missingContext.length > 0 ? decision.missingContext.join("; ") : "none"
+    }`,
+    `Reasoning: ${decision.reasoning}`,
+  ].join("\n");
+};
+
 export const buildAnalysisPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
@@ -179,16 +230,32 @@ Mode: analysis-only
 Requirements:
 1. Analyze the task and repository context only.
 2. Do not modify files, do not create files, do not run formatters, and do not perform implementation work.
-3. If the task is clear enough to implement safely, reply with exactly READY_FOR_IMPLEMENTATION and nothing else.
-4. If the task is ambiguous, reply with exactly one AI_QUESTION line using the clarification JSON contract below.
-5. Offer 2 to 4 mutually exclusive options when possible.
-6. Make the question human-friendly and specific to the blocker.
+3. Reply with exactly one line that starts with AI_ANALYSIS: followed by one compact JSON object.
+4. Do not add markdown fences, explanations, or any extra text around that one-line response.
+5. Choose recommendedMode from: implement, ask_clarification, decompose, human.
+6. Choose taskType from: frontend_ui_fix, backend_endpoint, tests_only, refactor, dependency_update, documentation, unknown.
+7. Use promptProfileId from the same built-in ids, or general when no profile fits.
+8. If critical context is missing, set recommendedMode to ask_clarification or human and list missingContext.
+9. If the task is too large for one merge request, set recommendedMode to decompose.
 
-${buildClarificationInstruction()}`;
+Required JSON schema:
+{
+  "confidence": 82,
+  "taskType": "frontend_ui_fix",
+  "recommendedMode": "implement",
+  "promptProfileId": "frontend_ui_fix",
+  "expectedFiles": ["src/components/Button.tsx"],
+  "expectedSubsystems": ["ui", "forms"],
+  "riskFactors": ["visual regression risk"],
+  "missingContext": [],
+  "reasoning": "Localized UI fix with clear acceptance criteria."
+}`;
 
 export const buildImplementationPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
+  profile?: PromptProfile,
+  analysisDecision?: TaskAnalysisDecision,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -200,6 +267,11 @@ ${formatHumanComments(comments)}
 
 Clarification history:
 ${formatClarificationHistory(comments)}
+
+Structured analysis:
+${formatAnalysisDecision(analysisDecision)}
+
+${formatProfileGuidance(profile)}
 
 Requirements:
 1. Analyze the repository.
@@ -214,10 +286,17 @@ ${buildClarificationInstruction()}`;
 export const buildFixPrompt = (
   issue: TrackerIssue,
   diagnostic: string,
+  profile?: PromptProfile,
+  analysisDecision?: TaskAnalysisDecision,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
 The previous implementation did not pass validation. Fix the code and rerun the required checks.
+
+Structured analysis:
+${formatAnalysisDecision(analysisDecision)}
+
+${formatProfileGuidance(profile)}
 
 Validation errors:
 ${diagnostic}
@@ -265,6 +344,8 @@ export const buildReviewFixPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
   reviewContext: ReviewFixPromptContext,
+  profile?: PromptProfile,
+  analysisDecision?: TaskAnalysisDecision,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -273,6 +354,11 @@ ${issue.description || "No description."}
 
 Relevant Tracker context:
 ${formatHumanComments(comments)}
+
+Structured analysis:
+${formatAnalysisDecision(analysisDecision)}
+
+${formatProfileGuidance(profile)}
 
 Merge request:
 - URL: ${reviewContext.mergeRequest.url}
@@ -301,3 +387,61 @@ Requirements:
 6. If critical business context is missing, stop and ask for clarification using the exact AI_QUESTION JSON contract below.
 
 ${buildClarificationInstruction()}`;
+
+export const buildDecompositionPrompt = (
+  issue: TrackerIssue,
+  comments: CommentWithMetadata[],
+  options: {
+    maxSubtasks: number;
+    defaultSubtaskTag: string;
+    titlePrefix: string;
+  },
+  analysisDecision?: TaskAnalysisDecision,
+): string => `Task: ${issue.key}
+Title: ${issue.title}
+
+Description:
+${issue.description || "No description."}
+
+Additional context:
+${formatHumanComments(comments)}
+
+Structured analysis:
+${formatAnalysisDecision(analysisDecision)}
+
+Mode: decomposition-only
+
+Requirements:
+1. Split this parent issue into no more than ${options.maxSubtasks} implementation-ready subtasks.
+2. Do not modify repository files and do not run implementation commands.
+3. Each subtask must include concrete acceptance criteria and a recommendedPromptProfileId.
+4. Prefer queue ${issue.queue ?? issue.key.split("-")[0]}; only specify another queue if the issue clearly requires it.
+5. Include tag ${options.defaultSubtaskTag} on every subtask unless a more specific tag is already present.
+6. Use title prefix ${options.titlePrefix} when thinking about final Tracker titles, but return clean subtask titles without duplicating the prefix.
+7. Express dependencies only between returned temporaryId values.
+8. Reply with exactly one line that starts with AI_DECOMPOSITION: followed by one compact JSON object.
+
+Required JSON schema:
+{
+  "parentIssueKey": "${issue.key}",
+  "summary": "Short summary of the split.",
+  "subtasks": [
+    {
+      "temporaryId": "task-1",
+      "title": "Implement API contract",
+      "description": "Detailed implementation scope.",
+      "queue": "${issue.queue ?? issue.key.split("-")[0]}",
+      "tags": ["${options.defaultSubtaskTag}"],
+      "acceptanceCriteria": ["Criterion one"],
+      "recommendedPromptProfileId": "backend_endpoint"
+    }
+  ],
+  "dependencies": [
+    {
+      "blockedTaskTemporaryId": "task-2",
+      "blockingTaskTemporaryId": "task-1",
+      "reason": "UI work depends on the API contract."
+    }
+  ],
+  "risks": ["Cross-subtask integration risk"]
+}`;

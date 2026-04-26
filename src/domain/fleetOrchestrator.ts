@@ -21,6 +21,7 @@ import {
   type CandidateIssue,
   type ScoredCandidate,
 } from "./priorityQueue.js";
+import { checkIssueDependencies } from "./dependencies.js";
 
 interface CandidateWithContext extends CandidateIssue {
   context: RepositoryWorkerContext;
@@ -38,6 +39,8 @@ const TARGET_PROCESSABLE_STATES = new Set([
   "waiting_for_answer",
   "review",
 ]);
+
+const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
 
 const queueFromIssue = (issue: TrackerIssue): string =>
   issue.queue?.trim() || issue.key.split("-")[0] || "";
@@ -234,6 +237,32 @@ export class FleetOrchestrator {
 
             if (issue.logicalStatus !== "open") {
               continue;
+            }
+
+            const dependencyCheck = await checkIssueDependencies(
+              context.tracker,
+              issue,
+              {
+                enforcement: this.config.dependencyEnforcement ?? true,
+                unknownStatusPolicy:
+                  this.config.dependencyUnknownStatusPolicy ?? "block",
+                blockedByLinkType:
+                  this.config.trackerBlockedByLinkType ??
+                  DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE,
+              },
+            );
+            if (!dependencyCheck.eligible) {
+              this.logger.info("Skipping issue because dependencies are not done.", {
+                issueKey: issue.key,
+                blockers: dependencyCheck.blockers,
+              });
+              continue;
+            }
+            if (dependencyCheck.blockers.length > 0) {
+              this.logger.warn("Issue has dependency warnings but remains eligible.", {
+                issueKey: issue.key,
+                blockers: dependencyCheck.blockers,
+              });
             }
 
             candidates.set(issueKey, {

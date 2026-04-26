@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  confidenceScoreFromComments,
   scoreAndSortCandidates,
   scoreCandidate,
 } from "../src/domain/priorityQueue.js";
+import {
+  formatAnalysisComment,
+  parseServiceComment,
+} from "../src/integrations/tracker/commentProtocol.js";
 import type {
   PriorityQueueConfig,
   RepositoryProfile,
@@ -151,5 +156,59 @@ describe("priority queue", () => {
       "FRONTEND-1",
       "FRONTEND-2",
     ]);
+  });
+
+  it("adds stored analysis confidence into candidate ordering", () => {
+    const highConfidence = formatAnalysisComment("worker-1", "FRONTEND-2", {
+      confidence: 90,
+      taskType: "unknown",
+      recommendedMode: "implement",
+      promptProfileId: "general",
+      expectedFiles: [],
+      expectedSubsystems: [],
+      riskFactors: [],
+      missingContext: [],
+      reasoning: "Clear task.",
+    });
+    const sorted = scoreAndSortCandidates(
+      [
+        {
+          issue: issue({ key: "FRONTEND-1", priority: "normal" }),
+          repository,
+        },
+        {
+          issue: issue({ key: "FRONTEND-2", priority: "normal" }),
+          repository,
+          comments: [
+            {
+              id: "1",
+              text: highConfidence,
+              createdAt: "2026-04-26T10:00:00.000Z",
+              isSystem: false,
+              metadata: parseServiceComment(highConfidence),
+            },
+          ],
+        },
+      ],
+      { ...config, confidencePriorityWeight: 2 },
+      new Date("2026-04-26T10:00:00.000Z"),
+    );
+
+    expect(sorted[0]?.issue.key).toBe("FRONTEND-2");
+    expect(
+      confidenceScoreFromComments(
+        issue({ key: "FRONTEND-2" }),
+        [
+          {
+            id: "1",
+            text: highConfidence,
+            createdAt: "2026-04-26T10:00:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(highConfidence),
+          },
+        ],
+        { ...config, confidencePriorityWeight: 2 },
+      ),
+    ).toBe(180);
   });
 });

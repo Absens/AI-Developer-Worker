@@ -261,12 +261,12 @@ repositories:
 - confidence score (поле зарезервировано, полноценный сигнал остаётся Phase 4);
 - manual override.
 
-## Фаза 4 - Task Routing и декомпозиция
+## Фаза 4 - Task Routing и декомпозиция - MVP completed 2026-04-26
 
 **Срок:** 4-5 недель.
 **Цель:** повысить success rate за счёт выбора подходящих задач и правильной декомпозиции.
 
-### 4.1 Confidence pre-analysis
+### 4.1 Confidence pre-analysis - MVP completed 2026-04-26
 
 Перед implementation воркер уже делает analysis stage. Следующий шаг - вернуть структурированную оценку:
 
@@ -278,7 +278,7 @@ repositories:
 
 Если confidence ниже порога, задача переводится в `waiting_for_answer` или специальный human status.
 
-### 4.2 Task routing
+### 4.2 Task routing - MVP completed 2026-04-26
 
 Специализированные prompt profiles:
 
@@ -291,7 +291,7 @@ repositories:
 
 Это дешевле и полезнее, чем сразу пытаться поддержать "любой тип задачи" одинаковым prompt.
 
-### 4.3 Epic decomposition
+### 4.3 Epic decomposition - MVP completed 2026-04-26
 
 Режим:
 
@@ -309,7 +309,7 @@ FRONTEND-100 Notifications
   -> FRONTEND-104 NotificationBell UI
 ```
 
-### 4.4 Dependencies between tasks
+### 4.4 Dependencies between tasks - MVP completed 2026-04-26
 
 Расширить `TrackerIssue`:
 

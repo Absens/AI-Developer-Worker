@@ -6,13 +6,17 @@ import { parse as parseYaml } from "yaml";
 import type {
   AppConfig,
   CoordinationConfig,
+  DependencyUnknownStatusPolicy,
   GlobalWorkerConfig,
   LogicalStatus,
   PriorityQueueConfig,
+  PromptProfileOverrideMap,
+  RepositoryDecompositionConfig,
   RepositoryProfile,
   RepositoryRuntimeConfig,
   TrackerOrgHeader,
   TrackerStatusConfig,
+  WorkerTaskMode,
 } from "./models/types.js";
 import { ConfigurationError } from "./utils/errors.js";
 
@@ -36,12 +40,26 @@ const DEFAULT_PRIORITY_QUEUE_CONFIG: PriorityQueueConfig = {
   },
   tagBoosts: {},
   componentBoosts: {},
+  confidencePriorityWeight: 2,
   deadlineBoost: {
     dueToday: 300,
     overdue: 600,
   },
   createdAtTieBreaker: "oldest",
 };
+
+const DEFAULT_TASK_MODE: WorkerTaskMode = "auto";
+const DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD = 70;
+const DEFAULT_CONFIDENCE_HUMAN_THRESHOLD = 40;
+const DEFAULT_DECOMPOSITION_MAX_SUBTASKS = 8;
+const DEFAULT_DECOMPOSITION_CREATE_ISSUES = true;
+const DEFAULT_DECOMPOSITION_DRY_RUN = false;
+const DEFAULT_DECOMPOSITION_SUBTASK_TAG = "ai_dev";
+const DEFAULT_DECOMPOSITION_TITLE_PREFIX = "[AI split]";
+const DEFAULT_TRACKER_PARENT_LINK_TYPE = "relates";
+const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
+const DEFAULT_DEPENDENCY_ENFORCEMENT = true;
+const DEFAULT_DEPENDENCY_UNKNOWN_STATUS_POLICY: DependencyUnknownStatusPolicy = "block";
 
 const requireEnv = (env: NodeJS.ProcessEnv, key: string): string => {
   const value = env[key]?.trim();
@@ -71,6 +89,15 @@ const parseOptionalPercent = (
   const value = Number.parseFloat(trimmed);
   if (!Number.isFinite(value) || value < 0 || value > 100) {
     throw new ConfigurationError(`${key} must be a number from 0 to 100.`);
+  }
+
+  return value;
+};
+
+const parsePercentInt = (input: string, key: string): number => {
+  const value = Number.parseInt(input, 10);
+  if (!Number.isInteger(value) || value < 0 || value > 100) {
+    throw new ConfigurationError(`${key} must be an integer from 0 to 100.`);
   }
 
   return value;
@@ -116,6 +143,43 @@ const parseCodexSandbox = (
   throw new ConfigurationError(
     "CODEX_SANDBOX must be one of: read-only, workspace-write, danger-full-access.",
   );
+};
+
+const parseTaskMode = (input: string | undefined, key = "TASK_MODE"): WorkerTaskMode => {
+  const normalized = input?.trim();
+  if (!normalized) {
+    return DEFAULT_TASK_MODE;
+  }
+
+  if (
+    normalized === "auto" ||
+    normalized === "implement" ||
+    normalized === "decompose" ||
+    normalized === "analyze_only" ||
+    normalized === "human"
+  ) {
+    return normalized;
+  }
+
+  throw new ConfigurationError(
+    `${key} must be one of: auto, implement, decompose, analyze_only, human.`,
+  );
+};
+
+const parseDependencyUnknownStatusPolicy = (
+  input: string | undefined,
+  key = "DEPENDENCY_UNKNOWN_STATUS_POLICY",
+): DependencyUnknownStatusPolicy => {
+  const normalized = input?.trim();
+  if (!normalized) {
+    return DEFAULT_DEPENDENCY_UNKNOWN_STATUS_POLICY;
+  }
+
+  if (normalized === "block" || normalized === "warn" || normalized === "ignore") {
+    return normalized;
+  }
+
+  throw new ConfigurationError(`${key} must be one of: block, warn, ignore.`);
 };
 
 const parseStringArray = (input: string | undefined, key: string): string[] => {
@@ -251,6 +315,22 @@ const optionalNumber = (
   return value;
 };
 
+const optionalPercentIntValue = (
+  value: unknown,
+  key: string,
+  defaultValue: number,
+): number => {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100) {
+    throw new ConfigurationError(`${key} must be an integer from 0 to 100.`);
+  }
+
+  return value;
+};
+
 const optionalStringArrayValue = (
   value: unknown,
   key: string,
@@ -285,6 +365,81 @@ const optionalNumberRecord = (
     result[entryKey.toLowerCase()] = entryValue;
   }
   return result;
+};
+
+const parsePromptProfileOverrides = (
+  value: unknown,
+  path: string,
+): PromptProfileOverrideMap | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const raw = asRecord(value, path);
+  const result: PromptProfileOverrideMap = {};
+  for (const [profileId, profileValue] of Object.entries(raw)) {
+    const profilePath = `${path}.${profileId}`;
+    const profile = asRecord(profileValue, profilePath);
+    result[profileId] = {
+      matchHints: optionalStringArrayValue(
+        profile.matchHints,
+        `${profilePath}.matchHints`,
+        [],
+      ),
+      implementationInstructions: optionalStringArrayValue(
+        profile.implementationInstructions,
+        `${profilePath}.implementationInstructions`,
+        [],
+      ),
+      validationFocus: optionalStringArrayValue(
+        profile.validationFocus,
+        `${profilePath}.validationFocus`,
+        [],
+      ),
+      riskChecklist: optionalStringArrayValue(
+        profile.riskChecklist,
+        `${profilePath}.riskChecklist`,
+        [],
+      ),
+    };
+  }
+
+  return result;
+};
+
+const parseRepositoryDecompositionConfig = (
+  value: unknown,
+  path: string,
+): RepositoryDecompositionConfig | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const raw = asRecord(value, path);
+  const maxSubtasks =
+    raw.maxSubtasks === undefined
+      ? undefined
+      : optionalPositiveInt(raw.maxSubtasks, `${path}.maxSubtasks`, 1);
+
+  return {
+    ...(optionalString(raw.defaultSubtaskTag, `${path}.defaultSubtaskTag`)
+      ? {
+          defaultSubtaskTag: optionalString(
+            raw.defaultSubtaskTag,
+            `${path}.defaultSubtaskTag`,
+          ),
+        }
+      : {}),
+    ...(optionalString(raw.subtaskTitlePrefix, `${path}.subtaskTitlePrefix`)
+      ? {
+          subtaskTitlePrefix: optionalString(
+            raw.subtaskTitlePrefix,
+            `${path}.subtaskTitlePrefix`,
+          ),
+        }
+      : {}),
+    ...(maxSubtasks !== undefined ? { maxSubtasks } : {}),
+  };
 };
 
 const resolveEnvReference = (
@@ -429,6 +584,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     trackerApiBaseUrl:
       env.TRACKER_API_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://api.tracker.yandex.net/v3",
+    trackerParentLinkType:
+      env.TRACKER_PARENT_LINK_TYPE?.trim() || DEFAULT_TRACKER_PARENT_LINK_TYPE,
+    trackerBlockedByLinkType:
+      env.TRACKER_BLOCKED_BY_LINK_TYPE?.trim() || DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE,
     gitlabUrl: requireEnv(env, "GITLAB_URL").replace(/\/+$/, ""),
     gitlabToken: requireEnv(env, "GITLAB_TOKEN"),
     gitlabProjectId: requireEnv(env, "GITLAB_PROJECT_ID"),
@@ -518,6 +677,43 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     ...(env.TARGET_ISSUE_KEY?.trim()
       ? { targetIssueKey: env.TARGET_ISSUE_KEY.trim() }
       : {}),
+    taskMode: parseTaskMode(env.TASK_MODE),
+    confidenceImplementThreshold: env.CONFIDENCE_IMPLEMENT_THRESHOLD?.trim()
+      ? parsePercentInt(
+          env.CONFIDENCE_IMPLEMENT_THRESHOLD,
+          "CONFIDENCE_IMPLEMENT_THRESHOLD",
+        )
+      : DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD,
+    confidenceHumanThreshold: env.CONFIDENCE_HUMAN_THRESHOLD?.trim()
+      ? parsePercentInt(env.CONFIDENCE_HUMAN_THRESHOLD, "CONFIDENCE_HUMAN_THRESHOLD")
+      : DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
+    decompositionMaxSubtasks: env.DECOMPOSITION_MAX_SUBTASKS?.trim()
+      ? parsePositiveInt(env.DECOMPOSITION_MAX_SUBTASKS, "DECOMPOSITION_MAX_SUBTASKS")
+      : DEFAULT_DECOMPOSITION_MAX_SUBTASKS,
+    decompositionCreateIssues: parseBooleanFlag(
+      env.DECOMPOSITION_CREATE_ISSUES,
+      "DECOMPOSITION_CREATE_ISSUES",
+      DEFAULT_DECOMPOSITION_CREATE_ISSUES,
+    ),
+    decompositionDryRun: parseBooleanFlag(
+      env.DECOMPOSITION_DRY_RUN,
+      "DECOMPOSITION_DRY_RUN",
+      DEFAULT_DECOMPOSITION_DRY_RUN,
+    ),
+    decompositionDefaultSubtaskTag:
+      env.DECOMPOSITION_DEFAULT_SUBTASK_TAG?.trim() ||
+      DEFAULT_DECOMPOSITION_SUBTASK_TAG,
+    decompositionSubtaskTitlePrefix:
+      env.DECOMPOSITION_SUBTASK_TITLE_PREFIX?.trim() ||
+      DEFAULT_DECOMPOSITION_TITLE_PREFIX,
+    dependencyEnforcement: parseBooleanFlag(
+      env.DEPENDENCY_ENFORCEMENT,
+      "DEPENDENCY_ENFORCEMENT",
+      DEFAULT_DEPENDENCY_ENFORCEMENT,
+    ),
+    dependencyUnknownStatusPolicy: parseDependencyUnknownStatusPolicy(
+      env.DEPENDENCY_UNKNOWN_STATUS_POLICY,
+    ),
   };
 };
 
@@ -565,7 +761,10 @@ const parseCoordinationConfig = (
   };
 };
 
-const parsePriorityQueueConfig = (rawValue?: Record<string, unknown>): PriorityQueueConfig => {
+const parsePriorityQueueConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+): PriorityQueueConfig => {
   const deadlineBoost = optionalRecord(
     rawValue?.deadlineBoost,
     "priorityQueue.deadlineBoost",
@@ -600,6 +799,13 @@ const parsePriorityQueueConfig = (rawValue?: Record<string, unknown>): PriorityQ
       "priorityQueue.componentBoosts",
       DEFAULT_PRIORITY_QUEUE_CONFIG.componentBoosts,
     ),
+    confidencePriorityWeight: env.CONFIDENCE_PRIORITY_WEIGHT?.trim()
+      ? parsePositiveInt(env.CONFIDENCE_PRIORITY_WEIGHT, "CONFIDENCE_PRIORITY_WEIGHT")
+      : optionalNumber(
+          rawValue?.confidencePriorityWeight,
+          "priorityQueue.confidencePriorityWeight",
+          DEFAULT_PRIORITY_QUEUE_CONFIG.confidencePriorityWeight ?? 2,
+        ),
     deadlineBoost: {
       dueToday: optionalNumber(
         deadlineBoost?.dueToday,
@@ -633,6 +839,38 @@ const buildSingleRepositoryFleetConfig = (
     ? { gitlabPreflightSourceBranch: config.gitlabPreflightSourceBranch }
     : {}),
   ...(config.targetIssueKey ? { targetIssueKey: config.targetIssueKey } : {}),
+  ...(config.taskMode ? { taskMode: config.taskMode } : {}),
+  ...(config.confidenceImplementThreshold !== undefined
+    ? { confidenceImplementThreshold: config.confidenceImplementThreshold }
+    : {}),
+  ...(config.confidenceHumanThreshold !== undefined
+    ? { confidenceHumanThreshold: config.confidenceHumanThreshold }
+    : {}),
+  ...(config.decompositionMaxSubtasks !== undefined
+    ? { decompositionMaxSubtasks: config.decompositionMaxSubtasks }
+    : {}),
+  ...(config.decompositionCreateIssues !== undefined
+    ? { decompositionCreateIssues: config.decompositionCreateIssues }
+    : {}),
+  ...(config.decompositionDryRun !== undefined
+    ? { decompositionDryRun: config.decompositionDryRun }
+    : {}),
+  ...(config.decompositionDefaultSubtaskTag
+    ? { decompositionDefaultSubtaskTag: config.decompositionDefaultSubtaskTag }
+    : {}),
+  ...(config.decompositionSubtaskTitlePrefix
+    ? { decompositionSubtaskTitlePrefix: config.decompositionSubtaskTitlePrefix }
+    : {}),
+  ...(config.dependencyEnforcement !== undefined
+    ? { dependencyEnforcement: config.dependencyEnforcement }
+    : {}),
+  ...(config.dependencyUnknownStatusPolicy
+    ? { dependencyUnknownStatusPolicy: config.dependencyUnknownStatusPolicy }
+    : {}),
+  ...(config.trackerParentLinkType ? { trackerParentLinkType: config.trackerParentLinkType } : {}),
+  ...(config.trackerBlockedByLinkType
+    ? { trackerBlockedByLinkType: config.trackerBlockedByLinkType }
+    : {}),
   maxFixAttempts: config.maxFixAttempts,
   maxReviewFixAttempts: config.maxReviewFixAttempts,
   gitRepositoryToken: config.gitRepositoryToken,
@@ -665,7 +903,7 @@ const buildSingleRepositoryFleetConfig = (
     questionMarker: config.codexQuestionMarker,
   },
   coordination: parseCoordinationConfig(env),
-  priorityQueue: parsePriorityQueueConfig(),
+  priorityQueue: parsePriorityQueueConfig(env),
   repositories: [
     {
       name: "default",
@@ -697,6 +935,17 @@ const buildSingleRepositoryFleetConfig = (
         ? { visualRegressionArtifactsDir: config.visualRegressionArtifactsDir }
         : {}),
       ...(config.gitRepositoryUrl ? { gitRepositoryUrl: config.gitRepositoryUrl } : {}),
+      decomposition: {
+        ...(config.decompositionDefaultSubtaskTag
+          ? { defaultSubtaskTag: config.decompositionDefaultSubtaskTag }
+          : {}),
+        ...(config.decompositionSubtaskTitlePrefix
+          ? { subtaskTitlePrefix: config.decompositionSubtaskTitlePrefix }
+          : {}),
+        ...(config.decompositionMaxSubtasks !== undefined
+          ? { maxSubtasks: config.decompositionMaxSubtasks }
+          : {}),
+      },
     },
   ],
 });
@@ -789,6 +1038,22 @@ const parseRepositoryProfile = (
     ...(optionalProfileString(raw, "gitRepositoryUrl", path)
       ? { gitRepositoryUrl: optionalProfileString(raw, "gitRepositoryUrl", path) }
       : {}),
+    ...(parsePromptProfileOverrides(raw.promptProfiles, `${path}.promptProfiles`)
+      ? {
+          promptProfiles: parsePromptProfileOverrides(
+            raw.promptProfiles,
+            `${path}.promptProfiles`,
+          ),
+        }
+      : {}),
+    ...(parseRepositoryDecompositionConfig(raw.decomposition, `${path}.decomposition`)
+      ? {
+          decomposition: parseRepositoryDecompositionConfig(
+            raw.decomposition,
+            `${path}.decomposition`,
+          ),
+        }
+      : {}),
   };
 };
 
@@ -877,6 +1142,97 @@ const loadFleetConfigFromFile = (
     ...(env.TARGET_ISSUE_KEY?.trim()
       ? { targetIssueKey: env.TARGET_ISSUE_KEY.trim() }
       : {}),
+    taskMode: env.TASK_MODE?.trim()
+      ? parseTaskMode(env.TASK_MODE)
+      : parseTaskMode(optionalString(worker.taskMode, "worker.taskMode")),
+    confidenceImplementThreshold: env.CONFIDENCE_IMPLEMENT_THRESHOLD?.trim()
+      ? parsePercentInt(
+          env.CONFIDENCE_IMPLEMENT_THRESHOLD,
+          "CONFIDENCE_IMPLEMENT_THRESHOLD",
+        )
+      : optionalPercentIntValue(
+          worker.confidenceImplementThreshold,
+          "worker.confidenceImplementThreshold",
+          DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD,
+        ),
+    confidenceHumanThreshold: env.CONFIDENCE_HUMAN_THRESHOLD?.trim()
+      ? parsePercentInt(env.CONFIDENCE_HUMAN_THRESHOLD, "CONFIDENCE_HUMAN_THRESHOLD")
+      : optionalPercentIntValue(
+          worker.confidenceHumanThreshold,
+          "worker.confidenceHumanThreshold",
+          DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
+        ),
+    decompositionMaxSubtasks: env.DECOMPOSITION_MAX_SUBTASKS?.trim()
+      ? parsePositiveInt(env.DECOMPOSITION_MAX_SUBTASKS, "DECOMPOSITION_MAX_SUBTASKS")
+      : optionalPositiveInt(
+          worker.decompositionMaxSubtasks,
+          "worker.decompositionMaxSubtasks",
+          DEFAULT_DECOMPOSITION_MAX_SUBTASKS,
+        ),
+    decompositionCreateIssues: env.DECOMPOSITION_CREATE_ISSUES?.trim()
+      ? parseBooleanFlag(
+          env.DECOMPOSITION_CREATE_ISSUES,
+          "DECOMPOSITION_CREATE_ISSUES",
+          DEFAULT_DECOMPOSITION_CREATE_ISSUES,
+        )
+      : optionalBoolean(
+          worker.decompositionCreateIssues,
+          "worker.decompositionCreateIssues",
+          DEFAULT_DECOMPOSITION_CREATE_ISSUES,
+        ),
+    decompositionDryRun: env.DECOMPOSITION_DRY_RUN?.trim()
+      ? parseBooleanFlag(
+          env.DECOMPOSITION_DRY_RUN,
+          "DECOMPOSITION_DRY_RUN",
+          DEFAULT_DECOMPOSITION_DRY_RUN,
+        )
+      : optionalBoolean(
+          worker.decompositionDryRun,
+          "worker.decompositionDryRun",
+          DEFAULT_DECOMPOSITION_DRY_RUN,
+        ),
+    decompositionDefaultSubtaskTag:
+      env.DECOMPOSITION_DEFAULT_SUBTASK_TAG?.trim() ||
+      optionalString(
+        worker.decompositionDefaultSubtaskTag,
+        "worker.decompositionDefaultSubtaskTag",
+      ) ||
+      DEFAULT_DECOMPOSITION_SUBTASK_TAG,
+    decompositionSubtaskTitlePrefix:
+      env.DECOMPOSITION_SUBTASK_TITLE_PREFIX?.trim() ||
+      optionalString(
+        worker.decompositionSubtaskTitlePrefix,
+        "worker.decompositionSubtaskTitlePrefix",
+      ) ||
+      DEFAULT_DECOMPOSITION_TITLE_PREFIX,
+    dependencyEnforcement: env.DEPENDENCY_ENFORCEMENT?.trim()
+      ? parseBooleanFlag(
+          env.DEPENDENCY_ENFORCEMENT,
+          "DEPENDENCY_ENFORCEMENT",
+          DEFAULT_DEPENDENCY_ENFORCEMENT,
+        )
+      : optionalBoolean(
+          worker.dependencyEnforcement,
+          "worker.dependencyEnforcement",
+          DEFAULT_DEPENDENCY_ENFORCEMENT,
+        ),
+    dependencyUnknownStatusPolicy: env.DEPENDENCY_UNKNOWN_STATUS_POLICY?.trim()
+      ? parseDependencyUnknownStatusPolicy(env.DEPENDENCY_UNKNOWN_STATUS_POLICY)
+      : parseDependencyUnknownStatusPolicy(
+          optionalString(
+            worker.dependencyUnknownStatusPolicy,
+            "worker.dependencyUnknownStatusPolicy",
+          ),
+          "worker.dependencyUnknownStatusPolicy",
+        ),
+    trackerParentLinkType:
+      env.TRACKER_PARENT_LINK_TYPE?.trim() ||
+      optionalString(tracker.parentLinkType, "tracker.parentLinkType") ||
+      DEFAULT_TRACKER_PARENT_LINK_TYPE,
+    trackerBlockedByLinkType:
+      env.TRACKER_BLOCKED_BY_LINK_TYPE?.trim() ||
+      optionalString(tracker.blockedByLinkType, "tracker.blockedByLinkType") ||
+      DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE,
     maxFixAttempts,
     maxReviewFixAttempts: env.MAX_REVIEW_FIX_ATTEMPTS?.trim()
       ? parsePositiveInt(env.MAX_REVIEW_FIX_ATTEMPTS, "MAX_REVIEW_FIX_ATTEMPTS")
@@ -981,7 +1337,7 @@ const loadFleetConfigFromFile = (
       questionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
     },
     coordination: parseCoordinationConfig(env, coordination),
-    priorityQueue: parsePriorityQueueConfig(priorityQueue),
+    priorityQueue: parsePriorityQueueConfig(env, priorityQueue),
     repositories,
   };
 };
@@ -1009,6 +1365,12 @@ export const buildRepositoryRuntimeConfig = (
   trackerTag: repository.tags[0] ?? "ai_dev",
   trackerStatusMap: globalConfig.tracker.statusMap,
   trackerApiBaseUrl: globalConfig.tracker.apiBaseUrl,
+  ...(globalConfig.trackerParentLinkType
+    ? { trackerParentLinkType: globalConfig.trackerParentLinkType }
+    : {}),
+  ...(globalConfig.trackerBlockedByLinkType
+    ? { trackerBlockedByLinkType: globalConfig.trackerBlockedByLinkType }
+    : {}),
   gitlabUrl: globalConfig.gitlab.url,
   gitlabToken: globalConfig.gitlab.token,
   gitlabProjectId: repository.gitlabProjectId,
@@ -1037,6 +1399,33 @@ export const buildRepositoryRuntimeConfig = (
   maxFixAttempts: globalConfig.maxFixAttempts,
   maxReviewFixAttempts: globalConfig.maxReviewFixAttempts,
   workerId: globalConfig.workerId,
+  ...(globalConfig.taskMode ? { taskMode: globalConfig.taskMode } : {}),
+  ...(globalConfig.confidenceImplementThreshold !== undefined
+    ? { confidenceImplementThreshold: globalConfig.confidenceImplementThreshold }
+    : {}),
+  ...(globalConfig.confidenceHumanThreshold !== undefined
+    ? { confidenceHumanThreshold: globalConfig.confidenceHumanThreshold }
+    : {}),
+  decompositionMaxSubtasks:
+    repository.decomposition?.maxSubtasks ??
+    globalConfig.decompositionMaxSubtasks ??
+    DEFAULT_DECOMPOSITION_MAX_SUBTASKS,
+  decompositionCreateIssues:
+    globalConfig.decompositionCreateIssues ?? DEFAULT_DECOMPOSITION_CREATE_ISSUES,
+  decompositionDryRun: globalConfig.decompositionDryRun ?? DEFAULT_DECOMPOSITION_DRY_RUN,
+  decompositionDefaultSubtaskTag:
+    repository.decomposition?.defaultSubtaskTag ??
+    globalConfig.decompositionDefaultSubtaskTag ??
+    DEFAULT_DECOMPOSITION_SUBTASK_TAG,
+  decompositionSubtaskTitlePrefix:
+    repository.decomposition?.subtaskTitlePrefix ??
+    globalConfig.decompositionSubtaskTitlePrefix ??
+    DEFAULT_DECOMPOSITION_TITLE_PREFIX,
+  dependencyEnforcement:
+    globalConfig.dependencyEnforcement ?? DEFAULT_DEPENDENCY_ENFORCEMENT,
+  dependencyUnknownStatusPolicy:
+    globalConfig.dependencyUnknownStatusPolicy ?? DEFAULT_DEPENDENCY_UNKNOWN_STATUS_POLICY,
+  ...(repository.promptProfiles ? { promptProfiles: repository.promptProfiles } : {}),
   ...(repository.typeCheckCommand ? { typeCheckCommand: repository.typeCheckCommand } : {}),
   testCommand: repository.testCommand,
   lintCommand: repository.lintCommand,

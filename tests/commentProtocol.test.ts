@@ -4,7 +4,11 @@ import {
   findFirstHumanReplyAfter,
   findActiveLease,
   findLatestHumanTaskCommandAfter,
+  findLatestAnalysisDecision,
+  findLatestDecompositionMetadata,
   findLatestReviewMetadata,
+  formatAnalysisComment,
+  formatDecompositionComment,
   formatLeaseComment,
   formatMergeRequestComment,
   formatQuestionComment,
@@ -226,6 +230,56 @@ describe("comment protocol", () => {
         now: new Date("2026-04-26T10:07:00.000Z"),
       }),
     ).toBeUndefined();
+  });
+
+  it("formats and parses AI ANALYSIS and AI DECOMPOSITION comments", () => {
+    const analysisText = formatAnalysisComment("worker-1", "DEV-1", {
+      confidence: 82,
+      taskType: "frontend_ui_fix",
+      recommendedMode: "implement",
+      promptProfileId: "frontend_ui_fix",
+      expectedFiles: ["src/Button.tsx"],
+      expectedSubsystems: ["ui"],
+      riskFactors: ["visual regression"],
+      missingContext: [],
+      reasoning: "Localized fix.",
+    });
+    const decompositionText = formatDecompositionComment("worker-1", {
+      parentIssueKey: "DEV-1",
+      createdIssueKeys: ["DEV-2", "DEV-3"],
+      dryRun: false,
+      summary: "Split into API and UI tasks.",
+    });
+
+    const comments: CommentWithMetadata[] = [
+      {
+        id: "1",
+        text: analysisText,
+        createdAt: "2026-04-26T10:00:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(analysisText),
+      },
+      {
+        id: "2",
+        text: decompositionText,
+        createdAt: "2026-04-26T10:05:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(decompositionText),
+      },
+    ];
+
+    expect(findLatestAnalysisDecision(comments, "DEV-1")).toMatchObject({
+      confidence: 82,
+      taskType: "frontend_ui_fix",
+      recommendedMode: "implement",
+      promptProfileId: "frontend_ui_fix",
+    });
+    expect(findLatestDecompositionMetadata(comments, "DEV-1")).toMatchObject({
+      kind: "AI DECOMPOSITION",
+      parentIssueKey: "DEV-1",
+      createdIssueKeys: ["DEV-2", "DEV-3"],
+      dryRun: false,
+    });
   });
 
   it("parses human task commands and finds the latest resume command", () => {

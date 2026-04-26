@@ -1488,4 +1488,107 @@ Reply with /resume A or /resume B.
       /unsupported logical status: done/,
     );
   });
+
+  it("supports TASK_MODE=analyze_only without checking out a task branch", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-ANALYZE",
+          title: "Analyze only task",
+          description: "Do not implement",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-ANALYZE": [] },
+    );
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner([
+      () => ({
+        process: { stdout: "", stderr: "", exitCode: 0 },
+        finalMessage:
+          'AI_ANALYSIS: {"confidence":88,"taskType":"documentation","recommendedMode":"implement","promptProfileId":"documentation","expectedFiles":["README.md"],"expectedSubsystems":["docs"],"riskFactors":[],"missingContext":[],"reasoning":"Clear docs task."}',
+        threadId: "thread-analysis-only",
+      }),
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { taskMode: "analyze_only" }),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(git.currentBranch).toBe("main");
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-ANALYZE", target: "in_progress" },
+      { issueKey: "DEV-ANALYZE", target: "waiting_for_answer" },
+    ]);
+    expect(tracker.addedComments.some((entry) => entry.text.startsWith("AI ANALYSIS:"))).toBe(
+      true,
+    );
+    expect(tracker.addedComments.some((entry) => entry.text.includes("manual_hold"))).toBe(true);
+  });
+
+  it("writes a decomposition dry-run comment and does not create a branch", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-EPIC",
+          title: "Split epic",
+          description: "Large task",
+          queue: "DEV",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-EPIC": [] },
+    );
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_ANALYSIS: {"confidence":80,"taskType":"unknown","recommendedMode":"decompose","promptProfileId":"general","expectedFiles":[],"expectedSubsystems":[],"riskFactors":["large scope"],"missingContext":[],"reasoning":"Epic-sized task."}',
+          threadId: "thread-decompose",
+        }),
+      ],
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_DECOMPOSITION: {"parentIssueKey":"DEV-EPIC","summary":"Split epic.","subtasks":[{"temporaryId":"api","title":"Build API","description":"Create endpoint.","queue":"DEV","tags":["ai_dev"],"acceptanceCriteria":["Endpoint works"],"recommendedPromptProfileId":"backend_endpoint"}],"dependencies":[],"risks":[]}',
+          threadId: "thread-decompose",
+        }),
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        decompositionDryRun: true,
+      }),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(git.currentBranch).toBe("main");
+    expect(codex.resumeCalls[0]?.threadId).toBe("thread-decompose");
+    expect(
+      tracker.addedComments.some(
+        (entry) => entry.text.startsWith("AI DECOMPOSITION:") && entry.text.includes('"dryRun"'),
+      ),
+    ).toBe(true);
+  });
 });
