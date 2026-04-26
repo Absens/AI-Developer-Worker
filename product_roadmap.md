@@ -145,6 +145,8 @@ review -> in_progress -> review -> ... -> failed/manual_hold
 
 ### 2.1 Type check как отдельный gate
 
+Статус: completed 2026-04-26. Реализован как optional `typecheck` gate перед lint/tests.
+
 Добавить:
 
 ```env
@@ -161,6 +163,8 @@ typecheck -> lint -> tests
 
 ### 2.2 Build verification
 
+Статус: completed 2026-04-26. Реализован как optional `build` gate после lint/tests, с отдельной строкой в validation summary.
+
 Добавить:
 
 ```env
@@ -170,6 +174,8 @@ BUILD_COMMAND=npm run build
 Build должен запускаться после tests/lint или как отдельная publish-проверка перед push.
 
 ### 2.3 Security scan
+
+Статус: completed 2026-04-26. Реализованы command-based `security_scan` и `sast` gates.
 
 Опциональные команды:
 
@@ -182,6 +188,8 @@ SAST_COMMAND=semgrep ci
 
 ### 2.4 Coverage gate
 
+Статус: completed 2026-04-26. Реализован общий line coverage threshold через Istanbul/Vitest summary.
+
 Добавить:
 
 ```env
@@ -192,6 +200,8 @@ MIN_COVERAGE_PERCENT=80
 Первый MVP может проверять только общий процент. Позже - diff coverage.
 
 ### 2.5 Visual regression
+
+Статус: completed 2026-04-26 как command-based MVP. Browser-specific orchestration оставлена для Phase 3 profiles.
 
 Для frontend-репозиториев:
 

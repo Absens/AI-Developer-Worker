@@ -797,6 +797,7 @@ Reply with /resume A or /resume B.
         "const marker = path.join(process.cwd(), '.test-once-marker');",
         "if (!fs.existsSync(marker)) {",
         "  fs.writeFileSync(marker, '1', 'utf8');",
+        "  console.error('test failed once');",
         "  process.exit(1);",
         "}",
         "process.exit(0);",
@@ -862,6 +863,9 @@ Reply with /resume A or /resume B.
     expect(codex.resumeCalls).toHaveLength(2);
     expect(codex.resumeCalls[0]?.threadId).toBe("thread-fix-1");
     expect(codex.resumeCalls[1]?.threadId).toBe("thread-fix-1");
+    expect(codex.resumeCalls[1]?.prompt).toContain("Quality gate \"Tests\" (tests)");
+    expect(codex.resumeCalls[1]?.prompt).toContain(`node "${failOnceScriptPath}"`);
+    expect(codex.resumeCalls[1]?.prompt).toContain("test failed once");
   });
 
   it("does not resume failed tasks parked in waiting state for manual recovery", async () => {

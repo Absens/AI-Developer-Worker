@@ -35,6 +35,23 @@ const parsePositiveInt = (input: string, key: string): number => {
   return value;
 };
 
+const parseOptionalPercent = (
+  input: string | undefined,
+  key: string,
+): number | undefined => {
+  const trimmed = input?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const value = Number.parseFloat(trimmed);
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    throw new ConfigurationError(`${key} must be a number from 0 to 100.`);
+  }
+
+  return value;
+};
+
 const parseBooleanFlag = (
   input: string | undefined,
   key: string,
@@ -208,6 +225,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     requireEnv(env, "MAX_FIX_ATTEMPTS"),
     "MAX_FIX_ATTEMPTS",
   );
+  const minCoveragePercent = parseOptionalPercent(
+    env.MIN_COVERAGE_PERCENT,
+    "MIN_COVERAGE_PERCENT",
+  );
 
   return {
     trackerToken: requireEnv(env, "TRACKER_TOKEN"),
@@ -265,8 +286,29 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       "MAX_REVIEW_FIX_ATTEMPTS",
     ),
     workerId: requireEnv(env, "WORKER_ID"),
+    ...(env.TYPE_CHECK_COMMAND?.trim()
+      ? { typeCheckCommand: env.TYPE_CHECK_COMMAND.trim() }
+      : {}),
     testCommand: env.TEST_COMMAND?.trim() || "npm test",
     lintCommand: env.LINT_COMMAND?.trim() || "npm run lint",
+    ...(env.BUILD_COMMAND?.trim() ? { buildCommand: env.BUILD_COMMAND.trim() } : {}),
+    ...(env.SECURITY_SCAN_COMMAND?.trim()
+      ? { securityScanCommand: env.SECURITY_SCAN_COMMAND.trim() }
+      : {}),
+    ...(env.SAST_COMMAND?.trim() ? { sastCommand: env.SAST_COMMAND.trim() } : {}),
+    ...(env.COVERAGE_COMMAND?.trim()
+      ? { coverageCommand: env.COVERAGE_COMMAND.trim() }
+      : {}),
+    ...(minCoveragePercent !== undefined ? { minCoveragePercent } : {}),
+    ...(env.COVERAGE_REPORT_FILE?.trim()
+      ? { coverageReportFile: env.COVERAGE_REPORT_FILE.trim() }
+      : {}),
+    ...(env.VISUAL_REGRESSION_COMMAND?.trim()
+      ? { visualRegressionCommand: env.VISUAL_REGRESSION_COMMAND.trim() }
+      : {}),
+    ...(env.VISUAL_REGRESSION_ARTIFACTS_DIR?.trim()
+      ? { visualRegressionArtifactsDir: env.VISUAL_REGRESSION_ARTIFACTS_DIR.trim() }
+      : {}),
     runOnce: parseBooleanFlag(env.WORKER_RUN_ONCE, "WORKER_RUN_ONCE", false),
     preflightOnly: parseBooleanFlag(
       env.WORKER_PREFLIGHT_ONLY,

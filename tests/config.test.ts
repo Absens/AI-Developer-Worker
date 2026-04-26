@@ -72,6 +72,15 @@ describe("config", () => {
     expect(config.gitCommitNoVerify).toBe(true);
     expect(config.testCommand).toBe("npm test");
     expect(config.lintCommand).toBe("npm run lint");
+    expect(config.typeCheckCommand).toBeUndefined();
+    expect(config.buildCommand).toBeUndefined();
+    expect(config.securityScanCommand).toBeUndefined();
+    expect(config.sastCommand).toBeUndefined();
+    expect(config.coverageCommand).toBeUndefined();
+    expect(config.minCoveragePercent).toBeUndefined();
+    expect(config.coverageReportFile).toBeUndefined();
+    expect(config.visualRegressionCommand).toBeUndefined();
+    expect(config.visualRegressionArtifactsDir).toBeUndefined();
     expect(config.runOnce).toBe(false);
     expect(config.preflightOnly).toBe(false);
     expect(config.preflightRunTargetCommands).toBe(true);
@@ -244,6 +253,39 @@ describe("config", () => {
     expect(config.maxReviewFixAttempts).toBe(4);
   });
 
+  it("accepts explicit quality gate options", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TYPE_CHECK_COMMAND: "npm run typecheck",
+      BUILD_COMMAND: "npm run build",
+      SECURITY_SCAN_COMMAND: "npm audit --audit-level=high",
+      SAST_COMMAND: "semgrep ci",
+      COVERAGE_COMMAND: "npm run test:coverage -- --reporter=json",
+      MIN_COVERAGE_PERCENT: "82.5",
+      COVERAGE_REPORT_FILE: "coverage/coverage-summary.json",
+      VISUAL_REGRESSION_COMMAND: "npm run test:visual",
+      VISUAL_REGRESSION_ARTIFACTS_DIR: "playwright-report",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.typeCheckCommand).toBe("npm run typecheck");
+    expect(config.buildCommand).toBe("npm run build");
+    expect(config.securityScanCommand).toBe("npm audit --audit-level=high");
+    expect(config.sastCommand).toBe("semgrep ci");
+    expect(config.coverageCommand).toBe("npm run test:coverage -- --reporter=json");
+    expect(config.minCoveragePercent).toBe(82.5);
+    expect(config.coverageReportFile).toBe("coverage/coverage-summary.json");
+    expect(config.visualRegressionCommand).toBe("npm run test:visual");
+    expect(config.visualRegressionArtifactsDir).toBe("playwright-report");
+  });
+
   it("rejects invalid CODEX_SANDBOX", () => {
     const statusMapFile = createStatusMapFile();
     expect(() =>
@@ -259,6 +301,23 @@ describe("config", () => {
         WORKER_ID: "worker-1",
       }),
     ).toThrow(/CODEX_SANDBOX/);
+  });
+
+  it("rejects invalid MIN_COVERAGE_PERCENT", () => {
+    const statusMapFile = createStatusMapFile();
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MIN_COVERAGE_PERCENT: "101",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/MIN_COVERAGE_PERCENT/);
   });
 
   it("rejects invalid CODEX_EXEC_ARGS_JSON", () => {

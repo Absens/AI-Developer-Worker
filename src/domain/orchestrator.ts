@@ -41,7 +41,14 @@ import {
   TemporaryIntegrationError,
 } from "../utils/errors.js";
 import { Logger } from "../utils/logger.js";
-import { runShellCommand } from "../utils/shell.js";
+import {
+  collectQualityGateNotes,
+  formatQualityGateDiagnostics,
+  formatQualityGateSummary,
+  qualityGatesPassed,
+  qualityGateStatus,
+  runQualityGates,
+} from "./qualityGates.js";
 
 type CycleOutcome = "processed" | "idle" | "waiting";
 
@@ -63,7 +70,7 @@ const TARGET_PROCESSABLE_STATES: LogicalStatus[] = [
 const branchNameForIssue = (issueKey: string): string => `feature/ai-task-${issueKey}`;
 
 const isValidationSuccessful = (validation: ValidationResult): boolean =>
-  validation.changed && validation.testsPassed && validation.lintPassed;
+  validation.changed && qualityGatesPassed(validation.gates);
 
 const isResumableStatus = (
   latestStatus: ReturnType<typeof findLatestStatusComment>,
@@ -72,20 +79,6 @@ const isResumableStatus = (
   latestStatus.state !== undefined &&
   ACTIVE_STATES.includes(latestStatus.state) &&
   latestStatus.waitingReason !== "failure_recovery";
-
-const buildCommandDiagnostic = (
-  label: string,
-  exitCode: number,
-  stdout: string,
-  stderr: string,
-): string =>
-  [
-    `${label} failed with exit code ${exitCode}.`,
-    stdout.trim() ? `stdout:\n${stdout.trim()}` : "",
-    stderr.trim() ? `stderr:\n${stderr.trim()}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
 
 const mergeUniqueStrings = (first: string[], second: string[]): string[] => [
   ...new Set([...first, ...second]),
@@ -857,68 +850,29 @@ export class WorkerOrchestrator {
         changed: false,
         testsPassed: false,
         lintPassed: false,
+        gates: [],
         diagnostic: "No repository changes detected.",
       };
     }
 
-    const testResult = await runShellCommand(this.config.testCommand, {
+    const gates = await runQualityGates(this.config, {
       cwd: this.config.repoPath,
+      logger: this.logger,
     });
-    if (testResult.exitCode !== 0) {
-      return {
-        changed: true,
-        testsPassed: false,
-        lintPassed: false,
-        diagnostic: buildCommandDiagnostic(
-          "Tests",
-          testResult.exitCode,
-          testResult.stdout,
-          testResult.stderr,
-        ),
-      };
-    }
-
-    const lintResult = await runShellCommand(this.config.lintCommand, {
-      cwd: this.config.repoPath,
-    });
-    if (lintResult.exitCode !== 0) {
-      return {
-        changed: true,
-        testsPassed: true,
-        lintPassed: false,
-        diagnostic: buildCommandDiagnostic(
-          "Lint",
-          lintResult.exitCode,
-          lintResult.stdout,
-          lintResult.stderr,
-        ),
-      };
-    }
 
     return {
       changed: true,
-      testsPassed: true,
-      lintPassed: true,
-      diagnostic: "",
+      testsPassed: qualityGateStatus(gates, "tests") === "passed",
+      lintPassed: qualityGateStatus(gates, "lint") === "passed",
+      gates,
+      diagnostic: formatQualityGateDiagnostics(gates),
     };
   }
 
   private formatValidationSummary(validation: ValidationResult): string {
-    if (isValidationSuccessful(validation)) {
-      return [
-        `- Tests (\`${this.config.testCommand}\`): passed`,
-        `- Lint (\`${this.config.lintCommand}\`): passed`,
-      ].join("\n");
-    }
-
     return [
       validation.changed ? "- Repository changes: detected" : "- Repository changes: none",
-      `- Tests (\`${this.config.testCommand}\`): ${
-        validation.testsPassed ? "passed" : "failed"
-      }`,
-      `- Lint (\`${this.config.lintCommand}\`): ${
-        validation.lintPassed ? "passed" : "failed"
-      }`,
+      formatQualityGateSummary(validation.gates),
       validation.diagnostic ? `\nDiagnostic:\n${validation.diagnostic}` : "",
     ]
       .filter(Boolean)
@@ -968,6 +922,7 @@ export class WorkerOrchestrator {
           targetBranch: this.config.baseBranch,
           changedFiles,
           validationSummary: this.formatValidationSummary(validation),
+          validationNotes: collectQualityGateNotes(validation.gates),
           workerId: this.config.workerId,
           codexSummary: implementationSummary,
         }),

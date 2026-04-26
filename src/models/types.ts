@@ -49,8 +49,17 @@ export interface AppConfig {
   maxFixAttempts: number;
   maxReviewFixAttempts: number;
   workerId: string;
+  typeCheckCommand?: string;
   testCommand: string;
   lintCommand: string;
+  buildCommand?: string;
+  securityScanCommand?: string;
+  sastCommand?: string;
+  coverageCommand?: string;
+  minCoveragePercent?: number;
+  coverageReportFile?: string;
+  visualRegressionCommand?: string;
+  visualRegressionArtifactsDir?: string;
   runOnce: boolean;
   preflightOnly: boolean;
   trackerPreflightIssueKey?: string;
@@ -144,10 +153,34 @@ export interface ProcessResult {
   timedOut?: boolean;
 }
 
+export interface QualityGate {
+  id: string;
+  label: string;
+  command: string;
+  required: boolean;
+  artifactPath?: string;
+}
+
+export interface QualityGateResult {
+  id: string;
+  label: string;
+  command: string;
+  status: "passed" | "failed" | "skipped";
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  durationMs?: number;
+  artifactPath?: string;
+  coveragePercent?: number;
+  coverageThreshold?: number;
+  diagnostic: string;
+}
+
 export interface ValidationResult {
   changed: boolean;
   testsPassed: boolean;
   lintPassed: boolean;
+  gates: QualityGateResult[];
   diagnostic: string;
 }
 

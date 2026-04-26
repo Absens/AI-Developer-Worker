@@ -62,6 +62,15 @@ For Tracker statuses, the repository already includes an example file at [config
 | `CODEX_QUESTION_MARKER` | No | `AI_QUESTION:` | Keep the default unless you intentionally changed the worker comment protocol. |
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |
 | `LINT_COMMAND` | No | `npm run lint` | Set the exact lint command that should run inside the mounted target repository. |
+| `TYPE_CHECK_COMMAND` | No | None | Optional typecheck gate. When set, runs before lint and tests and blocks publish on failure. |
+| `BUILD_COMMAND` | No | None | Optional build gate. When set, runs after lint/tests and blocks publish on failure. |
+| `SECURITY_SCAN_COMMAND` | No | None | Optional command-based security scan gate, for example `npm audit --audit-level=high`. Non-zero exit blocks publish. |
+| `SAST_COMMAND` | No | None | Optional command-based SAST gate, for example `semgrep ci`. Output is kept as generic diagnostic text. |
+| `COVERAGE_COMMAND` | No | None | Optional coverage gate command. The worker expects an Istanbul/Vitest-style summary from `COVERAGE_REPORT_FILE` or stdout. |
+| `MIN_COVERAGE_PERCENT` | No | None | Optional overall line coverage threshold from `0` to `100`. When set, lower coverage blocks publish. |
+| `COVERAGE_REPORT_FILE` | No | None | Optional coverage summary path relative to `REPO_PATH`, for example `coverage/coverage-summary.json`. Preferred over parsing stdout. |
+| `VISUAL_REGRESSION_COMMAND` | No | None | Optional command-based visual regression gate. The worker does not assume Playwright or any frontend stack. |
+| `VISUAL_REGRESSION_ARTIFACTS_DIR` | No | None | Optional artifact path included in validation summaries and MR notes when the visual regression gate is configured. |
 | `MAX_FIX_ATTEMPTS` | Yes | None | Positive integer. Choose how many automated fix attempts the worker may perform for one task. |
 | `MAX_REVIEW_FIX_ATTEMPTS` | No | `MAX_FIX_ATTEMPTS` | Positive integer. Choose how many validation repair attempts the worker may perform while addressing unresolved GitLab review discussions. |
 | `WORKER_ID` | Yes | None | Stable identifier for this worker instance. Use a unique value per running worker, for example `worker-1` or `gitlab-bot-prod-1`. |
@@ -103,6 +112,30 @@ GITLAB_PREFLIGHT_SOURCE_BRANCH=preflight/worker-check
 ```
 
 `PREFLIGHT_RUN_TARGET_COMMANDS=false` skips `TEST_COMMAND` and `LINT_COMMAND` and reports that check as `WARN`.
+
+## Quality gates
+
+Before publishing or updating a merge request, the worker first verifies that the target repository has changes. It then runs quality gates in this fail-fast order:
+
+```text
+typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visual_regression
+```
+
+`LINT_COMMAND` and `TEST_COMMAND` keep their defaults. The other gates are skipped unless their command environment variable is set. Any configured gate that exits non-zero blocks publishing and feeds the gate command, stdout, and stderr back into the Codex fix prompt.
+
+Coverage parsing supports this Istanbul/Vitest-style summary:
+
+```json
+{
+  "total": {
+    "lines": {
+      "pct": 82.5
+    }
+  }
+}
+```
+
+Set `COVERAGE_REPORT_FILE` when possible so the worker reads a stable report file from `REPO_PATH`. If it is omitted, the worker tries to parse the coverage command stdout as the same JSON shape.
 
 ## Target issue mode
 

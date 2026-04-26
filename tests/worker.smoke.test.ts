@@ -340,6 +340,7 @@ describe("worker smoke", () => {
       expect(mockServer.mergeRequests).toHaveLength(1);
       expect(mockServer.mergeRequests[0]?.description).toContain("## Summary");
       expect(mockServer.mergeRequests[0]?.description).toContain("## Testing");
+      expect(mockServer.mergeRequests[0]?.description).toContain("Build: skipped");
       expect(mockServer.mergeRequests[0]?.description).toContain("DEV-100");
       expect(
         mockServer.trackerComments.some((comment) => comment.text.startsWith("AI MR:")),

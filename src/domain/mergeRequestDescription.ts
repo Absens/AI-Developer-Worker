@@ -22,12 +22,19 @@ const formatChangedFiles = (changedFiles: string[]): string =>
     ? changedFiles.map((file) => `- \`${file}\``).join("\n")
     : "- No changed files reported.";
 
+const formatNotes = (notes: string[]): string =>
+  [
+    ...notes.map((note) => `- ${note}`),
+    "- Review the generated changes against the original Tracker requirements before merging.",
+  ].join("\n");
+
 export const buildMergeRequestDescription = (input: {
   issue: TrackerIssue;
   sourceBranch: string;
   targetBranch: string;
   changedFiles: string[];
   validationSummary: string;
+  validationNotes?: string[];
   workerId: string;
   codexSummary?: string;
 }): string => {
@@ -51,7 +58,7 @@ export const buildMergeRequestDescription = (input: {
     "",
     "## Risks / Notes",
     "",
-    "- Review the generated changes against the original Tracker requirements before merging.",
+    formatNotes(input.validationNotes ?? []),
     "",
     "## Links",
     "",
