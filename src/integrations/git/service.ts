@@ -97,7 +97,10 @@ export class RepositoryGitService implements GitService {
   }
 
   async checkoutTaskBranch(issueKey: string): Promise<string> {
-    const branch = branchNameForIssue(issueKey);
+    return this.checkoutBranch(branchNameForIssue(issueKey));
+  }
+
+  async checkoutBranch(branch: string): Promise<string> {
     const currentBranch = await this.getCurrentBranch();
     const dirty = await this.hasChanges();
 
@@ -131,6 +134,48 @@ export class RepositoryGitService implements GitService {
 
     await this.ensureSuccess(`git checkout -b ${branch}`);
     return branch;
+  }
+
+  async getDiffFromBase(): Promise<string> {
+    const result = await this.run(`git diff --find-renames ${this.config.baseBranch}...HEAD`);
+    if (result.exitCode !== 0) {
+      throw new Error(`Unable to collect diff from base branch: ${result.stderr}`);
+    }
+
+    return result.stdout.trim();
+  }
+
+  async getChangedFilesFromBase(): Promise<string[]> {
+    const result = await this.run(`git diff --name-only ${this.config.baseBranch}...HEAD`);
+    if (result.exitCode !== 0) {
+      throw new Error(`Unable to list changed files from base branch: ${result.stderr}`);
+    }
+
+    const worktreeResult = await this.run("git status --porcelain");
+    if (worktreeResult.exitCode !== 0) {
+      throw new Error(`Unable to inspect changed working tree files: ${worktreeResult.stderr}`);
+    }
+
+    const committedFiles = result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const worktreeFiles = worktreeResult.stdout
+      .split(/\r?\n/)
+      .map((line) => line.slice(3).trim())
+      .map((line) => line.split(" -> ").at(-1)?.trim() ?? line)
+      .filter(Boolean);
+
+    return [...new Set([...committedFiles, ...worktreeFiles])];
+  }
+
+  async getHeadSha(): Promise<string> {
+    const result = await this.run("git rev-parse HEAD");
+    if (result.exitCode !== 0) {
+      throw new Error(`Unable to determine HEAD commit: ${result.stderr}`);
+    }
+
+    return trimOutput(result.stdout);
   }
 
   async commit(message: string): Promise<void> {

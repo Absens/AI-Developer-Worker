@@ -1,4 +1,10 @@
-import type { AppConfig, GitLabService, MergeRequestInfo } from "../../models/types.js";
+import type {
+  AppConfig,
+  GitLabService,
+  MergeRequestDiscussion,
+  MergeRequestInfo,
+  MergeRequestNote,
+} from "../../models/types.js";
 import { TemporaryIntegrationError } from "../../utils/errors.js";
 import { Logger } from "../../utils/logger.js";
 import { withRetry } from "../../utils/retry.js";
@@ -12,6 +18,35 @@ interface GitLabMergeRequestResponse {
   target_branch: string;
 }
 
+interface GitLabUserResponse {
+  username: string;
+}
+
+interface GitLabDiscussionResponse {
+  id: string;
+  individual_note: boolean;
+  resolved?: boolean;
+  notes: GitLabNoteResponse[];
+}
+
+interface GitLabNoteResponse {
+  id: number;
+  body: string;
+  author?: {
+    username?: string;
+  };
+  system: boolean;
+  resolvable: boolean;
+  resolved: boolean;
+  created_at: string;
+  position?: {
+    new_path?: string;
+    old_path?: string;
+    new_line?: number;
+    old_line?: number;
+  };
+}
+
 const toMergeRequestInfo = (
   payload: GitLabMergeRequestResponse,
 ): MergeRequestInfo => ({
@@ -22,6 +57,47 @@ const toMergeRequestInfo = (
   sourceBranch: payload.source_branch,
   targetBranch: payload.target_branch,
 });
+
+const toMergeRequestNote = (payload: GitLabNoteResponse): MergeRequestNote => ({
+  id: payload.id,
+  body: payload.body,
+  authorUsername: payload.author?.username ?? "",
+  system: payload.system,
+  resolvable: payload.resolvable,
+  resolved: payload.resolved,
+  createdAt: payload.created_at,
+  ...(payload.position
+    ? {
+        position: {
+          ...(payload.position.new_path ? { newPath: payload.position.new_path } : {}),
+          ...(payload.position.old_path ? { oldPath: payload.position.old_path } : {}),
+          ...(payload.position.new_line !== undefined
+            ? { newLine: payload.position.new_line }
+            : {}),
+          ...(payload.position.old_line !== undefined
+            ? { oldLine: payload.position.old_line }
+            : {}),
+        },
+      }
+    : {}),
+});
+
+const toMergeRequestDiscussion = (
+  payload: GitLabDiscussionResponse,
+): MergeRequestDiscussion => {
+  const notes = payload.notes.map(toMergeRequestNote);
+  const resolved =
+    typeof payload.resolved === "boolean"
+      ? payload.resolved
+      : notes.every((note) => !note.resolvable || note.resolved);
+
+  return {
+    id: payload.id,
+    individualNote: payload.individual_note,
+    resolved,
+    notes,
+  };
+};
 
 export class GitLabApiClient implements GitLabService {
   constructor(
@@ -102,11 +178,62 @@ export class GitLabApiClient implements GitLabService {
     return toMergeRequestInfo(response);
   }
 
+  async getMergeRequestDiscussions(iid: number): Promise<MergeRequestDiscussion[]> {
+    const response = await this.fetchAllPages<GitLabDiscussionResponse>(
+      `/projects/${encodeURIComponent(this.config.gitlabProjectId)}/merge_requests/${iid}/discussions`,
+    );
+
+    return response.map(toMergeRequestDiscussion);
+  }
+
+  async replyToDiscussion(iid: number, discussionId: string, body: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(this.config.gitlabProjectId)}/merge_requests/${iid}/discussions/${encodeURIComponent(discussionId)}/notes`,
+      {
+        method: "POST",
+        body: { body },
+      },
+    );
+  }
+
+  async getCurrentUser(): Promise<{ username: string }> {
+    const response = await this.request<GitLabUserResponse>("/user");
+    return { username: response.username };
+  }
+
+  private async fetchAllPages<T>(
+    path: string,
+    options: {
+      method?: string;
+      query?: Record<string, string | number>;
+      body?: unknown;
+    } = {},
+  ): Promise<T[]> {
+    const perPage = Number(options.query?.per_page ?? 100);
+    const items: T[] = [];
+
+    for (let page = 1; ; page += 1) {
+      const pageItems = await this.request<T[]>(path, {
+        ...options,
+        query: {
+          ...(options.query ?? {}),
+          page,
+          per_page: perPage,
+        },
+      });
+      items.push(...pageItems);
+
+      if (pageItems.length < perPage) {
+        return items;
+      }
+    }
+  }
+
   private async request<T>(
     path: string,
     options: {
       method?: string;
-      query?: Record<string, string>;
+      query?: Record<string, string | number>;
       body?: unknown;
     } = {},
   ): Promise<T> {
@@ -114,7 +241,7 @@ export class GitLabApiClient implements GitLabService {
       async () => {
         const url = new URL(`${this.config.gitlabUrl}/api/v4${path}`);
         for (const [key, value] of Object.entries(options.query ?? {})) {
-          url.searchParams.set(key, value);
+          url.searchParams.set(key, String(value));
         }
 
         const response = await fetch(url, {

@@ -8,7 +8,9 @@ import type {
   GitService,
   HumanTaskCommand,
   LogicalStatus,
+  MergeRequestDiscussion,
   MergeRequestInfo,
+  MergeRequestNote,
   TaskAnalysisResult,
   TrackerClient,
   TrackerIssue,
@@ -18,7 +20,9 @@ import {
   findHumanCommentsAfter,
   findLatestHumanTaskCommandAfter,
   findLatestQuestionComment,
+  findLatestReviewMetadata,
   findLatestStatusComment,
+  formatReviewMetadataComment,
   formatMergeRequestComment,
   formatQuestionCommentWithThreadId,
   formatStatusComment,
@@ -27,8 +31,11 @@ import {
   buildAnalysisPrompt,
   buildFixPrompt,
   buildImplementationPrompt,
+  buildReviewFixPrompt,
   buildResumePrompt,
 } from "./promptBuilder.js";
+import { buildCommitMessage } from "./commitMessage.js";
+import { buildMergeRequestDescription } from "./mergeRequestDescription.js";
 import {
   PermanentTaskError,
   TemporaryIntegrationError,
@@ -44,11 +51,13 @@ interface ResumeContext {
 }
 
 const ACTIVE_STATES: LogicalStatus[] = ["in_progress", "waiting_for_answer"];
+const OWNED_TASK_STATES: LogicalStatus[] = [...ACTIVE_STATES, "review"];
 const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
 const TARGET_PROCESSABLE_STATES: LogicalStatus[] = [
   "open",
   "in_progress",
   "waiting_for_answer",
+  "review",
 ];
 
 const branchNameForIssue = (issueKey: string): string => `feature/ai-task-${issueKey}`;
@@ -77,6 +86,14 @@ const buildCommandDiagnostic = (
   ]
     .filter(Boolean)
     .join("\n\n");
+
+const mergeUniqueStrings = (first: string[], second: string[]): string[] => [
+  ...new Set([...first, ...second]),
+];
+
+const mergeUniqueNumbers = (first: number[], second: number[]): number[] => [
+  ...new Set([...first, ...second]),
+];
 
 export class WorkerOrchestrator {
   private shuttingDown = false;
@@ -161,7 +178,10 @@ export class WorkerOrchestrator {
 
     const ownedTask = await this.resumeOwnedTask();
     if (ownedTask) {
-      return this.handleIssue(ownedTask.issue, ownedTask.comments);
+      const outcome = await this.handleIssue(ownedTask.issue, ownedTask.comments);
+      if (outcome !== "idle" || ownedTask.issue.logicalStatus !== "review") {
+        return outcome;
+      }
     }
 
     const nextTask = await this.pickNextTask();
@@ -186,10 +206,6 @@ export class WorkerOrchestrator {
     if (this.isBusyByAnotherWorker(comments)) {
       this.logger.info("Target issue is locked by another worker.", { issueKey: issue.key });
       return "waiting";
-    }
-
-    if (issue.logicalStatus === "review") {
-      return this.handleTargetIssueInReview(issue);
     }
 
     if (!issue.logicalStatus || !TARGET_PROCESSABLE_STATES.includes(issue.logicalStatus)) {
@@ -217,28 +233,11 @@ export class WorkerOrchestrator {
     };
   }
 
-  private async handleTargetIssueInReview(issue: TrackerIssue): Promise<CycleOutcome> {
-    const branch = branchNameForIssue(issue.key);
-    const existingMr = await this.gitlab.findOpenMergeRequestByBranch(branch);
-    if (!existingMr) {
-      throw new PermanentTaskError(
-        `Target issue ${issue.key} is already in review, but no open merge request was found for ${branch}.`,
-      );
-    }
-
-    this.logger.info("Target issue is already in review with an open merge request.", {
-      issueKey: issue.key,
-      branch,
-      mergeRequestUrl: existingMr.url,
-    });
-    return "processed";
-  }
-
   private async resumeOwnedTask(): Promise<{
     issue: TrackerIssue;
     comments: CommentWithMetadata[];
   } | null> {
-    const issues = await this.tracker.findOwnedIssues(ACTIVE_STATES);
+    const issues = await this.tracker.findOwnedIssues(OWNED_TASK_STATES);
     for (const issue of issues) {
       const comments = await this.tracker.getComments(issue.key);
       const latestStatus = findLatestStatusComment(comments);
@@ -248,9 +247,23 @@ export class WorkerOrchestrator {
       ) {
         return { issue, comments };
       }
+
+      if (issue.logicalStatus === "review" && this.isReviewOwnedByThisWorker(comments)) {
+        return { issue, comments };
+      }
     }
 
     return null;
+  }
+
+  private isReviewOwnedByThisWorker(comments: CommentWithMetadata[]): boolean {
+    return comments.some(
+      (comment) =>
+        comment.metadata?.worker === this.config.workerId &&
+        (comment.metadata.kind === "AI MR" ||
+          (comment.metadata.kind === "AI STATUS" && comment.metadata.state === "review") ||
+          comment.metadata.kind === "AI REVIEW"),
+    );
   }
 
   private async pickNextTask(): Promise<{
@@ -310,6 +323,11 @@ export class WorkerOrchestrator {
   ): Promise<CycleOutcome> {
     let resumeContext: ResumeContext | undefined;
     let activeThreadId: string | undefined;
+    let implementationSummary: string | undefined;
+
+    if (issue.logicalStatus === "review") {
+      return this.handleReviewFeedback(issue, comments);
+    }
 
     if (issue.logicalStatus === "open") {
       await this.tracker.transition(issue.key, "in_progress");
@@ -380,6 +398,7 @@ export class WorkerOrchestrator {
         await this.pauseForClarification(issue, execution.clarification, activeThreadId);
         return "waiting";
       }
+      implementationSummary = execution.finalMessage?.trim();
 
       if (execution.process.exitCode !== 0) {
         this.logger.warn("Codex implementation run exited with non-zero code.", {
@@ -418,6 +437,7 @@ export class WorkerOrchestrator {
         await this.pauseForClarification(issue, execution.clarification, activeThreadId);
         return "waiting";
       }
+      implementationSummary = execution.finalMessage?.trim() ?? implementationSummary;
 
       if (execution.process.exitCode !== 0) {
         this.logger.warn("Codex fix run exited with non-zero code.", {
@@ -434,8 +454,271 @@ export class WorkerOrchestrator {
       throw new PermanentTaskError(validation.diagnostic);
     }
 
-    await this.publish(issue, branch, existingMr);
+    await this.publish(issue, branch, existingMr, validation, implementationSummary);
     return "processed";
+  }
+
+  private async handleReviewFeedback(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+  ): Promise<CycleOutcome> {
+    const { branch, mergeRequest } = await this.resolveReviewMergeRequest(issue, comments);
+    const pendingDiscussions = await this.findPendingReviewDiscussions(
+      issue,
+      comments,
+      mergeRequest,
+    );
+
+    if (pendingDiscussions.length === 0) {
+      this.logger.info("Review issue has no pending unresolved reviewer comments.", {
+        issueKey: issue.key,
+        mergeRequestIid: mergeRequest.iid,
+      });
+      return "idle";
+    }
+
+    await this.tracker.transition(issue.key, "in_progress");
+    await this.tracker.addComment(
+      issue.key,
+      formatStatusComment(
+        this.config.workerId,
+        "in_progress",
+        "Fixing unresolved review discussions.",
+      ),
+    );
+
+    const checkedOutBranch = await this.git.checkoutBranch(branch);
+    const headBefore = await this.git.getHeadSha();
+    const diffFromBase = await this.git.getDiffFromBase();
+    const changedFiles = await this.git.getChangedFilesFromBase();
+    const prompt = buildReviewFixPrompt(issue, comments, {
+      mergeRequest,
+      discussions: pendingDiscussions,
+      changedFiles,
+      diffFromBase,
+    });
+
+    let execution = await this.codex.runInitial(prompt);
+    let reviewThreadId = execution.threadId;
+    let reviewFixSummary = execution.finalMessage?.trim();
+    if (execution.clarification) {
+      await this.pauseForClarification(issue, execution.clarification, execution.threadId);
+      return "waiting";
+    }
+
+    if (execution.process.exitCode !== 0) {
+      this.logger.warn("Codex review fix run exited with non-zero code.", {
+        issueKey: issue.key,
+        exitCode: execution.process.exitCode,
+      });
+    }
+
+    let validation = await this.validateRepositoryState();
+    let attempt = 0;
+    while (!isValidationSuccessful(validation) && attempt < this.config.maxReviewFixAttempts) {
+      attempt += 1;
+      this.logger.warn("Review fix validation failed, asking Codex to apply a fix.", {
+        issueKey: issue.key,
+        attempt,
+        threadId: reviewThreadId,
+      });
+
+      execution = reviewThreadId
+        ? await this.codex.runResume(
+            reviewThreadId,
+            buildFixPrompt(issue, validation.diagnostic),
+          )
+        : await this.codex.runFix(buildFixPrompt(issue, validation.diagnostic));
+      reviewThreadId = execution.threadId ?? reviewThreadId;
+      reviewFixSummary = execution.finalMessage?.trim() ?? reviewFixSummary;
+      if (execution.clarification) {
+        await this.pauseForClarification(issue, execution.clarification, execution.threadId);
+        return "waiting";
+      }
+
+      if (execution.process.exitCode !== 0) {
+        this.logger.warn("Codex review validation fix run exited with non-zero code.", {
+          issueKey: issue.key,
+          attempt,
+          exitCode: execution.process.exitCode,
+        });
+      }
+
+      validation = await this.validateRepositoryState();
+    }
+
+    if (!isValidationSuccessful(validation)) {
+      throw new PermanentTaskError(validation.diagnostic);
+    }
+
+    if (await this.git.hasChanges()) {
+      const commitChangedFiles = await this.git.getChangedFilesFromBase();
+      await this.git.commit(
+        buildCommitMessage({
+          issue,
+          changedFiles: commitChangedFiles,
+          summary: reviewFixSummary,
+        }),
+      );
+    }
+
+    const headAfter = await this.git.getHeadSha();
+    if (headAfter === headBefore) {
+      throw new PermanentTaskError(
+        "Codex completed the review fix without producing a new commit.",
+      );
+    }
+
+    await this.git.push(checkedOutBranch);
+
+    const validationSummary = this.formatValidationSummary(validation);
+    const replyBody = this.formatReviewReplyBody(headAfter, validationSummary);
+    for (const discussion of pendingDiscussions) {
+      await this.gitlab.replyToDiscussion(mergeRequest.iid, discussion.id, replyBody);
+    }
+
+    const previousMetadata = findLatestReviewMetadata(
+      comments,
+      issue.key,
+      mergeRequest.iid,
+    );
+    await this.tracker.addComment(
+      issue.key,
+      formatReviewMetadataComment({
+        worker: this.config.workerId,
+        issueKey: issue.key,
+        mergeRequestIid: mergeRequest.iid,
+        processedDiscussionIds: mergeUniqueStrings(
+          previousMetadata?.processedDiscussionIds ?? [],
+          pendingDiscussions.map((discussion) => discussion.id),
+        ),
+        processedNoteIds: mergeUniqueNumbers(
+          previousMetadata?.processedNoteIds ?? [],
+          pendingDiscussions.flatMap((discussion) =>
+            discussion.notes.map((note) => note.id),
+          ),
+        ),
+        lastFixCommit: headAfter,
+      }),
+    );
+
+    await this.tracker.transition(issue.key, "review");
+    await this.tracker.addComment(
+      issue.key,
+      formatStatusComment(
+        this.config.workerId,
+        "review",
+        `Review feedback addressed and pushed: ${mergeRequest.url}`,
+      ),
+    );
+
+    return "processed";
+  }
+
+  private async resolveReviewMergeRequest(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+  ): Promise<{ branch: string; mergeRequest: MergeRequestInfo }> {
+    const branch = this.findLatestMergeRequestBranch(comments) ?? branchNameForIssue(issue.key);
+    const mergeRequest = await this.gitlab.findOpenMergeRequestByBranch(branch);
+    if (!mergeRequest) {
+      throw new PermanentTaskError(
+        `Issue ${issue.key} is in review, but no open merge request was found for ${branch}.`,
+      );
+    }
+
+    return { branch, mergeRequest };
+  }
+
+  private findLatestMergeRequestBranch(comments: CommentWithMetadata[]): string | undefined {
+    return comments
+      .filter(
+        (comment) =>
+          comment.metadata?.kind === "AI MR" &&
+          comment.metadata.worker === this.config.workerId &&
+          comment.metadata.branch,
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .at(-1)?.metadata?.branch;
+  }
+
+  private async findPendingReviewDiscussions(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+    mergeRequest: MergeRequestInfo,
+  ): Promise<MergeRequestDiscussion[]> {
+    const [currentUser, discussions] = await Promise.all([
+      this.gitlab.getCurrentUser(),
+      this.gitlab.getMergeRequestDiscussions(mergeRequest.iid),
+    ]);
+    const previousMetadata = findLatestReviewMetadata(
+      comments,
+      issue.key,
+      mergeRequest.iid,
+    );
+    const processedDiscussionIds = new Set(
+      previousMetadata?.processedDiscussionIds ?? [],
+    );
+    const processedNoteIds = new Set(previousMetadata?.processedNoteIds ?? []);
+
+    return discussions
+      .filter((discussion) => !discussion.resolved)
+      .map((discussion) =>
+        this.filterPendingReviewNotes(
+          discussion,
+          currentUser.username,
+          processedDiscussionIds,
+          processedNoteIds,
+        ),
+      )
+      .filter(
+        (discussion): discussion is MergeRequestDiscussion =>
+          discussion !== undefined && discussion.notes.length > 0,
+      );
+  }
+
+  private filterPendingReviewNotes(
+    discussion: MergeRequestDiscussion,
+    currentUsername: string,
+    processedDiscussionIds: Set<string>,
+    processedNoteIds: Set<number>,
+  ): MergeRequestDiscussion | undefined {
+    if (processedDiscussionIds.has(discussion.id) && processedNoteIds.size === 0) {
+      return undefined;
+    }
+
+    const anchorPosition = discussion.notes.find((note) => note.position)?.position;
+    const notes = discussion.notes
+      .filter((note) => this.isPendingReviewerNote(note, currentUsername, processedNoteIds))
+      .map((note) =>
+        note.position || !anchorPosition
+          ? note
+          : {
+              ...note,
+              position: anchorPosition,
+            },
+      );
+
+    if (notes.length === 0) {
+      return undefined;
+    }
+
+    return {
+      ...discussion,
+      notes,
+    };
+  }
+
+  private isPendingReviewerNote(
+    note: MergeRequestNote,
+    currentUsername: string,
+    processedNoteIds: Set<number>,
+  ): boolean {
+    return (
+      !note.system &&
+      note.authorUsername !== currentUsername &&
+      !processedNoteIds.has(note.id)
+    );
   }
 
   private resolveResumeContext(
@@ -620,16 +903,57 @@ export class WorkerOrchestrator {
     };
   }
 
+  private formatValidationSummary(validation: ValidationResult): string {
+    if (isValidationSuccessful(validation)) {
+      return [
+        `- Tests (\`${this.config.testCommand}\`): passed`,
+        `- Lint (\`${this.config.lintCommand}\`): passed`,
+      ].join("\n");
+    }
+
+    return [
+      validation.changed ? "- Repository changes: detected" : "- Repository changes: none",
+      `- Tests (\`${this.config.testCommand}\`): ${
+        validation.testsPassed ? "passed" : "failed"
+      }`,
+      `- Lint (\`${this.config.lintCommand}\`): ${
+        validation.lintPassed ? "passed" : "failed"
+      }`,
+      validation.diagnostic ? `\nDiagnostic:\n${validation.diagnostic}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  private formatReviewReplyBody(commitSha: string, validationSummary: string): string {
+    return [
+      `Applied the review feedback in commit ${commitSha}.`,
+      "",
+      "Validation:",
+      validationSummary,
+    ].join("\n");
+  }
+
   private async publish(
     issue: TrackerIssue,
     branch: string,
     existingMr: MergeRequestInfo | null,
+    validation: ValidationResult,
+    implementationSummary?: string,
   ): Promise<void> {
     if (await this.git.hasChanges()) {
-      await this.git.commit(`feat: implement ${issue.key}`);
+      const changedFiles = await this.git.getChangedFilesFromBase();
+      await this.git.commit(
+        buildCommitMessage({
+          issue,
+          changedFiles,
+          summary: implementationSummary,
+        }),
+      );
     }
 
     await this.git.push(branch);
+    const changedFiles = await this.git.getChangedFilesFromBase();
 
     const mergeRequest =
       existingMr ??
@@ -638,6 +962,15 @@ export class WorkerOrchestrator {
         sourceBranch: branch,
         targetBranch: this.config.baseBranch,
         title: `[AI] ${issue.key} implementation`,
+        description: buildMergeRequestDescription({
+          issue,
+          sourceBranch: branch,
+          targetBranch: this.config.baseBranch,
+          changedFiles,
+          validationSummary: this.formatValidationSummary(validation),
+          workerId: this.config.workerId,
+          codexSummary: implementationSummary,
+        }),
       }));
 
     await this.finalizeSuccess(issue, branch, mergeRequest);

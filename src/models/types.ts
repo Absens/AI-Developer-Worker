@@ -47,6 +47,7 @@ export interface AppConfig {
   codexLogFullEvents: boolean;
   codexQuestionMarker: string;
   maxFixAttempts: number;
+  maxReviewFixAttempts: number;
   workerId: string;
   testCommand: string;
   lintCommand: string;
@@ -84,7 +85,7 @@ export interface TrackerComment {
   isSystem: boolean;
 }
 
-export type ServiceCommentKind = "AI STATUS" | "AI QUESTION" | "AI MR";
+export type ServiceCommentKind = "AI STATUS" | "AI QUESTION" | "AI MR" | "AI REVIEW";
 export type ClarificationMode = "clarification";
 export type WaitingReason = "clarification" | "failure_recovery" | "manual_hold";
 
@@ -112,6 +113,11 @@ export interface ParsedServiceComment {
   threadId?: string;
   url?: string;
   branch?: string;
+  issueKey?: string;
+  mergeRequestIid?: number;
+  processedDiscussionIds?: string[];
+  processedNoteIds?: number[];
+  lastFixCommit?: string;
   mode?: ClarificationMode;
   summary?: string;
   blockingReason?: string;
@@ -154,6 +160,38 @@ export interface MergeRequestInfo {
   targetBranch: string;
 }
 
+export interface MergeRequestDiscussion {
+  id: string;
+  individualNote: boolean;
+  resolved: boolean;
+  notes: MergeRequestNote[];
+}
+
+export interface MergeRequestNote {
+  id: number;
+  body: string;
+  authorUsername: string;
+  system: boolean;
+  resolvable: boolean;
+  resolved: boolean;
+  createdAt: string;
+  position?: {
+    newPath?: string;
+    oldPath?: string;
+    newLine?: number;
+    oldLine?: number;
+  };
+}
+
+export interface ReviewMetadata {
+  worker: string;
+  issueKey: string;
+  mergeRequestIid: number;
+  processedDiscussionIds: string[];
+  processedNoteIds: number[];
+  lastFixCommit?: string;
+}
+
 export interface TrackerClient {
   checkReadAccess(): Promise<void>;
   findCandidateIssues(): Promise<TrackerIssue[]>;
@@ -171,7 +209,11 @@ export interface GitService {
   hasChanges(): Promise<boolean>;
   hasDiffFromBase(): Promise<boolean>;
   syncBaseBranch(): Promise<void>;
+  checkoutBranch(branch: string): Promise<string>;
   checkoutTaskBranch(issueKey: string): Promise<string>;
+  getDiffFromBase(): Promise<string>;
+  getChangedFilesFromBase(): Promise<string[]>;
+  getHeadSha(): Promise<string>;
   commit(message: string): Promise<void>;
   push(branch: string): Promise<void>;
 }
@@ -182,6 +224,9 @@ export interface GitLabService {
   findOpenMergeRequestByBranch(
     sourceBranch: string,
   ): Promise<MergeRequestInfo | null>;
+  getMergeRequestDiscussions(iid: number): Promise<MergeRequestDiscussion[]>;
+  replyToDiscussion(iid: number, discussionId: string, body: string): Promise<void>;
+  getCurrentUser(): Promise<{ username: string }>;
   createMergeRequest(input: {
     sourceBranch: string;
     targetBranch: string;

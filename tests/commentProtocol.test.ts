@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   findFirstHumanReplyAfter,
   findLatestHumanTaskCommandAfter,
+  findLatestReviewMetadata,
   formatMergeRequestComment,
   formatQuestionComment,
   formatQuestionCommentWithThreadId,
+  formatReviewMetadataComment,
   formatStatusComment,
   parseHumanTaskCommand,
   parseServiceComment,
@@ -96,6 +98,61 @@ describe("comment protocol", () => {
       worker: "worker-1",
       url: "https://gitlab/mr/1",
       branch: "feature/ai-task-ABC-1",
+    });
+  });
+
+  it("formats, parses, and finds latest AI REVIEW metadata", () => {
+    const first = formatReviewMetadataComment({
+      worker: "worker-1",
+      issueKey: "DEV-1",
+      mergeRequestIid: 17,
+      processedDiscussionIds: ["abc"],
+      processedNoteIds: [101],
+      lastFixCommit: "sha-1",
+    });
+    const second = formatReviewMetadataComment({
+      worker: "worker-1",
+      issueKey: "DEV-1",
+      mergeRequestIid: 17,
+      processedDiscussionIds: ["abc", "def"],
+      processedNoteIds: [101, 102],
+      lastFixCommit: "sha-2",
+    });
+
+    expect(parseServiceComment(first)).toEqual({
+      kind: "AI REVIEW",
+      worker: "worker-1",
+      issueKey: "DEV-1",
+      mergeRequestIid: 17,
+      processedDiscussionIds: ["abc"],
+      processedNoteIds: [101],
+      lastFixCommit: "sha-1",
+    });
+
+    const comments: CommentWithMetadata[] = [
+      {
+        id: "1",
+        text: first,
+        createdAt: "2026-03-10T10:00:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(first),
+      },
+      {
+        id: "2",
+        text: second,
+        createdAt: "2026-03-10T10:05:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(second),
+      },
+    ];
+
+    expect(findLatestReviewMetadata(comments, "DEV-1", 17)).toEqual({
+      worker: "worker-1",
+      issueKey: "DEV-1",
+      mergeRequestIid: 17,
+      processedDiscussionIds: ["abc", "def"],
+      processedNoteIds: [101, 102],
+      lastFixCommit: "sha-2",
     });
   });
 

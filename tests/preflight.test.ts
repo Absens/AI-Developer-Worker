@@ -54,6 +54,7 @@ const createConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
+  maxReviewFixAttempts: 2,
   workerId: "worker-1",
   testCommand: "npm test",
   lintCommand: "npm run lint",
@@ -131,8 +132,24 @@ class FakeGitService implements GitService {
     return;
   }
 
+  async checkoutBranch(branch: string): Promise<string> {
+    return branch;
+  }
+
   async checkoutTaskBranch(issueKey: string): Promise<string> {
     return `feature/ai-task-${issueKey}`;
+  }
+
+  async getDiffFromBase(): Promise<string> {
+    return "";
+  }
+
+  async getChangedFilesFromBase(): Promise<string[]> {
+    return [];
+  }
+
+  async getHeadSha(): Promise<string> {
+    return "HEAD";
   }
 
   async commit(): Promise<void> {
@@ -172,6 +189,7 @@ class FakeGitLabService implements GitLabService {
     sourceBranch: string;
     targetBranch: string;
     title: string;
+    description?: string;
   }): Promise<MergeRequestInfo> {
     return {
       id: 1,
@@ -181,6 +199,18 @@ class FakeGitLabService implements GitLabService {
       sourceBranch: input.sourceBranch,
       targetBranch: input.targetBranch,
     };
+  }
+
+  async getMergeRequestDiscussions() {
+    return [];
+  }
+
+  async replyToDiscussion(): Promise<void> {
+    return;
+  }
+
+  async getCurrentUser(): Promise<{ username: string }> {
+    return { username: "ai-worker" };
   }
 }
 

@@ -39,7 +39,12 @@ const readJsonBody = async (request: IncomingMessage): Promise<any> => {
 const startMockServer = async () => {
   const trackerComments: Array<{ text: string }> = [];
   const transitions: string[] = [];
-  const mergeRequests: Array<{ sourceBranch: string; web_url: string; title: string }> = [];
+  const mergeRequests: Array<{
+    sourceBranch: string;
+    web_url: string;
+    title: string;
+    description?: string;
+  }> = [];
   const searchBodies: any[] = [];
   const issue = {
     id: "1",
@@ -186,6 +191,7 @@ const startMockServer = async () => {
         sourceBranch: body.source_branch,
         title: body.title,
         web_url: webUrl,
+        description: body.description,
       });
       response.statusCode = 201;
       response.setHeader("Content-Type", "application/json");
@@ -332,6 +338,9 @@ describe("worker smoke", () => {
       ]);
       expect(mockServer.transitions).toEqual(["start", "review"]);
       expect(mockServer.mergeRequests).toHaveLength(1);
+      expect(mockServer.mergeRequests[0]?.description).toContain("## Summary");
+      expect(mockServer.mergeRequests[0]?.description).toContain("## Testing");
+      expect(mockServer.mergeRequests[0]?.description).toContain("DEV-100");
       expect(
         mockServer.trackerComments.some((comment) => comment.text.startsWith("AI MR:")),
       ).toBe(true);

@@ -204,6 +204,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     env.POLL_INTERVAL_MINUTES?.trim() || "30",
     "POLL_INTERVAL_MINUTES",
   );
+  const maxFixAttempts = parsePositiveInt(
+    requireEnv(env, "MAX_FIX_ATTEMPTS"),
+    "MAX_FIX_ATTEMPTS",
+  );
 
   return {
     trackerToken: requireEnv(env, "TRACKER_TOKEN"),
@@ -255,9 +259,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       false,
     ),
     codexQuestionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
-    maxFixAttempts: parsePositiveInt(
-      requireEnv(env, "MAX_FIX_ATTEMPTS"),
-      "MAX_FIX_ATTEMPTS",
+    maxFixAttempts,
+    maxReviewFixAttempts: parsePositiveInt(
+      env.MAX_REVIEW_FIX_ATTEMPTS?.trim() || String(maxFixAttempts),
+      "MAX_REVIEW_FIX_ATTEMPTS",
     ),
     workerId: requireEnv(env, "WORKER_ID"),
     testCommand: env.TEST_COMMAND?.trim() || "npm test",

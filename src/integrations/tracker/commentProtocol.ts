@@ -4,6 +4,7 @@ import type {
   HumanTaskCommand,
   LogicalStatus,
   ParsedServiceComment,
+  ReviewMetadata,
   TrackerComment,
   WaitingReason,
 } from "../../models/types.js";
@@ -11,6 +12,7 @@ import type {
 const STATUS_PREFIX = "AI STATUS:";
 const QUESTION_PREFIX = "AI QUESTION:";
 const MR_PREFIX = "AI MR:";
+const REVIEW_PREFIX = "AI REVIEW:";
 const JSON_BLOCK_START = "```json";
 const JSON_BLOCK_END = "```";
 const DEFAULT_RESUME_HINT =
@@ -71,6 +73,26 @@ const normalizeStringArray = (value: unknown): string[] | undefined => {
     .filter(Boolean);
 
   return normalized.length > 0 ? normalized : [];
+};
+
+const normalizeNumber = (value: unknown): number | undefined => {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return undefined;
+  }
+
+  return value;
+};
+
+const normalizeNumberArray = (value: unknown): number[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const normalized = value.filter(
+    (entry): entry is number => typeof entry === "number" && Number.isInteger(entry),
+  );
+
+  return normalized.length === value.length ? normalized : undefined;
 };
 
 const parseWaitingReason = (value: unknown): WaitingReason | undefined => {
@@ -222,6 +244,25 @@ const parseStructuredServiceComment = (
         branch,
       };
     }
+
+    if (kind === "AI REVIEW") {
+      const issueKey = normalizeString(jsonPayload.issueKey);
+      const mergeRequestIid = normalizeNumber(jsonPayload.mergeRequestIid);
+      if (!issueKey || mergeRequestIid === undefined) {
+        return undefined;
+      }
+
+      return {
+        kind,
+        worker,
+        issueKey,
+        mergeRequestIid,
+        processedDiscussionIds:
+          normalizeStringArray(jsonPayload.processedDiscussionIds) ?? [],
+        processedNoteIds: normalizeNumberArray(jsonPayload.processedNoteIds) ?? [],
+        lastFixCommit: normalizeString(jsonPayload.lastFixCommit),
+      };
+    }
   }
 
   const parsed = parseKeyValueLines(body);
@@ -335,12 +376,35 @@ export const formatMergeRequestComment = (
     `Merge request: ${url}\nBranch: ${branch}`,
   );
 
+export const formatReviewMetadataComment = (
+  metadata: ReviewMetadata,
+): string =>
+  buildStructuredComment(
+    REVIEW_PREFIX,
+    {
+      worker: metadata.worker,
+      issueKey: metadata.issueKey,
+      mergeRequestIid: metadata.mergeRequestIid,
+      processedDiscussionIds: metadata.processedDiscussionIds,
+      processedNoteIds: metadata.processedNoteIds,
+      ...(metadata.lastFixCommit ? { lastFixCommit: metadata.lastFixCommit } : {}),
+    },
+    [
+      `Review feedback processed for ${metadata.issueKey}.`,
+      `Merge request IID: ${metadata.mergeRequestIid}`,
+      metadata.lastFixCommit ? `Last fix commit: ${metadata.lastFixCommit}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
 export const parseServiceComment = (
   text: string,
 ): ParsedServiceComment | undefined =>
   parseStructuredServiceComment(STATUS_PREFIX, "AI STATUS", text) ??
   parseStructuredServiceComment(QUESTION_PREFIX, "AI QUESTION", text) ??
-  parseStructuredServiceComment(MR_PREFIX, "AI MR", text);
+  parseStructuredServiceComment(MR_PREFIX, "AI MR", text) ??
+  parseStructuredServiceComment(REVIEW_PREFIX, "AI REVIEW", text);
 
 export const decorateComments = (
   comments: TrackerComment[],
@@ -385,6 +449,36 @@ export const findLatestQuestionComment = (
     )
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .at(-1);
+
+export const findLatestReviewMetadata = (
+  comments: CommentWithMetadata[],
+  issueKey: string,
+  mergeRequestIid?: number,
+): ReviewMetadata | undefined => {
+  const metadata = comments
+    .filter(
+      (comment): comment is CommentWithMetadata & { metadata: ParsedServiceComment } =>
+        comment.metadata?.kind === "AI REVIEW" &&
+        comment.metadata.issueKey === issueKey &&
+        (mergeRequestIid === undefined ||
+          comment.metadata.mergeRequestIid === mergeRequestIid),
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .at(-1)?.metadata;
+
+  if (!metadata?.issueKey || metadata.mergeRequestIid === undefined) {
+    return undefined;
+  }
+
+  return {
+    worker: metadata.worker,
+    issueKey: metadata.issueKey,
+    mergeRequestIid: metadata.mergeRequestIid,
+    processedDiscussionIds: metadata.processedDiscussionIds ?? [],
+    processedNoteIds: metadata.processedNoteIds ?? [],
+    ...(metadata.lastFixCommit ? { lastFixCommit: metadata.lastFixCommit } : {}),
+  };
+};
 
 export const findHumanCommentsAfter = (
   comments: CommentWithMetadata[],

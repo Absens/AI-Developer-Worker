@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { WorkerOrchestrator } from "../src/domain/orchestrator.js";
 import {
+  formatMergeRequestComment,
   formatQuestionCommentWithThreadId,
   formatStatusComment,
   parseServiceComment,
@@ -19,6 +20,7 @@ import type {
   GitLabService,
   GitService,
   LogicalStatus,
+  MergeRequestDiscussion,
   MergeRequestInfo,
   TrackerClient,
   TrackerIssue,
@@ -77,6 +79,7 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
+  maxReviewFixAttempts: 2,
   workerId: "worker-1",
   testCommand: `node -e "process.exit(0)"`,
   lintCommand: `node -e "process.exit(0)"`,
@@ -185,6 +188,23 @@ class FakeGitService implements GitService {
     return this.currentBranch;
   }
 
+  async checkoutBranch(branch: string): Promise<string> {
+    this.currentBranch = branch;
+    return branch;
+  }
+
+  async getDiffFromBase(): Promise<string> {
+    return "diff --git a/src/example.ts b/src/example.ts";
+  }
+
+  async getChangedFilesFromBase(): Promise<string[]> {
+    return ["src/example.ts"];
+  }
+
+  async getHeadSha(): Promise<string> {
+    return this.commits.length > 0 ? `commit-${this.commits.length}` : "base-commit";
+  }
+
   async commit(message: string): Promise<void> {
     this.commits.push(message);
     this.uncommittedChanges = false;
@@ -198,8 +218,12 @@ class FakeGitService implements GitService {
 
 class FakeGitLabService implements GitLabService {
   createCalls: string[] = [];
+  createDescriptions: Array<string | undefined> = [];
   findCalls: string[] = [];
+  replies: Array<{ iid: number; discussionId: string; body: string }> = [];
   openMergeRequestsByBranch: Record<string, MergeRequestInfo> = {};
+  discussionsByIid: Record<number, MergeRequestDiscussion[]> = {};
+  currentUsername = "ai-worker";
 
   async checkReadAccess(): Promise<void> {
     return;
@@ -222,8 +246,10 @@ class FakeGitLabService implements GitLabService {
     sourceBranch: string;
     targetBranch: string;
     title: string;
+    description?: string;
   }): Promise<MergeRequestInfo> {
     this.createCalls.push(input.sourceBranch);
+    this.createDescriptions.push(input.description);
     return {
       id: 1,
       iid: 1,
@@ -232,6 +258,18 @@ class FakeGitLabService implements GitLabService {
       sourceBranch: input.sourceBranch,
       targetBranch: input.targetBranch,
     };
+  }
+
+  async getMergeRequestDiscussions(iid: number) {
+    return this.discussionsByIid[iid] ?? [];
+  }
+
+  async replyToDiscussion(iid: number, discussionId: string, body: string): Promise<void> {
+    this.replies.push({ iid, discussionId, body });
+  }
+
+  async getCurrentUser(): Promise<{ username: string }> {
+    return { username: this.currentUsername };
   }
 }
 
@@ -1132,6 +1170,11 @@ Reply with /resume A or /resume B.
   });
 
   it("does not create a duplicate merge request for a target issue already in review", async () => {
+    const mrComment = formatMergeRequestComment(
+      "worker-1",
+      "https://gitlab.example.com/project/-/merge_requests/1",
+      "feature/ai-task-DEV-REVIEW",
+    );
     const tracker = new FakeTrackerClient(
       [
         {
@@ -1143,7 +1186,17 @@ Reply with /resume A or /resume B.
           logicalStatus: "review",
         },
       ],
-      { "DEV-REVIEW": [] },
+      {
+        "DEV-REVIEW": [
+          {
+            id: "1",
+            text: mrComment,
+            createdAt: "2026-03-10T10:02:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(mrComment),
+          },
+        ],
+      },
     );
     const gitlab = new FakeGitLabService();
     gitlab.openMergeRequestsByBranch["feature/ai-task-DEV-REVIEW"] = {
@@ -1165,10 +1218,226 @@ Reply with /resume A or /resume B.
 
     const outcome = await orchestrator.runOnce();
 
-    expect(outcome).toBe("processed");
+    expect(outcome).toBe("idle");
     expect(gitlab.findCalls).toEqual(["feature/ai-task-DEV-REVIEW"]);
     expect(gitlab.createCalls).toEqual([]);
     expect(tracker.transitions).toEqual([]);
+  });
+
+  it("continues queue scanning when an owned review issue has no pending feedback", async () => {
+    const reviewBranch = "feature/ai-task-DEV-REVIEW-IDLE";
+    const mrComment = formatMergeRequestComment(
+      "worker-1",
+      "https://gitlab.example.com/project/-/merge_requests/2",
+      reviewBranch,
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-REVIEW-IDLE",
+          title: "Already in review",
+          description: "No feedback yet",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "review",
+        },
+        {
+          id: "2",
+          key: "DEV-NEXT",
+          title: "Next open task",
+          description: "Process after idle review check",
+          createdAt: "2026-03-10T10:02:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      {
+        "DEV-REVIEW-IDLE": [
+          {
+            id: "1",
+            text: mrComment,
+            createdAt: "2026-03-10T10:02:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(mrComment),
+          },
+        ],
+        "DEV-NEXT": [],
+      },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    gitlab.openMergeRequestsByBranch[reviewBranch] = {
+      id: 2,
+      iid: 2,
+      url: "https://gitlab.example.com/project/-/merge_requests/2",
+      title: "[AI] DEV-REVIEW-IDLE implementation",
+      sourceBranch: reviewBranch,
+      targetBranch: "main",
+    };
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-next",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-next",
+          };
+        },
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-NEXT", target: "in_progress" },
+      { issueKey: "DEV-NEXT", target: "review" },
+    ]);
+    expect(gitlab.findCalls).toContain(reviewBranch);
+    expect(git.commits).toEqual(["feat: implement DEV-NEXT"]);
+  });
+
+  it("fixes unresolved review discussions, replies, and records processed metadata", async () => {
+    const branch = "feature/ai-task-DEV-REVIEW-FIX";
+    const mrComment = formatMergeRequestComment(
+      "worker-1",
+      "https://gitlab.example.com/project/-/merge_requests/17",
+      branch,
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-REVIEW-FIX",
+          title: "Fix review feedback",
+          description: "Address the reviewer note",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "review",
+        },
+      ],
+      {
+        "DEV-REVIEW-FIX": [
+          {
+            id: "1",
+            text: mrComment,
+            createdAt: "2026-03-10T10:02:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(mrComment),
+          },
+        ],
+      },
+    );
+    const git = new FakeGitService();
+    git.currentBranch = branch;
+    git.diffFromBase = true;
+    const gitlab = new FakeGitLabService();
+    gitlab.openMergeRequestsByBranch[branch] = {
+      id: 17,
+      iid: 17,
+      url: "https://gitlab.example.com/project/-/merge_requests/17",
+      title: "[AI] DEV-REVIEW-FIX implementation",
+      sourceBranch: branch,
+      targetBranch: "main",
+    };
+    gitlab.discussionsByIid[17] = [
+      {
+        id: "discussion-1",
+        individualNote: false,
+        resolved: false,
+        notes: [
+          {
+            id: 101,
+            body: "Fix the null crash before merge.",
+            authorUsername: "reviewer",
+            system: false,
+            resolvable: true,
+            resolved: false,
+            createdAt: "2026-03-10T10:05:00.000Z",
+            position: {
+              newPath: "src/example.ts",
+              newLine: 12,
+            },
+          },
+          {
+            id: 102,
+            body: "Worker follow-up should be ignored.",
+            authorUsername: "ai-worker",
+            system: false,
+            resolvable: true,
+            resolved: false,
+            createdAt: "2026-03-10T10:06:00.000Z",
+            position: {
+              newPath: "src/example.ts",
+              newLine: 12,
+            },
+          },
+        ],
+      },
+    ];
+    const codex = new FakeCodexRunner([
+      () => {
+        git.uncommittedChanges = true;
+        return {
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "Handle null review feedback",
+          threadId: "thread-review-fix",
+        };
+      },
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd()),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const firstOutcome = await orchestrator.runOnce();
+    const secondOutcome = await orchestrator.runOnce();
+
+    expect(firstOutcome).toBe("processed");
+    expect(secondOutcome).toBe("idle");
+    expect(codex.initialCalls[0]).toContain("Fix the null crash before merge.");
+    expect(codex.initialCalls[0]).not.toContain("Worker follow-up should be ignored.");
+    expect(git.commits).toEqual(["fix: handle null review feedback DEV-REVIEW-FIX"]);
+    expect(git.pushes).toEqual([branch]);
+    expect(gitlab.replies).toHaveLength(1);
+    expect(gitlab.replies[0]).toMatchObject({
+      iid: 17,
+      discussionId: "discussion-1",
+    });
+    expect(gitlab.replies[0]?.body).toContain("commit-1");
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-REVIEW-FIX", target: "in_progress" },
+      { issueKey: "DEV-REVIEW-FIX", target: "review" },
+    ]);
+    expect(
+      tracker.addedComments.some(
+        (entry) =>
+          entry.text.startsWith("AI REVIEW:") &&
+          entry.text.includes('"processedDiscussionIds"') &&
+          entry.text.includes("discussion-1") &&
+          entry.text.includes("101") &&
+          !entry.text.includes("102"),
+      ),
+    ).toBe(true);
   });
 
   it("surfaces missing target issues as a controlled failure", async () => {

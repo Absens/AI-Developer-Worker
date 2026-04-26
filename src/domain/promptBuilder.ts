@@ -1,6 +1,8 @@
 import type {
   CommentWithMetadata,
   HumanTaskCommand,
+  MergeRequestDiscussion,
+  MergeRequestInfo,
   TrackerIssue,
 } from "../models/types.js";
 import {
@@ -16,6 +18,15 @@ const CLARIFICATION_SCHEMA = `{
   "options": ["A: option one", "B: option two"],
   "resumeHint": "Reply with /resume A or /resume freeform: <your answer>."
 }`;
+
+interface ReviewFixPromptContext {
+  mergeRequest: MergeRequestInfo;
+  discussions: MergeRequestDiscussion[];
+  changedFiles: string[];
+  diffFromBase: string;
+}
+
+const MAX_DIFF_CONTEXT_LENGTH = 16_000;
 
 const formatHumanComments = (comments: CommentWithMetadata[]): string => {
   const relevant = comments.filter((comment) => !comment.metadata && !comment.isSystem);
@@ -83,6 +94,63 @@ const formatResumeCommand = (command: HumanTaskCommand): string =>
   ]
     .filter(Boolean)
     .join("\n");
+
+const formatReviewPosition = (discussion: MergeRequestDiscussion): string => {
+  const position = discussion.notes.find((note) => note.position)?.position;
+  const path = position?.newPath ?? position?.oldPath ?? "general";
+  const line =
+    position?.newLine !== undefined
+      ? `new line ${position.newLine}`
+      : position?.oldLine !== undefined
+        ? `old line ${position.oldLine}`
+        : "no line";
+
+  return `${path}:${line}`;
+};
+
+const formatReviewComments = (discussions: MergeRequestDiscussion[]): string => {
+  if (discussions.length === 0) {
+    return "No unresolved reviewer comments.";
+  }
+
+  const groups = new Map<string, MergeRequestDiscussion[]>();
+  for (const discussion of discussions) {
+    const key = formatReviewPosition(discussion);
+    groups.set(key, [...(groups.get(key) ?? []), discussion]);
+  }
+
+  return [...groups.entries()]
+    .map(([location, groupedDiscussions]) => {
+      const lines = [`File/line: ${location}`];
+      for (const discussion of groupedDiscussions) {
+        lines.push(`Discussion ${discussion.id}:`);
+        for (const note of discussion.notes) {
+          lines.push(
+            [
+              `- note ${note.id}`,
+              note.authorUsername ? `by @${note.authorUsername}` : "by unknown reviewer",
+              `at ${note.createdAt}:`,
+              note.body,
+            ].join(" "),
+          );
+        }
+      }
+      return lines.join("\n");
+    })
+    .join("\n\n");
+};
+
+const truncateDiff = (diff: string): string => {
+  if (!diff.trim()) {
+    return "No diff from base was reported.";
+  }
+
+  if (diff.length <= MAX_DIFF_CONTEXT_LENGTH) {
+    return diff;
+  }
+
+  return `${diff.slice(0, MAX_DIFF_CONTEXT_LENGTH)}\n[diff truncated after ${MAX_DIFF_CONTEXT_LENGTH} characters]`;
+};
 
 const buildClarificationInstruction = (): string => [
   'If critical business context is missing, reply with exactly one line that starts with AI_QUESTION: followed by a compact JSON object.',
@@ -192,3 +260,44 @@ ${latestQuestion?.createdAt ?? "unknown"}
 
 ${buildClarificationInstruction()}`;
 };
+
+export const buildReviewFixPrompt = (
+  issue: TrackerIssue,
+  comments: CommentWithMetadata[],
+  reviewContext: ReviewFixPromptContext,
+): string => `Task: ${issue.key}
+Title: ${issue.title}
+
+Description:
+${issue.description || "No description."}
+
+Relevant Tracker context:
+${formatHumanComments(comments)}
+
+Merge request:
+- URL: ${reviewContext.mergeRequest.url}
+- Source branch: ${reviewContext.mergeRequest.sourceBranch}
+- Target branch: ${reviewContext.mergeRequest.targetBranch}
+
+Changed files from base:
+${
+  reviewContext.changedFiles.length > 0
+    ? reviewContext.changedFiles.map((file) => `- ${file}`).join("\n")
+    : "No changed files reported."
+}
+
+Unresolved reviewer comments:
+${formatReviewComments(reviewContext.discussions)}
+
+Diff from base:
+${truncateDiff(reviewContext.diffFromBase)}
+
+Requirements:
+1. Fix the unresolved reviewer comments by modifying only the target repository files.
+2. Keep the original task intent and existing architecture intact.
+3. Do not resolve GitLab threads manually and do not mark discussions as resolved.
+4. Do not change unrelated files or unrelated behavior.
+5. Run the project checks that are appropriate for the repository.
+6. If critical business context is missing, stop and ask for clarification using the exact AI_QUESTION JSON contract below.
+
+${buildClarificationInstruction()}`;

@@ -42,7 +42,7 @@ For Tracker statuses, the repository already includes an example file at [config
 | `TRACKER_API_BASE_URL` | No | `https://api.tracker.yandex.net/v3` | Keep the default unless you are using a non-standard Tracker endpoint or a test stub. |
 | `TRACKER_STATUS_MAP_FILE` | Yes | None | Path to a JSON file that maps the worker logical states to your real Tracker statuses. The `statuses` values in that file must exactly match the issue state names visible in Tracker. |
 | `GITLAB_URL` | Yes | None | Use the base URL of your GitLab instance, for example `https://gitlab.example.com`. Do not append `/api/v4`; the client adds that part itself. |
-| `GITLAB_TOKEN` | Yes | None | Create a GitLab access token that can read and create merge requests in the target project. For one repository, prefer a GitLab project access token over a personal token. The token must be valid for `GET` and `POST` calls to `/api/v4/projects/:id/merge_requests`, so in practice give it `api` scope and repository write access for that project. |
+| `GITLAB_TOKEN` | Yes | None | Create a GitLab access token that can read and create merge requests, read MR discussions, read the current user, and post discussion replies in the target project. For one repository, prefer a GitLab project access token over a personal token. In practice give it `api` scope and repository write access for that project. |
 | `GITLAB_PROJECT_ID` | Yes | None | Use the numeric or URL-encoded project ID accepted by the GitLab REST API. You can copy it from the project page or query it through the GitLab API once you know the project path. |
 | `GIT_AUTHOR_NAME` | No | None | Optional git commit author name for the worker process. Use this in Docker if the mounted repository does not already have `git config user.name` set. |
 | `GIT_AUTHOR_EMAIL` | No | None | Optional git commit author email for the worker process. Use this in Docker if the mounted repository does not already have `git config user.email` set. |
@@ -63,6 +63,7 @@ For Tracker statuses, the repository already includes an example file at [config
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |
 | `LINT_COMMAND` | No | `npm run lint` | Set the exact lint command that should run inside the mounted target repository. |
 | `MAX_FIX_ATTEMPTS` | Yes | None | Positive integer. Choose how many automated fix attempts the worker may perform for one task. |
+| `MAX_REVIEW_FIX_ATTEMPTS` | No | `MAX_FIX_ATTEMPTS` | Positive integer. Choose how many validation repair attempts the worker may perform while addressing unresolved GitLab review discussions. |
 | `WORKER_ID` | Yes | None | Stable identifier for this worker instance. Use a unique value per running worker, for example `worker-1` or `gitlab-bot-prod-1`. |
 | `WORKER_RUN_ONCE` | No | `false` | Set to `true` for a single validation cycle or local smoke run. |
 | `WORKER_PREFLIGHT_ONLY` | No | `false` | Set to `true` to run only the preflight report and exit without processing Tracker issues. `npm run preflight` sets this mode automatically. |
@@ -112,7 +113,7 @@ TARGET_ISSUE_KEY=FRONTEND-42
 WORKER_RUN_ONCE=true
 ```
 
-With `TARGET_ISSUE_KEY` set, the worker does not call the usual queue/tag candidate search. It loads the target issue directly, checks structured `AI STATUS` locks, resumes only matching `/resume` clarification flows, and avoids creating a duplicate merge request when the deterministic task branch already has an open MR.
+With `TARGET_ISSUE_KEY` set, the worker does not call the usual queue/tag candidate search. It loads the target issue directly, checks structured `AI STATUS` locks, resumes only matching `/resume` clarification flows, and processes unresolved GitLab review discussions when the target issue is already in `review`.
 
 ## `TRACKER_STATUS_MAP_FILE` format
 

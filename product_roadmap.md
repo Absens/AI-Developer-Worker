@@ -25,6 +25,9 @@ _Актуально на 2026-04-26._
 - Hard timeout для одного Codex запуска через `CODEX_TIMEOUT_SECONDS`.
 - Clarification loop: Codex может вернуть структурированный `AI_QUESTION: {...}`, воркер переводит задачу в `waiting_for_answer`, ждёт явный `/resume`, затем продолжает прежнюю Codex thread.
 - Автоисправления после проваленных `TEST_COMMAND` или `LINT_COMMAND` до `MAX_FIX_ATTEMPTS`.
+- Review feedback loop MVP: unresolved GitLab discussions, фильтрация self-comments, `AI REVIEW` processed metadata, Codex review-fix prompt, validation, push и replies в MR threads.
+- Автогенерация MR description с Summary, Changed Files, Testing, Risks/Notes и Links.
+- Smart conventional commit messages с fallback на `feat: implement ISSUE-KEY`.
 - Git flow: `feature/ai-task-{issueKey}`, sync base branch, reuse существующего MR, commit, push.
 - Git HTTPS auth bootstrap: rewrite SSH remote в HTTPS при необходимости, `GIT_REPOSITORY_TOKEN`, `GIT_REPOSITORY_USERNAME`, `GIT_REPOSITORY_URL`.
 - Worker commits по умолчанию используют `git commit --no-verify`, с возможностью включить repo hooks через `GIT_COMMIT_NO_VERIFY=false`.
@@ -33,9 +36,8 @@ _Актуально на 2026-04-26._
 
 ### Пока не реализовано
 
-- Обработка GitLab review discussions после создания MR.
-- Автогенерация полноценного MR description, labels, assignees и testing summary.
-- Smart commit messages и несколько логических коммитов.
+- MR labels, assignees и reviewer routing.
+- Несколько независимых логических коммитов.
 - Отдельные quality gates для typecheck, build, coverage, security и visual regression.
 - Multi-repository config и полноценная priority queue.
 - Dashboard, Prometheus metrics, alerts.
@@ -77,12 +79,13 @@ _Актуально на 2026-04-26._
 
 ## Фаза 1 - Review Feedback Loop
 
+**Статус:** MVP-completed.
 **Срок:** 3-4 недели.
 **Цель:** закрыть самый дорогой ручной этап после создания MR.
 
-Сейчас воркер доводит задачу до MR и переводит Tracker в `review`. После этого review comments остаются вне автоматического цикла.
+Worker доводит задачу до MR, переводит Tracker в `review`, затем может подхватить unresolved review discussions и выполнить fix cycle.
 
-### 1.1 GitLab discussions monitor
+### 1.1 GitLab discussions monitor - MVP done
 
 Расширить `GitLabService`:
 
@@ -91,12 +94,12 @@ _Актуально на 2026-04-26._
 - группировать замечания по файлам, line ranges и темам;
 - сохранять последний обработанный discussion/comment id, чтобы не повторять одну и ту же работу.
 
-### 1.2 Review fix cycle
+### 1.2 Review fix cycle - MVP done
 
 Добавить цикл:
 
 ```text
-review -> fixing_review -> review -> ... -> done/manual_hold
+review -> in_progress -> review -> ... -> failed/manual_hold
 ```
 
 Варианты реализации:
@@ -114,7 +117,7 @@ review -> fixing_review -> review -> ... -> done/manual_hold
 - отвечает в MR thread;
 - не зацикливается бесконечно, если review fix не проходит.
 
-### 1.3 MR description autogen
+### 1.3 MR description autogen - MVP done
 
 Заменить минимальный MR title `[AI] FRONTEND-123 implementation` на содержательный MR payload:
 
@@ -124,7 +127,7 @@ review -> fixing_review -> review -> ... -> done/manual_hold
 - Risks/Notes: ограничения и ручные действия;
 - Links: Tracker issue, branch, worker id.
 
-### 1.4 Smart commit messages
+### 1.4 Smart commit messages - MVP done
 
 Текущий commit message: `feat: implement ISSUE-KEY`.
 

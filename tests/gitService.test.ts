@@ -48,6 +48,7 @@ const createConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
   maxFixAttempts: 2,
+  maxReviewFixAttempts: 2,
   workerId: "worker-1",
   testCommand: "npm test",
   lintCommand: "npm run lint",

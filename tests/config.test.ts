@@ -85,6 +85,7 @@ describe("config", () => {
     expect(config.codexExecArgs).toEqual([]);
     expect(config.codexTimeoutMs).toBe(30 * 60 * 1000);
     expect(config.codexLogFullEvents).toBe(false);
+    expect(config.maxReviewFixAttempts).toBe(2);
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
@@ -223,6 +224,24 @@ describe("config", () => {
     expect(config.preflightRunTargetCommands).toBe(false);
     expect(config.targetIssueKey).toBe("DEV-2");
     expect(config.runOnce).toBe(true);
+  });
+
+  it("accepts explicit MAX_REVIEW_FIX_ATTEMPTS", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      MAX_REVIEW_FIX_ATTEMPTS: "4",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.maxFixAttempts).toBe(2);
+    expect(config.maxReviewFixAttempts).toBe(4);
   });
 
   it("rejects invalid CODEX_SANDBOX", () => {
