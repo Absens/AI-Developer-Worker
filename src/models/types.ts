@@ -68,6 +68,106 @@ export interface AppConfig {
   targetIssueKey?: string;
 }
 
+export type LockBackendKind = "tracker" | "redis" | "postgres";
+
+export interface CoordinationConfig {
+  lockBackend: LockBackendKind;
+  lockTtlMs: number;
+  lockHeartbeatMs: number;
+  redisUrl?: string;
+  postgresUrl?: string;
+}
+
+export interface PriorityQueueConfig {
+  manualOverrideTags: string[];
+  priorityWeights: Record<string, number>;
+  tagBoosts: Record<string, number>;
+  componentBoosts: Record<string, number>;
+  deadlineBoost: {
+    dueToday: number;
+    overdue: number;
+  };
+  createdAtTieBreaker: "oldest" | "newest";
+}
+
+export interface TrackerGlobalConfig {
+  token: string;
+  orgHeader: TrackerOrgHeader;
+  orgId: string;
+  statusMap: Record<LogicalStatus, TrackerStatusConfig>;
+  apiBaseUrl: string;
+}
+
+export interface GitLabGlobalConfig {
+  url: string;
+  token: string;
+}
+
+export interface CodexGlobalConfig {
+  home: string;
+  cliCommand: string;
+  cliArgs: string[];
+  model?: string;
+  profile?: string;
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  execArgs: string[];
+  timeoutMs: number;
+  progressLogIntervalMs: number;
+  logFullEvents: boolean;
+  questionMarker: string;
+}
+
+export interface RepositoryProfile {
+  name: string;
+  repoPath: string;
+  gitlabProjectId: string;
+  gitRemoteName: string;
+  baseBranch: string;
+  queues: string[];
+  tags: string[];
+  testCommand: string;
+  lintCommand: string;
+  typeCheckCommand?: string;
+  buildCommand?: string;
+  securityScanCommand?: string;
+  sastCommand?: string;
+  coverageCommand?: string;
+  minCoveragePercent?: number;
+  coverageReportFile?: string;
+  visualRegressionCommand?: string;
+  visualRegressionArtifactsDir?: string;
+  gitRepositoryUrl?: string;
+}
+
+export interface GlobalWorkerConfig {
+  workerId: string;
+  pollIntervalMinutes: number;
+  pollIntervalMs: number;
+  runOnce: boolean;
+  preflightOnly: boolean;
+  preflightRunTargetCommands: boolean;
+  trackerPreflightIssueKey?: string;
+  gitlabPreflightSourceBranch?: string;
+  targetIssueKey?: string;
+  maxFixAttempts: number;
+  maxReviewFixAttempts: number;
+  gitRepositoryToken: string;
+  gitRepositoryUsername: string;
+  gitCommitNoVerify: boolean;
+  gitAuthorName?: string;
+  gitAuthorEmail?: string;
+  tracker: TrackerGlobalConfig;
+  gitlab: GitLabGlobalConfig;
+  codex: CodexGlobalConfig;
+  coordination: CoordinationConfig;
+  priorityQueue: PriorityQueueConfig;
+  repositories: RepositoryProfile[];
+}
+
+export interface RepositoryRuntimeConfig extends AppConfig {
+  repositoryName: string;
+}
+
 export interface PreflightCheckResult {
   name: string;
   status: "pass" | "warn" | "fail";
@@ -79,11 +179,16 @@ export interface TrackerIssue {
   key: string;
   title: string;
   description: string;
+  queue?: string;
   createdAt?: string;
   updatedAt?: string;
   statusKey?: string;
   statusDisplay?: string;
   logicalStatus?: LogicalStatus;
+  priority?: string;
+  deadline?: string;
+  components?: string[];
+  tags?: string[];
 }
 
 export interface TrackerComment {
@@ -94,9 +199,15 @@ export interface TrackerComment {
   isSystem: boolean;
 }
 
-export type ServiceCommentKind = "AI STATUS" | "AI QUESTION" | "AI MR" | "AI REVIEW";
+export type ServiceCommentKind =
+  | "AI STATUS"
+  | "AI QUESTION"
+  | "AI MR"
+  | "AI REVIEW"
+  | "AI LEASE";
 export type ClarificationMode = "clarification";
 export type WaitingReason = "clarification" | "failure_recovery" | "manual_hold";
+export type LeaseKind = "task" | "repository";
 
 export interface ClarificationQuestion {
   summary: string;
@@ -133,6 +244,57 @@ export interface ParsedServiceComment {
   options?: string[];
   resumeHint?: string;
   waitingReason?: WaitingReason;
+  leaseKind?: LeaseKind;
+  leaseKey?: string;
+  repositoryName?: string;
+  repoPath?: string;
+  acquiredAt?: string;
+  expiresAt?: string;
+  heartbeatAt?: string;
+  token?: string;
+  releasedAt?: string;
+}
+
+export interface TaskLease {
+  kind: LeaseKind;
+  leaseKey: string;
+  issueKey: string;
+  workerId: string;
+  repositoryName: string;
+  repoPath: string;
+  acquiredAt: string;
+  expiresAt: string;
+  heartbeatAt: string;
+  token: string;
+  releasedAt?: string;
+}
+
+export interface AcquireTaskLeaseInput {
+  issueKey: string;
+  workerId: string;
+  repositoryName: string;
+  repoPath: string;
+  ttlMs: number;
+  now?: Date;
+}
+
+export interface AcquireRepositoryLeaseInput extends AcquireTaskLeaseInput {
+  leaseKey?: string;
+}
+
+export interface LockBackend {
+  acquireTaskLease(input: AcquireTaskLeaseInput): Promise<TaskLease | null>;
+  renewTaskLease(lease: TaskLease): Promise<TaskLease>;
+  releaseTaskLease(lease: TaskLease): Promise<void>;
+  getActiveLease(
+    issueKey: string,
+    options?: {
+      kind?: LeaseKind;
+      leaseKey?: string;
+      now?: Date;
+    },
+  ): Promise<TaskLease | null>;
+  acquireRepositoryLease(input: AcquireRepositoryLeaseInput): Promise<TaskLease | null>;
 }
 
 export interface CommentWithMetadata extends TrackerComment {
@@ -227,7 +389,7 @@ export interface ReviewMetadata {
 
 export interface TrackerClient {
   checkReadAccess(): Promise<void>;
-  findCandidateIssues(): Promise<TrackerIssue[]>;
+  findCandidateIssues(input?: { queue?: string; tag?: string }): Promise<TrackerIssue[]>;
   findOwnedIssues(statuses: LogicalStatus[]): Promise<TrackerIssue[]>;
   getIssue(issueKey: string): Promise<TrackerIssue>;
   getComments(issueKey: string): Promise<CommentWithMetadata[]>;

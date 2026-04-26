@@ -1,0 +1,73 @@
+import { buildRepositoryRuntimeConfig } from "../config.js";
+import { assertCodexAuthenticated } from "../integrations/codex/auth.js";
+import { CliCodexRunner } from "../integrations/codex/runner.js";
+import { RepositoryGitService } from "../integrations/git/service.js";
+import { GitLabApiClient } from "../integrations/gitlab/client.js";
+import { YandexTrackerClient } from "../integrations/tracker/client.js";
+import type {
+  GlobalWorkerConfig,
+  LockBackend,
+  RepositoryProfile,
+  RepositoryRuntimeConfig,
+} from "../models/types.js";
+import { Logger } from "../utils/logger.js";
+import { WorkerOrchestrator } from "./orchestrator.js";
+import { PreflightService } from "./preflight.js";
+
+export interface RepositoryWorkerContext {
+  profile: RepositoryProfile;
+  config: RepositoryRuntimeConfig;
+  tracker: YandexTrackerClient;
+  git: RepositoryGitService;
+  gitlab: GitLabApiClient;
+  codex: CliCodexRunner;
+  orchestrator: WorkerOrchestrator;
+  preflight: PreflightService;
+  assertRepositoryReady(): Promise<void>;
+  assertCodexAuthenticated(): Promise<void>;
+}
+
+export const buildRepositoryContext = (
+  globalConfig: GlobalWorkerConfig,
+  profile: RepositoryProfile,
+  logger: Logger,
+  lockBackend?: LockBackend,
+): RepositoryWorkerContext => {
+  const config = buildRepositoryRuntimeConfig(globalConfig, profile);
+  const tracker = new YandexTrackerClient(config, logger);
+  const git = new RepositoryGitService(config, logger);
+  const gitlab = new GitLabApiClient(config, logger);
+  const codex = new CliCodexRunner(config, logger);
+  const checkCodexAuth = () => assertCodexAuthenticated(config, logger);
+  const orchestrator = new WorkerOrchestrator(
+    config,
+    tracker,
+    git,
+    gitlab,
+    codex,
+    logger,
+    lockBackend,
+    globalConfig.coordination,
+  );
+  const preflight = new PreflightService(
+    config,
+    tracker,
+    git,
+    gitlab,
+    checkCodexAuth,
+    logger,
+  );
+
+  return {
+    profile,
+    config,
+    tracker,
+    git,
+    gitlab,
+    codex,
+    orchestrator,
+    preflight,
+    assertRepositoryReady: () => git.assertRepositoryReady(),
+    assertCodexAuthenticated: checkCodexAuth,
+  };
+};

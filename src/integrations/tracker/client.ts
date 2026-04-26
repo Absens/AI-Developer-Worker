@@ -26,10 +26,24 @@ interface TrackerSearchResponseItem {
   description?: string;
   createdAt?: string;
   updatedAt?: string;
+  queue?: {
+    key?: string;
+    display?: string;
+  };
   status?: {
     key?: string;
     display?: string;
   };
+  priority?: string | {
+    key?: string;
+    display?: string;
+  };
+  deadline?: string;
+  components?: Array<string | {
+    key?: string;
+    display?: string;
+  }>;
+  tags?: string[];
 }
 
 interface TrackerTransitionResponseItem {
@@ -63,6 +77,29 @@ const normalize = (value?: string): string =>
 const escapeTrackerQueryValue = (value: string): string =>
   value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
+const extractNamedValue = (
+  value: string | { key?: string; display?: string } | undefined,
+): string | undefined => {
+  if (typeof value === "string") {
+    return value.trim() || undefined;
+  }
+
+  return value?.key?.trim() || value?.display?.trim() || undefined;
+};
+
+const extractNamedValues = (
+  values: Array<string | { key?: string; display?: string }> | undefined,
+): string[] | undefined => {
+  if (!values) {
+    return undefined;
+  }
+
+  const normalized = values
+    .map(extractNamedValue)
+    .filter((entry): entry is string => entry !== undefined);
+  return normalized.length > 0 ? normalized : undefined;
+};
+
 const buildIssue = (
   issue: TrackerSearchResponseItem,
   logicalStatus?: LogicalStatus,
@@ -71,11 +108,16 @@ const buildIssue = (
   key: issue.key,
   title: issue.summary?.trim() || issue.key,
   description: issue.description?.trim() || "",
+  queue: issue.queue?.key?.trim() || issue.key.split("-")[0],
   createdAt: issue.createdAt,
   updatedAt: issue.updatedAt,
   statusKey: issue.status?.key,
   statusDisplay: issue.status?.display,
   logicalStatus,
+  priority: extractNamedValue(issue.priority),
+  deadline: issue.deadline?.trim() || undefined,
+  components: extractNamedValues(issue.components),
+  tags: issue.tags?.map((tag) => tag.trim()).filter(Boolean),
 });
 
 const buildTransition = (
@@ -143,8 +185,8 @@ export class YandexTrackerClient implements TrackerClient {
     extractCollection(response);
   }
 
-  async findCandidateIssues(): Promise<TrackerIssue[]> {
-    const issues = await this.searchIssuesByTag();
+  async findCandidateIssues(input: { queue?: string; tag?: string } = {}): Promise<TrackerIssue[]> {
+    const issues = await this.searchIssuesByTag(input);
     return issues
       .map((issue) => buildIssue(issue, this.determineLogicalStatus(buildIssue(issue))))
       .sort(sortIssues);
@@ -200,15 +242,19 @@ export class YandexTrackerClient implements TrackerClient {
     });
   }
 
-  private async searchIssuesByTag(): Promise<TrackerSearchResponseItem[]> {
+  private async searchIssuesByTag(
+    input: { queue?: string; tag?: string } = {},
+  ): Promise<TrackerSearchResponseItem[]> {
+    const queue = input.queue ?? this.config.trackerDefaultQueue;
+    const tag = input.tag ?? this.config.trackerTag;
     const result = await this.fetchAllPages<TrackerSearchResponseItem>("/issues/_search", {
       method: "POST",
       body: {
-        query: `"Queue": "${escapeTrackerQueryValue(this.config.trackerDefaultQueue)}" AND "Tags": "${escapeTrackerQueryValue(this.config.trackerTag)}"`,
+        query: `"Queue": "${escapeTrackerQueryValue(queue)}" AND "Tags": "${escapeTrackerQueryValue(tag)}"`,
       },
     });
 
-    this.logger.info("Fetched tracker candidates.", { count: result.length });
+    this.logger.info("Fetched tracker candidates.", { count: result.length, queue, tag });
     return result;
   }
 

@@ -216,7 +216,7 @@ MIN_COVERAGE_PERCENT=80
 **Срок:** 4-6 недель.
 **Цель:** перейти от одного supervised worker к управляемому fleet.
 
-### 3.1 Multi-repository config
+### 3.1 Multi-repository config - MVP completed 2026-04-26
 
 Перейти от плоского `.env` к YAML/JSON конфигу:
 
@@ -240,25 +240,25 @@ repositories:
     lintCommand: "golangci-lint run"
 ```
 
-### 3.2 Stronger worker coordination
+### 3.2 Stronger worker coordination - MVP completed 2026-04-26
 
 Текущий lock через Tracker comments достаточен для MVP, но не для высокой параллельности.
 
 Направления:
 
 - lease/heartbeat с TTL;
-- Redis/PostgreSQL lock backend для production;
+- Redis/PostgreSQL lock backend для production (контракт и fail-fast config есть, backend остаётся follow-up);
 - автоматический возврат задач в пул, если worker пропал;
 - запрет одновременной работы разных воркеров в одном repo path.
 
-### 3.3 Priority queue
+### 3.3 Priority queue - MVP completed 2026-04-26
 
 Заменить простое "старейшая открытая задача" на scoring:
 
 - Tracker priority;
 - deadline/SLA;
 - компоненты и tags;
-- confidence score;
+- confidence score (поле зарезервировано, полноценный сигнал остаётся Phase 4);
 - manual override.
 
 ## Фаза 4 - Task Routing и декомпозиция

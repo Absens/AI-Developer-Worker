@@ -230,6 +230,53 @@ describe("YandexTrackerClient", () => {
     expect(comments[0]?.isSystem).toBe(false);
   });
 
+  it("maps priority, deadline, components, tags, and queue from search responses", async () => {
+    const searchBodies: any[] = [];
+    const trackerApiBaseUrl = await startServer(async (request, response) => {
+      const method = request.method ?? "GET";
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+      if (method === "POST" && url.pathname === "/v3/issues/_search") {
+        searchBodies.push(await readJsonBody(request));
+        response.setHeader("Content-Type", "application/json");
+        response.end(
+          JSON.stringify([
+            {
+              id: "1",
+              key: "BACKEND-1",
+              summary: "Priority task",
+              description: "Description",
+              createdAt: "2026-04-26T10:00:00.000Z",
+              status: { key: "open", display: "Open" },
+              queue: { key: "BACKEND" },
+              priority: { key: "critical", display: "Critical" },
+              deadline: "2026-04-27",
+              components: [{ display: "payments" }],
+              tags: ["ai_dev", "urgent"],
+            },
+          ]),
+        );
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(`${method} ${url.pathname}`);
+    });
+
+    const client = new YandexTrackerClient(createConfig(trackerApiBaseUrl), new Logger());
+    const issues = await client.findCandidateIssues({ queue: "BACKEND", tag: "urgent" });
+
+    expect(searchBodies).toEqual([{ query: '"Queue": "BACKEND" AND "Tags": "urgent"' }]);
+    expect(issues[0]).toMatchObject({
+      key: "BACKEND-1",
+      queue: "BACKEND",
+      priority: "critical",
+      deadline: "2026-04-27",
+      components: ["payments"],
+      tags: ["ai_dev", "urgent"],
+    });
+  });
+
   it("resolves transitions from the issue transition list instead of using the hint as execute id", async () => {
     const requests: string[] = [];
 

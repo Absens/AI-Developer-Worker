@@ -50,6 +50,12 @@ For Tracker statuses, the repository already includes an example file at [config
 | `REPO_PATH` | No | `/workspace/project` | Keep the default in Docker. Override only if the worker should use another local checkout path. |
 | `BASE_BRANCH` | No | `main` | Set the branch that feature branches and merge requests should target. |
 | `POLL_INTERVAL_MINUTES` | No | `30` | Choose how often the worker polls Tracker. Must be a positive integer. |
+| `WORKER_CONFIG_FILE` | No | None | Optional YAML or JSON fleet config. When omitted, the `.env` values are bridged into one default repository profile. See [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md). |
+| `LOCK_BACKEND` | No | `tracker` | Coordination backend. Phase 3 MVP supports `tracker`; `redis` and `postgres` fail fast until implemented. |
+| `LOCK_TTL_SECONDS` | No | `900` | Lease TTL for task and repository locks. Expired leases do not block another worker. |
+| `LOCK_HEARTBEAT_SECONDS` | No | `60` | Interval for lease renewal during Codex, validation, and publish work. |
+| `LOCK_REDIS_URL` | No | None | Reserved for future Redis lock backend. |
+| `LOCK_POSTGRES_URL` | No | None | Reserved for future PostgreSQL lock backend. |
 | `CODEX_HOME` | No | `~/.codex` on the current machine | Use a writable Codex auth directory. In Docker, this should usually be the mounted volume path, for example `/codex-home`. |
 | `CODEX_CLI_COMMAND` | No | `codex` | Use the executable that starts Codex CLI. Keep `codex` unless you need a wrapper launcher. |
 | `CODEX_CLI_ARGS_JSON` | No | `[]` | JSON array of launcher/global Codex arguments passed before `exec`. Use this for flags such as `--search` or `--ask-for-approval never`. |
@@ -147,6 +153,12 @@ WORKER_RUN_ONCE=true
 ```
 
 With `TARGET_ISSUE_KEY` set, the worker does not call the usual queue/tag candidate search. It loads the target issue directly, checks structured `AI STATUS` locks, resumes only matching `/resume` clarification flows, and processes unresolved GitLab review discussions when the target issue is already in `review`.
+
+## Fleet mode
+
+Set `WORKER_CONFIG_FILE` to a YAML or JSON file when one worker process should manage multiple repositories. The config file owns repository-specific values such as `repoPath`, `gitlabProjectId`, queues, tags, base branch, and quality gate commands. Global secrets can still be referenced through environment variables with fields such as `tracker.tokenEnv`, `tracker.orgIdEnv`, `gitlab.urlEnv`, and `gitlab.tokenEnv`.
+
+Fleet mode uses `AI LEASE:` Tracker comments for task and repository leases. The task lease prevents duplicate processing of one issue, while the repository lease serializes mutations of the same checkout path. Full examples and caveats are in [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md).
 
 ## `TRACKER_STATUS_MAP_FILE` format
 

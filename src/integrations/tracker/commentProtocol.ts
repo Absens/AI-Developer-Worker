@@ -2,9 +2,11 @@ import type {
   ClarificationQuestion,
   CommentWithMetadata,
   HumanTaskCommand,
+  LeaseKind,
   LogicalStatus,
   ParsedServiceComment,
   ReviewMetadata,
+  TaskLease,
   TrackerComment,
   WaitingReason,
 } from "../../models/types.js";
@@ -13,6 +15,7 @@ const STATUS_PREFIX = "AI STATUS:";
 const QUESTION_PREFIX = "AI QUESTION:";
 const MR_PREFIX = "AI MR:";
 const REVIEW_PREFIX = "AI REVIEW:";
+const LEASE_PREFIX = "AI LEASE:";
 const JSON_BLOCK_START = "```json";
 const JSON_BLOCK_END = "```";
 const DEFAULT_RESUME_HINT =
@@ -101,6 +104,14 @@ const parseWaitingReason = (value: unknown): WaitingReason | undefined => {
     value === "failure_recovery" ||
     value === "manual_hold"
   ) {
+    return value;
+  }
+
+  return undefined;
+};
+
+const parseLeaseKind = (value: unknown): LeaseKind | undefined => {
+  if (value === "task" || value === "repository") {
     return value;
   }
 
@@ -263,6 +274,46 @@ const parseStructuredServiceComment = (
         lastFixCommit: normalizeString(jsonPayload.lastFixCommit),
       };
     }
+
+    if (kind === "AI LEASE") {
+      const leaseKind = parseLeaseKind(jsonPayload.leaseKind ?? jsonPayload.kind);
+      const issueKey = normalizeString(jsonPayload.issueKey);
+      const repositoryName = normalizeString(jsonPayload.repositoryName);
+      const repoPath = normalizeString(jsonPayload.repoPath);
+      const acquiredAt = normalizeString(jsonPayload.acquiredAt);
+      const expiresAt = normalizeString(jsonPayload.expiresAt);
+      const heartbeatAt = normalizeString(jsonPayload.heartbeatAt);
+      const token = normalizeString(jsonPayload.token);
+      const leaseKey = normalizeString(jsonPayload.leaseKey);
+      if (
+        !leaseKind ||
+        !issueKey ||
+        !repositoryName ||
+        !repoPath ||
+        !acquiredAt ||
+        !expiresAt ||
+        !heartbeatAt ||
+        !token ||
+        !leaseKey
+      ) {
+        return undefined;
+      }
+
+      return {
+        kind,
+        worker,
+        leaseKind,
+        leaseKey,
+        issueKey,
+        repositoryName,
+        repoPath,
+        acquiredAt,
+        expiresAt,
+        heartbeatAt,
+        token,
+        releasedAt: normalizeString(jsonPayload.releasedAt),
+      };
+    }
   }
 
   const parsed = parseKeyValueLines(body);
@@ -398,13 +449,40 @@ export const formatReviewMetadataComment = (
       .join("\n"),
   );
 
+export const formatLeaseComment = (lease: TaskLease): string =>
+  buildStructuredComment(
+    LEASE_PREFIX,
+    {
+      worker: lease.workerId,
+      leaseKind: lease.kind,
+      leaseKey: lease.leaseKey,
+      issueKey: lease.issueKey,
+      repositoryName: lease.repositoryName,
+      repoPath: lease.repoPath,
+      acquiredAt: lease.acquiredAt,
+      expiresAt: lease.expiresAt,
+      heartbeatAt: lease.heartbeatAt,
+      token: lease.token,
+      ...(lease.releasedAt ? { releasedAt: lease.releasedAt } : {}),
+    },
+    [
+      `${lease.kind} lease for ${lease.issueKey}.`,
+      `Repository: ${lease.repositoryName}`,
+      `Expires at: ${lease.expiresAt}`,
+      lease.releasedAt ? `Released at: ${lease.releasedAt}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
 export const parseServiceComment = (
   text: string,
 ): ParsedServiceComment | undefined =>
   parseStructuredServiceComment(STATUS_PREFIX, "AI STATUS", text) ??
   parseStructuredServiceComment(QUESTION_PREFIX, "AI QUESTION", text) ??
   parseStructuredServiceComment(MR_PREFIX, "AI MR", text) ??
-  parseStructuredServiceComment(REVIEW_PREFIX, "AI REVIEW", text);
+  parseStructuredServiceComment(REVIEW_PREFIX, "AI REVIEW", text) ??
+  parseStructuredServiceComment(LEASE_PREFIX, "AI LEASE", text);
 
 export const decorateComments = (
   comments: TrackerComment[],
@@ -478,6 +556,89 @@ export const findLatestReviewMetadata = (
     processedNoteIds: metadata.processedNoteIds ?? [],
     ...(metadata.lastFixCommit ? { lastFixCommit: metadata.lastFixCommit } : {}),
   };
+};
+
+const leaseFromMetadata = (
+  metadata: ParsedServiceComment | undefined,
+): TaskLease | undefined => {
+  if (
+    metadata?.kind !== "AI LEASE" ||
+    !metadata.leaseKind ||
+    !metadata.leaseKey ||
+    !metadata.issueKey ||
+    !metadata.repositoryName ||
+    !metadata.repoPath ||
+    !metadata.acquiredAt ||
+    !metadata.expiresAt ||
+    !metadata.heartbeatAt ||
+    !metadata.token
+  ) {
+    return undefined;
+  }
+
+  return {
+    kind: metadata.leaseKind,
+    leaseKey: metadata.leaseKey,
+    issueKey: metadata.issueKey,
+    workerId: metadata.worker,
+    repositoryName: metadata.repositoryName,
+    repoPath: metadata.repoPath,
+    acquiredAt: metadata.acquiredAt,
+    expiresAt: metadata.expiresAt,
+    heartbeatAt: metadata.heartbeatAt,
+    token: metadata.token,
+    ...(metadata.releasedAt ? { releasedAt: metadata.releasedAt } : {}),
+  };
+};
+
+export const getLeaseComments = (
+  comments: CommentWithMetadata[],
+): Array<CommentWithMetadata & { metadata: ParsedServiceComment }> =>
+  comments.filter(
+    (comment): comment is CommentWithMetadata & { metadata: ParsedServiceComment } =>
+      comment.metadata?.kind === "AI LEASE",
+  );
+
+export const isLeaseExpired = (lease: TaskLease, now: Date = new Date()): boolean => {
+  const expiresAt = Date.parse(lease.expiresAt);
+  return Number.isNaN(expiresAt) || expiresAt <= now.getTime();
+};
+
+export const findLatestLease = (
+  comments: CommentWithMetadata[],
+  options: {
+    kind?: LeaseKind;
+    leaseKey?: string;
+  } = {},
+): TaskLease | undefined =>
+  getLeaseComments(comments)
+    .map((comment) => ({
+      createdAt: comment.createdAt,
+      lease: leaseFromMetadata(comment.metadata),
+    }))
+    .filter(
+      (entry): entry is { createdAt: string; lease: TaskLease } =>
+        entry.lease !== undefined &&
+        (options.kind === undefined || entry.lease.kind === options.kind) &&
+        (options.leaseKey === undefined || entry.lease.leaseKey === options.leaseKey),
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .at(-1)?.lease;
+
+export const findActiveLease = (
+  comments: CommentWithMetadata[],
+  options: {
+    kind?: LeaseKind;
+    leaseKey?: string;
+    now?: Date;
+  } = {},
+): TaskLease | undefined => {
+  const latest = findLatestLease(comments, options);
+  if (!latest || latest.releasedAt || isLeaseExpired(latest, options.now)) {
+    return undefined;
+  }
+
+  return latest;
 };
 
 export const findHumanCommentsAfter = (

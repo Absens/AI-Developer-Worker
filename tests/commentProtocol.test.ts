@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   findFirstHumanReplyAfter,
+  findActiveLease,
   findLatestHumanTaskCommandAfter,
   findLatestReviewMetadata,
+  formatLeaseComment,
   formatMergeRequestComment,
   formatQuestionComment,
   formatQuestionCommentWithThreadId,
@@ -12,7 +14,7 @@ import {
   parseHumanTaskCommand,
   parseServiceComment,
 } from "../src/integrations/tracker/commentProtocol.js";
-import type { ClarificationQuestion, CommentWithMetadata } from "../src/models/types.js";
+import type { ClarificationQuestion, CommentWithMetadata, TaskLease } from "../src/models/types.js";
 
 const clarification: ClarificationQuestion = {
   summary: "Need a decision about the API variant.",
@@ -154,6 +156,76 @@ describe("comment protocol", () => {
       processedNoteIds: [101, 102],
       lastFixCommit: "sha-2",
     });
+  });
+
+  it("formats and parses active, expired, and released AI LEASE comments", () => {
+    const lease: TaskLease = {
+      kind: "task",
+      leaseKey: "task:DEV-1",
+      issueKey: "DEV-1",
+      workerId: "worker-1",
+      repositoryName: "frontend",
+      repoPath: "/workspace/frontend",
+      acquiredAt: "2026-04-26T10:00:00.000Z",
+      heartbeatAt: "2026-04-26T10:05:00.000Z",
+      expiresAt: "2026-04-26T10:15:00.000Z",
+      token: "lease-token",
+    };
+    const activeText = formatLeaseComment(lease);
+    const releasedText = formatLeaseComment({
+      ...lease,
+      heartbeatAt: "2026-04-26T10:06:00.000Z",
+      expiresAt: "2026-04-26T10:06:00.000Z",
+      releasedAt: "2026-04-26T10:06:00.000Z",
+    });
+
+    expect(parseServiceComment(activeText)).toMatchObject({
+      kind: "AI LEASE",
+      worker: "worker-1",
+      leaseKind: "task",
+      leaseKey: "task:DEV-1",
+      issueKey: "DEV-1",
+      token: "lease-token",
+    });
+
+    const activeComments: CommentWithMetadata[] = [
+      {
+        id: "1",
+        text: activeText,
+        createdAt: "2026-04-26T10:00:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(activeText),
+      },
+    ];
+    expect(
+      findActiveLease(activeComments, {
+        kind: "task",
+        now: new Date("2026-04-26T10:10:00.000Z"),
+      })?.token,
+    ).toBe("lease-token");
+    expect(
+      findActiveLease(activeComments, {
+        kind: "task",
+        now: new Date("2026-04-26T10:16:00.000Z"),
+      }),
+    ).toBeUndefined();
+
+    const releasedComments: CommentWithMetadata[] = [
+      ...activeComments,
+      {
+        id: "2",
+        text: releasedText,
+        createdAt: "2026-04-26T10:06:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(releasedText),
+      },
+    ];
+    expect(
+      findActiveLease(releasedComments, {
+        kind: "task",
+        now: new Date("2026-04-26T10:07:00.000Z"),
+      }),
+    ).toBeUndefined();
   });
 
   it("parses human task commands and finds the latest resume command", () => {

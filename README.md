@@ -1,13 +1,13 @@
 # AI Developer Worker
 
-Single-process Node.js/TypeScript worker that polls Yandex Tracker, runs `codex-cli` against a mounted project repository, validates the result, and creates or reuses a GitLab merge request.
+Node.js/TypeScript worker that polls Yandex Tracker, runs `codex-cli` against one or more configured project repositories, validates the result, and creates or reuses a GitLab merge request.
 
 ## What it does
 
 For each cycle the worker:
 
 1. Restores an unfinished task for the current `WORKER_ID`, if one exists.
-2. Otherwise selects the earliest eligible Tracker issue from queue `TRACKER_DEFAULT_QUEUE` with tag `TRACKER_TAG`.
+2. Otherwise selects an eligible Tracker issue by lease-aware priority scoring. In legacy `.env` mode this uses `TRACKER_DEFAULT_QUEUE` and `TRACKER_TAG`; in fleet mode it uses repository profiles from `WORKER_CONFIG_FILE`.
 3. Moves the issue through logical statuses from `TRACKER_STATUS_MAP_FILE`.
 4. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone.
 5. Runs structured `codex exec`, then tests and lint.
@@ -70,6 +70,8 @@ Common optional values:
 - `CODEX_PROGRESS_LOG_INTERVAL_SECONDS=30`
 - `WORKER_RUN_ONCE=true|false`
 - `HOST_CODEX_HOME=C:/Users/.../.codex` for optional Compose bootstrap on Windows
+- `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` for multi-repository fleet mode
+- `LOCK_BACKEND=tracker`, `LOCK_TTL_SECONDS=900`, `LOCK_HEARTBEAT_SECONDS=60` for Tracker-comment leases
 
 For Codex CLI 0.124.0, global flags such as `--search` and
 `--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example
@@ -79,6 +81,7 @@ for exec-level flags such as `["--add-dir","/workspace/shared"]`.
 ## Documentation Map
 
 - Environment variables and where to get them: [docs/ENV_CONFIGURATION.md](/C:/Users/gabba/projects/developer/docs/ENV_CONFIGURATION.md)
+- Fleet config and operational coordination: [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md)
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
 - Codex auth troubleshooting, including `refresh_token_reused`: [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md)

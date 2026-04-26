@@ -4,14 +4,17 @@ import type {
   CodexExecution,
   CodexRunner,
   CommentWithMetadata,
+  CoordinationConfig,
   GitLabService,
   GitService,
   HumanTaskCommand,
+  LockBackend,
   LogicalStatus,
   MergeRequestDiscussion,
   MergeRequestInfo,
   MergeRequestNote,
   TaskAnalysisResult,
+  TaskLease,
   TrackerClient,
   TrackerIssue,
   ValidationResult,
@@ -49,8 +52,9 @@ import {
   qualityGateStatus,
   runQualityGates,
 } from "./qualityGates.js";
+import { withLeaseHeartbeat } from "./lockBackend.js";
 
-type CycleOutcome = "processed" | "idle" | "waiting";
+export type CycleOutcome = "processed" | "idle" | "waiting";
 
 interface ResumeContext {
   questionComment: CommentWithMetadata & { metadata: NonNullable<CommentWithMetadata["metadata"]> };
@@ -99,6 +103,8 @@ export class WorkerOrchestrator {
     private readonly gitlab: GitLabService,
     private readonly codex: CodexRunner,
     private readonly logger: Logger,
+    private readonly lockBackend?: LockBackend,
+    private readonly coordination?: CoordinationConfig,
   ) {}
 
   async runForever(): Promise<void> {
@@ -171,7 +177,15 @@ export class WorkerOrchestrator {
 
     const ownedTask = await this.resumeOwnedTask();
     if (ownedTask) {
-      const outcome = await this.handleIssue(ownedTask.issue, ownedTask.comments);
+      const leases = await this.acquireProcessingLeases(ownedTask.issue);
+      if (!leases) {
+        return "waiting";
+      }
+      const outcome = await this.processSelectedIssue(
+        ownedTask.issue,
+        ownedTask.comments,
+        leases,
+      );
       if (outcome !== "idle" || ownedTask.issue.logicalStatus !== "review") {
         return outcome;
       }
@@ -183,7 +197,12 @@ export class WorkerOrchestrator {
       return "idle";
     }
 
-    return this.handleIssue(nextTask.issue, nextTask.comments);
+    const leases = await this.acquireProcessingLeases(nextTask.issue);
+    if (!leases) {
+      return "waiting";
+    }
+
+    return this.processSelectedIssue(nextTask.issue, nextTask.comments, leases);
   }
 
   private async runTargetIssueCycle(issueKey: string): Promise<CycleOutcome> {
@@ -207,7 +226,68 @@ export class WorkerOrchestrator {
       );
     }
 
+    const leases = await this.acquireProcessingLeases(issue);
+    if (!leases) {
+      return "waiting";
+    }
+
+    return this.processSelectedIssue(issue, comments, leases);
+  }
+
+  async processSelectedIssue(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+    leases: TaskLease[] = [],
+  ): Promise<CycleOutcome> {
+    if (this.lockBackend && leases.length > 0) {
+      return withLeaseHeartbeat(
+        this.lockBackend,
+        leases,
+        this.coordination?.lockHeartbeatMs ?? 60 * 1000,
+        () => this.handleIssue(issue, comments),
+      );
+    }
+
     return this.handleIssue(issue, comments);
+  }
+
+  private async acquireProcessingLeases(issue: TrackerIssue): Promise<TaskLease[] | null> {
+    if (!this.lockBackend || !this.coordination) {
+      return [];
+    }
+
+    const repositoryName = "repositoryName" in this.config
+      ? String(this.config.repositoryName)
+      : "default";
+    const taskLease = await this.lockBackend.acquireTaskLease({
+      issueKey: issue.key,
+      workerId: this.config.workerId,
+      repositoryName,
+      repoPath: this.config.repoPath,
+      ttlMs: this.coordination.lockTtlMs,
+    });
+    if (!taskLease) {
+      this.logger.info("Issue is already leased by another worker.", { issueKey: issue.key });
+      return null;
+    }
+
+    const repositoryLease = await this.lockBackend.acquireRepositoryLease({
+      issueKey: issue.key,
+      workerId: this.config.workerId,
+      repositoryName,
+      repoPath: this.config.repoPath,
+      ttlMs: this.coordination.lockTtlMs,
+    });
+    if (!repositoryLease) {
+      await this.lockBackend.releaseTaskLease(taskLease);
+      this.logger.info("Repository is already leased by another worker.", {
+        issueKey: issue.key,
+        repoPath: this.config.repoPath,
+      });
+      return null;
+    }
+
+    return [taskLease, repositoryLease];
   }
 
   private async loadTargetIssue(issueKey: string): Promise<TrackerIssue> {

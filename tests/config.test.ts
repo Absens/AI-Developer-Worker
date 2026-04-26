@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadConfig, parseStatusMap } from "../src/config.js";
+import { loadConfig, loadFleetConfig, parseStatusMap } from "../src/config.js";
 
 const STATUS_MAP = JSON.stringify({
   open: { statuses: ["Open"] },
@@ -95,6 +95,113 @@ describe("config", () => {
     expect(config.codexTimeoutMs).toBe(30 * 60 * 1000);
     expect(config.codexLogFullEvents).toBe(false);
     expect(config.maxReviewFixAttempts).toBe(2);
+  });
+
+  it("bridges .env mode into a single repository fleet config", () => {
+    const statusMapFile = createStatusMapFile();
+    const env = {
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TRACKER_DEFAULT_QUEUE: "BACKEND",
+      TRACKER_TAG: "ai_dev",
+      REPO_PATH: "/workspace/backend",
+      BASE_BRANCH: "develop",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    };
+
+    const appConfig = loadConfig(env);
+    const fleetConfig = loadFleetConfig(env);
+
+    expect(fleetConfig.workerId).toBe(appConfig.workerId);
+    expect(fleetConfig.repositories).toHaveLength(1);
+    expect(fleetConfig.repositories[0]).toMatchObject({
+      name: "default",
+      repoPath: "/workspace/backend",
+      gitlabProjectId: "123",
+      baseBranch: "develop",
+      queues: ["BACKEND"],
+      tags: ["ai_dev"],
+    });
+    expect(fleetConfig.coordination.lockBackend).toBe("tracker");
+    expect(fleetConfig.priorityQueue.priorityWeights.high).toBe(400);
+  });
+
+  it("parses YAML fleet config with multiple repository profiles", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.yaml");
+    writeFileSync(
+      configFile,
+      [
+        "worker:",
+        "  id: worker-yaml",
+        "  pollIntervalMinutes: 5",
+        "  runOnce: true",
+        "tracker:",
+        "  tokenEnv: TRACKER_TOKEN",
+        "  orgIdEnv: TRACKER_ORG_ID",
+        `  statusMapFile: ${JSON.stringify(statusMapFile)}`,
+        "gitlab:",
+        "  urlEnv: GITLAB_URL",
+        "  tokenEnv: GITLAB_TOKEN",
+        "coordination:",
+        "  lockBackend: tracker",
+        "  ttlSeconds: 120",
+        "  heartbeatSeconds: 10",
+        "priorityQueue:",
+        "  manualOverrideTags: [ai_priority]",
+        "  tagBoosts:",
+        "    urgent: 250",
+        "repositories:",
+        "  - name: client-application",
+        "    repoPath: /workspace/client-app",
+        "    gitlabProjectId: \"42\"",
+        "    baseBranch: main",
+        "    queues: [FRONTEND]",
+        "    tags: [ai_dev]",
+        "    testCommand: npm test",
+        "    lintCommand: npm run lint",
+        "  - name: backend-api",
+        "    repoPath: /workspace/backend",
+        "    gitlabProjectId: \"43\"",
+        "    baseBranch: develop",
+        "    queues: [BACKEND]",
+        "    tags: [ai_dev]",
+        "    testCommand: go test ./...",
+        "    lintCommand: golangci-lint run",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    });
+
+    expect(config.workerId).toBe("worker-yaml");
+    expect(config.runOnce).toBe(true);
+    expect(config.pollIntervalMs).toBe(5 * 60 * 1000);
+    expect(config.coordination.lockTtlMs).toBe(120 * 1000);
+    expect(config.coordination.lockHeartbeatMs).toBe(10 * 1000);
+    expect(config.priorityQueue.tagBoosts.urgent).toBe(250);
+    expect(config.repositories.map((repo) => repo.name)).toEqual([
+      "client-application",
+      "backend-api",
+    ]);
+    expect(config.repositories[1]).toMatchObject({
+      gitlabProjectId: "43",
+      queues: ["BACKEND"],
+      baseBranch: "develop",
+    });
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
@@ -301,6 +408,84 @@ describe("config", () => {
         WORKER_ID: "worker-1",
       }),
     ).toThrow(/CODEX_SANDBOX/);
+  });
+
+  it("rejects duplicate repository names in fleet config", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        tracker: { statusMapFile },
+        repositories: [
+          {
+            name: "api",
+            repoPath: "/workspace/api",
+            gitlabProjectId: "1",
+            queues: ["BACKEND"],
+          },
+          {
+            name: "api",
+            repoPath: "/workspace/api-2",
+            gitlabProjectId: "2",
+            queues: ["BACKEND"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      loadFleetConfig({
+        WORKER_CONFIG_FILE: configFile,
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/Duplicate repository name: api/);
+  });
+
+  it("rejects missing repository path or GitLab project id in fleet config", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const missingPathConfig = join(directory, "missing-path.json");
+    writeFileSync(
+      missingPathConfig,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        tracker: { statusMapFile },
+        repositories: [{ name: "api", gitlabProjectId: "1", queues: ["BACKEND"] }],
+      }),
+      "utf8",
+    );
+    const missingProjectConfig = join(directory, "missing-project.json");
+    writeFileSync(
+      missingProjectConfig,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        tracker: { statusMapFile },
+        repositories: [{ name: "api", repoPath: "/workspace/api", queues: ["BACKEND"] }],
+      }),
+      "utf8",
+    );
+    const env = {
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    };
+
+    expect(() =>
+      loadFleetConfig({ ...env, WORKER_CONFIG_FILE: missingPathConfig }),
+    ).toThrow(/repositories\[0\]\.repoPath/);
+    expect(() =>
+      loadFleetConfig({ ...env, WORKER_CONFIG_FILE: missingProjectConfig }),
+    ).toThrow(/repositories\[0\]\.gitlabProjectId/);
   });
 
   it("rejects invalid MIN_COVERAGE_PERCENT", () => {
