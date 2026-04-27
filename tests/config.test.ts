@@ -105,6 +105,52 @@ describe("config", () => {
     expect(config.codexTimeoutMs).toBe(30 * 60 * 1000);
     expect(config.codexLogFullEvents).toBe(false);
     expect(config.maxReviewFixAttempts).toBe(2);
+    expect(config.memory).toMatchObject({
+      enabled: false,
+      dir: "/workspace/ai-developer-memory",
+      maxContextChars: 6000,
+      strict: false,
+      includeDraftRules: false,
+      similarFailureLimit: 3,
+      bootstrapOnStart: false,
+      refreshOnPreflight: false,
+      bootstrapCodexSandbox: "inherit",
+    });
+  });
+
+  it("accepts explicit memory options", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MEMORY_ENABLED: "true",
+      MEMORY_DIR: "/memory",
+      MEMORY_MAX_CONTEXT_CHARS: "2048",
+      MEMORY_STRICT: "true",
+      MEMORY_INCLUDE_DRAFT_RULES: "true",
+      MEMORY_SIMILAR_FAILURE_LIMIT: "5",
+      MEMORY_BOOTSTRAP_ON_START: "true",
+      MEMORY_REFRESH_ON_PREFLIGHT: "true",
+      MEMORY_BOOTSTRAP_CODEX_SANDBOX: "read-only",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.memory).toMatchObject({
+      enabled: true,
+      dir: "/memory",
+      maxContextChars: 2048,
+      strict: true,
+      includeDraftRules: true,
+      similarFailureLimit: 5,
+      bootstrapOnStart: true,
+      refreshOnPreflight: true,
+      bootstrapCodexSandbox: "read-only",
+    });
   });
 
   it("bridges .env mode into a single repository fleet config", () => {
@@ -476,6 +522,45 @@ describe("config", () => {
         GITLAB_TOKEN: "gitlab-token",
       }),
     ).toThrow(/Duplicate repository name: api/);
+  });
+
+  it("rejects repository names that collide after memory key sanitization", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        tracker: { statusMapFile },
+        repositories: [
+          {
+            name: "Client Application",
+            repoPath: "/workspace/api",
+            gitlabProjectId: "1",
+            queues: ["BACKEND"],
+          },
+          {
+            name: "client-application",
+            repoPath: "/workspace/api-2",
+            gitlabProjectId: "2",
+            queues: ["BACKEND"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      loadFleetConfig({
+        WORKER_CONFIG_FILE: configFile,
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/same memory key "client-application"/);
   });
 
   it("rejects missing repository path or GitLab project id in fleet config", () => {

@@ -13,6 +13,10 @@ import {
   findLatestQuestionComment,
 } from "../integrations/tracker/commentProtocol.js";
 import { getPromptProfile } from "./promptProfiles.js";
+import {
+  formatPromptContextBundle,
+  type PromptContextBundle,
+} from "./promptContext.js";
 
 const CLARIFICATION_SCHEMA = `{
   "summary": "short summary of what is unclear",
@@ -210,9 +214,17 @@ const formatAnalysisDecision = (
   ].join("\n");
 };
 
+const formatRepositoryContext = (
+  memoryContext: PromptContextBundle | undefined,
+): string => {
+  const formatted = formatPromptContextBundle(memoryContext);
+  return formatted ? `\n${formatted}` : "";
+};
+
 export const buildAnalysisPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
+  memoryContext?: PromptContextBundle,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -223,7 +235,7 @@ Additional context:
 ${formatHumanComments(comments)}
 
 Previous clarification history:
-${formatClarificationHistory(comments)}
+${formatClarificationHistory(comments)}${formatRepositoryContext(memoryContext)}
 
 Mode: analysis-only
 
@@ -256,6 +268,7 @@ export const buildImplementationPrompt = (
   comments: CommentWithMetadata[],
   profile?: PromptProfile,
   analysisDecision?: TaskAnalysisDecision,
+  memoryContext?: PromptContextBundle,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -272,6 +285,7 @@ Structured analysis:
 ${formatAnalysisDecision(analysisDecision)}
 
 ${formatProfileGuidance(profile)}
+${formatRepositoryContext(memoryContext)}
 
 Requirements:
 1. Analyze the repository.

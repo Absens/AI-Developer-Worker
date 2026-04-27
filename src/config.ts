@@ -5,10 +5,13 @@ import { parse as parseYaml } from "yaml";
 
 import type {
   AppConfig,
+  CodexSandbox,
   CoordinationConfig,
   DependencyUnknownStatusPolicy,
   GlobalWorkerConfig,
   LogicalStatus,
+  MemoryBootstrapCodexSandbox,
+  MemoryConfig,
   PriorityQueueConfig,
   PromptProfileOverrideMap,
   RepositoryDecompositionConfig,
@@ -19,6 +22,7 @@ import type {
   WorkerTaskMode,
 } from "./models/types.js";
 import { ConfigurationError } from "./utils/errors.js";
+import { sanitizeRepositoryKey } from "./utils/repositoryKey.js";
 
 const LOGICAL_STATUSES: LogicalStatus[] = [
   "open",
@@ -60,6 +64,17 @@ const DEFAULT_TRACKER_PARENT_LINK_TYPE = "relates";
 const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
 const DEFAULT_DEPENDENCY_ENFORCEMENT = true;
 const DEFAULT_DEPENDENCY_UNKNOWN_STATUS_POLICY: DependencyUnknownStatusPolicy = "block";
+const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
+  enabled: false,
+  dir: "/workspace/ai-developer-memory",
+  maxContextChars: 6000,
+  strict: false,
+  includeDraftRules: false,
+  similarFailureLimit: 3,
+  bootstrapOnStart: false,
+  refreshOnPreflight: false,
+  bootstrapCodexSandbox: "inherit",
+};
 
 const requireEnv = (env: NodeJS.ProcessEnv, key: string): string => {
   const value = env[key]?.trim();
@@ -126,7 +141,7 @@ const parseBooleanFlag = (
 
 const parseCodexSandbox = (
   input?: string,
-): "read-only" | "workspace-write" | "danger-full-access" => {
+): CodexSandbox => {
   const normalized = input?.trim();
   if (!normalized) {
     return "danger-full-access";
@@ -142,6 +157,32 @@ const parseCodexSandbox = (
 
   throw new ConfigurationError(
     "CODEX_SANDBOX must be one of: read-only, workspace-write, danger-full-access.",
+  );
+};
+
+const parseMemoryBootstrapCodexSandbox = (
+  input: string | undefined,
+  key: string,
+): MemoryBootstrapCodexSandbox => {
+  const normalized = input?.trim();
+  if (!normalized) {
+    return DEFAULT_MEMORY_CONFIG.bootstrapCodexSandbox;
+  }
+
+  if (normalized === "inherit") {
+    return normalized;
+  }
+
+  if (
+    normalized === "read-only" ||
+    normalized === "workspace-write" ||
+    normalized === "danger-full-access"
+  ) {
+    return normalized;
+  }
+
+  throw new ConfigurationError(
+    `${key} must be one of: inherit, read-only, workspace-write, danger-full-access.`,
   );
 };
 
@@ -315,6 +356,22 @@ const optionalNumber = (
   return value;
 };
 
+const optionalMemoryBootstrapCodexSandbox = (
+  value: unknown,
+  key: string,
+  defaultValue: MemoryBootstrapCodexSandbox,
+): MemoryBootstrapCodexSandbox => {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+
+  if (typeof value !== "string") {
+    throw new ConfigurationError(`${key} must be a string.`);
+  }
+
+  return parseMemoryBootstrapCodexSandbox(value, key);
+};
+
 const optionalPercentIntValue = (
   value: unknown,
   key: string,
@@ -439,6 +496,84 @@ const parseRepositoryDecompositionConfig = (
         }
       : {}),
     ...(maxSubtasks !== undefined ? { maxSubtasks } : {}),
+  };
+};
+
+export const parseMemoryConfig = (
+  env: NodeJS.ProcessEnv = process.env,
+  rawValue?: Record<string, unknown>,
+): MemoryConfig => {
+  const refreshOnPreflightEnv =
+    env.MEMORY_REFRESH_ON_PREFLIGHT ?? env.MEMORY_REFRESH_ON_PRELIGHT;
+
+  return {
+  enabled: env.MEMORY_ENABLED?.trim()
+    ? parseBooleanFlag(env.MEMORY_ENABLED, "MEMORY_ENABLED", DEFAULT_MEMORY_CONFIG.enabled)
+    : optionalBoolean(rawValue?.enabled, "memory.enabled", DEFAULT_MEMORY_CONFIG.enabled),
+  dir:
+    env.MEMORY_DIR?.trim() ||
+    optionalString(rawValue?.dir, "memory.dir") ||
+    DEFAULT_MEMORY_CONFIG.dir,
+  maxContextChars: env.MEMORY_MAX_CONTEXT_CHARS?.trim()
+    ? parsePositiveInt(env.MEMORY_MAX_CONTEXT_CHARS, "MEMORY_MAX_CONTEXT_CHARS")
+    : optionalPositiveInt(
+        rawValue?.maxContextChars,
+        "memory.maxContextChars",
+        DEFAULT_MEMORY_CONFIG.maxContextChars,
+      ),
+  strict: env.MEMORY_STRICT?.trim()
+    ? parseBooleanFlag(env.MEMORY_STRICT, "MEMORY_STRICT", DEFAULT_MEMORY_CONFIG.strict)
+    : optionalBoolean(rawValue?.strict, "memory.strict", DEFAULT_MEMORY_CONFIG.strict),
+  includeDraftRules: env.MEMORY_INCLUDE_DRAFT_RULES?.trim()
+    ? parseBooleanFlag(
+        env.MEMORY_INCLUDE_DRAFT_RULES,
+        "MEMORY_INCLUDE_DRAFT_RULES",
+        DEFAULT_MEMORY_CONFIG.includeDraftRules,
+      )
+    : optionalBoolean(
+        rawValue?.includeDraftRules,
+        "memory.includeDraftRules",
+        DEFAULT_MEMORY_CONFIG.includeDraftRules,
+      ),
+  similarFailureLimit: env.MEMORY_SIMILAR_FAILURE_LIMIT?.trim()
+    ? parsePositiveInt(env.MEMORY_SIMILAR_FAILURE_LIMIT, "MEMORY_SIMILAR_FAILURE_LIMIT")
+    : optionalPositiveInt(
+        rawValue?.similarFailureLimit,
+        "memory.similarFailureLimit",
+        DEFAULT_MEMORY_CONFIG.similarFailureLimit,
+      ),
+  bootstrapOnStart: env.MEMORY_BOOTSTRAP_ON_START?.trim()
+    ? parseBooleanFlag(
+        env.MEMORY_BOOTSTRAP_ON_START,
+        "MEMORY_BOOTSTRAP_ON_START",
+        DEFAULT_MEMORY_CONFIG.bootstrapOnStart,
+      )
+    : optionalBoolean(
+      rawValue?.bootstrapOnStart,
+      "memory.bootstrapOnStart",
+      DEFAULT_MEMORY_CONFIG.bootstrapOnStart,
+    ),
+  refreshOnPreflight: refreshOnPreflightEnv?.trim()
+    ? parseBooleanFlag(
+        refreshOnPreflightEnv,
+        "MEMORY_REFRESH_ON_PREFLIGHT",
+        DEFAULT_MEMORY_CONFIG.refreshOnPreflight,
+      )
+    : optionalBoolean(
+        rawValue?.refreshOnPreflight,
+        "memory.refreshOnPreflight",
+        DEFAULT_MEMORY_CONFIG.refreshOnPreflight,
+      ),
+  bootstrapCodexSandbox: env.MEMORY_BOOTSTRAP_CODEX_SANDBOX?.trim()
+    ? parseMemoryBootstrapCodexSandbox(
+        env.MEMORY_BOOTSTRAP_CODEX_SANDBOX,
+        "MEMORY_BOOTSTRAP_CODEX_SANDBOX",
+      )
+    : optionalMemoryBootstrapCodexSandbox(
+        rawValue?.bootstrapCodexSandbox,
+        "memory.bootstrapCodexSandbox",
+        DEFAULT_MEMORY_CONFIG.bootstrapCodexSandbox,
+      ),
   };
 };
 
@@ -573,6 +708,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     env.MIN_COVERAGE_PERCENT,
     "MIN_COVERAGE_PERCENT",
   );
+  const memory = parseMemoryConfig(env);
 
   return {
     trackerToken: requireEnv(env, "TRACKER_TOKEN"),
@@ -714,6 +850,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     dependencyUnknownStatusPolicy: parseDependencyUnknownStatusPolicy(
       env.DEPENDENCY_UNKNOWN_STATUS_POLICY,
     ),
+    memory,
   };
 };
 
@@ -825,7 +962,54 @@ const parsePriorityQueueConfig = (
 const buildSingleRepositoryFleetConfig = (
   config: AppConfig,
   env: NodeJS.ProcessEnv,
-): GlobalWorkerConfig => ({
+): GlobalWorkerConfig => {
+  const repositories: RepositoryProfile[] = [
+    {
+      name: "default",
+      repoPath: config.repoPath,
+      gitlabProjectId: config.gitlabProjectId,
+      gitRemoteName: config.gitRemoteName,
+      baseBranch: config.baseBranch,
+      queues: [config.trackerDefaultQueue],
+      tags: [config.trackerTag],
+      testCommand: config.testCommand,
+      lintCommand: config.lintCommand,
+      ...(config.typeCheckCommand ? { typeCheckCommand: config.typeCheckCommand } : {}),
+      ...(config.buildCommand ? { buildCommand: config.buildCommand } : {}),
+      ...(config.securityScanCommand
+        ? { securityScanCommand: config.securityScanCommand }
+        : {}),
+      ...(config.sastCommand ? { sastCommand: config.sastCommand } : {}),
+      ...(config.coverageCommand ? { coverageCommand: config.coverageCommand } : {}),
+      ...(config.minCoveragePercent !== undefined
+        ? { minCoveragePercent: config.minCoveragePercent }
+        : {}),
+      ...(config.coverageReportFile
+        ? { coverageReportFile: config.coverageReportFile }
+        : {}),
+      ...(config.visualRegressionCommand
+        ? { visualRegressionCommand: config.visualRegressionCommand }
+        : {}),
+      ...(config.visualRegressionArtifactsDir
+        ? { visualRegressionArtifactsDir: config.visualRegressionArtifactsDir }
+        : {}),
+      ...(config.gitRepositoryUrl ? { gitRepositoryUrl: config.gitRepositoryUrl } : {}),
+      decomposition: {
+        ...(config.decompositionDefaultSubtaskTag
+          ? { defaultSubtaskTag: config.decompositionDefaultSubtaskTag }
+          : {}),
+        ...(config.decompositionSubtaskTitlePrefix
+          ? { subtaskTitlePrefix: config.decompositionSubtaskTitlePrefix }
+          : {}),
+        ...(config.decompositionMaxSubtasks !== undefined
+          ? { maxSubtasks: config.decompositionMaxSubtasks }
+          : {}),
+      },
+    },
+  ];
+  validateRepositoryProfiles(repositories);
+
+  return {
   workerId: config.workerId,
   pollIntervalMinutes: config.pollIntervalMinutes,
   pollIntervalMs: config.pollIntervalMs,
@@ -904,51 +1088,10 @@ const buildSingleRepositoryFleetConfig = (
   },
   coordination: parseCoordinationConfig(env),
   priorityQueue: parsePriorityQueueConfig(env),
-  repositories: [
-    {
-      name: "default",
-      repoPath: config.repoPath,
-      gitlabProjectId: config.gitlabProjectId,
-      gitRemoteName: config.gitRemoteName,
-      baseBranch: config.baseBranch,
-      queues: [config.trackerDefaultQueue],
-      tags: [config.trackerTag],
-      testCommand: config.testCommand,
-      lintCommand: config.lintCommand,
-      ...(config.typeCheckCommand ? { typeCheckCommand: config.typeCheckCommand } : {}),
-      ...(config.buildCommand ? { buildCommand: config.buildCommand } : {}),
-      ...(config.securityScanCommand
-        ? { securityScanCommand: config.securityScanCommand }
-        : {}),
-      ...(config.sastCommand ? { sastCommand: config.sastCommand } : {}),
-      ...(config.coverageCommand ? { coverageCommand: config.coverageCommand } : {}),
-      ...(config.minCoveragePercent !== undefined
-        ? { minCoveragePercent: config.minCoveragePercent }
-        : {}),
-      ...(config.coverageReportFile
-        ? { coverageReportFile: config.coverageReportFile }
-        : {}),
-      ...(config.visualRegressionCommand
-        ? { visualRegressionCommand: config.visualRegressionCommand }
-        : {}),
-      ...(config.visualRegressionArtifactsDir
-        ? { visualRegressionArtifactsDir: config.visualRegressionArtifactsDir }
-        : {}),
-      ...(config.gitRepositoryUrl ? { gitRepositoryUrl: config.gitRepositoryUrl } : {}),
-      decomposition: {
-        ...(config.decompositionDefaultSubtaskTag
-          ? { defaultSubtaskTag: config.decompositionDefaultSubtaskTag }
-          : {}),
-        ...(config.decompositionSubtaskTitlePrefix
-          ? { subtaskTitlePrefix: config.decompositionSubtaskTitlePrefix }
-          : {}),
-        ...(config.decompositionMaxSubtasks !== undefined
-          ? { maxSubtasks: config.decompositionMaxSubtasks }
-          : {}),
-      },
-    },
-  ],
-});
+  repositories,
+  memory: config.memory,
+  };
+};
 
 const optionalProfileString = (
   raw: Record<string, unknown>,
@@ -1059,11 +1202,21 @@ const parseRepositoryProfile = (
 
 const validateRepositoryProfiles = (repositories: RepositoryProfile[]): void => {
   const names = new Set<string>();
+  const memoryKeys = new Map<string, string>();
   for (const repository of repositories) {
     if (names.has(repository.name)) {
       throw new ConfigurationError(`Duplicate repository name: ${repository.name}`);
     }
     names.add(repository.name);
+
+    const memoryKey = sanitizeRepositoryKey(repository.name);
+    const previousName = memoryKeys.get(memoryKey);
+    if (previousName) {
+      throw new ConfigurationError(
+        `Repository names "${previousName}" and "${repository.name}" resolve to the same memory key "${memoryKey}". Rename one repository profile to keep MEMORY_DIR storage unambiguous.`,
+      );
+    }
+    memoryKeys.set(memoryKey, repository.name);
   }
 };
 
@@ -1091,6 +1244,7 @@ const loadFleetConfigFromFile = (
   const codex = optionalRecord(root.codex, "codex") ?? {};
   const coordination = optionalRecord(root.coordination, "coordination");
   const priorityQueue = optionalRecord(root.priorityQueue, "priorityQueue");
+  const memory = optionalRecord(root.memory, "memory");
   if (!Array.isArray(root.repositories) || root.repositories.length === 0) {
     throw new ConfigurationError("repositories must be a non-empty array.");
   }
@@ -1339,6 +1493,7 @@ const loadFleetConfigFromFile = (
     coordination: parseCoordinationConfig(env, coordination),
     priorityQueue: parsePriorityQueueConfig(env, priorityQueue),
     repositories,
+    memory: parseMemoryConfig(env, memory),
   };
 };
 
@@ -1457,4 +1612,5 @@ export const buildRepositoryRuntimeConfig = (
     : {}),
   preflightRunTargetCommands: globalConfig.preflightRunTargetCommands,
   ...(globalConfig.targetIssueKey ? { targetIssueKey: globalConfig.targetIssueKey } : {}),
+  memory: globalConfig.memory,
 });

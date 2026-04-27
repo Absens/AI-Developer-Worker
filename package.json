@@ -11,6 +11,7 @@
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --env-file=.env --import tsx src/index.ts",
+    "memory:validate": "node --import tsx src/memoryValidate.ts",
     "preflight": "node --env-file=.env --import tsx src/preflight.ts",
     "start": "node dist/index.js",
     "test": "vitest run",

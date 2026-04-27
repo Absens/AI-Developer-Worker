@@ -29,6 +29,20 @@ export type TaskType =
   | "unknown";
 
 export type DependencyUnknownStatusPolicy = "block" | "warn" | "ignore";
+export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
+export type MemoryBootstrapCodexSandbox = "inherit" | CodexSandbox;
+
+export interface MemoryConfig {
+  enabled: boolean;
+  dir: string;
+  maxContextChars: number;
+  strict: boolean;
+  includeDraftRules: boolean;
+  similarFailureLimit: number;
+  bootstrapOnStart: boolean;
+  refreshOnPreflight: boolean;
+  bootstrapCodexSandbox: MemoryBootstrapCodexSandbox;
+}
 
 export interface TrackerStatusConfig {
   statuses: string[];
@@ -64,6 +78,73 @@ export interface PromptProfileOverrides {
 }
 
 export type PromptProfileOverrideMap = Record<string, PromptProfileOverrides>;
+
+export interface RepositoryKnowledgeBase {
+  repositoryName: string;
+  schemaVersion: 1;
+  updatedAt: string;
+  architectureMap: KnowledgeSection[];
+  entryPoints: KnowledgeSection[];
+  codePatterns: KnowledgeSection[];
+  testStrategy: KnowledgeSection[];
+  knownPitfalls: KnowledgeSection[];
+  conventions: KnowledgeSection[];
+}
+
+export interface KnowledgeSection {
+  id: string;
+  title: string;
+  body: string;
+  source: "repo_docs" | "worker_observation" | "review_learning" | "manual";
+  sourceRefs: string[];
+  tags: string[];
+  taskTypes: TaskType[];
+  confidence: number;
+  updatedAt: string;
+}
+
+export interface FailureMemoryEntry {
+  repositoryName: string;
+  issueKey: string;
+  taskType: TaskType;
+  promptProfileId: string;
+  failureKind: string;
+  diagnosticSummary: string;
+  resolutionSummary?: string;
+  affectedFiles: string[];
+  tags: string[];
+  createdAt: string;
+}
+
+export interface ReviewLearningEntry {
+  repositoryName: string;
+  issueKey: string;
+  mergeRequestIid: number;
+  taskType: TaskType;
+  promptProfileId: string;
+  source: "review_discussion" | "merge_diff" | "validation_failure";
+  observation: string;
+  recommendedRule?: string;
+  affectedFiles: string[];
+  tags: string[];
+  confidence: number;
+  approvalState: "draft" | "approved" | "rejected";
+  createdAt: string;
+}
+
+export interface PromptRule {
+  id: string;
+  repositoryName: string;
+  title: string;
+  instruction: string;
+  taskTypes: TaskType[];
+  promptProfileIds: string[];
+  sourceEntryIds: string[];
+  confidence: number;
+  approvalState: "draft" | "approved";
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface DecompositionPlan {
   parentIssueKey: string;
@@ -147,7 +228,7 @@ export interface AppConfig {
   codexCliArgs: string[];
   codexModel?: string;
   codexProfile?: string;
-  codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
+  codexSandbox: CodexSandbox;
   codexExecArgs: string[];
   codexTimeoutMs: number;
   codexProgressLogIntervalMs: number;
@@ -184,6 +265,7 @@ export interface AppConfig {
   dependencyEnforcement?: boolean;
   dependencyUnknownStatusPolicy?: DependencyUnknownStatusPolicy;
   promptProfiles?: PromptProfileOverrideMap;
+  memory?: MemoryConfig;
 }
 
 export type LockBackendKind = "tracker" | "redis" | "postgres";
@@ -228,7 +310,7 @@ export interface CodexGlobalConfig {
   cliArgs: string[];
   model?: string;
   profile?: string;
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  sandbox: CodexSandbox;
   execArgs: string[];
   timeoutMs: number;
   progressLogIntervalMs: number;
@@ -295,6 +377,7 @@ export interface GlobalWorkerConfig {
   coordination: CoordinationConfig;
   priorityQueue: PriorityQueueConfig;
   repositories: RepositoryProfile[];
+  memory?: MemoryConfig;
 }
 
 export interface RepositoryRuntimeConfig extends AppConfig {

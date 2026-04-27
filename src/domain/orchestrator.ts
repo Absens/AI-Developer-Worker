@@ -10,6 +10,7 @@ import type {
   HumanTaskCommand,
   LockBackend,
   LogicalStatus,
+  FailureMemoryEntry,
   MergeRequestDiscussion,
   MergeRequestInfo,
   MergeRequestNote,
@@ -75,6 +76,11 @@ import {
 } from "./decomposition.js";
 import { selectPromptProfile } from "./promptProfiles.js";
 import { checkIssueDependencies } from "./dependencies.js";
+import {
+  buildPromptContextBundle,
+  type PromptContextBundle,
+} from "./promptContext.js";
+import { FileMemoryStore, type MemoryStore } from "./memoryStore.js";
 
 export type CycleOutcome = "processed" | "idle" | "waiting";
 
@@ -156,7 +162,15 @@ export class WorkerOrchestrator {
     private readonly logger: Logger,
     private readonly lockBackend?: LockBackend,
     private readonly coordination?: CoordinationConfig,
-  ) {}
+    memoryStore?: MemoryStore,
+  ) {
+    const memoryConfig = this.config.memory;
+    this.memoryStore = memoryStore ?? (
+      memoryConfig?.enabled ? new FileMemoryStore(memoryConfig, this.logger) : undefined
+    );
+  }
+
+  private readonly memoryStore?: MemoryStore;
 
   async runForever(): Promise<void> {
     this.shuttingDown = false;
@@ -556,11 +570,19 @@ export class WorkerOrchestrator {
     }
 
     if (!hasUncommittedChanges && !hasCommittedDiff) {
+      const memoryContext = await this.buildMemoryContext({
+        issue,
+        taskType: analysisDecision?.taskType ?? promptProfile.taskType,
+        promptProfileId: promptProfile.id,
+        expectedFiles: analysisDecision?.expectedFiles ?? [],
+        extraTags: analysisDecision?.expectedSubsystems ?? [],
+      });
       const implementationPrompt = buildImplementationPrompt(
         issue,
         comments,
         promptProfile,
         analysisDecision,
+        memoryContext,
       );
       const execution = resumeContext
         ? await this.runResumeOrInitial(
@@ -602,6 +624,13 @@ export class WorkerOrchestrator {
 
     let validation = await this.validateRepositoryState();
     if (!validation.changed) {
+      await this.recordFailureMemory({
+        issue,
+        failureKind: "no_repository_changes",
+        diagnostic: "Codex completed without producing repository changes.",
+        promptProfile,
+        analysisDecision,
+      });
       throw new PermanentTaskError("Codex completed without producing repository changes.");
     }
 
@@ -641,6 +670,13 @@ export class WorkerOrchestrator {
     }
 
     if (!isValidationSuccessful(validation)) {
+      await this.recordFailureMemory({
+        issue,
+        failureKind: "validation_exhausted",
+        diagnostic: validation.diagnostic,
+        promptProfile,
+        analysisDecision,
+      });
       throw new PermanentTaskError(validation.diagnostic);
     }
 
@@ -992,7 +1028,15 @@ export class WorkerOrchestrator {
       };
     }
 
-    const execution = await this.codex.runInitial(buildAnalysisPrompt(issue, comments));
+    const memoryContext = await this.buildMemoryContext({
+      issue,
+      taskType: "unknown",
+      promptProfileId: "general",
+      expectedFiles: [],
+    });
+    const execution = await this.codex.runInitial(
+      buildAnalysisPrompt(issue, comments, memoryContext),
+    );
     let decision: TaskAnalysisDecision | undefined;
     if (execution.clarification) {
       decision = {
@@ -1116,6 +1160,112 @@ export class WorkerOrchestrator {
       });
     }
     return profile;
+  }
+
+  private repositoryName(): string {
+    return "repositoryName" in this.config
+      ? String(this.config.repositoryName)
+      : "default";
+  }
+
+  private async buildMemoryContext(input: {
+    issue: TrackerIssue;
+    taskType: TaskAnalysisDecision["taskType"];
+    promptProfileId: string;
+    expectedFiles: string[];
+    extraTags?: string[];
+  }): Promise<PromptContextBundle | undefined> {
+    const memoryConfig = this.config.memory;
+    if (!memoryConfig?.enabled || !this.memoryStore) {
+      return undefined;
+    }
+
+    const repositoryName = this.repositoryName();
+    const bundle = await buildPromptContextBundle({
+      store: this.memoryStore,
+      repositoryName,
+      taskType: input.taskType,
+      promptProfileId: input.promptProfileId,
+      expectedFiles: input.expectedFiles,
+      tags: [
+        ...(input.issue.tags ?? []),
+        ...(input.issue.components ?? []),
+        ...(input.extraTags ?? []),
+      ],
+      contextBudgetChars: memoryConfig.maxContextChars,
+      includeDraftRules: memoryConfig.includeDraftRules,
+      similarFailureLimit: memoryConfig.similarFailureLimit,
+    });
+
+    this.logger.info("Memory prompt context prepared.", {
+      issueKey: input.issue.key,
+      repositoryName,
+      knowledgeSectionIds: bundle.knowledgeSections.map((section) => section.id),
+      promptRuleIds: bundle.promptRules.map((rule) => rule.id),
+      similarFailureCount: bundle.similarFailures.length,
+    });
+    return bundle;
+  }
+
+  private async recordFailureMemory(input: {
+    issue: TrackerIssue;
+    failureKind: string;
+    diagnostic: string;
+    promptProfile?: PromptProfile;
+    analysisDecision?: TaskAnalysisDecision;
+  }): Promise<void> {
+    if (!this.config.memory?.enabled || !this.memoryStore) {
+      return;
+    }
+
+    let affectedFiles: string[] = [];
+    try {
+      affectedFiles = await this.git.getChangedFilesFromBase();
+    } catch (error) {
+      this.logger.warn("Unable to collect changed files for failure memory.", {
+        issueKey: input.issue.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const entry: FailureMemoryEntry = {
+      repositoryName: this.repositoryName(),
+      issueKey: input.issue.key,
+      taskType:
+        input.analysisDecision?.taskType ??
+        input.promptProfile?.taskType ??
+        "unknown",
+      promptProfileId:
+        input.analysisDecision?.promptProfileId ??
+        input.promptProfile?.id ??
+        "general",
+      failureKind: input.failureKind,
+      diagnosticSummary:
+        input.diagnostic.length > 4000
+          ? `${input.diagnostic.slice(0, 4000)}\n[diagnostic truncated]`
+          : input.diagnostic,
+      affectedFiles,
+      tags: [
+        ...(input.issue.tags ?? []),
+        ...(input.issue.components ?? []),
+        ...(input.analysisDecision?.expectedSubsystems ?? []),
+      ],
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      await this.memoryStore.appendFailure(entry);
+      this.logger.info("Failure memory appended.", {
+        issueKey: input.issue.key,
+        repositoryName: entry.repositoryName,
+        failureKind: entry.failureKind,
+      });
+    } catch (error) {
+      this.logger.warn("Unable to append failure memory.", {
+        issueKey: input.issue.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async runResumeOrInitial(

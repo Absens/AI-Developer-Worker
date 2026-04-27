@@ -36,6 +36,7 @@ The container does not perform OAuth login on startup. If `CODEX_HOME` is missin
 - `npm run test:smoke` run the end-to-end smoke harness
 - `npm run build` build production output into `dist/`
 - `npm run dev` start the worker with `tsx` and load `.env`
+- `npm run memory:validate` validate the file-backed memory store
 - `npm run bootstrap:codex-home` copy an existing Codex auth directory into a target path or mounted volume
 
 ## Key Configuration
@@ -78,6 +79,7 @@ Common optional values:
 - `CONFIDENCE_IMPLEMENT_THRESHOLD=70`, `CONFIDENCE_HUMAN_THRESHOLD=40`, `CONFIDENCE_PRIORITY_WEIGHT=2`
 - `DECOMPOSITION_DRY_RUN=true` for safe epic split previews
 - `DEPENDENCY_ENFORCEMENT=true`, `DEPENDENCY_UNKNOWN_STATUS_POLICY=block` for blocked-task filtering
+- `MEMORY_ENABLED=false`, `MEMORY_DIR=/workspace/ai-developer-memory` for Phase 5 repository memory
 
 For Codex CLI 0.124.0, global flags such as `--search` and
 `--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example
@@ -88,6 +90,7 @@ for exec-level flags such as `["--add-dir","/workspace/shared"]`.
 
 - Environment variables and where to get them: [docs/ENV_CONFIGURATION.md](/C:/Users/gabba/projects/developer/docs/ENV_CONFIGURATION.md)
 - Fleet config and operational coordination: [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md)
+- Repository memory lifecycle: [docs/MEMORY_LIFECYCLE.md](/C:/Users/gabba/projects/developer/docs/MEMORY_LIFECYCLE.md)
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
 - Codex auth troubleshooting, including `refresh_token_reused`: [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md)

@@ -79,6 +79,15 @@ For Tracker statuses, the repository already includes an example file at [config
 | `TRACKER_BLOCKED_BY_LINK_TYPE` | No | `is blocked by` | Tracker relationship used for dependency links and dependency filtering. |
 | `DEPENDENCY_ENFORCEMENT` | No | `true` | When enabled, tasks with unresolved `blockedBy` dependencies are skipped before lease acquisition. |
 | `DEPENDENCY_UNKNOWN_STATUS_POLICY` | No | `block` | Policy for dependencies whose status cannot be determined: `block`, `warn`, or `ignore`. |
+| `MEMORY_ENABLED` | No | `false` | Enables Phase 5 repository memory. Keep disabled until `npm run memory:validate` passes for `MEMORY_DIR`. |
+| `MEMORY_DIR` | No | `/workspace/ai-developer-memory` | Local memory store outside the target repository. The worker writes per-repository files under `repositories/<sanitized RepositoryProfile.name>/`. |
+| `MEMORY_MAX_CONTEXT_CHARS` | No | `6000` | Hard character budget for the memory context section injected into analysis and implementation prompts. |
+| `MEMORY_STRICT` | No | `false` | When `false`, corrupted repository memory is disabled with a warning. When `true`, invalid memory blocks processing. |
+| `MEMORY_INCLUDE_DRAFT_RULES` | No | `false` | Includes draft prompt rules in prompts. Leave disabled for normal operation; approved rules are included automatically. |
+| `MEMORY_SIMILAR_FAILURE_LIMIT` | No | `3` | Maximum number of similar failure memory entries included in one prompt context bundle. |
+| `MEMORY_BOOTSTRAP_ON_START` | No | `false` | Reserved for the post-MVP bootstrap flow. The MVP validates storage and consumes manually maintained memory. |
+| `MEMORY_REFRESH_ON_PREFLIGHT` | No | `false` | Reserved for the post-MVP refresh flow. The legacy typo `MEMORY_REFRESH_ON_PRELIGHT` is also accepted. |
+| `MEMORY_BOOTSTRAP_CODEX_SANDBOX` | No | `inherit` | Reserved for bootstrap. Accepted values are `inherit`, `read-only`, `workspace-write`, and `danger-full-access`. |
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |
 | `LINT_COMMAND` | No | `npm run lint` | Set the exact lint command that should run inside the mounted target repository. |
 | `TYPE_CHECK_COMMAND` | No | None | Optional typecheck gate. When set, runs before lint and tests and blocks publish on failure. |
@@ -182,6 +191,12 @@ The worker stores that decision as an `AI ANALYSIS:` Tracker comment and uses it
 `TASK_MODE=decompose` or an analysis decision with `recommendedMode=decompose` runs the decomposition prompt. `DECOMPOSITION_DRY_RUN=true` writes the proposed plan as an `AI DECOMPOSITION:` comment without creating issues. Create mode uses Tracker issue creation plus `TRACKER_PARENT_LINK_TYPE` and `TRACKER_BLOCKED_BY_LINK_TYPE` for parent/dependency links.
 
 Dependency filtering runs before leases are acquired. The worker reads `blockedBy` issue fields and Tracker links when available; blockers must have logical status `done` unless `DEPENDENCY_UNKNOWN_STATUS_POLICY` is relaxed.
+
+## Phase 5 memory MVP
+
+Repository memory is off by default. When `MEMORY_ENABLED=true`, analysis and implementation prompts receive a compact `Repository context` section assembled from approved `prompt-rules.json`, manual `knowledge.json`, and similar `failures.jsonl` entries. Fix, review-fix, decomposition, bootstrap, and review-learning promotion are intentionally outside the MVP path.
+
+Run `npm run memory:validate` before enabling memory in production. The lifecycle, schema examples, approval workflow, and cleanup procedure are documented in [docs/MEMORY_LIFECYCLE.md](/C:/Users/gabba/projects/developer/docs/MEMORY_LIFECYCLE.md).
 
 ## Fleet mode
 

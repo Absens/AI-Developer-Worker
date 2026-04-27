@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1060,6 +1060,85 @@ Reply with /resume A or /resume B.
         entry.text.includes("Set GIT_COMMIT_NO_VERIFY=true to bypass repository hooks"),
       ),
     ).toBe(true);
+  });
+
+  it("appends failure memory when validation attempts are exhausted", async () => {
+    const memoryDir = createTempDir();
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-MEMORY",
+          title: "Remember validation failure",
+          description: "Implementation should fail validation",
+          createdAt: "2026-03-10T11:00:00.000Z",
+          logicalStatus: "open",
+          tags: ["ui"],
+        },
+      ],
+      { "DEV-MEMORY": [] },
+    );
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-memory",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-memory",
+          };
+        },
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        maxFixAttempts: 0,
+        testCommand: `node -e "process.exit(1)"`,
+        memory: {
+          enabled: true,
+          dir: memoryDir,
+          maxContextChars: 6000,
+          strict: false,
+          includeDraftRules: false,
+          similarFailureLimit: 3,
+          bootstrapOnStart: false,
+          refreshOnPreflight: false,
+          bootstrapCodexSandbox: "inherit",
+        },
+      }),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+    const failures = readFileSync(
+      join(memoryDir, "repositories", "default", "failures.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+
+    expect(outcome).toBe("processed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      repositoryName: "default",
+      issueKey: "DEV-MEMORY",
+      failureKind: "validation_exhausted",
+      affectedFiles: ["src/example.ts"],
+    });
   });
 
   it("loads the configured target issue instead of scanning the queue", async () => {
