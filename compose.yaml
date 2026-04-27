@@ -7,6 +7,8 @@ services:
       CODEX_HOME: /codex-home
       HOST_CODEX_HOME_MOUNT: /host-codex
       REPO_PATH: /workspace/project
+    ports:
+      - "9464:9464"
     volumes:
       - "${HOST_CODEX_HOME:?Set HOST_CODEX_HOME in .env}:/host-codex:ro"
       - "${TARGET_REPO_PATH:?Set TARGET_REPO_PATH in .env}:/workspace/project"
