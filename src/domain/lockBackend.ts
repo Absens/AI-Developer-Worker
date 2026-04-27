@@ -152,6 +152,43 @@ export class TrackerCommentLockBackend implements LockBackend {
   }
 }
 
+export class NoopLockBackend implements LockBackend {
+  async acquireTaskLease(input: AcquireTaskLeaseInput): Promise<TaskLease> {
+    return buildLease("task", leaseKeyFor("task", input.issueKey, input.repoPath), input);
+  }
+
+  async acquireRepositoryLease(input: AcquireRepositoryLeaseInput): Promise<TaskLease> {
+    return buildLease(
+      "repository",
+      leaseKeyFor("repository", input.issueKey, input.repoPath, input.leaseKey),
+      input,
+    );
+  }
+
+  async renewTaskLease(lease: TaskLease): Promise<TaskLease> {
+    const now = new Date();
+    return {
+      ...lease,
+      heartbeatAt: now.toISOString(),
+    };
+  }
+
+  async releaseTaskLease(_lease: TaskLease): Promise<void> {
+    return;
+  }
+
+  async getActiveLease(
+    _issueKey: string,
+    _options: {
+      kind?: LeaseKind;
+      leaseKey?: string;
+      now?: Date;
+    } = {},
+  ): Promise<TaskLease | null> {
+    return null;
+  }
+}
+
 export const withLeaseHeartbeat = async <T>(
   backend: LockBackend,
   leases: TaskLease[],

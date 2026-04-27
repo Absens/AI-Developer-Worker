@@ -219,6 +219,7 @@ export class FleetOrchestrator {
     const candidates = new Map<string, CandidateWithContext>();
     const fetchedIssueKeys = new Set<string>();
     const activeRepositoryLeases = new Map<string, TaskLease>();
+    const trackerLeaseCommentsEnabled = this.config.coordination.lockBackend !== "none";
 
     for (const context of this.contexts) {
       for (const queue of context.profile.queues) {
@@ -237,28 +238,32 @@ export class FleetOrchestrator {
             fetchedIssueKeys.add(issueKey);
 
             const comments = await context.tracker.getComments(issue.key);
-            const activeRepositoryLease = findActiveLease(comments, {
-              kind: "repository",
-            });
-            if (activeRepositoryLease) {
-              activeRepositoryLeases.set(
-                activeRepositoryLease.leaseKey,
-                activeRepositoryLease,
-              );
+            if (trackerLeaseCommentsEnabled) {
+              const activeRepositoryLease = findActiveLease(comments, {
+                kind: "repository",
+              });
+              if (activeRepositoryLease) {
+                activeRepositoryLeases.set(
+                  activeRepositoryLease.leaseKey,
+                  activeRepositoryLease,
+                );
+              }
             }
 
             if (!repositoryMatchesIssue(context.profile, issue)) {
               continue;
             }
 
-            const activeTaskLease = findActiveLease(comments, {
-              kind: "task",
-            });
-            if (
-              activeTaskLease &&
-              activeTaskLease.workerId !== this.config.workerId
-            ) {
-              continue;
+            if (trackerLeaseCommentsEnabled) {
+              const activeTaskLease = findActiveLease(comments, {
+                kind: "task",
+              });
+              if (
+                activeTaskLease &&
+                activeTaskLease.workerId !== this.config.workerId
+              ) {
+                continue;
+              }
             }
 
             if (issue.logicalStatus !== "open") {

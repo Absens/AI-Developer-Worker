@@ -115,6 +115,8 @@ LOCK_TTL_SECONDS=900
 LOCK_HEARTBEAT_SECONDS=60
 ```
 
+For a single worker process, `LOCK_BACKEND=none` disables task and repository locks and stops writing `AI LEASE:` comments to Tracker. Do not use `none` when multiple workers can process the same queue or mutate the same checkout.
+
 `LOCK_BACKEND=redis` and `LOCK_BACKEND=postgres` are reserved and fail fast until those backends are implemented.
 
 ## Operational Caveats

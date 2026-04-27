@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  NoopLockBackend,
   TrackerCommentLockBackend,
   withLeaseHeartbeat,
 } from "../src/domain/lockBackend.js";
@@ -132,6 +133,23 @@ describe("TrackerCommentLockBackend", () => {
         leaseKey: renewed.leaseKey,
       }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("NoopLockBackend", () => {
+  it("grants leases without writing Tracker comments", async () => {
+    const tracker = new FakeTrackerClient();
+    const backend = new NoopLockBackend();
+
+    const taskLease = await backend.acquireTaskLease(acquireInput());
+    const repositoryLease = await backend.acquireRepositoryLease(acquireInput());
+    await backend.renewTaskLease(taskLease);
+    await backend.releaseTaskLease(repositoryLease);
+
+    expect(taskLease.kind).toBe("task");
+    expect(repositoryLease.kind).toBe("repository");
+    expect(tracker.commentsByIssue["FRONTEND-1"]).toBeUndefined();
+    await expect(backend.getActiveLease("FRONTEND-1")).resolves.toBeNull();
   });
 });
 

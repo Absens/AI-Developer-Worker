@@ -1,7 +1,7 @@
 import { buildRepositoryRuntimeConfig, loadFleetConfig } from "./config.js";
 import { assertCodexAuthenticated } from "./integrations/codex/auth.js";
 import { FleetOrchestrator } from "./domain/fleetOrchestrator.js";
-import { TrackerCommentLockBackend } from "./domain/lockBackend.js";
+import { NoopLockBackend, TrackerCommentLockBackend } from "./domain/lockBackend.js";
 import { WorkerOrchestrator } from "./domain/orchestrator.js";
 import { PreflightService } from "./domain/preflight.js";
 import { buildRepositoryContext } from "./domain/repositoryContext.js";
@@ -26,11 +26,13 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   }
 
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
-  const lockTracker = new YandexTrackerClient(primaryConfig, logger);
-  const lockBackend = new TrackerCommentLockBackend(
-    lockTracker,
-    fleetConfig.coordination.lockTtlMs,
-  );
+  const lockBackend =
+    fleetConfig.coordination.lockBackend === "none"
+      ? new NoopLockBackend()
+      : new TrackerCommentLockBackend(
+          new YandexTrackerClient(primaryConfig, logger),
+          fleetConfig.coordination.lockTtlMs,
+        );
 
   if (env.WORKER_CONFIG_FILE?.trim()) {
     const contexts = fleetConfig.repositories.map((profile) =>

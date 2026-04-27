@@ -51,7 +51,7 @@ Copy-Item .env.example .env
 | `BASE_BRANCH` | Нет | `main` | Задайте ветку, в которую должны целиться feature branches и merge requests. |
 | `POLL_INTERVAL_MINUTES` | Нет | `30` | Выберите частоту опроса Tracker воркером. Значение должно быть положительным целым числом. |
 | `WORKER_CONFIG_FILE` | Нет | Не задано | Необязательная fleet-конфигурация YAML или JSON. Если она не указана, значения из `.env` преобразуются в один профиль репозитория по умолчанию. См. [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md). |
-| `LOCK_BACKEND` | Нет | `tracker` | Backend координации. Phase 3 MVP поддерживает `tracker`; `redis` и `postgres` завершаются ошибкой до реализации. |
+| `LOCK_BACKEND` | Нет | `tracker` | Backend координации. `tracker` пишет lease-комментарии в Tracker; `none` отключает locks и не пишет `AI LEASE:` comments, что подходит только для одного worker-а. `redis` и `postgres` зарезервированы и завершаются ошибкой до реализации. |
 | `LOCK_TTL_SECONDS` | Нет | `900` | Lease TTL для task и repository locks. Истекшие leases не блокируют другого воркера. |
 | `LOCK_HEARTBEAT_SECONDS` | Нет | `60` | Интервал продления lease во время работы Codex, validation и publish. |
 | `LOCK_REDIS_URL` | Нет | Не задано | Зарезервировано для будущего Redis lock backend. |

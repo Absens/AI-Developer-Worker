@@ -259,6 +259,23 @@ describe("config", () => {
     expect(fleetConfig.priorityQueue.confidencePriorityWeight).toBe(2);
   });
 
+  it("accepts LOCK_BACKEND=none for single-worker runs without Tracker lease comments", () => {
+    const statusMapFile = createStatusMapFile();
+    const fleetConfig = loadFleetConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      LOCK_BACKEND: "none",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(fleetConfig.coordination.lockBackend).toBe("none");
+  });
+
   it("parses YAML fleet config with multiple repository profiles", () => {
     const statusMapFile = createStatusMapFile();
     const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));

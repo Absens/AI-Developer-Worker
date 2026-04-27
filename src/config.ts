@@ -866,11 +866,12 @@ const parseCoordinationConfig = (
     optionalString(rawValue?.lockBackend, "coordination.lockBackend") ||
     "tracker";
   if (
+    lockBackend !== "none" &&
     lockBackend !== "tracker" &&
     lockBackend !== "redis" &&
     lockBackend !== "postgres"
   ) {
-    throw new ConfigurationError("LOCK_BACKEND must be one of: tracker, redis, postgres.");
+    throw new ConfigurationError("LOCK_BACKEND must be one of: none, tracker, redis, postgres.");
   }
   if (lockBackend === "redis") {
     throw new ConfigurationError("LOCK_BACKEND=redis is not implemented yet.");

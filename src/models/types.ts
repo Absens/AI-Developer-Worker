@@ -337,7 +337,7 @@ export interface AppConfig {
   observability?: ObservabilityConfig;
 }
 
-export type LockBackendKind = "tracker" | "redis" | "postgres";
+export type LockBackendKind = "none" | "tracker" | "redis" | "postgres";
 
 export interface CoordinationConfig {
   lockBackend: LockBackendKind;
