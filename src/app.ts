@@ -9,11 +9,17 @@ import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
+import { createObservabilityService } from "./observability/service.js";
 import { Logger } from "./utils/logger.js";
 
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
   const fleetConfig = loadFleetConfig(env);
+  const observability = createObservabilityService(
+    fleetConfig.observability,
+    logger,
+    fleetConfig.repositories,
+  );
   const primaryRepository = fleetConfig.repositories[0];
   if (!primaryRepository) {
     throw new Error("No repository profiles configured.");
@@ -28,13 +34,14 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
 
   if (env.WORKER_CONFIG_FILE?.trim()) {
     const contexts = fleetConfig.repositories.map((profile) =>
-      buildRepositoryContext(fleetConfig, profile, logger, lockBackend),
+      buildRepositoryContext(fleetConfig, profile, logger, lockBackend, observability),
     );
     const orchestrator = new FleetOrchestrator(
       fleetConfig,
       contexts,
       lockBackend,
       logger,
+      observability,
     );
     const preflight = {
       run: async () => {
@@ -48,6 +55,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       config: fleetConfig,
       orchestrator,
       preflight,
+      observability,
       assertRepositoryReady: async () => {
         await Promise.all(contexts.map((context) => context.assertRepositoryReady()));
       },
@@ -72,6 +80,8 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     logger,
     lockBackend,
     fleetConfig.coordination,
+    undefined,
+    observability,
   );
   const preflight = new PreflightService(
     config,
@@ -87,6 +97,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     config,
     orchestrator,
     preflight,
+    observability,
     assertRepositoryReady: () => git.assertRepositoryReady(),
     assertCodexAuthenticated: checkCodexAuth,
   };

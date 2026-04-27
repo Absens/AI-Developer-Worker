@@ -116,6 +116,77 @@ describe("config", () => {
       refreshOnPreflight: false,
       bootstrapCodexSandbox: "inherit",
     });
+    expect(config.observability).toMatchObject({
+      enabled: false,
+      host: "127.0.0.1",
+      port: 9464,
+      strictStartup: true,
+      metrics: { enabled: true, path: "/metrics" },
+      health: { path: "/healthz", readinessPath: "/readyz" },
+      events: { store: "memory", retention: 1000 },
+      dashboard: { enabled: false, path: "/dashboard", refreshSeconds: 10, apiPath: "/api" },
+      alerts: { enabled: false, minSeverity: "warning" },
+    });
+  });
+
+  it("accepts explicit observability options", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      OBSERVABILITY_ENABLED: "true",
+      OBSERVABILITY_HOST: "0.0.0.0",
+      OBSERVABILITY_PORT: "9564",
+      OBSERVABILITY_BASE_URL: "http://worker.internal:9564/",
+      OBSERVABILITY_STRICT_STARTUP: "false",
+      OBSERVABILITY_REDACT_MAX_CHARS: "1234",
+      OBSERVABILITY_EVENT_STORE: "file",
+      OBSERVABILITY_EVENT_STORE_FILE: "/tmp/events.jsonl",
+      OBSERVABILITY_EVENT_RETENTION: "25",
+      METRICS_ENABLED: "false",
+      METRICS_PATH: "/prometheus",
+      HEALTH_PATH: "/live",
+      READY_PATH: "/ready",
+      DASHBOARD_ENABLED: "true",
+      DASHBOARD_PATH: "/ops",
+      DASHBOARD_REFRESH_SECONDS: "5",
+      DASHBOARD_API_PATH: "/ops-api",
+      DASHBOARD_BEARER_TOKEN: "dashboard-token",
+      ALERTS_ENABLED: "true",
+      ALERT_CHANNELS: "webhook",
+      ALERT_WEBHOOK_URL: "https://alerts.example.test/webhook",
+      ALERT_MIN_SEVERITY: "info",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.observability).toMatchObject({
+      enabled: true,
+      host: "0.0.0.0",
+      port: 9564,
+      baseUrl: "http://worker.internal:9564",
+      strictStartup: false,
+      redactMaxChars: 1234,
+      metrics: { enabled: false, path: "/prometheus" },
+      health: { path: "/live", readinessPath: "/ready" },
+      events: { store: "file", file: "/tmp/events.jsonl", retention: 25 },
+      dashboard: {
+        enabled: true,
+        path: "/ops",
+        refreshSeconds: 5,
+        apiPath: "/ops-api",
+        bearerToken: "dashboard-token",
+      },
+      alerts: {
+        enabled: true,
+        minSeverity: "info",
+        channels: [{ type: "webhook", url: "https://alerts.example.test/webhook" }],
+      },
+    });
   });
 
   it("accepts explicit memory options", () => {
@@ -216,6 +287,24 @@ describe("config", () => {
         "  tagBoosts:",
         "    urgent: 250",
         "  confidencePriorityWeight: 3",
+        "observability:",
+        "  enabled: true",
+        "  host: 0.0.0.0",
+        "  port: 9465",
+        "  baseUrl: http://worker-yaml:9465",
+        "  strictStartup: true",
+        "  metrics:",
+        "    enabled: true",
+        "    path: /metrics",
+        "  health:",
+        "    path: /healthz",
+        "    readinessPath: /readyz",
+        "alerts:",
+        "  enabled: true",
+        "  minSeverity: warning",
+        "  channels:",
+        "    - type: webhook",
+        "      urlEnv: ALERT_WEBHOOK_URL",
         "repositories:",
         "  - name: client-application",
         "    repoPath: /workspace/client-app",
@@ -251,6 +340,7 @@ describe("config", () => {
       TRACKER_ORG_ID: "org-id",
       GITLAB_URL: "https://gitlab.example.com/",
       GITLAB_TOKEN: "gitlab-token",
+      ALERT_WEBHOOK_URL: "https://alerts.example.test/fleet",
     });
 
     expect(config.workerId).toBe("worker-yaml");
@@ -260,6 +350,16 @@ describe("config", () => {
     expect(config.coordination.lockHeartbeatMs).toBe(10 * 1000);
     expect(config.priorityQueue.tagBoosts.urgent).toBe(250);
     expect(config.priorityQueue.confidencePriorityWeight).toBe(3);
+    expect(config.observability).toMatchObject({
+      enabled: true,
+      port: 9465,
+      baseUrl: "http://worker-yaml:9465",
+      alerts: {
+        enabled: true,
+        minSeverity: "warning",
+        channels: [{ type: "webhook", url: "https://alerts.example.test/fleet" }],
+      },
+    });
     expect(config.repositories.map((repo) => repo.name)).toEqual([
       "client-application",
       "backend-api",

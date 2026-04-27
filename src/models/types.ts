@@ -44,6 +44,74 @@ export interface MemoryConfig {
   bootstrapCodexSandbox: MemoryBootstrapCodexSandbox;
 }
 
+export type AlertSeverity = "info" | "warning" | "error";
+
+export interface ObservabilityMetricsConfig {
+  enabled: boolean;
+  path: string;
+}
+
+export interface ObservabilityHealthConfig {
+  path: string;
+  readinessPath: string;
+}
+
+export interface ObservabilityEventStoreConfig {
+  store: "memory" | "file";
+  file?: string;
+  retention: number;
+}
+
+export interface ObservabilityDashboardConfig {
+  enabled: boolean;
+  path: string;
+  refreshSeconds: number;
+  apiPath: string;
+  bearerToken?: string;
+}
+
+export type AlertChannelConfig =
+  | {
+      type: "webhook";
+      url?: string;
+    }
+  | {
+      type: "slack";
+      webhookUrl?: string;
+    }
+  | {
+      type: "telegram";
+      botToken?: string;
+      chatId?: string;
+    };
+
+export interface ObservabilityAlertsConfig {
+  enabled: boolean;
+  minSeverity: AlertSeverity;
+  dedupWindowSeconds: number;
+  queueBlockedCycles: number;
+  codexTimeoutWindowSeconds: number;
+  codexTimeoutThreshold: number;
+  validationFailureWindowSeconds: number;
+  validationFailureThreshold: number;
+  workerStaleSeconds: number;
+  channels: AlertChannelConfig[];
+}
+
+export interface ObservabilityConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  baseUrl: string;
+  strictStartup: boolean;
+  redactMaxChars: number;
+  metrics: ObservabilityMetricsConfig;
+  health: ObservabilityHealthConfig;
+  events: ObservabilityEventStoreConfig;
+  dashboard: ObservabilityDashboardConfig;
+  alerts: ObservabilityAlertsConfig;
+}
+
 export interface TrackerStatusConfig {
   statuses: string[];
   transition?: string;
@@ -266,6 +334,7 @@ export interface AppConfig {
   dependencyUnknownStatusPolicy?: DependencyUnknownStatusPolicy;
   promptProfiles?: PromptProfileOverrideMap;
   memory?: MemoryConfig;
+  observability?: ObservabilityConfig;
 }
 
 export type LockBackendKind = "tracker" | "redis" | "postgres";
@@ -378,6 +447,7 @@ export interface GlobalWorkerConfig {
   priorityQueue: PriorityQueueConfig;
   repositories: RepositoryProfile[];
   memory?: MemoryConfig;
+  observability?: ObservabilityConfig;
 }
 
 export interface RepositoryRuntimeConfig extends AppConfig {

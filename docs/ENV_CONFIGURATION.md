@@ -88,6 +88,38 @@ For Tracker statuses, the repository already includes an example file at [config
 | `MEMORY_BOOTSTRAP_ON_START` | No | `false` | Reserved for the post-MVP bootstrap flow. The MVP validates storage and consumes manually maintained memory. |
 | `MEMORY_REFRESH_ON_PREFLIGHT` | No | `false` | Reserved for the post-MVP refresh flow. The legacy typo `MEMORY_REFRESH_ON_PRELIGHT` is also accepted. |
 | `MEMORY_BOOTSTRAP_CODEX_SANDBOX` | No | `inherit` | Reserved for bootstrap. Accepted values are `inherit`, `read-only`, `workspace-write`, and `danger-full-access`. |
+| `OBSERVABILITY_ENABLED` | No | `false` | Starts the Phase 6 observability HTTP server for health, readiness, metrics, dashboard API, and alerts. |
+| `OBSERVABILITY_HOST` | No | `127.0.0.1` | Interface for the observability server. Use `0.0.0.0` only on trusted internal networks or behind a private proxy. |
+| `OBSERVABILITY_PORT` | No | `9464` | Port for all observability endpoints. `METRICS_PORT` is accepted as a backward-compatible alias. |
+| `OBSERVABILITY_BASE_URL` | No | `http://<host>:<port>` | Base URL used by the HTTP router and alert dashboard links. |
+| `OBSERVABILITY_STRICT_STARTUP` | No | `true` | When true, a port bind failure fails startup. When false, the worker logs a warning and keeps processing. |
+| `OBSERVABILITY_REDACT_MAX_CHARS` | No | `4000` | Maximum diagnostic length after secret redaction in events, API payloads, and alerts. |
+| `METRICS_ENABLED` | No | `true` | Enables Prometheus text output on the observability server. |
+| `METRICS_PATH` | No | `/metrics` | Path for Prometheus text exposition. |
+| `HEALTH_PATH` | No | `/healthz` | Liveness endpoint path. |
+| `READY_PATH` | No | `/readyz` | Readiness endpoint path. |
+| `OBSERVABILITY_EVENT_STORE` | No | `memory` | Event store backend: `memory` or `file`. |
+| `OBSERVABILITY_EVENT_STORE_FILE` | No | None | JSONL file used when `OBSERVABILITY_EVENT_STORE=file`. |
+| `OBSERVABILITY_EVENT_RETENTION` | No | `1000` | Bounded recent event retention count. |
+| `DASHBOARD_ENABLED` | No | `false` | Enables the read-only dashboard and `/api/*` endpoints. |
+| `DASHBOARD_PATH` | No | `/dashboard` | Dashboard HTML path. |
+| `DASHBOARD_REFRESH_SECONDS` | No | `10` | Browser polling interval for dashboard API refreshes. |
+| `DASHBOARD_API_PATH` | No | `/api` | Read-only dashboard API path prefix. |
+| `DASHBOARD_BEARER_TOKEN` | No | None | Optional bearer token protecting `/dashboard` and `/api/*`. |
+| `ALERTS_ENABLED` | No | `false` | Enables event-based alert evaluation and notification sinks. |
+| `ALERT_CHANNELS` | No | None | Comma-separated channels: `webhook`, `slack`, `telegram`. |
+| `ALERT_WEBHOOK_URL` | No | None | Generic JSON webhook URL for `ALERT_CHANNELS=webhook`. |
+| `SLACK_WEBHOOK_URL` | No | None | Slack incoming webhook URL for `ALERT_CHANNELS=slack`. |
+| `TELEGRAM_BOT_TOKEN` | No | None | Telegram bot token for `ALERT_CHANNELS=telegram`. |
+| `TELEGRAM_CHAT_ID` | No | None | Telegram chat id for `ALERT_CHANNELS=telegram`. |
+| `ALERT_MIN_SEVERITY` | No | `warning` | Minimum notification severity: `info`, `warning`, or `error`. |
+| `ALERT_DEDUP_WINDOW_SECONDS` | No | `900` | Suppresses repeated alerts with the same rule/repository/issue/stage key. |
+| `ALERT_QUEUE_BLOCKED_CYCLES` | No | `3` | Queue-blocked cycles before a warning alert is emitted. |
+| `ALERT_CODEX_TIMEOUT_WINDOW_SECONDS` | No | `3600` | Rolling window for repeated Codex timeout alerts. |
+| `ALERT_CODEX_TIMEOUT_THRESHOLD` | No | `3` | Timeout count needed inside the rolling window. |
+| `ALERT_VALIDATION_FAILURE_WINDOW_SECONDS` | No | `3600` | Rolling window for repeated validation failure alerts. |
+| `ALERT_VALIDATION_FAILURE_THRESHOLD` | No | `3` | Validation failure count needed inside the rolling window. |
+| `ALERT_WORKER_STALE_SECONDS` | No | `300` | Reserved threshold for worker stale snapshots. |
 | `TEST_COMMAND` | No | `npm test` | Set the exact test command that should run inside the mounted target repository. |
 | `LINT_COMMAND` | No | `npm run lint` | Set the exact lint command that should run inside the mounted target repository. |
 | `TYPE_CHECK_COMMAND` | No | None | Optional typecheck gate. When set, runs before lint and tests and blocks publish on failure. |
@@ -197,6 +229,28 @@ Dependency filtering runs before leases are acquired. The worker reads `blockedB
 Repository memory is off by default. When `MEMORY_ENABLED=true`, analysis and implementation prompts receive a compact `Repository context` section assembled from approved `prompt-rules.json`, manual `knowledge.json`, and similar `failures.jsonl` entries. Fix, review-fix, decomposition, bootstrap, and review-learning promotion are intentionally outside the MVP path.
 
 Run `npm run memory:validate` before enabling memory in production. The lifecycle, schema examples, approval workflow, and cleanup procedure are documented in [docs/MEMORY_LIFECYCLE.md](/C:/Users/gabba/projects/developer/docs/MEMORY_LIFECYCLE.md).
+
+## Phase 6 observability MVP
+
+Observability is off by default. When `OBSERVABILITY_ENABLED=true`, the worker starts one HTTP server for `/healthz`, `/readyz`, `/metrics`, optional dashboard/API, and optional alerts. The server starts before startup checks and readiness becomes `ok` only after repository and Codex auth checks pass.
+
+Recommended rollout:
+
+```env
+OBSERVABILITY_ENABLED=true
+METRICS_ENABLED=true
+DASHBOARD_ENABLED=false
+ALERTS_ENABLED=false
+```
+
+Then enable dashboard on a trusted interface:
+
+```env
+DASHBOARD_ENABLED=true
+DASHBOARD_BEARER_TOKEN=change-me
+```
+
+Full endpoint contracts, Prometheus scrape examples, Docker/Compose snippets, and alert setup are documented in [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).
 
 ## Fleet mode
 

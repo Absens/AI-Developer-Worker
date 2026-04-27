@@ -81,6 +81,12 @@ import {
   type PromptContextBundle,
 } from "./promptContext.js";
 import { FileMemoryStore, type MemoryStore } from "./memoryStore.js";
+import {
+  noopObservability,
+  type ObservabilityTelemetry,
+  type TaskTelemetryContext,
+} from "../observability/service.js";
+import type { TaskEventType } from "../observability/events.js";
 
 export type CycleOutcome = "processed" | "idle" | "waiting";
 
@@ -152,6 +158,16 @@ const subtaskDependencyNotes = (
 export class WorkerOrchestrator {
   private shuttingDown = false;
   private wakeSleep: (() => void) | undefined;
+  private readonly terminalOutcomes = new Map<
+    string,
+    {
+      outcome: "success" | "failed" | "waiting" | "processed";
+      message: string;
+      branch?: string;
+      mergeRequestUrl?: string;
+      mergeRequestIid?: number;
+    }
+  >();
 
   constructor(
     private readonly config: AppConfig,
@@ -163,6 +179,7 @@ export class WorkerOrchestrator {
     private readonly lockBackend?: LockBackend,
     private readonly coordination?: CoordinationConfig,
     memoryStore?: MemoryStore,
+    private readonly telemetry: ObservabilityTelemetry = noopObservability,
   ) {
     const memoryConfig = this.config.memory;
     this.memoryStore = memoryStore ?? (
@@ -236,6 +253,13 @@ export class WorkerOrchestrator {
   }
 
   async runOnce(): Promise<CycleOutcome> {
+    this.telemetry.setWorkerState({
+      workerId: this.config.workerId,
+      state: "polling",
+      repositoryName: this.repositoryName(),
+      stage: "polling",
+    });
+
     if (this.config.targetIssueKey) {
       return this.runTargetIssueCycle(this.config.targetIssueKey);
     }
@@ -304,16 +328,71 @@ export class WorkerOrchestrator {
     comments: CommentWithMetadata[],
     leases: TaskLease[] = [],
   ): Promise<CycleOutcome> {
-    if (this.lockBackend && leases.length > 0) {
-      return withLeaseHeartbeat(
-        this.lockBackend,
-        leases,
-        this.coordination?.lockHeartbeatMs ?? 60 * 1000,
-        () => this.handleIssue(issue, comments),
+    const startedAt = Date.now();
+    this.terminalOutcomes.delete(issue.key);
+    this.markStage(issue, "picked");
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: "task_picked",
+      status: "info",
+      message: "Task picked for processing.",
+    });
+
+    const run = async (): Promise<CycleOutcome> => {
+      if (this.lockBackend && leases.length > 0) {
+        return withLeaseHeartbeat(
+          this.lockBackend,
+          leases,
+          this.coordination?.lockHeartbeatMs ?? 60 * 1000,
+          () => this.handleIssue(issue, comments),
+        );
+      }
+
+      return this.handleIssue(issue, comments);
+    };
+
+    const outcome = await run();
+    const terminal = this.terminalOutcomes.get(issue.key);
+    if (terminal) {
+      this.telemetry.recordTaskFinished(
+        {
+          ...this.taskContext(issue),
+          ...(terminal.branch ? { branch: terminal.branch } : {}),
+          ...(terminal.mergeRequestUrl ? { mergeRequestUrl: terminal.mergeRequestUrl } : {}),
+          ...(terminal.mergeRequestIid !== undefined
+            ? { mergeRequestIid: terminal.mergeRequestIid }
+            : {}),
+        },
+        terminal.outcome,
+        Date.now() - startedAt,
+        terminal.message,
+      );
+      this.terminalOutcomes.delete(issue.key);
+    } else if (outcome === "waiting") {
+      this.telemetry.recordTaskFinished(
+        this.taskContext(issue),
+        "waiting",
+        Date.now() - startedAt,
+        "Task is waiting.",
+      );
+    } else if (outcome === "processed") {
+      this.telemetry.recordTaskFinished(
+        this.taskContext(issue),
+        "processed",
+        Date.now() - startedAt,
+        "Task processed.",
       );
     }
 
-    return this.handleIssue(issue, comments);
+    this.telemetry.setWorkerState({
+      workerId: this.config.workerId,
+      state: outcome === "waiting" ? "waiting" : "idle",
+      repositoryName: this.repositoryName(),
+      ...(outcome === "waiting" ? { issueKey: issue.key, stage: "waiting" } : {}),
+    });
+    return outcome;
   }
 
   private async acquireProcessingLeases(issue: TrackerIssue): Promise<TaskLease[] | null> {
@@ -333,6 +412,18 @@ export class WorkerOrchestrator {
     });
     if (!taskLease) {
       this.logger.info("Issue is already leased by another worker.", { issueKey: issue.key });
+      this.telemetry.incrementCounter("ai_developer_lease_acquire_failures_total", {
+        repository: repositoryName,
+        kind: "task",
+      });
+      this.telemetry.recordEvent({
+        workerId: this.config.workerId,
+        repositoryName,
+        issueKey: issue.key,
+        type: "task_lease_blocked",
+        status: "warning",
+        message: "Task lease is held by another worker.",
+      });
       return null;
     }
 
@@ -349,9 +440,29 @@ export class WorkerOrchestrator {
         issueKey: issue.key,
         repoPath: this.config.repoPath,
       });
+      this.telemetry.incrementCounter("ai_developer_lease_acquire_failures_total", {
+        repository: repositoryName,
+        kind: "repository",
+      });
+      this.telemetry.recordEvent({
+        workerId: this.config.workerId,
+        repositoryName,
+        issueKey: issue.key,
+        type: "task_lease_blocked",
+        status: "warning",
+        message: "Repository lease is held by another worker.",
+      });
       return null;
     }
 
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName,
+      issueKey: issue.key,
+      type: "task_lease_acquired",
+      status: "info",
+      message: "Task and repository leases acquired.",
+    });
     return [taskLease, repositoryLease];
   }
 
@@ -410,6 +521,11 @@ export class WorkerOrchestrator {
   } | null> {
     const issues = await this.tracker.findCandidateIssues();
     const openIssues = issues.filter((issue) => issue.logicalStatus === "open");
+    this.telemetry.setQueueDepth(
+      this.repositoryName(),
+      this.config.trackerDefaultQueue,
+      openIssues.length,
+    );
 
     for (const issue of openIssues) {
       const dependencyCheck = await checkIssueDependencies(this.tracker, issue, {
@@ -456,6 +572,15 @@ export class WorkerOrchestrator {
           issueKey: issue.key,
           error: error.message,
         });
+        this.telemetry.incrementCounter("ai_developer_integration_errors_total", {
+          integration: "unknown",
+          kind: "temporary",
+        });
+        this.markStage(issue, "temporary_error", "waiting");
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: error.message,
+        });
         return "waiting";
       }
 
@@ -464,6 +589,7 @@ export class WorkerOrchestrator {
         issueKey: issue.key,
         error: message,
       });
+      this.markStage(issue, "failed", "error");
       await this.finalizeFailure(issue, message);
       return "processed";
     }
@@ -479,10 +605,12 @@ export class WorkerOrchestrator {
     let analysisDecision = findLatestAnalysisDecision(comments, issue.key);
 
     if (issue.logicalStatus === "review") {
+      this.markStage(issue, "review_fix");
       return this.handleReviewFeedback(issue, comments);
     }
 
     if (issue.logicalStatus === "open") {
+      this.markStage(issue, "starting");
       await this.tracker.transition(issue.key, "in_progress");
       await this.tracker.addComment(
         issue.key,
@@ -494,9 +622,15 @@ export class WorkerOrchestrator {
     if (issue.logicalStatus === "waiting_for_answer") {
       resumeContext = this.resolveResumeContext(issue, comments);
       if (!resumeContext) {
+        this.markStage(issue, "waiting_for_answer", "waiting");
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Task is waiting for an explicit resume command.",
+        });
         return "waiting";
       }
 
+      this.markStage(issue, "resume");
       activeThreadId = resumeContext.questionComment.metadata.threadId;
       await this.tracker.transition(issue.key, "in_progress");
       await this.tracker.addComment(
@@ -521,6 +655,7 @@ export class WorkerOrchestrator {
 
       const taskMode = this.resolveTaskMode(analysisDecision);
       if (taskMode === "analyze_only") {
+        this.markStage(issue, "manual_hold", "waiting");
         await this.tracker.transition(issue.key, "waiting_for_answer");
         await this.tracker.addComment(
           issue.key,
@@ -531,6 +666,10 @@ export class WorkerOrchestrator {
             "manual_hold",
           ),
         );
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Analysis completed and task is on manual hold.",
+        });
         return "processed";
       }
 
@@ -540,11 +679,19 @@ export class WorkerOrchestrator {
           analysis.clarification ?? createClarificationFromAnalysis(analysisDecision),
           activeThreadId,
         );
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Task is waiting for clarification.",
+        });
         return "waiting";
       }
 
       if (taskMode === "human") {
         await this.pauseForManualHold(issue, analysisDecision);
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Task is waiting on manual hold.",
+        });
         return "waiting";
       }
 
@@ -554,10 +701,15 @@ export class WorkerOrchestrator {
 
       if (analysis.status === "clarification_required" && analysis.clarification) {
         await this.pauseForClarification(issue, analysis.clarification, activeThreadId);
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Task is waiting for clarification.",
+        });
         return "waiting";
       }
     }
 
+    this.markStage(issue, "implementation");
     const promptProfile = this.selectProfile(issue, analysisDecision);
     const branch = await this.git.checkoutTaskBranch(issue.key);
     const existingMr = await this.gitlab.findOpenMergeRequestByBranch(branch);
@@ -584,25 +736,31 @@ export class WorkerOrchestrator {
         analysisDecision,
         memoryContext,
       );
-      const execution = resumeContext
-        ? await this.runResumeOrInitial(
-            issue,
-            activeThreadId,
-            buildResumePrompt(issue, comments, resumeContext.command),
-            implementationPrompt,
-          )
-        : activeThreadId
-          ? await this.runResumeOrInitial(
+      const execution = await this.runCodexStage(issue, "implementation", () =>
+        resumeContext
+          ? this.runResumeOrInitial(
               issue,
               activeThreadId,
-              implementationPrompt,
+              buildResumePrompt(issue, comments, resumeContext.command),
               implementationPrompt,
             )
-          : await this.codex.runInitial(implementationPrompt);
+          : activeThreadId
+            ? this.runResumeOrInitial(
+                issue,
+                activeThreadId,
+                implementationPrompt,
+                implementationPrompt,
+              )
+            : this.codex.runInitial(implementationPrompt),
+      );
 
       activeThreadId = execution.threadId ?? activeThreadId;
       if (execution.clarification) {
         await this.pauseForClarification(issue, execution.clarification, activeThreadId);
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Task is waiting for clarification.",
+        });
         return "waiting";
       }
       implementationSummary = execution.finalMessage?.trim();
@@ -622,7 +780,8 @@ export class WorkerOrchestrator {
       });
     }
 
-    let validation = await this.validateRepositoryState();
+    this.markStage(issue, "validation");
+    let validation = await this.validateRepositoryState(issue);
     if (!validation.changed) {
       await this.recordFailureMemory({
         issue,
@@ -637,20 +796,27 @@ export class WorkerOrchestrator {
     let attempt = 0;
     while (!isValidationSuccessful(validation) && attempt < this.config.maxFixAttempts) {
       attempt += 1;
+      this.telemetry.incrementCounter("ai_developer_fix_attempts_total", {
+        repository: this.repositoryName(),
+        stage: "implementation",
+        outcome: "started",
+      });
       this.logger.warn("Validation failed, asking Codex to apply a fix.", {
         issueKey: issue.key,
         attempt,
         threadId: activeThreadId,
       });
 
-      const execution = activeThreadId
-        ? await this.codex.runResume(
-            activeThreadId,
-            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
-          )
-        : await this.codex.runFix(
-            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
-          );
+      const execution = await this.runCodexStage(issue, "implementation", () =>
+        activeThreadId
+          ? this.codex.runResume(
+              activeThreadId,
+              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+            )
+          : this.codex.runFix(
+              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+            ),
+      );
       activeThreadId = execution.threadId ?? activeThreadId;
       if (execution.clarification) {
         await this.pauseForClarification(issue, execution.clarification, activeThreadId);
@@ -666,7 +832,7 @@ export class WorkerOrchestrator {
         });
       }
 
-      validation = await this.validateRepositoryState();
+      validation = await this.validateRepositoryState(issue);
     }
 
     if (!isValidationSuccessful(validation)) {
@@ -680,6 +846,7 @@ export class WorkerOrchestrator {
       throw new PermanentTaskError(validation.diagnostic);
     }
 
+    this.markStage(issue, "publish");
     await this.publish(issue, branch, existingMr, validation, implementationSummary);
     return "processed";
   }
@@ -732,11 +899,17 @@ export class WorkerOrchestrator {
       analysisDecision,
     );
 
-    let execution = await this.codex.runInitial(prompt);
+    let execution = await this.runCodexStage(issue, "review_fix", () =>
+      this.codex.runInitial(prompt),
+    );
     let reviewThreadId = execution.threadId;
     let reviewFixSummary = execution.finalMessage?.trim();
     if (execution.clarification) {
       await this.pauseForClarification(issue, execution.clarification, execution.threadId);
+      this.terminalOutcomes.set(issue.key, {
+        outcome: "waiting",
+        message: "Review fix is waiting for clarification.",
+      });
       return "waiting";
     }
 
@@ -747,28 +920,39 @@ export class WorkerOrchestrator {
       });
     }
 
-    let validation = await this.validateRepositoryState();
+    this.markStage(issue, "validation");
+    let validation = await this.validateRepositoryState(issue);
     let attempt = 0;
     while (!isValidationSuccessful(validation) && attempt < this.config.maxReviewFixAttempts) {
       attempt += 1;
+      this.telemetry.incrementCounter("ai_developer_review_fix_cycles_total", {
+        repository: this.repositoryName(),
+        outcome: "started",
+      });
       this.logger.warn("Review fix validation failed, asking Codex to apply a fix.", {
         issueKey: issue.key,
         attempt,
         threadId: reviewThreadId,
       });
 
-      execution = reviewThreadId
-        ? await this.codex.runResume(
-            reviewThreadId,
-            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
-          )
-        : await this.codex.runFix(
-            buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
-          );
+      execution = await this.runCodexStage(issue, "review_fix", () =>
+        reviewThreadId
+          ? this.codex.runResume(
+              reviewThreadId,
+              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+            )
+          : this.codex.runFix(
+              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+            ),
+      );
       reviewThreadId = execution.threadId ?? reviewThreadId;
       reviewFixSummary = execution.finalMessage?.trim() ?? reviewFixSummary;
       if (execution.clarification) {
         await this.pauseForClarification(issue, execution.clarification, execution.threadId);
+        this.terminalOutcomes.set(issue.key, {
+          outcome: "waiting",
+          message: "Review fix is waiting for clarification.",
+        });
         return "waiting";
       }
 
@@ -780,12 +964,20 @@ export class WorkerOrchestrator {
         });
       }
 
-      validation = await this.validateRepositoryState();
+      validation = await this.validateRepositoryState(issue);
     }
 
     if (!isValidationSuccessful(validation)) {
+      this.telemetry.incrementCounter("ai_developer_review_fix_cycles_total", {
+        repository: this.repositoryName(),
+        outcome: "failed",
+      });
       throw new PermanentTaskError(validation.diagnostic);
     }
+    this.telemetry.incrementCounter("ai_developer_review_fix_cycles_total", {
+      repository: this.repositoryName(),
+      outcome: "success",
+    });
 
     if (await this.git.hasChanges()) {
       const commitChangedFiles = await this.git.getChangedFilesFromBase();
@@ -847,6 +1039,13 @@ export class WorkerOrchestrator {
         `Review feedback addressed and pushed: ${mergeRequest.url}`,
       ),
     );
+    this.terminalOutcomes.set(issue.key, {
+      outcome: "success",
+      message: "Review feedback addressed.",
+      branch: checkedOutBranch,
+      mergeRequestUrl: mergeRequest.url,
+      mergeRequestIid: mergeRequest.iid,
+    });
 
     return "processed";
   }
@@ -1012,6 +1211,7 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
   ): Promise<TaskAnalysisResult> {
+    this.markStage(issue, "analysis");
     const storedDecision = findLatestAnalysisDecision(comments, issue.key);
     if (storedDecision) {
       this.logger.info("Reusing stored task analysis decision.", {
@@ -1034,8 +1234,10 @@ export class WorkerOrchestrator {
       promptProfileId: "general",
       expectedFiles: [],
     });
-    const execution = await this.codex.runInitial(
-      buildAnalysisPrompt(issue, comments, memoryContext),
+    const execution = await this.runCodexStage(
+      issue,
+      "analysis",
+      () => this.codex.runInitial(buildAnalysisPrompt(issue, comments, memoryContext)),
     );
     let decision: TaskAnalysisDecision | undefined;
     if (execution.clarification) {
@@ -1168,6 +1370,69 @@ export class WorkerOrchestrator {
       : "default";
   }
 
+  private taskContext(issue: TrackerIssue): TaskTelemetryContext {
+    return {
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+    };
+  }
+
+  private markStage(
+    issue: TrackerIssue,
+    stage: string,
+    state: "processing" | "waiting" | "error" = "processing",
+  ): void {
+    this.telemetry.setWorkerState({
+      workerId: this.config.workerId,
+      state,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      stage,
+    });
+  }
+
+  private async runCodexStage(
+    issue: TrackerIssue,
+    stage: "analysis" | "implementation" | "decomposition" | "review_fix",
+    run: () => Promise<CodexExecution>,
+  ): Promise<CodexExecution> {
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: `${stage}_started` as TaskEventType,
+      status: "info",
+      message: `Codex ${stage} started.`,
+    });
+    const startedAt = Date.now();
+    const execution = await run();
+    this.telemetry.recordCodexRun({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      stage,
+      durationMs: Date.now() - startedAt,
+      exitCode: execution.process.exitCode,
+      timedOut: execution.process.timedOut,
+    });
+    return execution;
+  }
+
+  private recordValidationResults(issue: TrackerIssue, validation: ValidationResult): void {
+    for (const gate of validation.gates) {
+      this.telemetry.recordValidationGate({
+        workerId: this.config.workerId,
+        repositoryName: this.repositoryName(),
+        issueKey: issue.key,
+        gate: gate.id,
+        status: gate.status,
+        ...(gate.durationMs !== undefined ? { durationMs: gate.durationMs } : {}),
+        ...(gate.status === "failed" ? { diagnostic: gate.diagnostic } : {}),
+      });
+    }
+  }
+
   private async buildMemoryContext(input: {
     issue: TrackerIssue;
     taskType: TaskAnalysisDecision["taskType"];
@@ -1203,6 +1468,11 @@ export class WorkerOrchestrator {
       knowledgeSectionIds: bundle.knowledgeSections.map((section) => section.id),
       promptRuleIds: bundle.promptRules.map((rule) => rule.id),
       similarFailureCount: bundle.similarFailures.length,
+    });
+    this.telemetry.incrementCounter("ai_developer_memory_operations_total", {
+      repository: repositoryName,
+      operation: "build_context",
+      outcome: "success",
     });
     return bundle;
   }
@@ -1255,12 +1525,22 @@ export class WorkerOrchestrator {
 
     try {
       await this.memoryStore.appendFailure(entry);
+      this.telemetry.incrementCounter("ai_developer_memory_operations_total", {
+        repository: entry.repositoryName,
+        operation: "append_failure",
+        outcome: "success",
+      });
       this.logger.info("Failure memory appended.", {
         issueKey: input.issue.key,
         repositoryName: entry.repositoryName,
         failureKind: entry.failureKind,
       });
     } catch (error) {
+      this.telemetry.incrementCounter("ai_developer_memory_operations_total", {
+        repository: entry.repositoryName,
+        operation: "append_failure",
+        outcome: "failed",
+      });
       this.logger.warn("Unable to append failure memory.", {
         issueKey: input.issue.key,
         error: error instanceof Error ? error.message : String(error),
@@ -1297,6 +1577,23 @@ export class WorkerOrchestrator {
     clarification: ClarificationQuestion,
     threadId?: string,
   ): Promise<void> {
+    this.markStage(issue, "clarification", "waiting");
+    this.telemetry.incrementCounter("ai_developer_clarifications_total", {
+      repository: this.repositoryName(),
+      reason: "clarification",
+    });
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: "clarification_requested",
+      status: "warning",
+      message: clarification.summary,
+      details: {
+        blockingReason: clarification.blockingReason,
+        question: clarification.question,
+      },
+    });
     await this.tracker.addComment(
       issue.key,
       formatQuestionCommentWithThreadId(this.config.workerId, clarification, threadId),
@@ -1317,6 +1614,20 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     decision: TaskAnalysisDecision,
   ): Promise<void> {
+    this.markStage(issue, "manual_hold", "waiting");
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: "manual_hold",
+      status: "warning",
+      message: decision.reasoning,
+      details: {
+        confidence: decision.confidence,
+        taskType: decision.taskType,
+        promptProfileId: decision.promptProfileId,
+      },
+    });
     await this.tracker.transition(issue.key, "waiting_for_answer");
     await this.tracker.addComment(
       issue.key,
@@ -1335,6 +1646,15 @@ export class WorkerOrchestrator {
     analysisDecision: TaskAnalysisDecision,
     threadId?: string,
   ): Promise<CycleOutcome> {
+    this.markStage(issue, "decomposition");
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: "decomposition_started",
+      status: "info",
+      message: "Task decomposition started.",
+    });
     const existing = findLatestDecompositionMetadata(comments, issue.key);
     if (existing?.createdIssueKeys && existing.createdIssueKeys.length > 0) {
       this.logger.info("Skipping decomposition because created sub-issues already exist.", {
@@ -1362,9 +1682,11 @@ export class WorkerOrchestrator {
       },
       analysisDecision,
     );
-    const execution = threadId
-      ? await this.codex.runResume(threadId, prompt)
-      : await this.codex.runInitial(prompt);
+    const execution = await this.runCodexStage(issue, "decomposition", () =>
+      threadId
+        ? this.codex.runResume(threadId, prompt)
+        : this.codex.runInitial(prompt),
+    );
     const plan = parseDecompositionPlan(execution.finalMessage, {
       parentIssueKey: issue.key,
       maxSubtasks,
@@ -1380,6 +1702,10 @@ export class WorkerOrchestrator {
         }),
       );
       await this.pauseForManualHold(issue, analysisDecision);
+      this.terminalOutcomes.set(issue.key, {
+        outcome: "waiting",
+        message: "Decomposition failed and task is on manual hold.",
+      });
       return "waiting";
     }
 
@@ -1397,6 +1723,14 @@ export class WorkerOrchestrator {
         }),
       );
       await this.pauseForManualHold(issue, analysisDecision);
+      this.telemetry.recordEvent({
+        workerId: this.config.workerId,
+        repositoryName: this.repositoryName(),
+        issueKey: issue.key,
+        type: "decomposition_completed",
+        status: "info",
+        message: "Decomposition dry run completed.",
+      });
       return "processed";
     }
 
@@ -1413,6 +1747,10 @@ export class WorkerOrchestrator {
         }),
       );
       await this.pauseForManualHold(issue, analysisDecision);
+      this.terminalOutcomes.set(issue.key, {
+        outcome: "waiting",
+        message: "Decomposition create API is unavailable.",
+      });
       return "waiting";
     }
 
@@ -1504,10 +1842,27 @@ export class WorkerOrchestrator {
       }),
     );
     await this.pauseForManualHold(issue, analysisDecision);
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: "decomposition_completed",
+      status: warnings.length > 0 ? "warning" : "info",
+      message: `Created ${createdIssueKeys.length} decomposed issues.`,
+      details: { createdIssueKeys, warnings },
+    });
     return "processed";
   }
 
-  private async validateRepositoryState(): Promise<ValidationResult> {
+  private async validateRepositoryState(issue: TrackerIssue): Promise<ValidationResult> {
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      type: "validation_started",
+      status: "info",
+      message: "Validation started.",
+    });
     const changed = (await this.git.hasChanges()) || (await this.git.hasDiffFromBase());
     if (!changed) {
       return {
@@ -1522,6 +1877,13 @@ export class WorkerOrchestrator {
     const gates = await runQualityGates(this.config, {
       cwd: this.config.repoPath,
       logger: this.logger,
+    });
+    this.recordValidationResults(issue, {
+      changed: true,
+      testsPassed: qualityGateStatus(gates, "tests") === "passed",
+      lintPassed: qualityGateStatus(gates, "lint") === "passed",
+      gates,
+      diagnostic: formatQualityGateDiagnostics(gates),
     });
 
     return {
@@ -1559,6 +1921,15 @@ export class WorkerOrchestrator {
     validation: ValidationResult,
     implementationSummary?: string,
   ): Promise<void> {
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      branch,
+      type: "publish_started",
+      status: "info",
+      message: "Publishing task result.",
+    });
     if (await this.git.hasChanges()) {
       const changedFiles = await this.git.getChangedFilesFromBase();
       await this.git.commit(
@@ -1573,10 +1944,10 @@ export class WorkerOrchestrator {
     await this.git.push(branch);
     const changedFiles = await this.git.getChangedFilesFromBase();
 
-    const mergeRequest =
-      existingMr ??
-      (await this.gitlab.findOpenMergeRequestByBranch(branch)) ??
-      (await this.gitlab.createMergeRequest({
+    let mergeRequest = existingMr ?? (await this.gitlab.findOpenMergeRequestByBranch(branch));
+    let mergeRequestOutcome: "created" | "reused" = mergeRequest ? "reused" : "created";
+    if (!mergeRequest) {
+      mergeRequest = await this.gitlab.createMergeRequest({
         sourceBranch: branch,
         targetBranch: this.config.baseBranch,
         title: `[AI] ${issue.key} implementation`,
@@ -1590,15 +1961,17 @@ export class WorkerOrchestrator {
           workerId: this.config.workerId,
           codexSummary: implementationSummary,
         }),
-      }));
+      });
+    }
 
-    await this.finalizeSuccess(issue, branch, mergeRequest);
+    await this.finalizeSuccess(issue, branch, mergeRequest, mergeRequestOutcome);
   }
 
   private async finalizeSuccess(
     issue: TrackerIssue,
     branch: string,
     mergeRequest: MergeRequestInfo,
+    mergeRequestOutcome: "created" | "reused" = "reused",
   ): Promise<void> {
     await this.tracker.addComment(
       issue.key,
@@ -1613,6 +1986,22 @@ export class WorkerOrchestrator {
         `Merge Request ready: ${mergeRequest.url}`,
       ),
     );
+    this.telemetry.recordMergeRequest({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      branch,
+      mergeRequestUrl: mergeRequest.url,
+      mergeRequestIid: mergeRequest.iid,
+      outcome: mergeRequestOutcome,
+    });
+    this.terminalOutcomes.set(issue.key, {
+      outcome: "success",
+      message: "Merge request is ready.",
+      branch,
+      mergeRequestUrl: mergeRequest.url,
+      mergeRequestIid: mergeRequest.iid,
+    });
   }
 
   private async finalizeFailure(issue: TrackerIssue, diagnostic: string): Promise<void> {
@@ -1626,6 +2015,10 @@ export class WorkerOrchestrator {
         issue.key,
         formatStatusComment(this.config.workerId, "failed", diagnostic),
       );
+      this.terminalOutcomes.set(issue.key, {
+        outcome: "failed",
+        message: diagnostic,
+      });
     } catch (error) {
       this.logger.warn("Failed to move issue into failed state. Falling back to waiting state.", {
         issueKey: issue.key,
@@ -1641,6 +2034,10 @@ export class WorkerOrchestrator {
           "failure_recovery",
         ),
       );
+      this.terminalOutcomes.set(issue.key, {
+        outcome: "waiting",
+        message: "Task is waiting for manual intervention after automation failure.",
+      });
     }
   }
 }

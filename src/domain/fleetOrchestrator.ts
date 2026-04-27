@@ -17,6 +17,10 @@ import {
 import type { CycleOutcome } from "./orchestrator.js";
 import type { RepositoryWorkerContext } from "./repositoryContext.js";
 import {
+  noopObservability,
+  type ObservabilityTelemetry,
+} from "../observability/service.js";
+import {
   scoreAndSortCandidates,
   type CandidateIssue,
   type ScoredCandidate,
@@ -74,6 +78,7 @@ export class FleetOrchestrator {
     private readonly contexts: RepositoryWorkerContext[],
     private readonly lockBackend: LockBackend,
     private readonly logger: Logger,
+    private readonly telemetry: ObservabilityTelemetry = noopObservability,
   ) {}
 
   async runForever(): Promise<void> {
@@ -121,6 +126,11 @@ export class FleetOrchestrator {
   }
 
   async runOnce(): Promise<CycleOutcome> {
+    this.telemetry.setWorkerState({
+      workerId: this.config.workerId,
+      state: "polling",
+      stage: "fleet_polling",
+    });
     if (this.config.targetIssueKey) {
       return this.runTargetIssueCycle(this.config.targetIssueKey);
     }
@@ -128,6 +138,11 @@ export class FleetOrchestrator {
     const collection = await this.collectCandidates();
     if (collection.candidates.length === 0) {
       this.logger.info("No suitable fleet tasks found.");
+      for (const context of this.contexts) {
+        for (const queue of context.profile.queues) {
+          this.telemetry.setQueueDepth(context.profile.name, queue, 0);
+        }
+      }
       return "idle";
     }
 
@@ -158,6 +173,12 @@ export class FleetOrchestrator {
     }
 
     this.logger.info("Fleet candidates were blocked by active leases.");
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      type: "task_lease_blocked",
+      status: "warning",
+      message: "Fleet candidates were blocked by active leases.",
+    });
     return "waiting";
   }
 
@@ -203,6 +224,11 @@ export class FleetOrchestrator {
       for (const queue of context.profile.queues) {
         for (const tag of context.profile.tags) {
           const issues = await context.tracker.findCandidateIssues({ queue, tag });
+          this.telemetry.setQueueDepth(
+            context.profile.name,
+            queue,
+            issues.filter((issue) => issue.logicalStatus === "open").length,
+          );
           for (const issue of issues) {
             const issueKey = `${context.profile.name}:${issue.key}`;
             if (fetchedIssueKeys.has(issueKey)) {
@@ -310,6 +336,10 @@ export class FleetOrchestrator {
       ttlMs: this.config.coordination.lockTtlMs,
     });
     if (!taskLease) {
+      this.telemetry.incrementCounter("ai_developer_lease_acquire_failures_total", {
+        repository: candidate.repository.name,
+        kind: "task",
+      });
       return null;
     }
 
@@ -322,9 +352,21 @@ export class FleetOrchestrator {
     });
     if (!repositoryLease) {
       await this.lockBackend.releaseTaskLease(taskLease);
+      this.telemetry.incrementCounter("ai_developer_lease_acquire_failures_total", {
+        repository: candidate.repository.name,
+        kind: "repository",
+      });
       return null;
     }
 
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: candidate.repository.name,
+      issueKey: candidate.issue.key,
+      type: "task_lease_acquired",
+      status: "info",
+      message: "Fleet task and repository leases acquired.",
+    });
     return [taskLease, repositoryLease];
   }
 

@@ -80,6 +80,9 @@ Common optional values:
 - `DECOMPOSITION_DRY_RUN=true` for safe epic split previews
 - `DEPENDENCY_ENFORCEMENT=true`, `DEPENDENCY_UNKNOWN_STATUS_POLICY=block` for blocked-task filtering
 - `MEMORY_ENABLED=false`, `MEMORY_DIR=/workspace/ai-developer-memory` for Phase 5 repository memory
+- `OBSERVABILITY_ENABLED=false`, `OBSERVABILITY_PORT=9464`, `METRICS_ENABLED=true` for Phase 6 health, readiness, and Prometheus metrics
+- `DASHBOARD_ENABLED=false`, `DASHBOARD_BEARER_TOKEN=...` for the read-only dashboard/API
+- `ALERTS_ENABLED=false`, `ALERT_CHANNELS=webhook|slack|telegram` for event-based notifications
 
 For Codex CLI 0.124.0, global flags such as `--search` and
 `--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example
@@ -91,6 +94,7 @@ for exec-level flags such as `["--add-dir","/workspace/shared"]`.
 - Environment variables and where to get them: [docs/ENV_CONFIGURATION.md](/C:/Users/gabba/projects/developer/docs/ENV_CONFIGURATION.md)
 - Fleet config and operational coordination: [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md)
 - Repository memory lifecycle: [docs/MEMORY_LIFECYCLE.md](/C:/Users/gabba/projects/developer/docs/MEMORY_LIFECYCLE.md)
+- Observability, dashboard, metrics, probes, and alerts: [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md)
 - Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
 - Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
 - Codex auth troubleshooting, including `refresh_token_reused`: [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md)

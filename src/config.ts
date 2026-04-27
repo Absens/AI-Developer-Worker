@@ -21,6 +21,7 @@ import type {
   TrackerStatusConfig,
   WorkerTaskMode,
 } from "./models/types.js";
+import { parseObservabilityConfig } from "./observability/config.js";
 import { ConfigurationError } from "./utils/errors.js";
 import { sanitizeRepositoryKey } from "./utils/repositoryKey.js";
 
@@ -709,6 +710,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     "MIN_COVERAGE_PERCENT",
   );
   const memory = parseMemoryConfig(env);
+  const observability = parseObservabilityConfig(env);
 
   return {
     trackerToken: requireEnv(env, "TRACKER_TOKEN"),
@@ -851,6 +853,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       env.DEPENDENCY_UNKNOWN_STATUS_POLICY,
     ),
     memory,
+    observability,
   };
 };
 
@@ -1090,6 +1093,7 @@ const buildSingleRepositoryFleetConfig = (
   priorityQueue: parsePriorityQueueConfig(env),
   repositories,
   memory: config.memory,
+  observability: config.observability,
   };
 };
 
@@ -1245,6 +1249,8 @@ const loadFleetConfigFromFile = (
   const coordination = optionalRecord(root.coordination, "coordination");
   const priorityQueue = optionalRecord(root.priorityQueue, "priorityQueue");
   const memory = optionalRecord(root.memory, "memory");
+  const observability = optionalRecord(root.observability, "observability");
+  const alerts = optionalRecord(root.alerts, "alerts");
   if (!Array.isArray(root.repositories) || root.repositories.length === 0) {
     throw new ConfigurationError("repositories must be a non-empty array.");
   }
@@ -1494,6 +1500,10 @@ const loadFleetConfigFromFile = (
     priorityQueue: parsePriorityQueueConfig(env, priorityQueue),
     repositories,
     memory: parseMemoryConfig(env, memory),
+    observability: parseObservabilityConfig(env, {
+      ...(observability ?? {}),
+      ...(alerts ? { alerts } : {}),
+    }),
   };
 };
 
@@ -1613,4 +1623,5 @@ export const buildRepositoryRuntimeConfig = (
   preflightRunTargetCommands: globalConfig.preflightRunTargetCommands,
   ...(globalConfig.targetIssueKey ? { targetIssueKey: globalConfig.targetIssueKey } : {}),
   memory: globalConfig.memory,
+  observability: globalConfig.observability,
 });

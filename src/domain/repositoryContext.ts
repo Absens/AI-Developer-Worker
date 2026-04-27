@@ -10,6 +10,7 @@ import type {
   RepositoryProfile,
   RepositoryRuntimeConfig,
 } from "../models/types.js";
+import type { ObservabilityTelemetry } from "../observability/service.js";
 import { Logger } from "../utils/logger.js";
 import { WorkerOrchestrator } from "./orchestrator.js";
 import { PreflightService } from "./preflight.js";
@@ -32,6 +33,7 @@ export const buildRepositoryContext = (
   profile: RepositoryProfile,
   logger: Logger,
   lockBackend?: LockBackend,
+  telemetry?: ObservabilityTelemetry,
 ): RepositoryWorkerContext => {
   const config = buildRepositoryRuntimeConfig(globalConfig, profile);
   const tracker = new YandexTrackerClient(config, logger);
@@ -48,6 +50,8 @@ export const buildRepositoryContext = (
     logger,
     lockBackend,
     globalConfig.coordination,
+    undefined,
+    telemetry,
   );
   const preflight = new PreflightService(
     config,
