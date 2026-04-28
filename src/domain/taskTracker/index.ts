@@ -7,10 +7,24 @@ export {
 } from "./fieldOwnership.js";
 export {
   DuplicateExternalRefError,
-  InMemoryTaskTrackerClient,
+  LeaseExpiredError,
+  LeaseNotFoundError,
+  LeaseOwnershipError,
   TaskNotFoundError,
   TaskReadinessError,
-} from "./inMemoryTaskTracker.js";
+} from "./errors.js";
+export { InMemoryTaskTrackerClient } from "./inMemoryTaskTracker.js";
+export {
+  activeBlockingDependenciesForTask,
+  claimPriorityScore,
+  compareTasksForClaim,
+  isLeaseActiveAt,
+  normalizeRepositoryLeaseKey,
+  repositoryLeaseKeyForTask,
+  taskLeaseKeyForTask,
+  taskMatchesRepositoryProfile,
+  taskMatchesTarget,
+} from "./queueEligibility.js";
 export {
   TASK_STATUS_TO_LOGICAL_STATUS,
   InvalidTaskStatusTransitionError,
@@ -21,6 +35,9 @@ export {
 export type {
   AgentTaskContext,
   ArtifactRef,
+  ClaimedTask,
+  ClaimRepositoryProfile,
+  ClaimTaskInput,
   CommentInput,
   CreateTaskInput,
   ExportDigestInput,
@@ -28,12 +45,15 @@ export type {
   ExternalTaskSource,
   ExternalTransitionInput,
   ImportCandidatesInput,
+  LeaseHeartbeatInput,
+  ReleaseLeaseInput,
   TaskActor,
   TaskComment,
   TaskDecision,
   TaskDecisionInput,
   TaskDecisionKind,
   TaskDependency,
+  TaskDependencyInput,
   TaskDependencyKind,
   TaskEvent,
   TaskEventInput,
@@ -45,6 +65,7 @@ export type {
   TaskMessageKind,
   TaskPlan,
   TaskPlanStatus,
+  TaskLeaseRecord,
   TaskRecord,
   TaskRevision,
   TaskRevisionInput,

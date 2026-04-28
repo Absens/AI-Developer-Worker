@@ -271,6 +271,16 @@ export interface TaskDependency {
   resolvedAt?: string;
 }
 
+export interface TaskDependencyInput {
+  fromTaskId: string;
+  toTaskId: string;
+  kind: TaskDependencyKind;
+  reason?: string;
+  status?: "active" | "resolved";
+  createdAt?: string;
+  resolvedAt?: string;
+}
+
 export interface TaskRecord {
   id: string;
   title: string;
@@ -307,6 +317,56 @@ export interface TaskRecord {
   createdAt: string;
   updatedAt: string;
   lastSyncedAt?: string;
+}
+
+export interface ClaimRepositoryProfile {
+  name: string;
+  repoPathKey?: string;
+  queues?: string[];
+  tags?: string[];
+}
+
+export interface ClaimTaskInput {
+  workerId: string;
+  repositoryProfiles: ClaimRepositoryProfile[];
+  capabilities?: string[];
+  maxTasks?: number;
+  leaseTtlSeconds: number;
+  targetExternalKey?: string;
+  idempotencyKey?: string;
+}
+
+export interface TaskLeaseRecord {
+  leaseId: string;
+  kind: "task" | "repository";
+  leaseKey: string;
+  taskId: string;
+  repositoryName: string;
+  workerId: string;
+  token: string;
+  expiresAt: string;
+  heartbeatAt: string;
+  releasedAt?: string;
+}
+
+export interface ClaimedTask {
+  task: TaskRecord;
+  agentContext: AgentTaskContext;
+  taskLease: TaskLeaseRecord;
+  repositoryLease: TaskLeaseRecord;
+}
+
+export interface LeaseHeartbeatInput {
+  workerId: string;
+  token: string;
+  leaseTtlSeconds: number;
+  idempotencyKey?: string;
+}
+
+export interface ReleaseLeaseInput {
+  workerId: string;
+  token: string;
+  idempotencyKey?: string;
 }
 
 export interface CreateTaskInput {
@@ -379,6 +439,13 @@ export interface TaskTrackerClient {
   appendEvent(taskId: string, input: TaskEventInput): Promise<void>;
   appendComment(taskId: string, input: CommentInput): Promise<void>;
   setStatus(taskId: string, status: TaskStatus, reason?: string): Promise<void>;
+  addDependency(input: TaskDependencyInput): Promise<TaskDependency>;
+  claimNextTask(input: ClaimTaskInput): Promise<ClaimedTask | null>;
+  heartbeatLease(
+    leaseId: string,
+    input: LeaseHeartbeatInput,
+  ): Promise<TaskLeaseRecord>;
+  releaseLease(leaseId: string, input: ReleaseLeaseInput): Promise<void>;
 }
 
 export interface ImportCandidatesInput {

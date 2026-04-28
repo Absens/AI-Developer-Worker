@@ -20,11 +20,13 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.20.5",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "pg": "^8.20.0",
     "yaml": "^2.8.3"
   }
 }

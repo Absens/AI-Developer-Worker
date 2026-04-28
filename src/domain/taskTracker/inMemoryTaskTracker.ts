@@ -5,14 +5,37 @@ import {
   FIELD_OWNERSHIP_RULES,
   assertOwnerCanUpdateFieldGroup,
 } from "./fieldOwnership.js";
+import {
+  DuplicateExternalRefError,
+  LeaseExpiredError,
+  LeaseNotFoundError,
+  LeaseOwnershipError,
+  TaskNotFoundError,
+  TaskReadinessError,
+} from "./errors.js";
+import {
+  activeBlockingDependenciesForTask,
+  compareTasksForClaim,
+  isLeaseActiveAt,
+  repositoryLeaseKeyForTask,
+  taskLeaseKeyForTask,
+  taskMatchesRepositoryProfile,
+  taskMatchesTarget,
+} from "./queueEligibility.js";
 import { assertValidTaskStatusTransition } from "./status.js";
 import type {
   AgentTaskContext,
+  ClaimedTask,
+  ClaimTaskInput,
   CommentInput,
   CreateTaskInput,
+  LeaseHeartbeatInput,
+  ReleaseLeaseInput,
   TaskActor,
   TaskDecision,
   TaskDecisionInput,
+  TaskDependency,
+  TaskDependencyInput,
   TaskEvent,
   TaskEventInput,
   TaskExternalRef,
@@ -20,33 +43,13 @@ import type {
   TaskFieldOwner,
   TaskFieldOwnership,
   TaskPlan,
+  TaskLeaseRecord,
   TaskRecord,
   TaskRevision,
   TaskRevisionInput,
   TaskStatus,
   TaskTrackerClient,
 } from "./types.js";
-
-export class TaskNotFoundError extends Error {
-  constructor(readonly taskId: string) {
-    super(`Task ${taskId} was not found.`);
-  }
-}
-
-export class DuplicateExternalRefError extends Error {
-  constructor(
-    readonly provider: string,
-    readonly externalKey: string,
-  ) {
-    super(`External ref ${provider}:${externalKey} is already attached to a task.`);
-  }
-}
-
-export class TaskReadinessError extends Error {
-  constructor(readonly missingFields: string[]) {
-    super(`Task is missing required execution fields: ${missingFields.join(", ")}.`);
-  }
-}
 
 export interface InMemoryTaskTrackerOptions {
   now?: () => Date;
@@ -174,6 +177,10 @@ const createInitialRevision = (
 export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly externalRefIndex = new Map<string, string>();
+  private readonly leases = new Map<string, TaskLeaseRecord>();
+  private readonly claimIdempotency = new Map<string, ClaimedTask | null>();
+  private readonly heartbeatIdempotency = new Map<string, TaskLeaseRecord>();
+  private readonly releaseIdempotency = new Set<string>();
   private readonly now: () => Date;
 
   constructor(options: InMemoryTaskTrackerOptions = {}) {
@@ -436,6 +443,153 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     return clone(decision);
   }
 
+  async addDependency(input: TaskDependencyInput): Promise<TaskDependency> {
+    const fromTask = this.requireTask(input.fromTaskId);
+    const toTask = this.requireTask(input.toTaskId);
+    const createdAt = input.createdAt ?? this.nowIso();
+    const dependency: TaskDependency = {
+      id: `dep_${randomUUID()}`,
+      fromTaskId: input.fromTaskId,
+      toTaskId: input.toTaskId,
+      kind: input.kind,
+      ...(input.reason ? { reason: input.reason } : {}),
+      status: input.status ?? "active",
+      createdAt,
+      ...(input.resolvedAt ? { resolvedAt: input.resolvedAt } : {}),
+    };
+
+    fromTask.dependencies.push(dependency);
+    if (toTask.id !== fromTask.id) {
+      toTask.dependencies.push(dependency);
+    }
+    fromTask.updatedAt = createdAt;
+    toTask.updatedAt = createdAt;
+
+    return clone(dependency);
+  }
+
+  async claimNextTask(input: ClaimTaskInput): Promise<ClaimedTask | null> {
+    this.assertClaimInput(input);
+    if (input.idempotencyKey && this.claimIdempotency.has(input.idempotencyKey)) {
+      return clone(this.claimIdempotency.get(input.idempotencyKey) ?? null);
+    }
+
+    const now = this.now();
+    const candidates = [...this.tasks.values()]
+      .filter((task) => this.isEligibleClaimCandidate(task, input, now))
+      .sort(compareTasksForClaim(now));
+    const task = candidates[0];
+
+    if (!task) {
+      if (input.idempotencyKey) {
+        this.claimIdempotency.set(input.idempotencyKey, null);
+      }
+      return null;
+    }
+
+    const timestamp = now.toISOString();
+    const repositoryName = task.repositoryName;
+    if (!repositoryName) {
+      throw new Error(`Task ${task.id} has no repositoryName.`);
+    }
+
+    const taskLease = this.createLeaseRecord("task", taskLeaseKeyForTask(task.id), task, input, now);
+    const repositoryLease = this.createLeaseRecord(
+      "repository",
+      repositoryLeaseKeyForTask(task),
+      task,
+      input,
+      now,
+    );
+
+    this.leases.set(taskLease.leaseId, taskLease);
+    this.leases.set(repositoryLease.leaseId, repositoryLease);
+    task.status = "claimed";
+    task.updatedAt = timestamp;
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId: task.id,
+      kind: "task_claimed",
+      source: "worker_agent",
+      actor: {
+        owner: "worker_agent",
+        id: input.workerId,
+      },
+      payload: {
+        taskLeaseId: taskLease.leaseId,
+        repositoryLeaseId: repositoryLease.leaseId,
+        repositoryLeaseKey: repositoryLease.leaseKey,
+      },
+      createdAt: timestamp,
+    });
+
+    const claimed: ClaimedTask = {
+      task: clone(task),
+      agentContext: buildAgentTaskContext(task),
+      taskLease: clone(taskLease),
+      repositoryLease: clone(repositoryLease),
+    };
+
+    if (input.idempotencyKey) {
+      this.claimIdempotency.set(input.idempotencyKey, clone(claimed));
+    }
+
+    return clone(claimed);
+  }
+
+  async heartbeatLease(
+    leaseId: string,
+    input: LeaseHeartbeatInput,
+  ): Promise<TaskLeaseRecord> {
+    this.assertPositiveTtl(input.leaseTtlSeconds);
+    const idempotencyKey = input.idempotencyKey
+      ? `${leaseId}:${input.idempotencyKey}`
+      : undefined;
+    if (idempotencyKey && this.heartbeatIdempotency.has(idempotencyKey)) {
+      return clone(this.heartbeatIdempotency.get(idempotencyKey) as TaskLeaseRecord);
+    }
+
+    const lease = this.requireLease(leaseId);
+    this.assertLeaseOwner(lease, input.workerId, input.token);
+    const now = this.now();
+    if (!isLeaseActiveAt(lease, now)) {
+      throw new LeaseExpiredError(leaseId);
+    }
+
+    lease.heartbeatAt = now.toISOString();
+    lease.expiresAt = this.expiresAt(now, input.leaseTtlSeconds);
+    const result = clone(lease);
+
+    if (idempotencyKey) {
+      this.heartbeatIdempotency.set(idempotencyKey, result);
+    }
+
+    return clone(result);
+  }
+
+  async releaseLease(leaseId: string, input: ReleaseLeaseInput): Promise<void> {
+    const idempotencyKey = input.idempotencyKey
+      ? `${leaseId}:${input.idempotencyKey}`
+      : undefined;
+    if (idempotencyKey && this.releaseIdempotency.has(idempotencyKey)) {
+      return;
+    }
+
+    const lease = this.requireLease(leaseId);
+    this.assertLeaseOwner(lease, input.workerId, input.token);
+
+    if (!lease.releasedAt) {
+      const now = this.now().toISOString();
+      lease.releasedAt = now;
+      lease.heartbeatAt = now;
+      lease.expiresAt = now;
+    }
+
+    if (idempotencyKey) {
+      this.releaseIdempotency.add(idempotencyKey);
+    }
+  }
+
   private nowIso(): string {
     return this.now().toISOString();
   }
@@ -457,6 +611,122 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
         throw new DuplicateExternalRefError(ref.provider, ref.externalKey);
       }
       seen.add(key);
+    }
+  }
+
+  private isEligibleClaimCandidate(
+    task: TaskRecord,
+    input: ClaimTaskInput,
+    now: Date,
+  ): boolean {
+    if (task.status !== "ready" && task.status !== "claimed") {
+      return false;
+    }
+    if (!task.repositoryName || !task.repoPathKey) {
+      return false;
+    }
+    if (!taskMatchesRepositoryProfile(task, input.repositoryProfiles)) {
+      return false;
+    }
+    if (!taskMatchesTarget(task, input.targetExternalKey)) {
+      return false;
+    }
+
+    const dependencies = this.allDependencies();
+    if (activeBlockingDependenciesForTask(task.id, dependencies).length > 0) {
+      return false;
+    }
+
+    const activeLeases = [...this.leases.values()].filter((lease) =>
+      isLeaseActiveAt(lease, now),
+    );
+    const taskLeaseKey = taskLeaseKeyForTask(task.id);
+    if (
+      activeLeases.some(
+        (lease) => lease.kind === "task" && lease.leaseKey === taskLeaseKey,
+      )
+    ) {
+      return false;
+    }
+
+    const repositoryLeaseKey = repositoryLeaseKeyForTask(task);
+    return !activeLeases.some(
+      (lease) => lease.kind === "repository" && lease.leaseKey === repositoryLeaseKey,
+    );
+  }
+
+  private allDependencies(): TaskDependency[] {
+    const dependencies = new Map<string, TaskDependency>();
+    for (const task of this.tasks.values()) {
+      for (const dependency of task.dependencies) {
+        dependencies.set(dependency.id, dependency);
+      }
+    }
+
+    return [...dependencies.values()];
+  }
+
+  private createLeaseRecord(
+    kind: "task" | "repository",
+    leaseKey: string,
+    task: TaskRecord,
+    input: ClaimTaskInput,
+    now: Date,
+  ): TaskLeaseRecord {
+    if (!task.repositoryName) {
+      throw new Error(`Task ${task.id} has no repositoryName.`);
+    }
+
+    const timestamp = now.toISOString();
+    return {
+      leaseId: `lease_${randomUUID()}`,
+      kind,
+      leaseKey,
+      taskId: task.id,
+      repositoryName: task.repositoryName,
+      workerId: input.workerId,
+      token: `lease-token-${randomUUID()}`,
+      expiresAt: this.expiresAt(now, input.leaseTtlSeconds),
+      heartbeatAt: timestamp,
+    };
+  }
+
+  private expiresAt(now: Date, leaseTtlSeconds: number): string {
+    return new Date(now.getTime() + leaseTtlSeconds * 1000).toISOString();
+  }
+
+  private requireLease(leaseId: string): TaskLeaseRecord {
+    const lease = this.leases.get(leaseId);
+    if (!lease) {
+      throw new LeaseNotFoundError(leaseId);
+    }
+
+    return lease;
+  }
+
+  private assertLeaseOwner(
+    lease: TaskLeaseRecord,
+    workerId: string,
+    token: string,
+  ): void {
+    if (lease.workerId !== workerId || lease.token !== token) {
+      throw new LeaseOwnershipError(lease.leaseId);
+    }
+  }
+
+  private assertClaimInput(input: ClaimTaskInput): void {
+    if (!input.workerId.trim()) {
+      throw new Error("workerId is required to claim a task.");
+    }
+    if (input.repositoryProfiles.length === 0) {
+      throw new Error("At least one repository profile is required to claim a task.");
+    }
+    this.assertPositiveTtl(input.leaseTtlSeconds);
+  }
+
+  private assertPositiveTtl(leaseTtlSeconds: number): void {
+    if (!Number.isFinite(leaseTtlSeconds) || leaseTtlSeconds <= 0) {
+      throw new Error("leaseTtlSeconds must be a positive number.");
     }
   }
 }
