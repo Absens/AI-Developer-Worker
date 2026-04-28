@@ -17,17 +17,23 @@ isolated from the current Yandex direct path.
   - `TaskRevision`;
   - `TaskEvent`;
   - `TaskComment`;
+  - `TaskMessageKind`;
   - `TaskExternalRef`;
   - `AgentTaskContext`;
   - `TaskPlan`;
   - `TaskStep`;
   - `TaskDecision`;
   - `TaskDependency`;
-  - `ArtifactRef`.
+  - `ArtifactRef`;
+  - `ExternalTaskSource` boundary types.
 - Define `TaskTrackerClient` for internal task operations.
+- Define the external-source boundary as a provider-neutral stub so Yandex and
+  future trackers cannot leak into the internal runtime model.
 - Add basic status transition validation.
 - Add status mapping from internal task statuses to the current logical statuses.
 - Add append-only event recording.
+- Add the canonical conversation taxonomy for human comments, AI protocol
+  messages, commands, status digests, and system events.
 - Add task revision recording.
 - Add external refs with uniqueness by provider and external key.
 - Add an implicit task plan and step model as a Phase 8 foundation.
@@ -43,6 +49,7 @@ isolated from the current Yandex direct path.
 - Atomic `claimNextTask`.
 - DB-backed leases.
 - Yandex import/export bridge.
+- Implementing any `ExternalTaskSource` provider.
 - Human UI.
 - AI proposals.
 - Decomposition approval UI.
@@ -89,6 +96,37 @@ The interface can keep plan, decision, dependency, and artifact methods out of
 the public client until later phases, but the types and schema must exist in
 this phase. Start every task with one implicit plan so worker migration can
 record step transitions without another schema redesign.
+
+Define the provider boundary in this phase, but leave concrete providers to
+later phases:
+
+```typescript
+export interface ExternalTaskSource {
+  importCandidates(input: ImportCandidatesInput): Promise<ExternalIssueSnapshot[]>;
+  exportDigest(input: ExportDigestInput): Promise<void>;
+  transitionExternal(input: ExternalTransitionInput): Promise<void>;
+}
+```
+
+The Phase 7A implementation may keep the related input/output types minimal or
+schema-only. They must not reference Yandex-specific fields directly; provider
+details belong in bridge modules such as Phase 7E.
+
+Canonical message kinds:
+
+```text
+comment
+question
+answer
+command
+status_digest
+system_event
+```
+
+`TaskComment` or the equivalent conversation record must preserve the message
+kind, author/source, creation time, body or structured payload, and optional
+external reference metadata. UI can later merge these into one timeline, but
+the API and storage model must not collapse them into untyped free text.
 
 Minimum statuses:
 
@@ -206,6 +244,13 @@ Add schema files for at least:
 - `task_dependencies`;
 - `artifacts`.
 
+This is the core schema skeleton, not the complete production schema. Later
+phases add or activate `task_leases`, idempotency records, `agent_runs`,
+`quality_gate_runs`, merge/review metadata, `sync_cursors`, raw external
+snapshots, `task_proposals`, proposal evidence, retention metadata, and
+operational tables. Do not mark internal tracker production-ready until those
+staged schema additions exist.
+
 PostgreSQL should be the production target. SQLite or in-memory storage can be
 used only for tests and local smoke paths.
 
@@ -233,7 +278,11 @@ Add tests for:
 - rejecting invalid status transitions;
 - appending a revision and preserving previous input;
 - appending events in chronological order;
+- preserving conversation message kind instead of parsing protocol messages from
+  plain comments;
 - enforcing external ref uniqueness;
+- exposing the provider-neutral `ExternalTaskSource` boundary without a concrete
+  provider implementation;
 - building `AgentTaskContext`;
 - creating an implicit plan for a new task;
 - mapping internal statuses to current logical statuses;
@@ -246,8 +295,14 @@ Add tests for:
 - A task can be moved to `ready`.
 - Human-readable task data and agent context can be read from the same model.
 - Timeline events are append-only.
+- Conversation records distinguish comments, questions, answers, commands,
+  status digests, and system events.
+- `ExternalTaskSource` exists as a neutral boundary, but no external provider is
+  implemented in this phase.
 - The schema skeleton includes plans, steps, decisions, dependencies, and
   artifacts as first-class tables.
+- The plan documents which production tables are intentionally staged for later
+  phases.
 - Internal-to-logical status mapping is documented and tested.
 - Current Yandex direct mode remains untouched.
 - `npm run typecheck` passes.

@@ -62,6 +62,10 @@ Exact names can follow existing observability config conventions.
 
 ## Human API
 
+These endpoints are for humans and service accounts. They complement the
+workflow-first agent API from Phase 7D and must not become the worker runtime
+contract.
+
 Minimum read endpoints:
 
 ```http

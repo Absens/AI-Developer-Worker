@@ -28,6 +28,9 @@ internal task -> claim -> analysis -> implementation -> validation -> MR publish
 - Record memory context snapshot refs when memory context is added to a prompt.
 - Keep `commentProtocol.ts` only for Yandex direct mode and bridge
   compatibility.
+- Define and, where the application exposes tracker operations over HTTP,
+  implement the workflow-first agent API surface that maps to the internal
+  tracker contract.
 - Add smoke or integration test for internal task execution.
 
 ## What Is Out Of Scope
@@ -37,6 +40,7 @@ internal task -> claim -> analysis -> implementation -> validation -> MR publish
 - AI proposals.
 - Full decomposition approval UI.
 - Yandex mirroring of child tasks created through decomposition.
+- Full public API gateway, human UI, or browser workflow.
 - Removing Yandex direct worker path.
 
 ## Current Code To Touch
@@ -91,6 +95,32 @@ Add:
 - `ArtifactRef`;
 - `MemoryContextRef`.
 
+## Worker Workflow API Surface
+
+The worker-facing API must remain workflow-first and mirror the internal
+`TaskTrackerClient` operations. Do not introduce generic CRUD routes as the main
+agent contract.
+
+Minimum HTTP contract for internal mode:
+
+```http
+POST /api/agent/tasks:claim
+POST /api/agent/tasks/{taskId}/events
+POST /api/agent/tasks/{taskId}/decisions/analysis
+POST /api/agent/tasks/{taskId}/decisions/decomposition
+POST /api/agent/tasks/{taskId}/questions
+POST /api/agent/tasks/{taskId}/validation-runs
+POST /api/agent/tasks/{taskId}/merge-requests
+POST /api/agent/leases/{leaseId}:heartbeat
+POST /api/agent/leases/{leaseId}:release
+```
+
+If the current worker uses an in-process tracker client during this phase, the
+same service methods must still be organized so these endpoints can call them
+without duplicating orchestration logic. Handler-level tests or contract tests
+should verify request validation and idempotency for claim, heartbeat, release,
+validation, and publish paths.
+
 ## Storage Shape
 
 Add or activate persisted storage for:
@@ -126,12 +156,14 @@ path unless the path is explicitly a compatibility bridge.
 3. Add internal state writer methods for analysis, plan steps, clarification,
    validation, MR publish, review fix, decomposition, dependencies, artifacts,
    and memory context refs.
-4. Implement internal execution path behind `TASK_TRACKER_PROVIDER=internal`.
-5. Keep Yandex path unchanged.
-6. Ensure decomposition creates internal child tasks first and does not mirror
+4. Add the workflow-first agent API service/route boundary, or an explicitly
+   tested in-process equivalent that can be exposed through those routes.
+5. Implement internal execution path behind `TASK_TRACKER_PROVIDER=internal`.
+6. Keep Yandex path unchanged.
+7. Ensure decomposition creates internal child tasks first and does not mirror
    them to Yandex in internal mode.
-7. Add tests for internal execution.
-8. Run typecheck, unit tests, and smoke tests.
+8. Add tests for internal execution.
+9. Run typecheck, unit tests, and smoke tests.
 
 ## Tests
 
@@ -143,6 +175,9 @@ Add tests for:
 - human answer plus resume continues execution;
 - validation failure writes diagnostic and failure status;
 - successful publish records MR URL, branch, and validation summary;
+- agent workflow endpoints or their route-ready service boundary validate
+  claim, lifecycle events, decisions, questions, validation, publish, heartbeat,
+  and release inputs;
 - implicit plan steps are updated across analysis, implementation, validation,
   publish, and review fix;
 - decomposition stores a decision, creates internal child tasks, and links
@@ -162,6 +197,9 @@ internal tracker -> mock GitLab -> worker -> MR ready
 - Worker does not require Yandex comments in internal mode.
 - `AI STATUS`, `AI MR`, `AI REVIEW`, `AI ANALYSIS`, and `AI LEASE` comments are
   not written in internal mode.
+- Internal worker operations are exposed through, or cleanly mappable to, the
+  workflow-first agent API surface without introducing a CRUD-first worker
+  contract.
 - Current Yandex direct mode remains functional.
 - Restart recovery uses internal DB/task state for internal mode.
 - Internal mode records an implicit plan, step state, agent runs, decisions,

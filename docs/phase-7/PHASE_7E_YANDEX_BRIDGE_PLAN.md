@@ -10,7 +10,8 @@ or updates internal tasks, and workers operate on internal `taskId` values.
 
 ## What Is In Scope
 
-- Define `ExternalTaskSource`.
+- Use the provider-neutral `ExternalTaskSource` boundary introduced in Phase 7A
+  and extend only provider-specific snapshot/bridge types here.
 - Import Yandex issues into internal tasks.
 - Create `TaskRevision` when relevant Yandex fields change.
 - Store raw Yandex snapshot for diagnostics.
@@ -47,6 +48,10 @@ or updates internal tasks, and workers operate on internal `taskId` values.
   new bridge tests.
 
 ## New Types And API
+
+Use the `ExternalTaskSource` interface introduced in Phase 7A. The bridge may
+add concrete Yandex snapshot and sync types, but it must not create an
+incompatible provider contract:
 
 ```typescript
 export interface ExternalTaskSource {
@@ -159,7 +164,8 @@ The bridge must avoid importing its own digest comments as human commands.
 
 ## Implementation Order
 
-1. Define `ExternalTaskSource` and Yandex bridge types.
+1. Reuse or extend the Phase 7A `ExternalTaskSource` boundary and define Yandex
+   bridge types.
 2. Add sync cursor storage.
 3. Implement idempotent import.
 4. Implement revision creation for changed Yandex input.

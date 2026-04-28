@@ -67,6 +67,12 @@ The first usable internal runtime should exist by the end of Phase 7D:
 - structured state is stored in the internal tracker;
 - Yandex is not required for that flow.
 
+The worker-facing surface should be workflow-first, not CRUD-first. The
+TypeScript `TaskTrackerClient` is the first internal boundary, but the same
+operations must map cleanly to agent HTTP endpoints for claim, events,
+decisions, questions, validation, merge request publication, heartbeat, and
+release before the tracker is considered externally operable.
+
 Yandex compatibility returns in Phase 7E. Human usability arrives in Phase 7F.
 Autonomy and AI-created work are deliberately postponed until Phase 7G.
 
@@ -77,6 +83,8 @@ The internal tracker is not production-ready until:
 - PostgreSQL-backed storage is implemented for tasks, revisions, events,
   comments, decisions, plans, steps, leases, dependencies, artifacts, proposals,
   and sync cursors;
+- the staged schema additions from 7B, 7D, 7E, 7G, and 7H have been applied,
+  even if 7A starts with only the core table skeleton;
 - claim and lease operations use database transactions and cannot be backed by
   the in-memory adapter outside tests;
 - restart recovery uses persisted DB state, including active runs, plans,
