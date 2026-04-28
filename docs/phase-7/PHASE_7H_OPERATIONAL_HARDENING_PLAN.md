@@ -23,6 +23,9 @@ alignment, and runbooks.
   exported digests.
 - Metrics for sync lag, claim latency, lease conflicts, task lifecycle duration,
   failed tasks, waiting-for-human duration, proposal volume, and cleanup jobs.
+- Observability convergence between the existing event/dashboard storage and
+  the internal task timeline, including documented ownership of which system is
+  used for operational dashboards versus task audit history.
 - Dashboard/auth alignment for tracker UI, observability UI, agent API, and
   system API.
 - Preflight checks for Yandex sync, GitLab sync, worker API, and configured
@@ -103,6 +106,15 @@ Expose or record at least:
 - proposal count, rejection count, auto-approval count;
 - cleanup job duration and deleted artifact/log counts.
 
+## Observability Convergence
+
+By this phase, task execution events should not exist as two unrelated
+vocabularies. Keep the task timeline as the audit-grade history for a task, and
+keep observability/dashboard storage optimized for fleet and operations views.
+Where both stores receive the same lifecycle event, use a shared event mapper or
+documented schema mapping so status names, task ids, worker ids, repository
+keys, lease ids, and failure classifications stay consistent.
+
 ## Redaction
 
 Redaction must apply before data is written to:
@@ -126,11 +138,13 @@ payloads.
 4. Add cleanup jobs.
 5. Add redaction helpers and apply them to tracker writes and digest exports.
 6. Add metrics for queue, leases, sync, lifecycle, proposals, and cleanup.
-7. Align auth checks across tracker UI, observability UI, agent API, and system
+7. Align task timeline and observability event schemas so dashboard data and
+   task audit history remain consistent.
+8. Align auth checks across tracker UI, observability UI, agent API, and system
    API.
-8. Add backup/restore and PostgreSQL deployment runbooks.
-9. Add restart recovery smoke test.
-10. Run verification commands.
+9. Add backup/restore and PostgreSQL deployment runbooks.
+10. Add restart recovery smoke test.
+11. Run verification commands.
 
 ## Tests
 
@@ -146,6 +160,8 @@ Add tests for:
   digest exports;
 - unauthenticated writable APIs are rejected;
 - metrics are emitted for claim latency, lease conflicts, sync lag, and cleanup;
+- task timeline and observability event mappings preserve consistent task,
+  worker, repository, lease, status, and failure identifiers;
 - restart recovery can resume from persisted DB task state after process
   restart.
 
@@ -161,6 +177,8 @@ Add tests for:
   and Yandex digest export.
 - Metrics cover sync lag, claim latency, lease conflicts, lifecycle duration,
   proposal volume, and cleanup jobs.
+- Existing observability outputs and the task timeline use a documented shared
+  lifecycle mapping instead of diverging event semantics.
 - Writable UI/API and agent/system APIs are not anonymously exposed.
 - Restart recovery is verified against persisted DB state.
 - Current Yandex direct fallback remains available.

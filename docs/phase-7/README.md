@@ -67,11 +67,21 @@ The first usable internal runtime should exist by the end of Phase 7D:
 - structured state is stored in the internal tracker;
 - Yandex is not required for that flow.
 
+Before Phase 7F, direct standalone task creation only has to be available
+through the internal tracker client, a seed/admin utility, or a local test/smoke
+path. Phase 7F is where this becomes a supported human/system HTTP API and UI
+workflow with auth, idempotency, and audit guarantees.
+
 The worker-facing surface should be workflow-first, not CRUD-first. The
 TypeScript `TaskTrackerClient` is the first internal boundary, but the same
 operations must map cleanly to agent HTTP endpoints for claim, events,
 decisions, questions, validation, merge request publication, heartbeat, and
 release before the tracker is considered externally operable.
+
+If those agent operations are exposed over HTTP before Phase 7H, they must be
+protected by a service token from the first exposed version. If Phase 7D keeps
+them in-process only, the implementation must document that there is no
+externally reachable anonymous agent API yet.
 
 Yandex compatibility returns in Phase 7E. Human usability arrives in Phase 7F.
 Autonomy and AI-created work are deliberately postponed until Phase 7G.

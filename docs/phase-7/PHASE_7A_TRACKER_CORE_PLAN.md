@@ -36,6 +36,9 @@ isolated from the current Yandex direct path.
   messages, commands, status digests, and system events.
 - Add task revision recording.
 - Add external refs with uniqueness by provider and external key.
+- Add a field ownership model that separates human-authored task input,
+  external-source snapshots, worker runtime state, GitLab sync metadata, and
+  policy/admin decisions.
 - Add an implicit task plan and step model as a Phase 8 foundation.
 - Add schema-only dependency and artifact metadata models so later phases do not
   need to rewrite the storage shape.
@@ -127,6 +130,29 @@ system_event
 kind, author/source, creation time, body or structured payload, and optional
 external reference metadata. UI can later merge these into one timeline, but
 the API and storage model must not collapse them into untyped free text.
+
+## Field Ownership And Conflicts
+
+The core model must make field ownership explicit enough that later Yandex,
+GitLab, UI, worker, and policy integrations do not overwrite each other's
+state. This can be implemented as metadata on field groups, task revisions,
+events, or adapter-specific ownership records, but the behavior must be
+documented and tested at the domain level.
+
+Minimum ownership groups:
+
+| Owner | Owns | Must Not Own |
+| --- | --- | --- |
+| Human/UI/API | task title, description, acceptance criteria, constraints, comments, manual commands for native tasks | leases, agent runs, validation internals |
+| External task source | imported snapshots, external revision metadata, external refs, external business status mirror fields | internal runtime status, leases, active plans, worker decisions |
+| Worker/agent | execution status transitions through workflow methods, plan steps, agent runs, questions, decisions, validation records, MR publication events | approved human input revisions |
+| GitLab sync | merge request refs, branch metadata, review feedback snapshots, review-fix state | canonical task description or external tracker status policy |
+| Policy/admin | autonomy level, approval policy, supervisor decisions, retention/admin settings | raw human task text or worker execution artifacts |
+
+Conflict rule: external changes to human-authored input create a new
+`TaskRevision` and audit event. They do not directly rewrite active execution
+state. Runtime decisions about reanalysis, cancellation, or continuing work are
+made by internal tracker workflow methods in later phases.
 
 Minimum statuses:
 
@@ -287,6 +313,8 @@ Add tests for:
 - creating an implicit plan for a new task;
 - mapping internal statuses to current logical statuses;
 - preserving schema-versioned decision payloads.
+- documenting and enforcing the minimum field ownership groups at the domain
+  boundary.
 
 ## Acceptance Criteria
 
@@ -301,6 +329,9 @@ Add tests for:
   implemented in this phase.
 - The schema skeleton includes plans, steps, decisions, dependencies, and
   artifacts as first-class tables.
+- Field ownership is documented so external source updates, human input,
+  worker runtime state, and integration metadata cannot silently overwrite each
+  other.
 - The plan documents which production tables are intentionally staged for later
   phases.
 - Internal-to-logical status mapping is documented and tested.

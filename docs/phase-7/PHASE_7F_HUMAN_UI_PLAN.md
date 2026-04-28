@@ -36,6 +36,14 @@ see MR and validation results, and diagnose failures without opening Yandex.
 - AI proposal review UI if Phase 7G has not started.
 - Multi-tenant SaaS security.
 
+## MVP Cut Lines
+
+Phase 7F deliberately ships a simple decomposition approval list instead of the
+full dependency graph view described in the concept. The dependency graph must
+already exist in the tracker model, but graph visualization and advanced graph
+editing are deferred until after the MVP unless a later plan explicitly pulls
+them forward.
+
 ## Current Code To Touch
 
 - Existing observability server modules if UI is added there:
@@ -228,6 +236,8 @@ Add tests for:
 - cancelling a task;
 - retrying a failed task;
 - approving decomposition child mirroring where supported;
+- decomposition approval works through the simple list while preserving graph
+  data in the underlying task dependency model;
 - viewer cannot mutate;
 - unauthenticated mutation is rejected.
 

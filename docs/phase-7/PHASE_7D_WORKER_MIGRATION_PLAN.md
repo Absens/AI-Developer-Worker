@@ -26,6 +26,9 @@ internal task -> claim -> analysis -> implementation -> validation -> MR publish
 - Record decomposition decisions, create internal child tasks, and link typed
   dependencies when the existing decomposition path is used.
 - Record memory context snapshot refs when memory context is added to a prompt.
+- Write worker lifecycle events to the internal task timeline while preserving
+  the existing observability event stream, using a shared mapping where
+  practical so dashboard events and task events do not diverge semantically.
 - Keep `commentProtocol.ts` only for Yandex direct mode and bridge
   compatibility.
 - Define and, where the application exposes tracker operations over HTTP,
@@ -121,6 +124,12 @@ without duplicating orchestration logic. Handler-level tests or contract tests
 should verify request validation and idempotency for claim, heartbeat, release,
 validation, and publish paths.
 
+Any HTTP exposure of this agent API in Phase 7D must require a service token.
+Unauthenticated claim, heartbeat, release, decision, validation, and publish
+requests must be rejected. If Phase 7D only provides an in-process service
+boundary, document that no externally reachable agent API is enabled yet and
+leave HTTP auth wiring to Phase 7F/7H.
+
 ## Storage Shape
 
 Add or activate persisted storage for:
@@ -158,12 +167,14 @@ path unless the path is explicitly a compatibility bridge.
    and memory context refs.
 4. Add the workflow-first agent API service/route boundary, or an explicitly
    tested in-process equivalent that can be exposed through those routes.
-5. Implement internal execution path behind `TASK_TRACKER_PROVIDER=internal`.
-6. Keep Yandex path unchanged.
-7. Ensure decomposition creates internal child tasks first and does not mirror
+5. Add task timeline writes for worker lifecycle events while keeping existing
+   observability events available.
+6. Implement internal execution path behind `TASK_TRACKER_PROVIDER=internal`.
+7. Keep Yandex path unchanged.
+8. Ensure decomposition creates internal child tasks first and does not mirror
    them to Yandex in internal mode.
-8. Add tests for internal execution.
-9. Run typecheck, unit tests, and smoke tests.
+9. Add tests for internal execution.
+10. Run typecheck, unit tests, and smoke tests.
 
 ## Tests
 
@@ -178,6 +189,10 @@ Add tests for:
 - agent workflow endpoints or their route-ready service boundary validate
   claim, lifecycle events, decisions, questions, validation, publish, heartbeat,
   and release inputs;
+- unauthenticated agent HTTP requests are rejected when the endpoints are
+  exposed in this phase;
+- worker lifecycle events are visible in the internal task timeline without
+  removing existing observability events;
 - implicit plan steps are updated across analysis, implementation, validation,
   publish, and review fix;
 - decomposition stores a decision, creates internal child tasks, and links
@@ -200,10 +215,14 @@ internal tracker -> mock GitLab -> worker -> MR ready
 - Internal worker operations are exposed through, or cleanly mappable to, the
   workflow-first agent API surface without introducing a CRUD-first worker
   contract.
+- Exposed agent HTTP operations require service-token authentication, or the
+  phase explicitly remains in-process-only with no external anonymous agent API.
 - Current Yandex direct mode remains functional.
 - Restart recovery uses internal DB/task state for internal mode.
 - Internal mode records an implicit plan, step state, agent runs, decisions,
   quality gates, MR metadata, and artifact refs.
+- Worker lifecycle events are recorded in the task timeline while current
+  observability outputs remain available.
 - Decomposition creates internal child tasks first and leaves Yandex mirroring to
   the bridge policy.
 - `npm run typecheck` passes.

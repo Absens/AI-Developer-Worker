@@ -105,6 +105,24 @@ the new revision and mark the task as context-changed for internal handling.
 The worker or a human action inside the internal tracker decides whether to
 continue, rerun analysis, or move the task to human review.
 
+## Field Ownership Rules
+
+The bridge must follow the ownership model from Phase 7A:
+
+- Yandex owns imported snapshots and the external mirror of business-facing
+  fields for Yandex-originated tasks.
+- The bridge may update derived fields such as priority, deadline, tags,
+  components, queue, and `businessStatus` only through documented import rules
+  and audit events.
+- Yandex changes to title, description, and acceptance criteria create
+  `TaskRevision` rows instead of silently overwriting the active agent context.
+- The bridge must not mutate active leases, agent runs, plan steps, validation
+  records, MR metadata, worker decisions, or internal runtime status except
+  through explicit internal tracker workflow commands.
+- When internal UI/API edits a task that also has a Yandex ref, conflict
+  handling must be explicit: preserve both revisions, record the source, and
+  let internal workflow decide whether reanalysis is required.
+
 ## Export Rules
 
 Export compact digest events only:
@@ -190,6 +208,8 @@ Add tests for:
 - digest export is idempotent;
 - changed Yandex human input on an active task sets `requiresReanalysis` and
   emits `context_changed`;
+- Yandex import honors field ownership and does not overwrite active runtime
+  state, leases, plans, validation records, or worker decisions;
 - child tasks are not mirrored by default;
 - approved child-task mirroring stores Yandex external refs on internal child
   tasks;
