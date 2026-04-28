@@ -9,6 +9,7 @@ const main = async (): Promise<void> => {
     preflight,
     logger,
     observability,
+    cleanup,
     assertCodexAuthenticated,
     assertRepositoryReady,
   } = buildApplication();
@@ -48,6 +49,7 @@ const main = async (): Promise<void> => {
       check: "codex_auth",
       status: "pass",
     });
+    cleanup.start();
     observability.markReady();
     if (config.runOnce) {
       await orchestrator.runOnce();
@@ -66,6 +68,7 @@ const main = async (): Promise<void> => {
   } finally {
     process.off("SIGINT", markStopping);
     process.off("SIGTERM", markStopping);
+    await cleanup.stop();
     await observability.stop();
   }
 };

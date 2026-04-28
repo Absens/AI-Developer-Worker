@@ -89,6 +89,21 @@ missing. For long-running workers, prefer logging in directly inside the worker
 volume instead. A copied host `auth.json` can become stale when host Codex is
 also running and may fail with `refresh_token_reused`.
 
+For internal tracker production mode, set:
+
+```env
+TASK_TRACKER_PROVIDER=internal
+TASK_TRACKER_STORAGE=postgres
+TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+```
+
+Apply migrations and run preflight before continuous processing:
+
+```powershell
+docker compose run --rm worker npm run tracker:migrate
+docker compose run --rm worker npm run preflight
+```
+
 ### 6. Set the path to the target project
 
 Replace this path with the repository the worker should modify:

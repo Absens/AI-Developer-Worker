@@ -1,4 +1,18 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ai_developer_tasks
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: tracker
+    volumes:
+      - tracker-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d ai_developer_tasks"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   worker:
     build: .
     env_file:
@@ -7,6 +21,10 @@ services:
       CODEX_HOME: /codex-home
       HOST_CODEX_HOME_MOUNT: /host-codex
       REPO_PATH: /workspace/project
+      TASK_TRACKER_DATABASE_URL: postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "9464:9464"
     volumes:
@@ -16,3 +34,4 @@ services:
 
 volumes:
   codex-home:
+  tracker-postgres:

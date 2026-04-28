@@ -79,6 +79,20 @@ const DEFAULT_TRACKER_PARENT_LINK_TYPE = "relates";
 const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
 const DEFAULT_DEPENDENCY_ENFORCEMENT = true;
 const DEFAULT_DEPENDENCY_UNKNOWN_STATUS_POLICY: DependencyUnknownStatusPolicy = "block";
+const DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG = {
+  retention: {
+    rawLogDays: 30,
+    artifactDays: 30,
+    failedArtifactDays: 90,
+    historyDays: 365,
+  },
+  cleanup: {
+    enabled: true,
+    intervalSeconds: 3600,
+  },
+  metricsEnabled: true,
+  redactionEnabled: true,
+} as const;
 const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   enabled: false,
   dir: "/workspace/ai-developer-memory",
@@ -195,6 +209,119 @@ const parseTaskTrackerStorage = (
   }
 
   throw new ConfigurationError(`${key} must be one of: postgres, memory.`);
+};
+
+const parseTaskTrackerOperationalConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+) => {
+  const retention = optionalRecord(rawValue?.retention, "taskTracker.retention");
+  const cleanup = optionalRecord(rawValue?.cleanup, "taskTracker.cleanup");
+  const rawLogDays = env.TASK_TRACKER_RETENTION_RAW_LOG_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_RAW_LOG_DAYS,
+        "TASK_TRACKER_RETENTION_RAW_LOG_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.rawLogDays,
+        "taskTracker.retention.rawLogDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.rawLogDays,
+      );
+  const artifactDays = env.TASK_TRACKER_RETENTION_ARTIFACT_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_ARTIFACT_DAYS,
+        "TASK_TRACKER_RETENTION_ARTIFACT_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.artifactDays,
+        "taskTracker.retention.artifactDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.artifactDays,
+      );
+  const failedArtifactDays = env.TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS,
+        "TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.failedArtifactDays,
+        "taskTracker.retention.failedArtifactDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.failedArtifactDays,
+      );
+  const historyDays = env.TASK_TRACKER_RETENTION_HISTORY_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_HISTORY_DAYS,
+        "TASK_TRACKER_RETENTION_HISTORY_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.historyDays,
+        "taskTracker.retention.historyDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.historyDays,
+      );
+
+  if (historyDays < 365) {
+    throw new ConfigurationError(
+      "TASK_TRACKER_RETENTION_HISTORY_DAYS must be at least 365 days.",
+    );
+  }
+  if (failedArtifactDays < artifactDays) {
+    throw new ConfigurationError(
+      "TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS must be greater than or equal to TASK_TRACKER_RETENTION_ARTIFACT_DAYS.",
+    );
+  }
+
+  return {
+    retention: {
+      rawLogDays,
+      artifactDays,
+      failedArtifactDays,
+      historyDays,
+    },
+    cleanup: {
+      enabled: env.TASK_TRACKER_CLEANUP_ENABLED?.trim()
+        ? parseBooleanFlag(
+            env.TASK_TRACKER_CLEANUP_ENABLED,
+            "TASK_TRACKER_CLEANUP_ENABLED",
+            DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.cleanup.enabled,
+          )
+        : optionalBoolean(
+            cleanup?.enabled,
+            "taskTracker.cleanup.enabled",
+            DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.cleanup.enabled,
+          ),
+      intervalSeconds: env.TASK_TRACKER_CLEANUP_INTERVAL_SECONDS?.trim()
+        ? parsePositiveInt(
+            env.TASK_TRACKER_CLEANUP_INTERVAL_SECONDS,
+            "TASK_TRACKER_CLEANUP_INTERVAL_SECONDS",
+          )
+        : optionalPositiveInt(
+            cleanup?.intervalSeconds,
+            "taskTracker.cleanup.intervalSeconds",
+            DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.cleanup.intervalSeconds,
+          ),
+    },
+    metricsEnabled: env.TASK_TRACKER_METRICS_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TASK_TRACKER_METRICS_ENABLED,
+          "TASK_TRACKER_METRICS_ENABLED",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.metricsEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.metricsEnabled,
+          "taskTracker.metricsEnabled",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.metricsEnabled,
+        ),
+    redactionEnabled: env.TASK_TRACKER_REDACTION_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TASK_TRACKER_REDACTION_ENABLED,
+          "TASK_TRACKER_REDACTION_ENABLED",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.redactionEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.redactionEnabled,
+          "taskTracker.redactionEnabled",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.redactionEnabled,
+        ),
+  };
 };
 
 const validatePostgresUrl = (input: string, key: string): string => {
@@ -623,6 +750,7 @@ const parseTaskTrackerConfig = (
     env.TASK_INTAKE_MODE ?? optionalString(rawValue?.intakeMode, "taskTracker.intakeMode");
   const rawStorage =
     env.TASK_TRACKER_STORAGE ?? optionalString(rawValue?.storage, "taskTracker.storage");
+  const operational = parseTaskTrackerOperationalConfig(env, rawValue);
 
   if (provider === "yandex") {
     if (rawIntakeMode !== undefined) {
@@ -677,6 +805,7 @@ const parseTaskTrackerConfig = (
         ...(databaseUrl ? { databaseUrl } : {}),
         intakeMode,
         yandexSyncEnabled,
+        operational,
       },
     };
   }
@@ -694,6 +823,7 @@ const parseTaskTrackerConfig = (
       databaseUrl: validatePostgresUrl(databaseUrl, "TASK_TRACKER_DATABASE_URL"),
       intakeMode,
       yandexSyncEnabled,
+      operational,
     },
   };
 };

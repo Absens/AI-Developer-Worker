@@ -172,6 +172,17 @@ describe("config", () => {
         databaseUrl: "postgres://tracker:secret@localhost:5432/tasks",
         intakeMode: "standalone",
         yandexSyncEnabled: false,
+        operational: {
+          retention: {
+            rawLogDays: 30,
+            artifactDays: 30,
+            failedArtifactDays: 90,
+            historyDays: 365,
+          },
+          cleanup: { enabled: true, intervalSeconds: 3600 },
+          metricsEnabled: true,
+          redactionEnabled: true,
+        },
       },
     });
     expect(config.trackerToken).toBe("");
@@ -309,8 +320,78 @@ describe("config", () => {
         storage: "memory",
         intakeMode: "standalone",
         yandexSyncEnabled: false,
+        operational: {
+          cleanup: { enabled: true, intervalSeconds: 3600 },
+          redactionEnabled: true,
+        },
       },
     });
+  });
+
+  it("parses and validates internal tracker operational hardening options", () => {
+    const config = loadConfig({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+      TASK_TRACKER_RETENTION_RAW_LOG_DAYS: "14",
+      TASK_TRACKER_RETENTION_ARTIFACT_DAYS: "21",
+      TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS: "120",
+      TASK_TRACKER_RETENTION_HISTORY_DAYS: "400",
+      TASK_TRACKER_CLEANUP_ENABLED: "false",
+      TASK_TRACKER_CLEANUP_INTERVAL_SECONDS: "7200",
+      TASK_TRACKER_METRICS_ENABLED: "false",
+      TASK_TRACKER_REDACTION_ENABLED: "true",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.taskTracker).toMatchObject({
+      provider: "internal",
+      internal: {
+        operational: {
+          retention: {
+            rawLogDays: 14,
+            artifactDays: 21,
+            failedArtifactDays: 120,
+            historyDays: 400,
+          },
+          cleanup: { enabled: false, intervalSeconds: 7200 },
+          metricsEnabled: false,
+          redactionEnabled: true,
+        },
+      },
+    });
+  });
+
+  it("rejects invalid internal tracker retention settings", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        TASK_TRACKER_RETENTION_HISTORY_DAYS: "30",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/RETENTION_HISTORY_DAYS/);
+
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        TASK_TRACKER_RETENTION_ARTIFACT_DAYS: "90",
+        TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS: "30",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/FAILED_ARTIFACT_DAYS/);
   });
 
   it("rejects memory task tracker storage outside test or local smoke config", () => {

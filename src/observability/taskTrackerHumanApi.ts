@@ -23,6 +23,7 @@ import type {
   TaskTrackerHumanRole,
   TaskTrackerUiConfig,
 } from "../models/types.js";
+import { redactSecrets } from "./redaction.js";
 import type { WorkerStateRegistry } from "./state.js";
 
 interface TaskTrackerHumanApiInput {
@@ -102,7 +103,7 @@ const json = (response: ServerResponse, statusCode: number, body: unknown): void
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
   });
-  response.end(JSON.stringify(body));
+  response.end(JSON.stringify(redactSecrets(body)));
 };
 
 const text = (

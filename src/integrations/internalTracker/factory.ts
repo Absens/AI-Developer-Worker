@@ -16,9 +16,15 @@ export const createInternalTaskTrackerClient = (
   }
 
   if (config.internal.storage === "memory") {
-    return new InMemoryTaskTrackerClient({ autonomyPolicy });
+    return new InMemoryTaskTrackerClient({
+      autonomyPolicy,
+      redactionEnabled: config.internal.operational.redactionEnabled,
+    });
   }
 
   const pool = new Pool({ connectionString: config.internal.databaseUrl });
-  return new PostgresTaskTrackerClient(pool, { autonomyPolicy });
+  return new PostgresTaskTrackerClient(pool, {
+    autonomyPolicy,
+    redactionEnabled: config.internal.operational.redactionEnabled,
+  });
 };

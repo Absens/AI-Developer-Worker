@@ -22,6 +22,7 @@ import {
   type TaskComment,
   type TaskDecision,
   type TaskLeaseRecord,
+  type TaskRecord,
   mapTaskStatusToLogicalStatus,
   type TaskTrackerClient,
 } from "./taskTracker/index.js";
@@ -295,7 +296,9 @@ export class InternalWorkerOrchestrator {
       stage: "internal_polling",
     });
     await this.importExternalTasks();
+    const queueTasks = await this.recordInternalQueueMetrics();
 
+    const claimStarted = Date.now();
     const claim = await this.workflow.claimTask({
       workerId: this.config.workerId,
       repositoryProfiles: this.contexts.map((context) => ({
@@ -306,7 +309,18 @@ export class InternalWorkerOrchestrator {
       leaseTtlSeconds: Math.max(1, Math.floor(this.config.coordination.lockTtlMs / 1000)),
       ...(this.config.targetIssueKey ? { targetExternalKey: this.config.targetIssueKey } : {}),
     });
+    this.telemetry.observeHistogram(
+      "ai_developer_task_tracker_claim_latency_seconds",
+      { worker_id: this.config.workerId },
+      Math.max(0, Date.now() - claimStarted) / 1000,
+    );
     if (!claim) {
+      if (queueTasks.some((task) => task.status === "ready" || task.status === "claimed")) {
+        this.telemetry.incrementCounter(
+          "ai_developer_task_tracker_lease_conflicts_total",
+          { worker_id: this.config.workerId },
+        );
+      }
       this.logger.info("No suitable internal tasks found.");
       return "idle";
     }
@@ -317,14 +331,106 @@ export class InternalWorkerOrchestrator {
 
   private async importExternalTasks(): Promise<void> {
     for (const bridge of this.yandexBridges) {
-      await bridge.importCandidates();
+      const started = Date.now();
+      const result = await bridge.importCandidates();
+      this.telemetry.observeHistogram(
+        "ai_developer_task_tracker_sync_duration_seconds",
+        { provider: "yandex" },
+        Math.max(0, Date.now() - started) / 1000,
+      );
+      this.telemetry.incrementCounter(
+        "ai_developer_task_tracker_sync_imports_total",
+        { provider: "yandex", outcome: "created" },
+        result.created,
+      );
+      this.telemetry.incrementCounter(
+        "ai_developer_task_tracker_sync_imports_total",
+        { provider: "yandex", outcome: "updated" },
+        result.updated,
+      );
+      this.telemetry.setGauge(
+        "ai_developer_task_tracker_sync_lag_seconds",
+        { provider: "yandex" },
+        0,
+      );
     }
+  }
+
+  private async recordInternalQueueMetrics(): Promise<TaskRecord[]> {
+    const tasks = await this.taskTracker.listTasks({ limit: 500 });
+    const queueDepth = new Map<string, number>();
+    const proposals = new Map<string, number>();
+    const now = Date.now();
+
+    for (const task of tasks) {
+      const repository = task.repositoryName ?? "unassigned";
+      const queue = task.queue ?? "unassigned";
+      const priority = task.priority ?? "none";
+      const key = [repository, queue, task.status, priority].join("\u0000");
+      queueDepth.set(key, (queueDepth.get(key) ?? 0) + 1);
+      if (task.proposal) {
+        proposals.set(
+          task.proposal.supervisorStatus,
+          (proposals.get(task.proposal.supervisorStatus) ?? 0) + 1,
+        );
+      }
+      if (task.status === "awaiting_human") {
+        this.telemetry.setGauge(
+          "ai_developer_task_tracker_waiting_for_human_seconds",
+          {
+            repository,
+            queue,
+            task_id: task.id,
+          },
+          Math.max(0, (now - Date.parse(task.updatedAt)) / 1000),
+        );
+      }
+    }
+
+    for (const [key, depth] of queueDepth) {
+      const [repository, queue, status, priority] = key.split("\u0000");
+      this.telemetry.setGauge(
+        "ai_developer_task_tracker_queue_depth",
+        {
+          repository,
+          queue,
+          status,
+          priority,
+        },
+        depth,
+      );
+    }
+    for (const [status, count] of proposals) {
+      this.telemetry.setGauge(
+        "ai_developer_task_tracker_proposals",
+        { supervisor_status: status },
+        count,
+      );
+    }
+
+    return tasks;
   }
 
   private async syncExternalMirror(taskId: string): Promise<void> {
     for (const bridge of this.yandexBridges) {
-      await bridge.exportTaskDigests(taskId);
-      await bridge.syncTaskStatus(taskId);
+      try {
+        await bridge.exportTaskDigests(taskId);
+      } catch (error) {
+        this.telemetry.incrementCounter(
+          "ai_developer_task_tracker_digest_export_failures_total",
+          { provider: "yandex" },
+        );
+        throw error;
+      }
+      try {
+        await bridge.syncTaskStatus(taskId);
+      } catch (error) {
+        this.telemetry.incrementCounter(
+          "ai_developer_task_tracker_sync_failures_total",
+          { provider: "yandex" },
+        );
+        throw error;
+      }
       await bridge.mirrorApprovedChildTasks(taskId);
     }
   }

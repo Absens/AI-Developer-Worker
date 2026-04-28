@@ -64,9 +64,29 @@ export type TaskIntakeMode =
   | "ai_proposed";
 export type TaskTrackerStorageAdapter = "postgres" | "memory";
 
+export interface TaskTrackerRetentionConfig {
+  rawLogDays: number;
+  artifactDays: number;
+  failedArtifactDays: number;
+  historyDays: number;
+}
+
+export interface TaskTrackerCleanupConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+}
+
+export interface TaskTrackerOperationalConfig {
+  retention: TaskTrackerRetentionConfig;
+  cleanup: TaskTrackerCleanupConfig;
+  metricsEnabled: boolean;
+  redactionEnabled: boolean;
+}
+
 export interface BaseInternalTaskTrackerConfig {
   intakeMode: TaskIntakeMode;
   yandexSyncEnabled: boolean;
+  operational: TaskTrackerOperationalConfig;
 }
 
 export interface PostgresInternalTaskTrackerConfig

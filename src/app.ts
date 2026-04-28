@@ -12,6 +12,11 @@ import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
 import { createInternalTaskTrackerClient } from "./integrations/internalTracker/index.js";
+import {
+  InternalTrackerCleanupRunner,
+  InternalTrackerCleanupScheduler,
+  type InternalTrackerCleanupResult,
+} from "./integrations/internalTracker/cleanup.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
 import {
@@ -23,6 +28,20 @@ import {
 } from "./integrations/yandexBridge/index.js";
 import { createObservabilityService } from "./observability/service.js";
 import { Logger } from "./utils/logger.js";
+
+interface CleanupController {
+  start(): void;
+  runOnce(): Promise<InternalTrackerCleanupResult | undefined>;
+  stop(): Promise<void>;
+}
+
+const noopCleanupController: CleanupController = {
+  start(): void {},
+  async runOnce(): Promise<undefined> {
+    return undefined;
+  },
+  async stop(): Promise<void> {},
+};
 
 const createYandexBridgeStore = (
   taskTracker: ReturnType<typeof loadFleetConfig>["taskTracker"],
@@ -52,6 +71,37 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     fleetConfig.repositories,
     internalTaskTracker,
   );
+  const cleanup =
+    fleetConfig.taskTracker?.provider === "internal" &&
+    fleetConfig.taskTracker.internal.storage === "postgres" &&
+    internalTaskTracker
+      ? (() => {
+          const pool = new Pool({
+            connectionString: fleetConfig.taskTracker.internal.databaseUrl,
+          });
+          const scheduler = new InternalTrackerCleanupScheduler(
+            new InternalTrackerCleanupRunner({
+              db: pool,
+              taskTracker: internalTaskTracker,
+              operational: fleetConfig.taskTracker.internal.operational,
+              metrics: fleetConfig.taskTracker.internal.operational.metricsEnabled
+                ? observability.metrics
+                : undefined,
+              logger,
+            }),
+            fleetConfig.taskTracker.internal.operational,
+            logger,
+          );
+          return {
+            start: () => scheduler.start(),
+            runOnce: () => scheduler.runOnce(),
+            stop: async () => {
+              scheduler.stop();
+              await pool.end();
+            },
+          } satisfies CleanupController;
+        })()
+      : noopCleanupController;
   const primaryRepository = fleetConfig.repositories[0];
   if (!primaryRepository) {
     throw new Error("No repository profiles configured.");
@@ -139,6 +189,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       orchestrator,
       preflight,
       observability,
+      cleanup,
       taskTracker: internalTaskTracker,
       yandexBridges,
       assertRepositoryReady: async () => {
@@ -201,6 +252,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     orchestrator,
     preflight,
     observability,
+    cleanup,
     taskTracker: internalTaskTracker,
     yandexBridges,
     assertRepositoryReady: () => git.assertRepositoryReady(),

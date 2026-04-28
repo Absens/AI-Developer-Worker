@@ -173,8 +173,24 @@ Recommended first panels:
 - `ai_developer_validation_gate_failures_total`
 - `ai_developer_queue_depth`
 - `ai_developer_alerts_total`
+- `ai_developer_task_tracker_queue_depth`
+- `ai_developer_task_tracker_claim_latency_seconds_bucket`
+- `ai_developer_task_tracker_lease_conflicts_total`
+- `ai_developer_task_tracker_sync_lag_seconds`
+- `ai_developer_task_tracker_cleanup_deleted_total`
+- `ai_developer_task_tracker_proposals`
 
 Prometheus labels intentionally exclude issue keys, branch names, commands, local paths, and diagnostics.
+
+## Task Timeline Mapping
+
+The internal task timeline is the audit-grade history for one task. The
+observability event store remains optimized for fleet dashboards. When both
+stores describe the same lifecycle transition, the shared mapper in
+[src/observability/lifecycleMapping.ts](/C:/Users/gabba/projects/developer/src/observability/lifecycleMapping.ts)
+preserves task id, worker id, repository, lease ids, status transition, and
+failure classification. Do not introduce new dashboard-only lifecycle names
+without updating that mapper and its tests.
 
 ## Docker and Probes
 

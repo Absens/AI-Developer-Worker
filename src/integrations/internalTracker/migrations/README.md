@@ -1,15 +1,20 @@
 # Internal Tracker Migrations
 
 Phase 7A adds the core PostgreSQL schema skeleton. Phase 7B adds the atomic
-queue tables for `task_leases` and persisted `idempotency_keys`. The internal
-tracker is still not wired into runtime startup; provider selection belongs to
-Phase 7C, and the in-memory adapter remains test/local-only.
+queue tables for `task_leases` and persisted `idempotency_keys`. Later Phase 7
+migrations add worker runtime records, Yandex bridge state, AI proposals, and
+Phase 7H operational hardening indexes/cleanup metadata.
 
-The following production tables are intentionally staged for later Phase 7
-work: `agent_runs`, `quality_gate_runs`, GitLab merge/review metadata,
-review-fix state, `sync_cursors`, raw external snapshots, task proposals,
-proposal evidence, retention metadata, audit redaction records,
-auth/service-token records, and operational metrics tables.
+Apply migrations with:
+
+```bash
+npm run tracker:migrate
+```
+
+The runner stores applied versions in `internal_tracker_schema_migrations`.
+Production preflight fails when this metadata is missing, any migration is
+pending, required indexes are absent, or transactional `FOR UPDATE SKIP LOCKED`
+claim support is unavailable.
 
 Stale queue recovery is implemented by treating expired unreleased leases as
 inactive and eagerly marking them released inside the PostgreSQL claim

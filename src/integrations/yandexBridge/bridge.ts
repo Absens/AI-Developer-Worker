@@ -15,6 +15,7 @@ import {
   formatDigestComment,
   parseHumanTaskCommand,
 } from "../tracker/commentProtocol.js";
+import { redactSecrets } from "../../observability/redaction.js";
 import { Logger } from "../../utils/logger.js";
 import {
   YANDEX_TRACKER_PROVIDER,
@@ -573,19 +574,20 @@ export class YandexBridge {
       return;
     }
 
-    const digest = formatDigestComment(this.options.workerId, {
+    const digestInput = redactSecrets({
       taskId: task.id,
       digestKind: input.digestKind ?? digestKey,
       externalKey,
       details: input.details,
       ...(input.payload ? { payload: input.payload } : {}),
     });
+    const digest = formatDigestComment(this.options.workerId, digestInput);
     await this.options.source.exportDigest({
       taskId: task.id,
       provider: YANDEX_TRACKER_PROVIDER,
       externalKey,
       digest,
-      ...(input.payload ? { payload: input.payload } : {}),
+      ...(digestInput.payload ? { payload: digestInput.payload } : {}),
     });
     await this.options.store.recordExportedDigest({
       taskId: task.id,
@@ -593,7 +595,7 @@ export class YandexBridge {
       externalKey,
       digestKey,
       digest,
-      ...(input.payload ? { payload: input.payload } : {}),
+      ...(digestInput.payload ? { payload: digestInput.payload } : {}),
       exportedAt: this.now().toISOString(),
     });
   }

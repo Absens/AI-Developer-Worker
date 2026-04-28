@@ -24,6 +24,7 @@ import {
   taskLeaseKeyForTask,
 } from "../../domain/taskTracker/queueEligibility.js";
 import { assertValidTaskStatusTransition } from "../../domain/taskTracker/status.js";
+import { redactSecrets } from "../../observability/redaction.js";
 import {
   DuplicateExternalRefError,
   DuplicateTaskProposalError,
@@ -119,6 +120,8 @@ export interface PostgresPoolLike extends PostgresQueryable {
 export interface PostgresTaskTrackerOptions {
   now?: () => Date;
   autonomyPolicy?: Partial<AutonomyPolicyConfig>;
+  redactionEnabled?: boolean;
+  redactMaxChars?: number;
 }
 
 type TransactionClient = PostgresQueryable & { release?: () => void };
@@ -436,6 +439,8 @@ const buildRepositoryProfileWhere = (
 export class PostgresTaskTrackerClient implements TaskTrackerClient {
   private readonly now: () => Date;
   private readonly autonomyPolicy: AutonomyPolicyConfig;
+  private readonly redactionEnabled: boolean;
+  private readonly redactMaxChars: number;
 
   constructor(
     private readonly db: PostgresQueryable,
@@ -443,6 +448,8 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
   ) {
     this.now = options.now ?? (() => new Date());
     this.autonomyPolicy = normalizeAutonomyPolicyConfig(options.autonomyPolicy);
+    this.redactionEnabled = options.redactionEnabled ?? true;
+    this.redactMaxChars = options.redactMaxChars ?? 4000;
   }
 
   async listTasks(input: ListTasksInput = {}): Promise<TaskRecord[]> {
@@ -1235,6 +1242,11 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
 
   async appendComment(taskId: string, input: CommentInput): Promise<void> {
     const createdAt = input.createdAt ?? this.nowIso();
+    const comment = this.redact({
+      body: input.body ?? null,
+      payload: input.payload ? clone(input.payload) : null,
+      externalRef: input.externalRef ? clone(input.externalRef) : null,
+    });
     await this.withTransaction(async (client) => {
       await this.ensureTaskExists(client, taskId);
       await client.query(
@@ -1249,9 +1261,9 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
           taskId,
           input.kind,
           JSON.stringify(input.author),
-          input.body ?? null,
-          input.payload ? JSON.stringify(input.payload) : null,
-          input.externalRef ? JSON.stringify(input.externalRef) : null,
+          comment.body,
+          comment.payload ? JSON.stringify(comment.payload) : null,
+          comment.externalRef ? JSON.stringify(comment.externalRef) : null,
           createdAt,
         ],
       );
@@ -1306,7 +1318,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     input: TaskDecisionInput,
   ): Promise<TaskDecision> {
     const createdAt = input.createdAt ?? this.nowIso();
-    const decision: TaskDecision = {
+    const decision: TaskDecision = this.redact({
       id: `decision_${randomUUID()}`,
       taskId,
       kind: input.kind,
@@ -1316,7 +1328,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       ...(input.workerId ? { workerId: input.workerId } : {}),
       payload: clone(input.payload),
       createdAt,
-    };
+    });
 
     await this.withTransaction(async (client) => {
       await this.ensureTaskExists(client, taskId);
@@ -1403,9 +1415,9 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
             input.kind,
             input.status,
             input.inputContextHash ?? null,
-            input.outputSummary ?? null,
+            input.outputSummary ? this.redact(input.outputSummary) : null,
             input.failureKind ?? null,
-            input.diagnostic ?? null,
+            input.diagnostic ? this.redact(input.diagnostic) : null,
             updatedAt,
           ],
         );
@@ -1426,9 +1438,9 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
             attempt,
             input.status,
             input.inputContextHash ?? null,
-            input.outputSummary ?? null,
+            input.outputSummary ? this.redact(input.outputSummary) : null,
             input.failureKind ?? null,
-            input.diagnostic ?? null,
+            input.diagnostic ? this.redact(input.diagnostic) : null,
             updatedAt,
           ],
         );
@@ -1521,7 +1533,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
 
   async recordAgentRun(taskId: string, input: AgentRunInput): Promise<void> {
     const createdAt = input.completedAt ?? input.startedAt ?? this.nowIso();
-    const run: AgentRun = {
+    const run: AgentRun = this.redact({
       id: `run_${randomUUID()}`,
       taskId,
       workerId: input.workerId,
@@ -1534,7 +1546,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
       startedAt: input.startedAt ?? createdAt,
       ...(input.completedAt ? { completedAt: input.completedAt } : {}),
-    };
+    });
 
     await this.withTransaction(async (client) => {
       await this.ensureTaskExists(client, taskId);
@@ -1615,9 +1627,9 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
           input.validation.changed,
           input.validation.testsPassed,
           input.validation.lintPassed,
-          JSON.stringify(input.validation.gates),
-          input.validation.diagnostic,
-          input.summary ?? null,
+          JSON.stringify(this.redact(input.validation.gates)),
+          this.redact(input.validation.diagnostic),
+          input.summary ? this.redact(input.summary) : null,
           createdAt,
         ],
       );
@@ -2340,6 +2352,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
   }
 
   private async insertEvent(client: PostgresQueryable, event: TaskEvent): Promise<void> {
+    const redacted = this.redact(event);
     await client.query(
       `
         INSERT INTO task_events (
@@ -2348,14 +2361,14 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8)
       `,
       [
-        event.id,
-        event.taskId,
-        event.kind,
-        event.source,
-        event.actor ? JSON.stringify(event.actor) : null,
-        event.message ?? null,
-        event.payload ? JSON.stringify(event.payload) : null,
-        event.createdAt,
+        redacted.id,
+        redacted.taskId,
+        redacted.kind,
+        redacted.source,
+        redacted.actor ? JSON.stringify(redacted.actor) : null,
+        redacted.message ?? null,
+        redacted.payload ? JSON.stringify(redacted.payload) : null,
+        redacted.createdAt,
       ],
     );
   }
@@ -2398,7 +2411,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         kind: input.kind,
         ...(input.path ? { path: input.path } : {}),
         ...(input.uri ? { uri: input.uri } : {}),
-        ...(input.summary ? { summary: input.summary } : {}),
+        ...(input.summary ? { summary: this.redact(input.summary) } : {}),
         retentionClass: input.retentionClass ?? "task_lifetime",
         createdAt,
       };
@@ -2571,6 +2584,17 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     message: string,
     createdAt: string,
   ): Promise<void> {
+    const payload = this.redact({
+      proposal: {
+        decision: evaluation.decision,
+        policy: evaluation.policy,
+        allowed: evaluation.allowed,
+        autoApproved: evaluation.autoApproved,
+        reason: evaluation.reason,
+        autonomyLevel: evaluation.autonomyLevel,
+        evidenceRefs: evaluation.evidenceRefs,
+      },
+    });
     await client.query(
       `
         INSERT INTO task_decisions (
@@ -2582,17 +2606,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       [
         `decision_${randomUUID()}`,
         taskId,
-        JSON.stringify({
-          proposal: {
-            decision: evaluation.decision,
-            policy: evaluation.policy,
-            allowed: evaluation.allowed,
-            autoApproved: evaluation.autoApproved,
-            reason: evaluation.reason,
-            autonomyLevel: evaluation.autonomyLevel,
-            evidenceRefs: evaluation.evidenceRefs,
-          },
-        }),
+        JSON.stringify(payload),
         createdAt,
       ],
     );
@@ -3661,6 +3675,10 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     if (!Number.isFinite(leaseTtlSeconds) || leaseTtlSeconds <= 0) {
       throw new Error("leaseTtlSeconds must be a positive number.");
     }
+  }
+
+  private redact<T>(value: T): T {
+    return this.redactionEnabled ? redactSecrets(value, this.redactMaxChars) : value;
   }
 
   private nowIso(): string {

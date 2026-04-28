@@ -37,6 +37,7 @@ import {
   taskMatchesTarget,
 } from "./queueEligibility.js";
 import { assertValidTaskStatusTransition } from "./status.js";
+import { redactSecrets } from "../../observability/redaction.js";
 import type {
   AgentTaskContext,
   AgentRun,
@@ -104,6 +105,8 @@ import type {
 export interface InMemoryTaskTrackerOptions {
   now?: () => Date;
   autonomyPolicy?: Partial<AutonomyPolicyConfig>;
+  redactionEnabled?: boolean;
+  redactMaxChars?: number;
 }
 
 const REQUIRED_EXECUTION_FIELDS = [
@@ -242,10 +245,14 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   private readonly proposalRejectionIdempotency = new Set<string>();
   private readonly now: () => Date;
   private readonly autonomyPolicy: AutonomyPolicyConfig;
+  private readonly redactionEnabled: boolean;
+  private readonly redactMaxChars: number;
 
   constructor(options: InMemoryTaskTrackerOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.autonomyPolicy = normalizeAutonomyPolicyConfig(options.autonomyPolicy);
+    this.redactionEnabled = options.redactionEnabled ?? true;
+    this.redactMaxChars = options.redactMaxChars ?? 4000;
   }
 
   async listTasks(input: ListTasksInput = {}): Promise<TaskRecord[]> {
@@ -910,7 +917,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   async appendEvent(taskId: string, input: TaskEventInput): Promise<void> {
     const task = this.requireTask(taskId);
     const createdAt = input.createdAt ?? this.nowIso();
-    const event: TaskEvent = {
+    const event: TaskEvent = this.redact({
       id: `evt_${randomUUID()}`,
       taskId,
       kind: input.kind,
@@ -919,7 +926,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       ...(input.message ? { message: input.message } : {}),
       ...(input.payload ? { payload: clone(input.payload) } : {}),
       createdAt,
-    };
+    });
 
     task.events.push(event);
     task.updatedAt = createdAt;
@@ -928,7 +935,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   async appendComment(taskId: string, input: CommentInput): Promise<void> {
     const task = this.requireTask(taskId);
     const createdAt = input.createdAt ?? this.nowIso();
-    task.comments.push({
+    task.comments.push(this.redact({
       id: `comment_${randomUUID()}`,
       taskId,
       kind: input.kind,
@@ -937,8 +944,8 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       ...(input.payload ? { payload: clone(input.payload) } : {}),
       ...(input.externalRef ? { externalRef: clone(input.externalRef) } : {}),
       createdAt,
-    });
-    task.events.push({
+    }));
+    task.events.push(this.redact({
       id: `evt_${randomUUID()}`,
       taskId,
       kind: "task_comment_created",
@@ -946,7 +953,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       actor: clone(input.author),
       payload: { messageKind: input.kind },
       createdAt,
-    });
+    }));
     task.updatedAt = createdAt;
   }
 
@@ -961,7 +968,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     const createdAt = this.nowIso();
     task.status = status;
     task.updatedAt = createdAt;
-    task.events.push({
+    task.events.push(this.redact({
       id: `evt_${randomUUID()}`,
       taskId,
       kind: "task_status_changed",
@@ -969,7 +976,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       message: reason ?? `Task status changed from ${previousStatus} to ${status}.`,
       payload: { from: previousStatus, to: status },
       createdAt,
-    });
+    }));
   }
 
   async recordDecision(
@@ -978,7 +985,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   ): Promise<TaskDecision> {
     const task = this.requireTask(taskId);
     const createdAt = input.createdAt ?? this.nowIso();
-    const decision: TaskDecision = {
+    const decision: TaskDecision = this.redact({
       id: `decision_${randomUUID()}`,
       taskId,
       kind: input.kind,
@@ -988,7 +995,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       ...(input.workerId ? { workerId: input.workerId } : {}),
       payload: clone(input.payload),
       createdAt,
-    };
+    });
 
     task.decisions.push(decision);
     task.updatedAt = createdAt;
@@ -1034,9 +1041,9 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       existing.artifacts = [...existing.artifacts, ...artifacts];
       existing.updatedAt = updatedAt;
       existing.inputContextHash = input.inputContextHash ?? existing.inputContextHash;
-      existing.outputSummary = input.outputSummary ?? existing.outputSummary;
+      existing.outputSummary = this.redact(input.outputSummary ?? existing.outputSummary);
       existing.failureKind = input.failureKind ?? existing.failureKind;
-      existing.diagnostic = input.diagnostic ?? existing.diagnostic;
+      existing.diagnostic = this.redact(input.diagnostic ?? existing.diagnostic);
     } else {
       const step: TaskStep = {
         id: `step_${randomUUID()}`,
@@ -1046,10 +1053,10 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
         attempt,
         status: input.status,
         ...(input.inputContextHash ? { inputContextHash: input.inputContextHash } : {}),
-        ...(input.outputSummary ? { outputSummary: input.outputSummary } : {}),
+        ...(input.outputSummary ? { outputSummary: this.redact(input.outputSummary) } : {}),
         artifacts,
         ...(input.failureKind ? { failureKind: input.failureKind } : {}),
-        ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
+        ...(input.diagnostic ? { diagnostic: this.redact(input.diagnostic) } : {}),
         createdAt: updatedAt,
         updatedAt,
       };
@@ -1096,7 +1103,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       createdAt,
     };
     task.clarificationQuestions.push(record);
-    task.comments.push({
+    task.comments.push(this.redact({
       id: record.id,
       taskId,
       kind: "question",
@@ -1104,8 +1111,8 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       body: question.question,
       payload: clone(record) as unknown as Record<string, unknown>,
       createdAt,
-    });
-    task.events.push({
+    }));
+    task.events.push(this.redact({
       id: `evt_${randomUUID()}`,
       taskId,
       kind: "clarification_requested",
@@ -1117,14 +1124,14 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
         blockingReason: question.blockingReason,
       },
       createdAt,
-    });
+    }));
     task.updatedAt = createdAt;
   }
 
   async recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void> {
     const task = this.requireTask(taskId);
     const createdAt = this.nowIso();
-    const record: HumanAnswerRecord = {
+    const record: HumanAnswerRecord = this.redact({
       id: `answer_${randomUUID()}`,
       taskId,
       ...(input.questionId ? { questionId: input.questionId } : {}),
@@ -1132,9 +1139,9 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       body: input.body,
       ...(input.command ? { command: clone(input.command) } : {}),
       createdAt,
-    };
+    });
     task.humanAnswers.push(record);
-    task.comments.push({
+    task.comments.push(this.redact({
       id: record.id,
       taskId,
       kind: "answer",
@@ -1142,7 +1149,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       body: input.body,
       payload: clone(record) as unknown as Record<string, unknown>,
       createdAt,
-    });
+    }));
     if (input.questionId) {
       const question = task.clarificationQuestions.find(
         (candidate) => candidate.id === input.questionId,
@@ -1151,7 +1158,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
         question.status = "answered";
       }
     }
-    task.events.push({
+    task.events.push(this.redact({
       id: `evt_${randomUUID()}`,
       taskId,
       kind: "human_answer_recorded",
@@ -1159,7 +1166,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       actor: clone(input.author),
       payload: { questionId: input.questionId },
       createdAt,
-    });
+    }));
     task.updatedAt = createdAt;
     if (
       task.status === "awaiting_human" ||
@@ -1173,7 +1180,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   async recordAgentRun(taskId: string, input: AgentRunInput): Promise<void> {
     const task = this.requireTask(taskId);
     const createdAt = input.completedAt ?? input.startedAt ?? this.nowIso();
-    const run: AgentRun = {
+    const run: AgentRun = this.redact({
       id: `run_${randomUUID()}`,
       taskId,
       workerId: input.workerId,
@@ -1186,7 +1193,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
       startedAt: input.startedAt ?? createdAt,
       ...(input.completedAt ? { completedAt: input.completedAt } : {}),
-    };
+    });
     task.agentRuns.push(run);
     task.events.push({
       id: `evt_${randomUUID()}`,
@@ -1222,7 +1229,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       [...gateArtifacts, ...(input.artifacts ?? [])],
       createdAt,
     );
-    const run: QualityGateRun = {
+    const run: QualityGateRun = this.redact({
       id: `validation_${randomUUID()}`,
       taskId,
       workerId: input.workerId,
@@ -1235,7 +1242,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       ...(input.summary ? { summary: input.summary } : {}),
       artifactRefs,
       createdAt,
-    };
+    });
     task.qualityGateRuns.push(run);
     task.events.push({
       id: `evt_${randomUUID()}`,
@@ -1629,6 +1636,10 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       ).toISOString();
     }
     return cleanup;
+  }
+
+  private redact<T>(value: T): T {
+    return this.redactionEnabled ? redactSecrets(value, this.redactMaxChars) : value;
   }
 
   private requireProposal(task: TaskRecord): TaskProposalRecord {

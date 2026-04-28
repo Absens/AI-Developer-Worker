@@ -7,6 +7,7 @@ import type { EventStore } from "./events.js";
 import type { MetricsRegistry } from "./metrics.js";
 import type { WorkerStateRegistry } from "./state.js";
 import { renderDashboardHtml } from "./dashboardAssets.js";
+import { redactSecrets } from "./redaction.js";
 import { TaskTrackerHumanApi } from "./taskTrackerHumanApi.js";
 import { renderTaskTrackerUiHtml } from "./taskTrackerUiAssets.js";
 
@@ -31,7 +32,7 @@ const json = (response: ServerResponse, statusCode: number, body: unknown): void
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
   });
-  response.end(JSON.stringify(body));
+  response.end(JSON.stringify(redactSecrets(body)));
 };
 
 const text = (

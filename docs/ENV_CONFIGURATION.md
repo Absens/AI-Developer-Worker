@@ -79,6 +79,19 @@ Copy-Item .env.example .env
 | `TRACKER_BLOCKED_BY_LINK_TYPE` | Нет | `is blocked by` | Связь Tracker, используемая для dependency links и dependency filtering. |
 | `DEPENDENCY_ENFORCEMENT` | Нет | `true` | Если включено, задачи с unresolved dependencies `blockedBy` пропускаются до получения lease. |
 | `DEPENDENCY_UNKNOWN_STATUS_POLICY` | Нет | `block` | Политика для dependencies, чей статус нельзя определить: `block`, `warn` или `ignore`. |
+| `TASK_TRACKER_PROVIDER` | Нет | `yandex` | Runtime provider: `yandex` сохраняет прямой Tracker fallback, `internal` включает внутренний task tracker. |
+| `TASK_TRACKER_STORAGE` | Нет | `postgres` | Storage adapter для internal provider. `memory` разрешен только в `NODE_ENV=test` или `TASK_TRACKER_LOCAL_SMOKE=true`. |
+| `TASK_TRACKER_DATABASE_URL` | Да для internal/postgres | Не задано | PostgreSQL URL внутреннего task tracker. Перед запуском примените `npm run tracker:migrate`. |
+| `TASK_INTAKE_MODE` | Нет | `standalone` | Intake mode internal tracker: `standalone`, `yandex_integration`, `hybrid`, `system_only` или `ai_proposed`. |
+| `YANDEX_SYNC_ENABLED` | Нет | `false` | Включает Yandex bridge как source/mirror для internal tracker. Требует Yandex credentials и intake `yandex_integration` или `hybrid`. |
+| `TASK_TRACKER_RETENTION_RAW_LOG_DAYS` | Нет | `30` | Retention для raw Codex log artifacts. |
+| `TASK_TRACKER_RETENTION_ARTIFACT_DAYS` | Нет | `30` | Retention для обычных validation artifacts. |
+| `TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS` | Нет | `90` | Retention для validation artifacts failed tasks. Не может быть меньше обычного artifact retention. |
+| `TASK_TRACKER_RETENTION_HISTORY_DAYS` | Нет | `365` | Минимальный retention compact task history. Значение меньше 365 отклоняется. |
+| `TASK_TRACKER_CLEANUP_ENABLED` | Нет | `true` | Включает periodic cleanup job для expired artifacts, raw logs, released leases и stale proposals. |
+| `TASK_TRACKER_CLEANUP_INTERVAL_SECONDS` | Нет | `3600` | Интервал cleanup job. |
+| `TASK_TRACKER_METRICS_ENABLED` | Нет | `true` | Включает internal tracker metrics: queue depth, claim latency, sync, proposals и cleanup. |
+| `TASK_TRACKER_REDACTION_ENABLED` | Нет | `true` | Включает redaction перед записью task events/comments/diagnostics и digest export. |
 | `MEMORY_ENABLED` | Нет | `false` | Включает repository memory Phase 5. Оставьте выключенным, пока `npm run memory:validate` не проходит для `MEMORY_DIR`. |
 | `MEMORY_DIR` | Нет | `/workspace/ai-developer-memory` | Локальное хранилище memory вне целевого репозитория. Воркер пишет per-repository файлы в `repositories/<sanitized RepositoryProfile.name>/`. |
 | `MEMORY_MAX_CONTEXT_CHARS` | Нет | `6000` | Жесткий лимит символов для секции memory context, добавляемой в analysis и implementation prompts. |
@@ -275,6 +288,20 @@ TASK_TRACKER_SYSTEM_TOKEN=change-me
 ```
 
 UI доступен на `/tasks`, JSON API - на `/api/tasks`. Мутации требуют trusted proxy user/role headers или service bearer token; anonymous writes отклоняются.
+
+## Phase 7H: internal tracker hardening
+
+Production internal mode requires PostgreSQL, applied migrations, and passing
+preflight:
+
+```bash
+npm run tracker:migrate
+npm run preflight
+```
+
+`TASK_TRACKER_STORAGE=memory` остается только для unit tests и local smoke.
+Cleanup, retention, redaction, metrics, backup/restore и rollback описаны в
+[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
 
 ## Режим fleet
 

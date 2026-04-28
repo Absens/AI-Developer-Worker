@@ -7,6 +7,12 @@ export {
 export {
   InternalTrackerRuntimeGuardClient,
 } from "./runtimeGuardTrackerClient.js";
+export {
+  assertInternalTrackerOperational,
+  getInternalTrackerMigrationStatus,
+  listInternalTrackerMigrations,
+  runInternalTrackerMigrations,
+} from "./migrations.js";
 export type {
   PostgresPoolLike,
   PostgresQueryable,

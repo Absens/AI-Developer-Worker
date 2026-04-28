@@ -1,3 +1,6 @@
+import { Pool } from "pg";
+
+import { assertInternalTrackerOperational } from "../integrations/internalTracker/index.js";
 import type {
   AppConfig,
   GitLabService,
@@ -14,6 +17,8 @@ type ShellCommandRunner = (
   options: { cwd: string },
 ) => Promise<ProcessResult>;
 
+type InternalTrackerChecker = (databaseUrl: string) => Promise<void>;
+
 const buildCommandFailure = (
   label: string,
   command: string,
@@ -29,6 +34,21 @@ const buildCommandFailure = (
 
 const formatError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const defaultInternalTrackerChecker: InternalTrackerChecker = async (databaseUrl) => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    await assertInternalTrackerOperational(pool);
+  } finally {
+    await pool.end();
+  }
+};
+
+const isLoopbackHost = (host: string): boolean =>
+  host === "localhost" ||
+  host === "127.0.0.1" ||
+  host === "::1" ||
+  host === "[::1]";
 
 export const hasPreflightFailures = (checks: PreflightCheckResult[]): boolean =>
   checks.some((check) => check.status === "fail");
@@ -50,6 +70,7 @@ export class PreflightService {
     private readonly assertCodexAuthenticated: () => Promise<void>,
     private readonly logger: Logger,
     private readonly commandRunner: ShellCommandRunner = runShellCommand,
+    private readonly internalTrackerChecker: InternalTrackerChecker = defaultInternalTrackerChecker,
   ) {}
 
   async run(): Promise<PreflightCheckResult[]> {
@@ -68,12 +89,23 @@ export class PreflightService {
     if (internalTracker) {
       checks.push({
         name: "Internal tracker storage",
-        status: "pass",
+        status: internalTracker.storage === "memory" ? "fail" : "pass",
         details:
           internalTracker.storage === "postgres"
             ? "PostgreSQL storage is configured for the internal task tracker."
-            : "In-memory internal task tracker storage is configured for test/local smoke.",
+            : "In-memory storage is not allowed for production internal tracker preflight.",
       });
+
+      if (internalTracker.storage === "postgres") {
+        await this.record(
+          checks,
+          "Internal tracker migrations",
+          () => this.internalTrackerChecker(internalTracker.databaseUrl),
+          () => "Database connection, applied migrations, required tables/indexes, and SKIP LOCKED claim support are available.",
+        );
+      }
+
+      this.checkOperationalAuthAlignment(checks);
 
       if (internalTracker.yandexSyncEnabled) {
         checks.push({
@@ -84,6 +116,8 @@ export class PreflightService {
         });
       }
     }
+
+    this.checkNotificationSinks(checks);
 
     await this.record(checks, "Codex auth", this.assertCodexAuthenticated, () =>
       `Codex authentication is available for CODEX_HOME=${this.config.codexHome}.`,
@@ -116,6 +150,89 @@ export class PreflightService {
       failed: hasPreflightFailures(checks),
     });
     return checks;
+  }
+
+  private checkOperationalAuthAlignment(checks: PreflightCheckResult[]): void {
+    const observability = this.config.observability;
+    if (!observability) {
+      return;
+    }
+    const exposed = !isLoopbackHost(observability.host);
+    const ui = observability.taskTrackerUi;
+    if (ui.enabled && exposed && ui.authMode === "localhost") {
+      checks.push({
+        name: "Task tracker UI auth",
+        status: "fail",
+        details:
+          "TASK_TRACKER_HUMAN_AUTH_MODE=localhost cannot be used when TASK_TRACKER_UI_BIND_HOST exposes the UI outside localhost.",
+      });
+      return;
+    }
+    if (ui.enabled && exposed && (!ui.systemToken || !ui.agentToken)) {
+      checks.push({
+        name: "Task tracker UI auth",
+        status: "fail",
+        details:
+          "TASK_TRACKER_SYSTEM_TOKEN and TASK_TRACKER_AGENT_TOKEN are required when the internal tracker UI/API is exposed outside localhost.",
+      });
+      return;
+    }
+    if (ui.enabled) {
+      checks.push({
+        name: "Task tracker UI auth",
+        status: "pass",
+        details: exposed
+          ? "Task tracker UI/API auth is configured for a non-localhost bind host."
+          : "Task tracker UI/API is bound to localhost or disabled for remote exposure.",
+      });
+    }
+
+    if (observability.dashboard.enabled && exposed && !observability.dashboard.bearerToken) {
+      checks.push({
+        name: "Dashboard auth",
+        status: "fail",
+        details:
+          "DASHBOARD_BEARER_TOKEN is required when the observability dashboard is exposed outside localhost.",
+      });
+      return;
+    }
+    if (observability.dashboard.enabled) {
+      checks.push({
+        name: "Dashboard auth",
+        status: "pass",
+        details: exposed
+          ? "Dashboard bearer auth is configured for a non-localhost bind host."
+          : "Dashboard is bound to localhost or protected by its configured auth.",
+      });
+    }
+  }
+
+  private checkNotificationSinks(checks: PreflightCheckResult[]): void {
+    const alerts = this.config.observability?.alerts;
+    if (!alerts?.enabled) {
+      return;
+    }
+    const missing: string[] = [];
+    for (const channel of alerts.channels) {
+      if (channel.type === "webhook" && !channel.url) {
+        missing.push("webhook.url");
+      }
+      if (channel.type === "slack" && !channel.webhookUrl) {
+        missing.push("slack.webhookUrl");
+      }
+      if (channel.type === "telegram" && (!channel.botToken || !channel.chatId)) {
+        missing.push("telegram.botToken/chatId");
+      }
+    }
+
+    checks.push({
+      name: "Notification sinks",
+      status: missing.length > 0 ? "fail" : "pass",
+      details:
+        missing.length > 0
+          ? `Missing alert notification sink settings: ${missing.join(", ")}.`
+          : "Configured alert notification sinks have required credentials.",
+    });
   }
 
   private async record<T extends string | void>(

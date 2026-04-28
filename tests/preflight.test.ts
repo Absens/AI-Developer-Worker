@@ -313,6 +313,17 @@ describe("PreflightService", () => {
             databaseUrl: "postgres://tracker:secret@localhost/tasks",
             intakeMode: "standalone",
             yandexSyncEnabled: false,
+            operational: {
+              retention: {
+                rawLogDays: 30,
+                artifactDays: 30,
+                failedArtifactDays: 90,
+                historyDays: 365,
+              },
+              cleanup: { enabled: true, intervalSeconds: 3600 },
+              metricsEnabled: true,
+              redactionEnabled: true,
+            },
           },
         },
       }),
@@ -322,6 +333,7 @@ describe("PreflightService", () => {
       async () => undefined,
       new Logger(),
       successfulCommand,
+      async () => undefined,
     );
 
     const checks = await service.run();
@@ -329,6 +341,7 @@ describe("PreflightService", () => {
     expect(checks.map((check) => check.name)).toEqual([
       "Config load",
       "Internal tracker storage",
+      "Internal tracker migrations",
       "Codex auth",
       "Git repository",
       "GitLab read",

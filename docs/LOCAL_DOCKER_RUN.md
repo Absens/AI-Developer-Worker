@@ -83,6 +83,24 @@ At minimum, verify that:
 
 For `TRACKER_STATUS_MAP_FILE`, point to a JSON file. Inside that file, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
 
+For production internal tracker mode, set:
+
+```env
+TASK_TRACKER_PROVIDER=internal
+TASK_TRACKER_STORAGE=postgres
+TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+```
+
+Then apply migrations before starting the continuous worker:
+
+```bash
+docker compose run --rm worker npm run tracker:migrate
+docker compose run --rm worker npm run preflight
+```
+
+Retention, backup/restore and rollback details are in
+[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
+
 ### 3. Prepare the project mount
 
 The worker expects a real git clone of the target project at:
