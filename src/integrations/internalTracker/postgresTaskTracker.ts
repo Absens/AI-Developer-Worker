@@ -41,6 +41,7 @@ import type {
   HumanAnswerRecord,
   LeaseHeartbeatInput,
   LinkTaskDependencyInput,
+  ListTasksInput,
   MemoryContextRecordInput,
   MemoryContextRef,
   MergeRequestRecord,
@@ -371,6 +372,74 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     options: PostgresTaskTrackerOptions = {},
   ) {
     this.now = options.now ?? (() => new Date());
+  }
+
+  async listTasks(input: ListTasksInput = {}): Promise<TaskRecord[]> {
+    const params: unknown[] = [];
+    const addParam = (value: unknown): string => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+    const clauses: string[] = [];
+
+    if (input.statuses && input.statuses.length > 0) {
+      clauses.push(`t.status = ANY(${addParam(input.statuses)}::text[])`);
+    }
+    if (input.repositoryName) {
+      clauses.push(`t.repository_name = ${addParam(input.repositoryName)}`);
+    }
+    if (input.queue) {
+      clauses.push(`t.queue = ${addParam(input.queue)}`);
+    }
+    if (input.priority) {
+      clauses.push(`t.priority = ${addParam(input.priority)}`);
+    }
+    if (input.tag) {
+      clauses.push(`${addParam(input.tag)} = ANY(t.tags)`);
+    }
+    if (input.workerId) {
+      const nowRef = addParam(this.nowIso());
+      const workerRef = addParam(input.workerId);
+      clauses.push(`
+        EXISTS (
+          SELECT 1
+          FROM task_leases lease
+          WHERE lease.task_id = t.id
+            AND lease.worker_id = ${workerRef}
+            AND lease.released_at IS NULL
+            AND lease.expires_at > ${nowRef}
+        )
+      `);
+    }
+
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const limitRef = addParam(limit);
+    const result = await this.db.query<{ id: string }>(
+      `
+        SELECT t.id
+        FROM tasks t
+        ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
+        ORDER BY t.updated_at DESC, t.id ASC
+        LIMIT ${limitRef}
+      `,
+      params,
+    );
+
+    return Promise.all(result.rows.map((row) => this.getTask(row.id)));
+  }
+
+  async listActiveLeases(): Promise<TaskLeaseRecord[]> {
+    const result = await this.db.query<TaskLeaseRow>(
+      `
+        SELECT *
+        FROM task_leases
+        WHERE released_at IS NULL AND expires_at > $1
+        ORDER BY expires_at, lease_id
+      `,
+      [this.nowIso()],
+    );
+
+    return result.rows.map(mapLeaseRow);
   }
 
   async createTask(input: CreateTaskInput): Promise<TaskRecord> {
@@ -2264,6 +2333,16 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
   private mapClarificationQuestions(
     comments: TaskComment[],
   ): ClarificationQuestionRecord[] {
+    const answeredQuestionIds = new Set(
+      comments
+        .filter((comment) => comment.kind === "answer")
+        .map((comment) => {
+          const payload = (comment.payload ?? {}) as Record<string, unknown>;
+          return typeof payload.questionId === "string" ? payload.questionId : undefined;
+        })
+        .filter((questionId): questionId is string => Boolean(questionId)),
+    );
+
     return comments
       .filter((comment) => comment.kind === "question")
       .map((comment) => {
@@ -2297,7 +2376,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
                 : "Reply with /resume.",
           },
           ...(typeof payload.threadId === "string" ? { threadId: payload.threadId } : {}),
-          status: "open",
+          status: answeredQuestionIds.has(comment.id) ? "answered" : "open",
           createdAt: comment.createdAt,
         };
       });

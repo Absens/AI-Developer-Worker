@@ -1,12 +1,14 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import type { ObservabilityConfig } from "../models/types.js";
+import type { ObservabilityConfig, TaskTrackerClient } from "../models/types.js";
 import type { AlertService } from "./alerts.js";
 import type { EventStore } from "./events.js";
 import type { MetricsRegistry } from "./metrics.js";
 import type { WorkerStateRegistry } from "./state.js";
 import { renderDashboardHtml } from "./dashboardAssets.js";
+import { TaskTrackerHumanApi } from "./taskTrackerHumanApi.js";
+import { renderTaskTrackerUiHtml } from "./taskTrackerUiAssets.js";
 
 export interface ReadinessState {
   ready: boolean;
@@ -21,6 +23,7 @@ interface ObservabilityServerInput {
   alerts: AlertService;
   readiness: () => ReadinessState;
   repositories: () => string[];
+  taskTracker?: TaskTrackerClient;
 }
 
 const json = (response: ServerResponse, statusCode: number, body: unknown): void => {
@@ -66,8 +69,16 @@ const hasDashboardAuth = (request: IncomingMessage, config: ObservabilityConfig)
 
 export class ObservabilityHttpServer {
   private server: Server | undefined;
+  private readonly taskTrackerHumanApi: TaskTrackerHumanApi;
 
-  constructor(private readonly input: ObservabilityServerInput) {}
+  constructor(private readonly input: ObservabilityServerInput) {
+    this.taskTrackerHumanApi = new TaskTrackerHumanApi({
+      config: input.config.taskTrackerUi,
+      taskTracker: input.taskTracker,
+      state: input.state,
+      repositories: input.repositories,
+    });
+  }
 
   async start(): Promise<void> {
     if (this.server) {
@@ -124,21 +135,24 @@ export class ObservabilityHttpServer {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
-    if (request.method !== "GET") {
-      text(response, 405, "method not allowed");
-      return;
-    }
-
     const url = new URL(request.url ?? "/", this.input.config.baseUrl);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const { config } = this.input;
 
     if (path === config.health.path) {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return;
+      }
       json(response, 200, { status: "ok" });
       return;
     }
 
     if (path === config.health.readinessPath) {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return;
+      }
       const readiness = this.input.readiness();
       json(response, readiness.ready ? 200 : 503, {
         status: readiness.ready ? "ok" : "not_ready",
@@ -148,6 +162,10 @@ export class ObservabilityHttpServer {
     }
 
     if (config.metrics.enabled && path === config.metrics.path) {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return;
+      }
       text(
         response,
         200,
@@ -157,9 +175,38 @@ export class ObservabilityHttpServer {
       return;
     }
 
+    const taskTrackerUiPath = config.taskTrackerUi.path;
+    if (
+      config.taskTrackerUi.enabled &&
+      (path === taskTrackerUiPath || path === `${taskTrackerUiPath}/`)
+    ) {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return;
+      }
+      text(
+        response,
+        200,
+        renderTaskTrackerUiHtml({
+          apiPath: config.taskTrackerUi.apiPath,
+        }),
+        "text/html; charset=utf-8",
+      );
+      return;
+    }
+
+    if (config.taskTrackerUi.enabled && this.taskTrackerHumanApi.isApiRoute(path)) {
+      await this.taskTrackerHumanApi.handle(request, path, url, response);
+      return;
+    }
+
     const dashboardPath = config.dashboard.path;
     const apiPath = config.dashboard.apiPath;
     if (config.dashboard.enabled && (path === dashboardPath || path === `${dashboardPath}/`)) {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return;
+      }
       if (!hasDashboardAuth(request, config)) {
         text(response, 401, "unauthorized");
         return;
@@ -177,6 +224,10 @@ export class ObservabilityHttpServer {
     }
 
     if (config.dashboard.enabled && (path === apiPath || path.startsWith(`${apiPath}/`))) {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return;
+      }
       if (!hasDashboardAuth(request, config)) {
         text(response, 401, "unauthorized");
         return;

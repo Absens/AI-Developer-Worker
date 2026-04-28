@@ -41,6 +41,7 @@ import type {
   HumanAnswerRecord,
   LeaseHeartbeatInput,
   LinkTaskDependencyInput,
+  ListTasksInput,
   MemoryContextRecordInput,
   MemoryContextRef,
   MergeRequestRecord,
@@ -216,6 +217,55 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
 
   constructor(options: InMemoryTaskTrackerOptions = {}) {
     this.now = options.now ?? (() => new Date());
+  }
+
+  async listTasks(input: ListTasksInput = {}): Promise<TaskRecord[]> {
+    const now = this.now();
+    const activeLeases = [...this.leases.values()].filter((lease) =>
+      isLeaseActiveAt(lease, now),
+    );
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const statuses = input.statuses ? new Set(input.statuses) : undefined;
+    const tasks = [...this.tasks.values()]
+      .filter((task) => {
+        if (statuses && !statuses.has(task.status)) {
+          return false;
+        }
+        if (input.repositoryName && task.repositoryName !== input.repositoryName) {
+          return false;
+        }
+        if (input.queue && task.queue !== input.queue) {
+          return false;
+        }
+        if (input.priority && task.priority !== input.priority) {
+          return false;
+        }
+        if (input.tag && !task.tags.includes(input.tag)) {
+          return false;
+        }
+        if (
+          input.workerId &&
+          !activeLeases.some(
+            (lease) => lease.taskId === task.id && lease.workerId === input.workerId,
+          )
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, limit);
+
+    return clone(tasks);
+  }
+
+  async listActiveLeases(): Promise<TaskLeaseRecord[]> {
+    const now = this.now();
+    return clone(
+      [...this.leases.values()]
+        .filter((lease) => isLeaseActiveAt(lease, now))
+        .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt)),
+    );
   }
 
   async createTask(input: CreateTaskInput): Promise<TaskRecord> {

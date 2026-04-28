@@ -106,6 +106,16 @@ Copy-Item .env.example .env
 | `DASHBOARD_REFRESH_SECONDS` | Нет | `10` | Browser polling interval для обновления dashboard API. |
 | `DASHBOARD_API_PATH` | Нет | `/api` | Read-only dashboard API path prefix. |
 | `DASHBOARD_BEARER_TOKEN` | Нет | Не задано | Необязательный bearer token, защищающий `/dashboard` и `/api/*`. |
+| `TASK_TRACKER_UI_ENABLED` | Нет | `false` | Включает Phase 7F human UI/API для internal tracker workflows. Может поднять HTTP-сервер даже при `OBSERVABILITY_ENABLED=false`. |
+| `TASK_TRACKER_UI_BIND_HOST` | Нет | `127.0.0.1` | Alias для bind host HTTP-сервера при включении task tracker UI. |
+| `TASK_TRACKER_UI_PORT` | Нет | `9464` | Alias для порта HTTP-сервера при включении task tracker UI. |
+| `TASK_TRACKER_UI_PATH` | Нет | `/tasks` | HTML path для human task UI. |
+| `TASK_TRACKER_UI_API_PATH` | Нет | `/api` | JSON API prefix для human task API. |
+| `TASK_TRACKER_HUMAN_AUTH_MODE` | Нет | `trusted_proxy` | Auth mode для UI/API: `trusted_proxy`, `bearer` или local-only `localhost`. |
+| `TASK_TRACKER_TRUSTED_USER_HEADER` | Нет | `x-task-tracker-user` | Header с authenticated user от trusted reverse proxy. |
+| `TASK_TRACKER_TRUSTED_ROLE_HEADER` | Нет | `x-task-tracker-role` | Header с ролью `viewer`, `developer`, `operator` или `admin`. |
+| `TASK_TRACKER_AGENT_TOKEN` | Нет | Не задано | Bearer token для agent/service operational access к Phase 7F API. |
+| `TASK_TRACKER_SYSTEM_TOKEN` | Нет | Не задано | Bearer token для system-created task API и idempotent bulk/create paths. |
 | `ALERTS_ENABLED` | Нет | `false` | Включает event-based alert evaluation и notification sinks. |
 | `ALERT_CHANNELS` | Нет | Не задано | Channels через запятую: `webhook`, `slack`, `telegram`. |
 | `ALERT_WEBHOOK_URL` | Нет | Не задано | Generic JSON webhook URL для `ALERT_CHANNELS=webhook`. |
@@ -251,6 +261,20 @@ DASHBOARD_BEARER_TOKEN=change-me
 ```
 
 Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).
+
+## Phase 7F: internal task UI
+
+При `TASK_TRACKER_PROVIDER=internal` можно включить minimal human workflow UI/API:
+
+```env
+TASK_TRACKER_UI_ENABLED=true
+TASK_TRACKER_UI_BIND_HOST=127.0.0.1
+TASK_TRACKER_UI_PORT=9464
+TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
+TASK_TRACKER_SYSTEM_TOKEN=change-me
+```
+
+UI доступен на `/tasks`, JSON API - на `/api/tasks`. Мутации требуют trusted proxy user/role headers или service bearer token; anonymous writes отклоняются.
 
 ## Режим fleet
 

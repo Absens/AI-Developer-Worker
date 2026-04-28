@@ -584,6 +584,16 @@ export interface ReleaseLeaseInput {
   idempotencyKey?: string;
 }
 
+export interface ListTasksInput {
+  statuses?: TaskStatus[];
+  repositoryName?: string;
+  queue?: string;
+  priority?: string;
+  workerId?: string;
+  tag?: string;
+  limit?: number;
+}
+
 export interface CreateTaskInput {
   id?: string;
   title: string;
@@ -646,6 +656,8 @@ export interface AgentTaskContext {
 }
 
 export interface TaskTrackerClient {
+  listTasks(input?: ListTasksInput): Promise<TaskRecord[]>;
+  listActiveLeases(): Promise<TaskLeaseRecord[]>;
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
   updateTaskRevision(taskId: string, input: TaskRevisionInput): Promise<TaskRecord>;
   updateExternalTaskFields(

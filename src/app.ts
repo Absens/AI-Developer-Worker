@@ -42,17 +42,18 @@ const createYandexBridgeStore = (
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
   const fleetConfig = loadFleetConfig(env);
+  const internalTaskTracker = createInternalTaskTrackerClient(fleetConfig.taskTracker);
   const observability = createObservabilityService(
     fleetConfig.observability,
     logger,
     fleetConfig.repositories,
+    internalTaskTracker,
   );
   const primaryRepository = fleetConfig.repositories[0];
   if (!primaryRepository) {
     throw new Error("No repository profiles configured.");
   }
 
-  const internalTaskTracker = createInternalTaskTrackerClient(fleetConfig.taskTracker);
   const internalMode = fleetConfig.taskTracker?.provider === "internal";
   const internalConfig =
     fleetConfig.taskTracker?.provider === "internal"

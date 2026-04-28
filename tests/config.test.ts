@@ -367,6 +367,45 @@ describe("config", () => {
     });
   });
 
+  it("accepts explicit task tracker UI options", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TASK_TRACKER_UI_ENABLED: "true",
+      TASK_TRACKER_UI_BIND_HOST: "0.0.0.0",
+      TASK_TRACKER_UI_PORT: "9666",
+      TASK_TRACKER_UI_PATH: "/tracker",
+      TASK_TRACKER_UI_API_PATH: "/tracker-api",
+      TASK_TRACKER_HUMAN_AUTH_MODE: "trusted_proxy",
+      TASK_TRACKER_TRUSTED_USER_HEADER: "x-user",
+      TASK_TRACKER_TRUSTED_ROLE_HEADER: "x-role",
+      TASK_TRACKER_AGENT_TOKEN: "agent-token",
+      TASK_TRACKER_SYSTEM_TOKEN: "system-token",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.observability).toMatchObject({
+      host: "0.0.0.0",
+      port: 9666,
+      taskTrackerUi: {
+        enabled: true,
+        path: "/tracker",
+        apiPath: "/tracker-api",
+        authMode: "trusted_proxy",
+        trustedUserHeader: "x-user",
+        trustedRoleHeader: "x-role",
+        agentToken: "agent-token",
+        systemToken: "system-token",
+      },
+    });
+  });
+
   it("accepts explicit memory options", () => {
     const statusMapFile = createStatusMapFile();
     const config = loadConfig({

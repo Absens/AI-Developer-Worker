@@ -60,6 +60,7 @@ export type {
   ImportCandidatesInput,
   LeaseHeartbeatInput,
   LinkTaskDependencyInput,
+  ListTasksInput,
   MemoryContextRecordInput,
   MemoryContextRef,
   MergeRequestRecord,

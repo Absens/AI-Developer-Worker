@@ -3,6 +3,8 @@ import type {
   AlertSeverity,
   ObservabilityAlertsConfig,
   ObservabilityConfig,
+  TaskTrackerHumanAuthMode,
+  TaskTrackerUiConfig,
 } from "../models/types.js";
 import { ConfigurationError } from "../utils/errors.js";
 
@@ -122,6 +124,29 @@ const parseAlertSeverity = (
   }
 
   throw new ConfigurationError(`${key} must be one of: info, warning, error.`);
+};
+
+const parseTaskTrackerHumanAuthMode = (
+  input: string | undefined,
+  key: string,
+  defaultValue: TaskTrackerHumanAuthMode,
+): TaskTrackerHumanAuthMode => {
+  const normalized = input?.trim().toLowerCase();
+  if (!normalized) {
+    return defaultValue;
+  }
+
+  if (
+    normalized === "trusted_proxy" ||
+    normalized === "bearer" ||
+    normalized === "localhost"
+  ) {
+    return normalized;
+  }
+
+  throw new ConfigurationError(
+    `${key} must be one of: trusted_proxy, bearer, localhost.`,
+  );
 };
 
 const parseOptionalSeverity = (
@@ -305,6 +330,68 @@ const parseAlertsConfig = (
   channels: parseRawAlertChannels(rawValue?.channels, env),
 });
 
+const parseTaskTrackerUiConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+): TaskTrackerUiConfig => ({
+  enabled: env.TASK_TRACKER_UI_ENABLED?.trim()
+    ? parseBoolean(env.TASK_TRACKER_UI_ENABLED, "TASK_TRACKER_UI_ENABLED", false)
+    : optionalBoolean(rawValue?.enabled, "observability.taskTrackerUi.enabled", false),
+  path: normalizePath(
+    env.TASK_TRACKER_UI_PATH?.trim() ||
+      optionalString(rawValue?.path, "observability.taskTrackerUi.path") ||
+      "/tasks",
+    "TASK_TRACKER_UI_PATH",
+  ),
+  apiPath: normalizePath(
+    env.TASK_TRACKER_UI_API_PATH?.trim() ||
+      optionalString(rawValue?.apiPath, "observability.taskTrackerUi.apiPath") ||
+      "/api",
+    "TASK_TRACKER_UI_API_PATH",
+  ),
+  authMode: env.TASK_TRACKER_HUMAN_AUTH_MODE?.trim()
+    ? parseTaskTrackerHumanAuthMode(
+        env.TASK_TRACKER_HUMAN_AUTH_MODE,
+        "TASK_TRACKER_HUMAN_AUTH_MODE",
+        "trusted_proxy",
+      )
+    : parseTaskTrackerHumanAuthMode(
+        optionalString(rawValue?.authMode, "observability.taskTrackerUi.authMode"),
+        "observability.taskTrackerUi.authMode",
+        "trusted_proxy",
+      ),
+  trustedUserHeader:
+    env.TASK_TRACKER_TRUSTED_USER_HEADER?.trim().toLowerCase() ||
+    optionalString(
+      rawValue?.trustedUserHeader,
+      "observability.taskTrackerUi.trustedUserHeader",
+    )?.toLowerCase() ||
+    "x-task-tracker-user",
+  trustedRoleHeader:
+    env.TASK_TRACKER_TRUSTED_ROLE_HEADER?.trim().toLowerCase() ||
+    optionalString(
+      rawValue?.trustedRoleHeader,
+      "observability.taskTrackerUi.trustedRoleHeader",
+    )?.toLowerCase() ||
+    "x-task-tracker-role",
+  ...(env.TASK_TRACKER_AGENT_TOKEN?.trim() ||
+  optionalString(rawValue?.agentToken, "observability.taskTrackerUi.agentToken")
+    ? {
+        agentToken:
+          env.TASK_TRACKER_AGENT_TOKEN?.trim() ||
+          optionalString(rawValue?.agentToken, "observability.taskTrackerUi.agentToken"),
+      }
+    : {}),
+  ...(env.TASK_TRACKER_SYSTEM_TOKEN?.trim() ||
+  optionalString(rawValue?.systemToken, "observability.taskTrackerUi.systemToken")
+    ? {
+        systemToken:
+          env.TASK_TRACKER_SYSTEM_TOKEN?.trim() ||
+          optionalString(rawValue?.systemToken, "observability.taskTrackerUi.systemToken"),
+      }
+    : {}),
+});
+
 export const parseObservabilityConfig = (
   env: NodeJS.ProcessEnv = process.env,
   rawValue?: Record<string, unknown>,
@@ -312,19 +399,34 @@ export const parseObservabilityConfig = (
   const metrics = optionalRecord(rawValue?.metrics, "observability.metrics");
   const health = optionalRecord(rawValue?.health, "observability.health");
   const dashboard = optionalRecord(rawValue?.dashboard, "observability.dashboard");
+  const taskTrackerUi = optionalRecord(
+    rawValue?.taskTrackerUi,
+    "observability.taskTrackerUi",
+  );
   const events = optionalRecord(rawValue?.events, "observability.events");
   const alertsRoot =
     optionalRecord(rawValue?.alerts, "observability.alerts") ??
     optionalRecord((rawValue as { alerts?: unknown } | undefined)?.alerts, "alerts");
-  const envPort = env.OBSERVABILITY_PORT?.trim() || env.METRICS_PORT?.trim();
+  const envPort =
+    env.TASK_TRACKER_UI_PORT?.trim() ||
+    env.OBSERVABILITY_PORT?.trim() ||
+    env.METRICS_PORT?.trim();
   const rawPort =
     rawValue?.port === undefined || rawValue?.port === null
       ? DEFAULT_OBSERVABILITY_PORT
       : optionalPositiveInt(rawValue.port, "observability.port", DEFAULT_OBSERVABILITY_PORT);
   const port = envPort
-    ? parsePositiveInt(envPort, env.OBSERVABILITY_PORT?.trim() ? "OBSERVABILITY_PORT" : "METRICS_PORT")
+      ? parsePositiveInt(
+          envPort,
+          env.TASK_TRACKER_UI_PORT?.trim()
+            ? "TASK_TRACKER_UI_PORT"
+            : env.OBSERVABILITY_PORT?.trim()
+              ? "OBSERVABILITY_PORT"
+              : "METRICS_PORT",
+        )
     : rawPort;
   const host =
+    env.TASK_TRACKER_UI_BIND_HOST?.trim() ||
     env.OBSERVABILITY_HOST?.trim() ||
     env.METRICS_HOST?.trim() ||
     optionalString(rawValue?.host, "observability.host") ||
@@ -442,6 +544,7 @@ export const parseObservabilityConfig = (
           }
         : {}),
     },
+    taskTrackerUi: parseTaskTrackerUiConfig(env, taskTrackerUi),
     alerts: parseAlertsConfig(
       env,
       alertsRoot ??

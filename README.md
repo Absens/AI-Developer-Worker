@@ -167,6 +167,8 @@ Repository memory по умолчанию выключена. При `MEMORY_ENA
 
 Observability по умолчанию выключена. При `OBSERVABILITY_ENABLED=true` воркер поднимает HTTP-сервер для `/healthz`, `/readyz`, `/metrics`, опциональных dashboard/API и оповещений. Dashboard включайте только на доверенном интерфейсе и защищайте `DASHBOARD_BEARER_TOKEN`.
 
+Для `TASK_TRACKER_PROVIDER=internal` можно включить human workflow UI через `TASK_TRACKER_UI_ENABLED=true`; UI будет на `/tasks`, JSON API на `/api/tasks`, а write actions требуют trusted proxy role headers или `TASK_TRACKER_SYSTEM_TOKEN`.
+
 ## Документация
 
 - [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md) - все переменные окружения и источники значений.

@@ -107,6 +107,20 @@ export interface ObservabilityDashboardConfig {
   bearerToken?: string;
 }
 
+export type TaskTrackerHumanAuthMode = "trusted_proxy" | "bearer" | "localhost";
+export type TaskTrackerHumanRole = "viewer" | "developer" | "operator" | "admin";
+
+export interface TaskTrackerUiConfig {
+  enabled: boolean;
+  path: string;
+  apiPath: string;
+  authMode: TaskTrackerHumanAuthMode;
+  trustedUserHeader: string;
+  trustedRoleHeader: string;
+  agentToken?: string;
+  systemToken?: string;
+}
+
 export type AlertChannelConfig =
   | {
       type: "webhook";
@@ -146,6 +160,7 @@ export interface ObservabilityConfig {
   health: ObservabilityHealthConfig;
   events: ObservabilityEventStoreConfig;
   dashboard: ObservabilityDashboardConfig;
+  taskTrackerUi: TaskTrackerUiConfig;
   alerts: ObservabilityAlertsConfig;
 }
 

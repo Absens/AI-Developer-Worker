@@ -76,6 +76,24 @@ When `DASHBOARD_BEARER_TOKEN` is set, both `/dashboard` and `/api/*` require:
 curl -H "Authorization: Bearer <token>" http://localhost:9464/api/workers
 ```
 
+Internal task UI/API:
+
+```env
+TASK_TRACKER_UI_ENABLED=false
+TASK_TRACKER_UI_PATH=/tasks
+TASK_TRACKER_UI_API_PATH=/api
+TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
+TASK_TRACKER_TRUSTED_USER_HEADER=x-task-tracker-user
+TASK_TRACKER_TRUSTED_ROLE_HEADER=x-task-tracker-role
+TASK_TRACKER_AGENT_TOKEN=
+TASK_TRACKER_SYSTEM_TOKEN=
+```
+
+When enabled with `TASK_TRACKER_PROVIDER=internal`, `/tasks` serves the Phase 7F
+operations UI and `/api/tasks` exposes the human JSON API. Writes require a
+trusted proxy role header (`developer`, `operator`, or `admin`) or the system
+bearer token for idempotent system-created tasks.
+
 Event store:
 
 ```env
