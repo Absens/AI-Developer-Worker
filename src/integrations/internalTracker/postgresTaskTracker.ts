@@ -24,14 +24,30 @@ import {
 } from "../../domain/taskTracker/errors.js";
 import type {
   AgentTaskContext,
+  AgentRun,
+  AgentRunInput,
   ArtifactRef,
+  ArtifactRefInput,
   ClaimedTask,
+  ClarificationQuestionInput,
+  ClarificationQuestionRecord,
   ClaimRepositoryProfile,
   ClaimTaskInput,
   CommentInput,
   CreateTaskInput,
+  DecompositionDecisionRecord,
+  HumanAnswerInput,
+  HumanAnswerRecord,
   LeaseHeartbeatInput,
+  LinkTaskDependencyInput,
+  MemoryContextRecordInput,
+  MemoryContextRef,
+  MergeRequestRecord,
+  MergeRequestRecordInput,
+  QualityGateRun,
   ReleaseLeaseInput,
+  ReviewMetadataRecord,
+  ReviewMetadataRecordInput,
   TaskActor,
   TaskComment,
   TaskDecision,
@@ -50,9 +66,19 @@ import type {
   TaskRevisionInput,
   TaskStatus,
   TaskStep,
+  TaskStepRecordInput,
   TaskTrackerClient,
   TaskLeaseRecord,
+  ValidationRecordInput,
 } from "../../domain/taskTracker/types.js";
+import type {
+  DecompositionPlan,
+  MergeRequestInfo,
+  QualityGateResult,
+  ReviewMetadata,
+  SubtaskDraft,
+  TaskAnalysisDecision,
+} from "../../models/types.js";
 
 export interface PostgresQueryable {
   query<R extends QueryResultRow = QueryResultRow>(
@@ -112,6 +138,65 @@ type TaskLeaseRow = QueryResultRow & {
   expires_at: Date | string;
   heartbeat_at: Date | string;
   released_at: Date | string | null;
+};
+
+type AgentRunRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  worker_id: string;
+  stage: AgentRun["stage"];
+  status: AgentRun["status"];
+  thread_id: string | null;
+  exit_code: number | null;
+  timed_out: boolean | null;
+  final_message: string | null;
+  diagnostic: string | null;
+  started_at: Date | string;
+  completed_at: Date | string | null;
+};
+
+type QualityGateRunRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  worker_id: string;
+  status: QualityGateRun["status"];
+  changed: boolean;
+  tests_passed: boolean;
+  lint_passed: boolean;
+  gates: unknown;
+  diagnostic: string;
+  summary: string | null;
+  created_at: Date | string;
+};
+
+type MergeRequestRecordRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  worker_id: string;
+  merge_request: unknown;
+  branch: string;
+  outcome: MergeRequestRecord["outcome"];
+  validation_summary: string | null;
+  created_at: Date | string;
+};
+
+type ReviewMetadataRecordRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  metadata: unknown;
+  created_at: Date | string;
+};
+
+type MemoryContextRefRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  worker_id: string;
+  prompt_profile_id: string;
+  task_type: string;
+  knowledge_section_ids: string[];
+  prompt_rule_ids: string[];
+  similar_failure_count: number;
+  created_at: Date | string;
 };
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -484,6 +569,522 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     });
   }
 
+  async recordDecision(
+    taskId: string,
+    input: TaskDecisionInput,
+  ): Promise<TaskDecision> {
+    const createdAt = input.createdAt ?? this.nowIso();
+    const decision: TaskDecision = {
+      id: `decision_${randomUUID()}`,
+      taskId,
+      kind: input.kind,
+      schemaVersion: input.schemaVersion,
+      source: input.source,
+      ...(input.authorId ? { authorId: input.authorId } : {}),
+      ...(input.workerId ? { workerId: input.workerId } : {}),
+      payload: clone(input.payload),
+      createdAt,
+    };
+
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      await client.query(
+        `
+          INSERT INTO task_decisions (
+            id, task_id, kind, schema_version, source, author_id, worker_id,
+            payload, created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+        `,
+        [
+          decision.id,
+          decision.taskId,
+          decision.kind,
+          decision.schemaVersion,
+          decision.source,
+          decision.authorId ?? null,
+          decision.workerId ?? null,
+          JSON.stringify(decision.payload),
+          decision.createdAt,
+        ],
+      );
+      await this.touchTask(client, taskId, createdAt);
+    });
+
+    return clone(decision);
+  }
+
+  async recordAnalysis(taskId: string, decision: TaskAnalysisDecision): Promise<void> {
+    await this.recordDecision(taskId, {
+      kind: "analysis",
+      schemaVersion: 1,
+      source: "worker_agent",
+      payload: clone(decision) as unknown as Record<string, unknown>,
+    });
+    await this.appendEvent(taskId, {
+      kind: "analysis_recorded",
+      source: "worker_agent",
+      message: decision.reasoning,
+      payload: {
+        confidence: decision.confidence,
+        recommendedMode: decision.recommendedMode,
+        promptProfileId: decision.promptProfileId,
+      },
+    });
+  }
+
+  async recordTaskStep(taskId: string, input: TaskStepRecordInput): Promise<void> {
+    const updatedAt = this.nowIso();
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      const planId = input.planId ?? (await this.findActivePlanId(client, taskId));
+      const attempt = input.attempt ?? 1;
+      const artifacts = await this.insertArtifacts(client, taskId, input.artifacts ?? [], updatedAt);
+      const existing = await client.query<{ id: string }>(
+        `
+          SELECT id
+          FROM task_steps
+          WHERE task_id = $1 AND plan_id = $2 AND kind = $3 AND attempt = $4
+          ORDER BY created_at, id
+          LIMIT 1
+        `,
+        [taskId, planId, input.kind, attempt],
+      );
+      const stepId = existing.rows[0]?.id ?? `step_${randomUUID()}`;
+
+      if (existing.rowCount && existing.rowCount > 0) {
+        await client.query(
+          `
+            UPDATE task_steps
+            SET status = $5,
+                input_context_hash = COALESCE($6, input_context_hash),
+                output_summary = COALESCE($7, output_summary),
+                failure_kind = COALESCE($8, failure_kind),
+                diagnostic = COALESCE($9, diagnostic),
+                updated_at = $10
+            WHERE id = $1 AND task_id = $2 AND plan_id = $3 AND kind = $4
+          `,
+          [
+            stepId,
+            taskId,
+            planId,
+            input.kind,
+            input.status,
+            input.inputContextHash ?? null,
+            input.outputSummary ?? null,
+            input.failureKind ?? null,
+            input.diagnostic ?? null,
+            updatedAt,
+          ],
+        );
+      } else {
+        await client.query(
+          `
+            INSERT INTO task_steps (
+              id, task_id, plan_id, kind, attempt, status, input_context_hash,
+              output_summary, failure_kind, diagnostic, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+          `,
+          [
+            stepId,
+            taskId,
+            planId,
+            input.kind,
+            attempt,
+            input.status,
+            input.inputContextHash ?? null,
+            input.outputSummary ?? null,
+            input.failureKind ?? null,
+            input.diagnostic ?? null,
+            updatedAt,
+          ],
+        );
+      }
+
+      for (const artifact of artifacts) {
+        await client.query(
+          `
+            INSERT INTO task_step_artifacts (step_id, artifact_id)
+            VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+          `,
+          [stepId, artifact.id],
+        );
+      }
+      await client.query("UPDATE task_plans SET updated_at = $2 WHERE id = $1", [
+        planId,
+        updatedAt,
+      ]);
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "task_step_recorded",
+        source: "worker_agent",
+        payload: {
+          planId,
+          kind: input.kind,
+          attempt,
+          status: input.status,
+        },
+        createdAt: updatedAt,
+      });
+      await this.touchTask(client, taskId, updatedAt);
+    });
+  }
+
+  async askClarification(
+    taskId: string,
+    question: ClarificationQuestionInput,
+  ): Promise<void> {
+    const workerId = question.workerId ?? "worker";
+    await this.appendComment(taskId, {
+      kind: "question",
+      author: { owner: "worker_agent", id: workerId },
+      body: question.question,
+      payload: {
+        workerId,
+        summary: question.summary,
+        blockingReason: question.blockingReason,
+        question: question.question,
+        options: question.options,
+        resumeHint: question.resumeHint,
+        ...(question.threadId ? { threadId: question.threadId } : {}),
+      },
+    });
+    await this.appendEvent(taskId, {
+      kind: "clarification_requested",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: workerId },
+      message: question.summary,
+      payload: { blockingReason: question.blockingReason },
+    });
+  }
+
+  async recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void> {
+    await this.appendComment(taskId, {
+      kind: "answer",
+      author: clone(input.author),
+      body: input.body,
+      payload: {
+        ...(input.questionId ? { questionId: input.questionId } : {}),
+        ...(input.command ? { command: input.command } : {}),
+      },
+    });
+    await this.appendEvent(taskId, {
+      kind: "human_answer_recorded",
+      source: input.author.owner,
+      actor: clone(input.author),
+      payload: { questionId: input.questionId },
+    });
+    const task = await this.getTask(taskId);
+    if (
+      task.status === "awaiting_human" ||
+      task.status === "blocked" ||
+      task.status === "failed"
+    ) {
+      await this.setStatus(taskId, "ready", "Human answer recorded; task is ready to resume.");
+    }
+  }
+
+  async recordAgentRun(taskId: string, input: AgentRunInput): Promise<void> {
+    const createdAt = input.completedAt ?? input.startedAt ?? this.nowIso();
+    const run: AgentRun = {
+      id: `run_${randomUUID()}`,
+      taskId,
+      workerId: input.workerId,
+      stage: input.stage,
+      status: input.status,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.exitCode !== undefined ? { exitCode: input.exitCode } : {}),
+      ...(input.timedOut !== undefined ? { timedOut: input.timedOut } : {}),
+      ...(input.finalMessage ? { finalMessage: input.finalMessage } : {}),
+      ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
+      startedAt: input.startedAt ?? createdAt,
+      ...(input.completedAt ? { completedAt: input.completedAt } : {}),
+    };
+
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      await client.query(
+        `
+          INSERT INTO agent_runs (
+            id, task_id, worker_id, stage, status, thread_id, exit_code,
+            timed_out, final_message, diagnostic, started_at, completed_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        `,
+        [
+          run.id,
+          run.taskId,
+          run.workerId,
+          run.stage,
+          run.status,
+          run.threadId ?? null,
+          run.exitCode ?? null,
+          run.timedOut ?? null,
+          run.finalMessage ?? null,
+          run.diagnostic ?? null,
+          run.startedAt,
+          run.completedAt ?? null,
+        ],
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "agent_run_recorded",
+        source: "worker_agent",
+        actor: { owner: "worker_agent", id: input.workerId },
+        payload: {
+          runId: run.id,
+          stage: run.stage,
+          status: run.status,
+          exitCode: run.exitCode,
+          timedOut: run.timedOut,
+        },
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
+    });
+  }
+
+  async recordValidation(taskId: string, input: ValidationRecordInput): Promise<void> {
+    const createdAt = this.nowIso();
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      const gateArtifacts = input.validation.gates
+        .filter((gate) => gate.artifactPath)
+        .map((gate): ArtifactRefInput => ({
+          kind: "validation_artifact",
+          path: gate.artifactPath,
+          summary: `${gate.label} ${gate.status}`,
+          retentionClass: "task_lifetime",
+        }));
+      const artifacts = await this.insertArtifacts(
+        client,
+        taskId,
+        [...gateArtifacts, ...(input.artifacts ?? [])],
+        createdAt,
+      );
+      const validationId = `validation_${randomUUID()}`;
+      await client.query(
+        `
+          INSERT INTO quality_gate_runs (
+            id, task_id, worker_id, status, changed, tests_passed, lint_passed,
+            gates, diagnostic, summary, created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+        `,
+        [
+          validationId,
+          taskId,
+          input.workerId,
+          input.status,
+          input.validation.changed,
+          input.validation.testsPassed,
+          input.validation.lintPassed,
+          JSON.stringify(input.validation.gates),
+          input.validation.diagnostic,
+          input.summary ?? null,
+          createdAt,
+        ],
+      );
+      for (const artifact of artifacts) {
+        await client.query(
+          `
+            INSERT INTO quality_gate_run_artifacts (validation_id, artifact_id)
+            VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+          `,
+          [validationId, artifact.id],
+        );
+      }
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "validation_recorded",
+        source: "worker_agent",
+        actor: { owner: "worker_agent", id: input.workerId },
+        payload: {
+          validationId,
+          status: input.status,
+          changed: input.validation.changed,
+          gateCount: input.validation.gates.length,
+        },
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
+    });
+  }
+
+  async recordMergeRequest(
+    taskId: string,
+    input: MergeRequestRecordInput,
+  ): Promise<void> {
+    const createdAt = this.nowIso();
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      const recordId = `mr_${randomUUID()}`;
+      await client.query(
+        `
+          INSERT INTO merge_request_records (
+            id, task_id, worker_id, merge_request, branch, outcome,
+            validation_summary, created_at
+          )
+          VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+        `,
+        [
+          recordId,
+          taskId,
+          input.workerId,
+          JSON.stringify(input.mergeRequest),
+          input.branch,
+          input.outcome,
+          input.validationSummary ?? null,
+          createdAt,
+        ],
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "merge_request_recorded",
+        source: "worker_agent",
+        actor: { owner: "worker_agent", id: input.workerId },
+        message: input.mergeRequest.url,
+        payload: {
+          mergeRequestIid: input.mergeRequest.iid,
+          branch: input.branch,
+          outcome: input.outcome,
+        },
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
+    });
+  }
+
+  async recordReviewMetadata(
+    taskId: string,
+    input: ReviewMetadataRecordInput,
+  ): Promise<void> {
+    const createdAt = this.nowIso();
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      await client.query(
+        `
+          INSERT INTO review_metadata_records (id, task_id, metadata, created_at)
+          VALUES ($1, $2, $3::jsonb, $4)
+        `,
+        [`review_${randomUUID()}`, taskId, JSON.stringify(input.metadata), createdAt],
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "review_metadata_recorded",
+        source: "gitlab_sync",
+        payload: {
+          mergeRequestIid: input.metadata.mergeRequestIid,
+          processedDiscussionCount: input.metadata.processedDiscussionIds.length,
+        },
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
+    });
+  }
+
+  async recordDecomposition(taskId: string, plan: DecompositionPlan): Promise<void> {
+    await this.recordDecision(taskId, {
+      kind: "decomposition",
+      schemaVersion: 1,
+      source: "worker_agent",
+      payload: clone(plan) as unknown as Record<string, unknown>,
+    });
+  }
+
+  async createChildTasks(
+    taskId: string,
+    subtasks: SubtaskDraft[],
+  ): Promise<TaskRecord[]> {
+    const parent = await this.getTask(taskId);
+    const created: TaskRecord[] = [];
+    for (const subtask of subtasks) {
+      created.push(
+        await this.createTask({
+          title: subtask.title,
+          description: [
+            subtask.description,
+            "",
+            `Parent task: ${parent.id}`,
+          ].join("\n"),
+          source: { kind: "native" },
+          createdBy: {
+            owner: "worker_agent",
+            id: "decomposition",
+          },
+          repositoryName: parent.repositoryName,
+          repoPathKey: parent.repoPathKey,
+          baseBranch: parent.baseBranch,
+          queue: subtask.queue ?? parent.queue,
+          tags: [...new Set([...parent.tags, ...subtask.tags])],
+          components: [...parent.components],
+          status: "ready",
+          taskType: "unknown",
+          promptProfileId: subtask.recommendedPromptProfileId,
+          acceptanceCriteria: subtask.acceptanceCriteria,
+          constraints: [...parent.constraints],
+        }),
+      );
+    }
+    return created;
+  }
+
+  async linkDependency(input: LinkTaskDependencyInput): Promise<void> {
+    await this.addDependency(input);
+  }
+
+  async recordMemoryContext(
+    taskId: string,
+    input: MemoryContextRecordInput,
+  ): Promise<void> {
+    const createdAt = this.nowIso();
+    await this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      await client.query(
+        `
+          INSERT INTO memory_context_refs (
+            id, task_id, worker_id, prompt_profile_id, task_type,
+            knowledge_section_ids, prompt_rule_ids, similar_failure_count, created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `,
+        [
+          `memory_${randomUUID()}`,
+          taskId,
+          input.workerId,
+          input.promptProfileId,
+          input.taskType,
+          input.knowledgeSectionIds,
+          input.promptRuleIds,
+          input.similarFailureCount,
+          createdAt,
+        ],
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "memory_context_recorded",
+        source: "worker_agent",
+        actor: { owner: "worker_agent", id: input.workerId },
+        payload: {
+          knowledgeSectionIds: input.knowledgeSectionIds,
+          promptRuleIds: input.promptRuleIds,
+          similarFailureCount: input.similarFailureCount,
+        },
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
+    });
+  }
+
   async addDependency(input: TaskDependencyInput): Promise<TaskDependency> {
     const createdAt = input.createdAt ?? this.nowIso();
     const dependency: TaskDependency = {
@@ -828,6 +1429,14 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       plans: [createImplicitPlan(taskId, createdAt)],
       dependencies: [],
       artifacts: [],
+      agentRuns: [],
+      qualityGateRuns: [],
+      mergeRequests: [],
+      clarificationQuestions: [],
+      humanAnswers: [],
+      decompositionDecisions: [],
+      reviewMetadata: [],
+      memoryContextRefs: [],
       createdAt,
       updatedAt: createdAt,
       ...(input.lastSyncedAt ? { lastSyncedAt: input.lastSyncedAt } : {}),
@@ -1018,6 +1627,71 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     );
   }
 
+  private async findActivePlanId(
+    client: PostgresQueryable,
+    taskId: string,
+  ): Promise<string> {
+    const result = await client.query<{ id: string }>(
+      `
+        SELECT id
+        FROM task_plans
+        WHERE task_id = $1
+        ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, created_at, id
+        LIMIT 1
+      `,
+      [taskId],
+    );
+    const id = result.rows[0]?.id;
+    if (!id) {
+      throw new Error(`Task ${taskId} has no active plan.`);
+    }
+    return id;
+  }
+
+  private async insertArtifacts(
+    client: PostgresQueryable,
+    taskId: string,
+    inputs: readonly ArtifactRefInput[],
+    createdAt: string,
+  ): Promise<ArtifactRef[]> {
+    const artifacts: ArtifactRef[] = [];
+    for (const input of inputs) {
+      if (!input.path && !input.uri) {
+        throw new Error("Artifact ref requires path or uri.");
+      }
+      const artifact: ArtifactRef = {
+        id: `artifact_${randomUUID()}`,
+        taskId,
+        kind: input.kind,
+        ...(input.path ? { path: input.path } : {}),
+        ...(input.uri ? { uri: input.uri } : {}),
+        ...(input.summary ? { summary: input.summary } : {}),
+        retentionClass: input.retentionClass ?? "task_lifetime",
+        createdAt,
+      };
+      await client.query(
+        `
+          INSERT INTO artifacts (
+            id, task_id, kind, path, uri, summary, retention_class, created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `,
+        [
+          artifact.id,
+          artifact.taskId,
+          artifact.kind,
+          artifact.path ?? null,
+          artifact.uri ?? null,
+          artifact.summary ?? null,
+          artifact.retentionClass,
+          artifact.createdAt,
+        ],
+      );
+      artifacts.push(artifact);
+    }
+    return artifacts;
+  }
+
   private async getTaskUsing(
     client: PostgresQueryable,
     taskId: string,
@@ -1041,6 +1715,12 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       dependencies,
       artifacts,
       stepArtifacts,
+      agentRuns,
+      qualityGateRuns,
+      qualityGateRunArtifacts,
+      mergeRequests,
+      reviewMetadata,
+      memoryContextRefs,
     ] = await Promise.all([
       client.query("SELECT * FROM task_external_refs WHERE task_id = $1 ORDER BY created_at, id", [
         taskId,
@@ -1083,6 +1763,29 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         `,
         [taskId],
       ),
+      client.query("SELECT * FROM agent_runs WHERE task_id = $1 ORDER BY started_at, id", [
+        taskId,
+      ]),
+      client.query("SELECT * FROM quality_gate_runs WHERE task_id = $1 ORDER BY created_at, id", [
+        taskId,
+      ]),
+      client.query(
+        `
+          SELECT validation_id, artifact_id
+          FROM quality_gate_run_artifacts
+          WHERE artifact_id IN (SELECT id FROM artifacts WHERE task_id = $1)
+        `,
+        [taskId],
+      ),
+      client.query("SELECT * FROM merge_request_records WHERE task_id = $1 ORDER BY created_at, id", [
+        taskId,
+      ]),
+      client.query("SELECT * FROM review_metadata_records WHERE task_id = $1 ORDER BY created_at, id", [
+        taskId,
+      ]),
+      client.query("SELECT * FROM memory_context_refs WHERE task_id = $1 ORDER BY created_at, id", [
+        taskId,
+      ]),
     ]);
 
     const artifactRecords = artifacts.rows.map((artifact) =>
@@ -1098,6 +1801,16 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       const bucket = artifactsByStepId.get(String(link.step_id)) ?? [];
       bucket.push(artifact);
       artifactsByStepId.set(String(link.step_id), bucket);
+    }
+    const artifactsByValidationId = new Map<string, ArtifactRef[]>();
+    for (const link of qualityGateRunArtifacts.rows) {
+      const artifact = artifactById.get(String(link.artifact_id));
+      if (!artifact) {
+        continue;
+      }
+      const bucket = artifactsByValidationId.get(String(link.validation_id)) ?? [];
+      bucket.push(artifact);
+      artifactsByValidationId.set(String(link.validation_id), bucket);
     }
 
     const stepsByPlanId = new Map<string, TaskStep[]>();
@@ -1143,6 +1856,32 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         this.mapDependency(dependency),
       ),
       artifacts: artifactRecords,
+      agentRuns: agentRuns.rows.map((run) => this.mapAgentRun(run as AgentRunRow)),
+      qualityGateRuns: qualityGateRuns.rows.map((run) =>
+        this.mapQualityGateRun(
+          run as QualityGateRunRow,
+          artifactsByValidationId.get(String(run.id)) ?? [],
+        ),
+      ),
+      mergeRequests: mergeRequests.rows.map((record) =>
+        this.mapMergeRequestRecord(record as MergeRequestRecordRow),
+      ),
+      clarificationQuestions: this.mapClarificationQuestions(
+        comments.rows.map((comment) => this.mapComment(comment)),
+      ),
+      humanAnswers: this.mapHumanAnswers(
+        comments.rows.map((comment) => this.mapComment(comment)),
+      ),
+      decompositionDecisions: decisions.rows
+        .map((decision) => this.mapDecision(decision))
+        .filter((decision) => decision.kind === "decomposition")
+        .map((decision) => this.mapDecompositionDecision(decision)),
+      reviewMetadata: reviewMetadata.rows.map((record) =>
+        this.mapReviewMetadataRecord(record as ReviewMetadataRecordRow),
+      ),
+      memoryContextRefs: memoryContextRefs.rows.map((ref) =>
+        this.mapMemoryContextRef(ref as MemoryContextRefRow),
+      ),
       createdAt: toIso(row.created_at),
       updatedAt: toIso(row.updated_at),
       ...(optionalIso(row.last_synced_at)
@@ -1289,6 +2028,153 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       ...(row.uri ? { uri: String(row.uri) } : {}),
       ...(row.summary ? { summary: String(row.summary) } : {}),
       retentionClass: row.retention_class as ArtifactRef["retentionClass"],
+      createdAt: toIso(row.created_at),
+    };
+  }
+
+  private mapAgentRun(row: AgentRunRow): AgentRun {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      workerId: row.worker_id,
+      stage: row.stage,
+      status: row.status,
+      ...(row.thread_id ? { threadId: row.thread_id } : {}),
+      ...(row.exit_code !== null ? { exitCode: Number(row.exit_code) } : {}),
+      ...(row.timed_out !== null ? { timedOut: Boolean(row.timed_out) } : {}),
+      ...(row.final_message ? { finalMessage: row.final_message } : {}),
+      ...(row.diagnostic ? { diagnostic: row.diagnostic } : {}),
+      startedAt: toIso(row.started_at),
+      ...(row.completed_at ? { completedAt: toIso(row.completed_at) } : {}),
+    };
+  }
+
+  private mapQualityGateRun(
+    row: QualityGateRunRow,
+    artifactRefs: ArtifactRef[],
+  ): QualityGateRun {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      workerId: row.worker_id,
+      status: row.status,
+      changed: row.changed,
+      testsPassed: row.tests_passed,
+      lintPassed: row.lint_passed,
+      gates: row.gates as QualityGateResult[],
+      diagnostic: row.diagnostic,
+      ...(row.summary ? { summary: row.summary } : {}),
+      artifactRefs,
+      createdAt: toIso(row.created_at),
+    };
+  }
+
+  private mapMergeRequestRecord(row: MergeRequestRecordRow): MergeRequestRecord {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      workerId: row.worker_id,
+      mergeRequest: row.merge_request as MergeRequestInfo,
+      branch: row.branch,
+      outcome: row.outcome,
+      ...(row.validation_summary ? { validationSummary: row.validation_summary } : {}),
+      createdAt: toIso(row.created_at),
+    };
+  }
+
+  private mapClarificationQuestions(
+    comments: TaskComment[],
+  ): ClarificationQuestionRecord[] {
+    return comments
+      .filter((comment) => comment.kind === "question")
+      .map((comment) => {
+        const payload = (comment.payload ?? {}) as Record<string, unknown>;
+        return {
+          id: comment.id,
+          taskId: comment.taskId,
+          workerId:
+            typeof payload.workerId === "string"
+              ? payload.workerId
+              : comment.author.id,
+          question: {
+            summary:
+              typeof payload.summary === "string"
+                ? payload.summary
+                : comment.body ?? "Clarification requested.",
+            blockingReason:
+              typeof payload.blockingReason === "string"
+                ? payload.blockingReason
+                : "Not recorded.",
+            question:
+              typeof payload.question === "string"
+                ? payload.question
+                : comment.body ?? "",
+            options: Array.isArray(payload.options)
+              ? payload.options.filter((value): value is string => typeof value === "string")
+              : [],
+            resumeHint:
+              typeof payload.resumeHint === "string"
+                ? payload.resumeHint
+                : "Reply with /resume.",
+          },
+          ...(typeof payload.threadId === "string" ? { threadId: payload.threadId } : {}),
+          status: "open",
+          createdAt: comment.createdAt,
+        };
+      });
+  }
+
+  private mapHumanAnswers(comments: TaskComment[]): HumanAnswerRecord[] {
+    return comments
+      .filter((comment) => comment.kind === "answer")
+      .map((comment) => {
+        const payload = (comment.payload ?? {}) as Record<string, unknown>;
+        return {
+          id: comment.id,
+          taskId: comment.taskId,
+          ...(typeof payload.questionId === "string" ? { questionId: payload.questionId } : {}),
+          author: comment.author,
+          body: comment.body ?? "",
+          ...(payload.command && typeof payload.command === "object"
+            ? { command: payload.command as HumanAnswerRecord["command"] }
+            : {}),
+          createdAt: comment.createdAt,
+        };
+      });
+  }
+
+  private mapDecompositionDecision(
+    decision: TaskDecision,
+  ): DecompositionDecisionRecord {
+    return {
+      id: decision.id,
+      taskId: decision.taskId,
+      plan: decision.payload as unknown as DecompositionPlan,
+      createdAt: decision.createdAt,
+    };
+  }
+
+  private mapReviewMetadataRecord(
+    row: ReviewMetadataRecordRow,
+  ): ReviewMetadataRecord {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      metadata: row.metadata as ReviewMetadata,
+      createdAt: toIso(row.created_at),
+    };
+  }
+
+  private mapMemoryContextRef(row: MemoryContextRefRow): MemoryContextRef {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      workerId: row.worker_id,
+      promptProfileId: row.prompt_profile_id,
+      taskType: row.task_type as MemoryContextRef["taskType"],
+      knowledgeSectionIds: row.knowledge_section_ids ?? [],
+      promptRuleIds: row.prompt_rule_ids ?? [],
+      similarFailureCount: Number(row.similar_failure_count),
       createdAt: toIso(row.created_at),
     };
   }

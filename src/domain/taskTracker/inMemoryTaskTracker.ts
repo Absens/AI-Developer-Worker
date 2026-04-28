@@ -25,12 +25,29 @@ import {
 import { assertValidTaskStatusTransition } from "./status.js";
 import type {
   AgentTaskContext,
+  AgentRun,
+  AgentRunInput,
+  ArtifactRef,
+  ArtifactRefInput,
   ClaimedTask,
+  ClarificationQuestionInput,
+  ClarificationQuestionRecord,
   ClaimTaskInput,
   CommentInput,
   CreateTaskInput,
+  DecompositionDecisionRecord,
+  HumanAnswerInput,
+  HumanAnswerRecord,
   LeaseHeartbeatInput,
+  LinkTaskDependencyInput,
+  MemoryContextRecordInput,
+  MemoryContextRef,
+  MergeRequestRecord,
+  MergeRequestRecordInput,
+  QualityGateRun,
   ReleaseLeaseInput,
+  ReviewMetadataRecord,
+  ReviewMetadataRecordInput,
   TaskActor,
   TaskDecision,
   TaskDecisionInput,
@@ -48,8 +65,16 @@ import type {
   TaskRevision,
   TaskRevisionInput,
   TaskStatus,
+  TaskStep,
+  TaskStepRecordInput,
   TaskTrackerClient,
+  ValidationRecordInput,
 } from "./types.js";
+import type {
+  DecompositionPlan,
+  SubtaskDraft,
+  TaskAnalysisDecision,
+} from "../../models/types.js";
 
 export interface InMemoryTaskTrackerOptions {
   now?: () => Date;
@@ -248,6 +273,14 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       plans: [createImplicitPlan(taskId, createdAt)],
       dependencies: [],
       artifacts: [],
+      agentRuns: [],
+      qualityGateRuns: [],
+      mergeRequests: [],
+      clarificationQuestions: [],
+      humanAnswers: [],
+      decompositionDecisions: [],
+      reviewMetadata: [],
+      memoryContextRefs: [],
       createdAt,
       updatedAt: createdAt,
       ...(input.lastSyncedAt ? { lastSyncedAt: input.lastSyncedAt } : {}),
@@ -443,6 +476,418 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     return clone(decision);
   }
 
+  async recordAnalysis(taskId: string, decision: TaskAnalysisDecision): Promise<void> {
+    await this.recordDecision(taskId, {
+      kind: "analysis",
+      schemaVersion: 1,
+      source: "worker_agent",
+      payload: clone(decision) as unknown as Record<string, unknown>,
+    });
+    await this.appendEvent(taskId, {
+      kind: "analysis_recorded",
+      source: "worker_agent",
+      message: decision.reasoning,
+      payload: {
+        confidence: decision.confidence,
+        recommendedMode: decision.recommendedMode,
+        promptProfileId: decision.promptProfileId,
+      },
+    });
+  }
+
+  async recordTaskStep(taskId: string, input: TaskStepRecordInput): Promise<void> {
+    const task = this.requireTask(taskId);
+    const updatedAt = this.nowIso();
+    const planId = input.planId ?? this.requireActivePlan(task).id;
+    const attempt = input.attempt ?? 1;
+    const artifacts = this.createArtifactRefs(task, input.artifacts ?? [], updatedAt);
+    const existing = task.plans
+      .flatMap((plan) => plan.steps)
+      .find(
+        (step) =>
+          step.planId === planId &&
+          step.kind === input.kind &&
+          step.attempt === attempt,
+      );
+
+    if (existing) {
+      existing.status = input.status;
+      existing.artifacts = [...existing.artifacts, ...artifacts];
+      existing.updatedAt = updatedAt;
+      existing.inputContextHash = input.inputContextHash ?? existing.inputContextHash;
+      existing.outputSummary = input.outputSummary ?? existing.outputSummary;
+      existing.failureKind = input.failureKind ?? existing.failureKind;
+      existing.diagnostic = input.diagnostic ?? existing.diagnostic;
+    } else {
+      const step: TaskStep = {
+        id: `step_${randomUUID()}`,
+        taskId,
+        planId,
+        kind: input.kind,
+        attempt,
+        status: input.status,
+        ...(input.inputContextHash ? { inputContextHash: input.inputContextHash } : {}),
+        ...(input.outputSummary ? { outputSummary: input.outputSummary } : {}),
+        artifacts,
+        ...(input.failureKind ? { failureKind: input.failureKind } : {}),
+        ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
+        createdAt: updatedAt,
+        updatedAt,
+      };
+      this.requirePlan(task, planId).steps.push(step);
+    }
+
+    this.requirePlan(task, planId).updatedAt = updatedAt;
+    task.updatedAt = updatedAt;
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "task_step_recorded",
+      source: "worker_agent",
+      payload: {
+        planId,
+        kind: input.kind,
+        attempt,
+        status: input.status,
+      },
+      createdAt: updatedAt,
+    });
+  }
+
+  async askClarification(
+    taskId: string,
+    question: ClarificationQuestionInput,
+  ): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = this.nowIso();
+    const workerId = question.workerId ?? "worker";
+    const record: ClarificationQuestionRecord = {
+      id: `question_${randomUUID()}`,
+      taskId,
+      workerId,
+      question: {
+        summary: question.summary,
+        blockingReason: question.blockingReason,
+        question: question.question,
+        options: [...question.options],
+        resumeHint: question.resumeHint,
+      },
+      ...(question.threadId ? { threadId: question.threadId } : {}),
+      status: "open",
+      createdAt,
+    };
+    task.clarificationQuestions.push(record);
+    task.comments.push({
+      id: record.id,
+      taskId,
+      kind: "question",
+      author: { owner: "worker_agent", id: workerId },
+      body: question.question,
+      payload: clone(record) as unknown as Record<string, unknown>,
+      createdAt,
+    });
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "clarification_requested",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: workerId },
+      message: question.summary,
+      payload: {
+        questionId: record.id,
+        blockingReason: question.blockingReason,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+  }
+
+  async recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = this.nowIso();
+    const record: HumanAnswerRecord = {
+      id: `answer_${randomUUID()}`,
+      taskId,
+      ...(input.questionId ? { questionId: input.questionId } : {}),
+      author: clone(input.author),
+      body: input.body,
+      ...(input.command ? { command: clone(input.command) } : {}),
+      createdAt,
+    };
+    task.humanAnswers.push(record);
+    task.comments.push({
+      id: record.id,
+      taskId,
+      kind: "answer",
+      author: clone(input.author),
+      body: input.body,
+      payload: clone(record) as unknown as Record<string, unknown>,
+      createdAt,
+    });
+    if (input.questionId) {
+      const question = task.clarificationQuestions.find(
+        (candidate) => candidate.id === input.questionId,
+      );
+      if (question) {
+        question.status = "answered";
+      }
+    }
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "human_answer_recorded",
+      source: input.author.owner,
+      actor: clone(input.author),
+      payload: { questionId: input.questionId },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+    if (
+      task.status === "awaiting_human" ||
+      task.status === "blocked" ||
+      task.status === "failed"
+    ) {
+      await this.setStatus(taskId, "ready", "Human answer recorded; task is ready to resume.");
+    }
+  }
+
+  async recordAgentRun(taskId: string, input: AgentRunInput): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = input.completedAt ?? input.startedAt ?? this.nowIso();
+    const run: AgentRun = {
+      id: `run_${randomUUID()}`,
+      taskId,
+      workerId: input.workerId,
+      stage: input.stage,
+      status: input.status,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.exitCode !== undefined ? { exitCode: input.exitCode } : {}),
+      ...(input.timedOut !== undefined ? { timedOut: input.timedOut } : {}),
+      ...(input.finalMessage ? { finalMessage: input.finalMessage } : {}),
+      ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
+      startedAt: input.startedAt ?? createdAt,
+      ...(input.completedAt ? { completedAt: input.completedAt } : {}),
+    };
+    task.agentRuns.push(run);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "agent_run_recorded",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: input.workerId },
+      payload: {
+        runId: run.id,
+        stage: run.stage,
+        status: run.status,
+        exitCode: run.exitCode,
+        timedOut: run.timedOut,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+  }
+
+  async recordValidation(taskId: string, input: ValidationRecordInput): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = this.nowIso();
+    const gateArtifacts = input.validation.gates
+      .filter((gate) => gate.artifactPath)
+      .map((gate): ArtifactRefInput => ({
+        kind: "validation_artifact",
+        path: gate.artifactPath,
+        summary: `${gate.label} ${gate.status}`,
+        retentionClass: "task_lifetime",
+      }));
+    const artifactRefs = this.createArtifactRefs(
+      task,
+      [...gateArtifacts, ...(input.artifacts ?? [])],
+      createdAt,
+    );
+    const run: QualityGateRun = {
+      id: `validation_${randomUUID()}`,
+      taskId,
+      workerId: input.workerId,
+      status: input.status,
+      changed: input.validation.changed,
+      testsPassed: input.validation.testsPassed,
+      lintPassed: input.validation.lintPassed,
+      gates: clone(input.validation.gates),
+      diagnostic: input.validation.diagnostic,
+      ...(input.summary ? { summary: input.summary } : {}),
+      artifactRefs,
+      createdAt,
+    };
+    task.qualityGateRuns.push(run);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "validation_recorded",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: input.workerId },
+      payload: {
+        validationId: run.id,
+        status: run.status,
+        changed: run.changed,
+        gateCount: run.gates.length,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+  }
+
+  async recordMergeRequest(
+    taskId: string,
+    input: MergeRequestRecordInput,
+  ): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = this.nowIso();
+    const record: MergeRequestRecord = {
+      id: `mr_${randomUUID()}`,
+      taskId,
+      workerId: input.workerId,
+      mergeRequest: clone(input.mergeRequest),
+      branch: input.branch,
+      outcome: input.outcome,
+      ...(input.validationSummary ? { validationSummary: input.validationSummary } : {}),
+      createdAt,
+    };
+    task.mergeRequests.push(record);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "merge_request_recorded",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: input.workerId },
+      message: input.mergeRequest.url,
+      payload: {
+        mergeRequestIid: input.mergeRequest.iid,
+        branch: input.branch,
+        outcome: input.outcome,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+  }
+
+  async recordReviewMetadata(
+    taskId: string,
+    input: ReviewMetadataRecordInput,
+  ): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = this.nowIso();
+    const record: ReviewMetadataRecord = {
+      id: `review_${randomUUID()}`,
+      taskId,
+      metadata: clone(input.metadata),
+      createdAt,
+    };
+    task.reviewMetadata.push(record);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "review_metadata_recorded",
+      source: "gitlab_sync",
+      payload: {
+        mergeRequestIid: input.metadata.mergeRequestIid,
+        processedDiscussionCount: input.metadata.processedDiscussionIds.length,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+  }
+
+  async recordDecomposition(taskId: string, plan: DecompositionPlan): Promise<void> {
+    const task = this.requireTask(taskId);
+    const decision = await this.recordDecision(taskId, {
+      kind: "decomposition",
+      schemaVersion: 1,
+      source: "worker_agent",
+      payload: clone(plan) as unknown as Record<string, unknown>,
+    });
+    task.decompositionDecisions.push({
+      id: decision.id,
+      taskId,
+      plan: clone(plan),
+      createdAt: decision.createdAt,
+    });
+  }
+
+  async createChildTasks(
+    taskId: string,
+    subtasks: SubtaskDraft[],
+  ): Promise<TaskRecord[]> {
+    const parent = this.requireTask(taskId);
+    const created: TaskRecord[] = [];
+    for (const subtask of subtasks) {
+      created.push(
+        await this.createTask({
+          title: subtask.title,
+          description: [
+            subtask.description,
+            "",
+            `Parent task: ${parent.id}`,
+          ].join("\n"),
+          source: { kind: "native" },
+          createdBy: {
+            owner: "worker_agent",
+            id: "decomposition",
+          },
+          repositoryName: parent.repositoryName,
+          repoPathKey: parent.repoPathKey,
+          baseBranch: parent.baseBranch,
+          queue: subtask.queue ?? parent.queue,
+          tags: [...new Set([...parent.tags, ...subtask.tags])],
+          components: [...parent.components],
+          status: "ready",
+          taskType: "unknown",
+          promptProfileId: subtask.recommendedPromptProfileId,
+          acceptanceCriteria: subtask.acceptanceCriteria,
+          constraints: [...parent.constraints],
+        }),
+      );
+    }
+    return created;
+  }
+
+  async linkDependency(input: LinkTaskDependencyInput): Promise<void> {
+    await this.addDependency(input);
+  }
+
+  async recordMemoryContext(
+    taskId: string,
+    input: MemoryContextRecordInput,
+  ): Promise<void> {
+    const task = this.requireTask(taskId);
+    const createdAt = this.nowIso();
+    const ref: MemoryContextRef = {
+      id: `memory_${randomUUID()}`,
+      taskId,
+      workerId: input.workerId,
+      promptProfileId: input.promptProfileId,
+      taskType: input.taskType,
+      knowledgeSectionIds: [...input.knowledgeSectionIds],
+      promptRuleIds: [...input.promptRuleIds],
+      similarFailureCount: input.similarFailureCount,
+      createdAt,
+    };
+    task.memoryContextRefs.push(ref);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "memory_context_recorded",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: input.workerId },
+      payload: {
+        memoryContextId: ref.id,
+        knowledgeSectionIds: ref.knowledgeSectionIds,
+        promptRuleIds: ref.promptRuleIds,
+        similarFailureCount: ref.similarFailureCount,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
+  }
+
   async addDependency(input: TaskDependencyInput): Promise<TaskDependency> {
     const fromTask = this.requireTask(input.fromTaskId);
     const toTask = this.requireTask(input.toTaskId);
@@ -592,6 +1037,46 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
 
   private nowIso(): string {
     return this.now().toISOString();
+  }
+
+  private requireActivePlan(task: TaskRecord): TaskPlan {
+    const plan = task.plans.find((candidate) => candidate.status === "active") ?? task.plans[0];
+    if (!plan) {
+      throw new Error(`Task ${task.id} has no active plan.`);
+    }
+    return plan;
+  }
+
+  private requirePlan(task: TaskRecord, planId: string): TaskPlan {
+    const plan = task.plans.find((candidate) => candidate.id === planId);
+    if (!plan) {
+      throw new Error(`Task ${task.id} has no plan ${planId}.`);
+    }
+    return plan;
+  }
+
+  private createArtifactRefs(
+    task: TaskRecord,
+    inputs: readonly ArtifactRefInput[],
+    createdAt: string,
+  ): ArtifactRef[] {
+    const artifacts = inputs.map((input) => {
+      if (!input.path && !input.uri) {
+        throw new Error("Artifact ref requires path or uri.");
+      }
+      return {
+        id: `artifact_${randomUUID()}`,
+        taskId: task.id,
+        kind: input.kind,
+        ...(input.path ? { path: input.path } : {}),
+        ...(input.uri ? { uri: input.uri } : {}),
+        ...(input.summary ? { summary: input.summary } : {}),
+        retentionClass: input.retentionClass ?? "task_lifetime",
+        createdAt,
+      } satisfies ArtifactRef;
+    });
+    task.artifacts.push(...artifacts);
+    return artifacts.map(clone);
   }
 
   private requireTask(taskId: string): TaskRecord {

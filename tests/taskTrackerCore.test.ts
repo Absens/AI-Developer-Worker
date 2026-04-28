@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   FIELD_OWNERSHIP_RULES,
+  AgentWorkflowService,
   FieldOwnershipError,
   InMemoryTaskTrackerClient,
   InvalidTaskStatusTransitionError,
@@ -323,5 +324,98 @@ describe("internal task tracker core", () => {
         title: "Worker must not own this",
       }),
     ).rejects.toThrow(FieldOwnershipError);
+  });
+
+  it("records Phase 7D worker runtime structures without service comments", async () => {
+    const client = new InMemoryTaskTrackerClient({ now: createClock() });
+    const service = new AgentWorkflowService(client);
+    const task = await client.createTask(baseTaskInput({ id: "phase-7d" }));
+
+    await service.recordAnalysisDecision(task.id, {
+      confidence: 90,
+      taskType: "backend_endpoint",
+      recommendedMode: "implement",
+      promptProfileId: "general",
+      expectedFiles: ["src/app.ts"],
+      expectedSubsystems: ["worker"],
+      riskFactors: [],
+      missingContext: [],
+      reasoning: "Clear implementation task.",
+    });
+    await service.recordTaskStep(task.id, { kind: "analyze", status: "done" });
+    await service.askClarification(task.id, {
+      workerId: "worker-1",
+      summary: "Need target API.",
+      blockingReason: "API variant is ambiguous.",
+      question: "Which API variant should be used?",
+      options: ["A"],
+      resumeHint: "Reply with /resume A.",
+    });
+    await service.recordHumanAnswer(task.id, {
+      questionId: (await client.getTask(task.id)).clarificationQuestions[0]?.id,
+      author: human,
+      body: "/resume A",
+      command: { type: "resume", rawText: "/resume A", choice: "A" },
+    });
+    await service.recordAgentRun(task.id, {
+      workerId: "worker-1",
+      stage: "implementation",
+      status: "completed",
+      threadId: "thread-1",
+      exitCode: 0,
+    });
+    await service.recordValidation(task.id, {
+      workerId: "worker-1",
+      status: "passed",
+      validation: {
+        changed: true,
+        testsPassed: true,
+        lintPassed: true,
+        gates: [],
+        diagnostic: "",
+      },
+    });
+    await service.recordMergeRequest(task.id, {
+      workerId: "worker-1",
+      branch: "feature/ai-task-phase-7d",
+      outcome: "created",
+      mergeRequest: {
+        id: 1,
+        iid: 1,
+        url: "https://gitlab.example/mr/1",
+        title: "MR",
+        sourceBranch: "feature/ai-task-phase-7d",
+        targetBranch: "main",
+      },
+    });
+    await service.recordMemoryContext(task.id, {
+      workerId: "worker-1",
+      promptProfileId: "general",
+      taskType: "backend_endpoint",
+      knowledgeSectionIds: ["architecture"],
+      promptRuleIds: ["rule-1"],
+      similarFailureCount: 1,
+    });
+
+    const stored = await client.getTask(task.id);
+    expect(stored.decisions).toHaveLength(1);
+    expect(stored.plans[0]?.steps).toEqual([
+      expect.objectContaining({ kind: "analyze", status: "done" }),
+    ]);
+    expect(stored.clarificationQuestions).toHaveLength(1);
+    expect(stored.humanAnswers).toHaveLength(1);
+    expect(stored.agentRuns).toEqual([
+      expect.objectContaining({ stage: "implementation", threadId: "thread-1" }),
+    ]);
+    expect(stored.qualityGateRuns).toEqual([
+      expect.objectContaining({ status: "passed", changed: true }),
+    ]);
+    expect(stored.mergeRequests).toEqual([
+      expect.objectContaining({ branch: "feature/ai-task-phase-7d" }),
+    ]);
+    expect(stored.memoryContextRefs).toEqual([
+      expect.objectContaining({ knowledgeSectionIds: ["architecture"] }),
+    ]);
+    expect(stored.comments.some((comment) => comment.body?.startsWith("AI "))).toBe(false);
   });
 });

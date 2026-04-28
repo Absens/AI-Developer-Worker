@@ -1,4 +1,16 @@
-import type { LogicalStatus, TaskType } from "../../models/types.js";
+import type {
+  ClarificationQuestion,
+  DecompositionPlan,
+  HumanTaskCommand,
+  LogicalStatus,
+  MergeRequestInfo,
+  QualityGateResult,
+  ReviewMetadata,
+  SubtaskDraft,
+  TaskAnalysisDecision,
+  TaskType,
+  ValidationResult,
+} from "../../models/types.js";
 
 export const TASK_STATUSES = [
   "new",
@@ -191,6 +203,14 @@ export interface ArtifactRef {
   createdAt: string;
 }
 
+export interface ArtifactRefInput {
+  kind: string;
+  path?: string;
+  uri?: string;
+  summary?: string;
+  retentionClass?: ArtifactRef["retentionClass"];
+}
+
 export interface TaskStep {
   id: string;
   taskId: string;
@@ -207,6 +227,18 @@ export interface TaskStep {
   updatedAt: string;
 }
 
+export interface TaskStepRecordInput {
+  planId?: string;
+  kind: TaskStepKind;
+  attempt?: number;
+  status: TaskStep["status"];
+  inputContextHash?: string;
+  outputSummary?: string;
+  artifacts?: ArtifactRefInput[];
+  failureKind?: string;
+  diagnostic?: string;
+}
+
 export interface TaskPlan {
   id: string;
   taskId: string;
@@ -215,6 +247,135 @@ export interface TaskPlan {
   steps: TaskStep[];
   createdAt: string;
   updatedAt: string;
+}
+
+export type AgentRunStage =
+  | "analysis"
+  | "decomposition"
+  | "implementation"
+  | "validation"
+  | "fix"
+  | "publish"
+  | "review_fix";
+
+export interface AgentRun {
+  id: string;
+  taskId: string;
+  workerId: string;
+  stage: AgentRunStage;
+  status: "started" | "completed" | "failed";
+  threadId?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  finalMessage?: string;
+  diagnostic?: string;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface AgentRunInput {
+  workerId: string;
+  stage: AgentRunStage;
+  status: AgentRun["status"];
+  threadId?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  finalMessage?: string;
+  diagnostic?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface QualityGateRun {
+  id: string;
+  taskId: string;
+  workerId: string;
+  status: "passed" | "failed";
+  changed: boolean;
+  testsPassed: boolean;
+  lintPassed: boolean;
+  gates: QualityGateResult[];
+  diagnostic: string;
+  summary?: string;
+  artifactRefs: ArtifactRef[];
+  createdAt: string;
+}
+
+export interface ValidationRecordInput {
+  workerId: string;
+  validation: ValidationResult;
+  status: QualityGateRun["status"];
+  summary?: string;
+  artifacts?: ArtifactRefInput[];
+}
+
+export interface MergeRequestRecord {
+  id: string;
+  taskId: string;
+  workerId: string;
+  mergeRequest: MergeRequestInfo;
+  branch: string;
+  outcome: "created" | "reused";
+  validationSummary?: string;
+  createdAt: string;
+}
+
+export interface MergeRequestRecordInput {
+  workerId: string;
+  mergeRequest: MergeRequestInfo;
+  branch: string;
+  outcome: MergeRequestRecord["outcome"];
+  validationSummary?: string;
+}
+
+export interface ClarificationQuestionRecord {
+  id: string;
+  taskId: string;
+  workerId: string;
+  question: ClarificationQuestion;
+  threadId?: string;
+  status: "open" | "answered";
+  createdAt: string;
+}
+
+export type ClarificationQuestionInput = ClarificationQuestion & {
+  workerId?: string;
+  threadId?: string;
+};
+
+export interface HumanAnswerRecord {
+  id: string;
+  taskId: string;
+  questionId?: string;
+  author: TaskActor;
+  body: string;
+  command?: HumanTaskCommand;
+  createdAt: string;
+}
+
+export interface HumanAnswerInput {
+  questionId?: string;
+  author: TaskActor;
+  body: string;
+  command?: HumanTaskCommand;
+}
+
+export interface ReviewMetadataRecord {
+  id: string;
+  taskId: string;
+  metadata: ReviewMetadata;
+  createdAt: string;
+}
+
+export interface ReviewMetadataRecordInput {
+  metadata: ReviewMetadata;
+}
+
+export interface DecompositionDecisionRecord {
+  id: string;
+  taskId: string;
+  plan: DecompositionPlan;
+  createdAt: string;
 }
 
 export const TASK_DECISION_KINDS = [
@@ -281,6 +442,31 @@ export interface TaskDependencyInput {
   resolvedAt?: string;
 }
 
+export interface LinkTaskDependencyInput extends TaskDependencyInput {}
+
+export interface TaskDependencyRecord extends TaskDependency {}
+
+export interface MemoryContextRef {
+  id: string;
+  taskId: string;
+  workerId: string;
+  promptProfileId: string;
+  taskType: TaskType;
+  knowledgeSectionIds: string[];
+  promptRuleIds: string[];
+  similarFailureCount: number;
+  createdAt: string;
+}
+
+export interface MemoryContextRecordInput {
+  workerId: string;
+  promptProfileId: string;
+  taskType: TaskType;
+  knowledgeSectionIds: string[];
+  promptRuleIds: string[];
+  similarFailureCount: number;
+}
+
 export interface TaskRecord {
   id: string;
   title: string;
@@ -314,6 +500,14 @@ export interface TaskRecord {
   plans: TaskPlan[];
   dependencies: TaskDependency[];
   artifacts: ArtifactRef[];
+  agentRuns: AgentRun[];
+  qualityGateRuns: QualityGateRun[];
+  mergeRequests: MergeRequestRecord[];
+  clarificationQuestions: ClarificationQuestionRecord[];
+  humanAnswers: HumanAnswerRecord[];
+  decompositionDecisions: DecompositionDecisionRecord[];
+  reviewMetadata: ReviewMetadataRecord[];
+  memoryContextRefs: MemoryContextRef[];
   createdAt: string;
   updatedAt: string;
   lastSyncedAt?: string;
@@ -439,6 +633,25 @@ export interface TaskTrackerClient {
   appendEvent(taskId: string, input: TaskEventInput): Promise<void>;
   appendComment(taskId: string, input: CommentInput): Promise<void>;
   setStatus(taskId: string, status: TaskStatus, reason?: string): Promise<void>;
+  recordDecision(taskId: string, input: TaskDecisionInput): Promise<TaskDecision>;
+  recordAnalysis(taskId: string, decision: TaskAnalysisDecision): Promise<void>;
+  recordTaskStep(taskId: string, input: TaskStepRecordInput): Promise<void>;
+  askClarification(
+    taskId: string,
+    question: ClarificationQuestionInput,
+  ): Promise<void>;
+  recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void>;
+  recordAgentRun(taskId: string, input: AgentRunInput): Promise<void>;
+  recordValidation(taskId: string, input: ValidationRecordInput): Promise<void>;
+  recordMergeRequest(taskId: string, input: MergeRequestRecordInput): Promise<void>;
+  recordReviewMetadata(
+    taskId: string,
+    input: ReviewMetadataRecordInput,
+  ): Promise<void>;
+  recordDecomposition(taskId: string, plan: DecompositionPlan): Promise<void>;
+  createChildTasks(taskId: string, subtasks: SubtaskDraft[]): Promise<TaskRecord[]>;
+  linkDependency(input: LinkTaskDependencyInput): Promise<void>;
+  recordMemoryContext(taskId: string, input: MemoryContextRecordInput): Promise<void>;
   addDependency(input: TaskDependencyInput): Promise<TaskDependency>;
   claimNextTask(input: ClaimTaskInput): Promise<ClaimedTask | null>;
   heartbeatLease(

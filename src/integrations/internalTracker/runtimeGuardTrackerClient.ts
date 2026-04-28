@@ -11,7 +11,7 @@ import { ConfigurationError } from "../../utils/errors.js";
 import type { TaskTrackerClient } from "../../domain/taskTracker/index.js";
 
 const unsupportedInternalRuntimeMessage =
-  "TASK_TRACKER_PROVIDER=internal is configured, but worker execution through the internal tracker is scheduled for Phase 7D. Use WORKER_PREFLIGHT_ONLY=true for Phase 7C validation or set TASK_TRACKER_PROVIDER=yandex.";
+  "TASK_TRACKER_PROVIDER=internal is configured, but Yandex-style TrackerClient runtime calls are disabled. Use the internal worker workflow boundary or set TASK_TRACKER_PROVIDER=yandex for direct Tracker mode.";
 
 export class InternalTrackerRuntimeGuardClient implements TrackerClient {
   constructor(private readonly taskTracker: TaskTrackerClient | undefined) {}

@@ -1,6 +1,7 @@
 import { buildRepositoryRuntimeConfig, loadFleetConfig } from "./config.js";
 import { assertCodexAuthenticated } from "./integrations/codex/auth.js";
 import { FleetOrchestrator } from "./domain/fleetOrchestrator.js";
+import { InternalWorkerOrchestrator } from "./domain/internalWorkerOrchestrator.js";
 import { NoopLockBackend, TrackerCommentLockBackend } from "./domain/lockBackend.js";
 import { WorkerOrchestrator } from "./domain/orchestrator.js";
 import { PreflightService } from "./domain/preflight.js";
@@ -28,6 +29,10 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   }
 
   const internalTaskTracker = createInternalTaskTrackerClient(fleetConfig.taskTracker);
+  const internalMode = fleetConfig.taskTracker?.provider === "internal";
+  if (internalMode && !internalTaskTracker) {
+    throw new Error("TASK_TRACKER_PROVIDER=internal requires an internal task tracker client.");
+  }
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
   const lockBackend =
     fleetConfig.coordination.lockBackend === "none"
@@ -48,13 +53,22 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
         internalTaskTracker,
       ),
     );
-    const orchestrator = new FleetOrchestrator(
-      fleetConfig,
-      contexts,
-      lockBackend,
-      logger,
-      observability,
-    );
+    const orchestrator = internalMode
+      ? new InternalWorkerOrchestrator(
+          fleetConfig,
+          contexts,
+          internalTaskTracker!,
+          logger,
+          undefined,
+          observability,
+        )
+      : new FleetOrchestrator(
+          fleetConfig,
+          contexts,
+          lockBackend,
+          logger,
+          observability,
+        );
     const preflight = {
       run: async () => {
         const results = await Promise.all(contexts.map((context) => context.preflight.run()));
@@ -84,18 +98,35 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const gitlab = new GitLabApiClient(config, logger);
   const codex = new CliCodexRunner(config, logger);
   const checkCodexAuth = () => assertCodexAuthenticated(config, logger);
-  const orchestrator = new WorkerOrchestrator(
-    config,
-    tracker,
-    git,
-    gitlab,
-    codex,
-    logger,
-    lockBackend,
-    fleetConfig.coordination,
-    undefined,
-    observability,
-  );
+  const orchestrator = internalMode
+    ? new InternalWorkerOrchestrator(
+        fleetConfig,
+        [
+          {
+            profile: primaryRepository,
+            config,
+            git,
+            gitlab,
+            codex,
+          },
+        ],
+        internalTaskTracker!,
+        logger,
+        undefined,
+        observability,
+      )
+    : new WorkerOrchestrator(
+        config,
+        tracker,
+        git,
+        gitlab,
+        codex,
+        logger,
+        lockBackend,
+        fleetConfig.coordination,
+        undefined,
+        observability,
+      );
   const preflight = new PreflightService(
     config,
     tracker,
