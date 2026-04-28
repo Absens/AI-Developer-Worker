@@ -755,3 +755,36 @@ export interface TaskAnalysisResult {
   clarification?: ClarificationQuestion;
   decision?: TaskAnalysisDecision;
 }
+
+export type {
+  AgentTaskContext,
+  ArtifactRef,
+  CommentInput,
+  CreateTaskInput,
+  ExportDigestInput,
+  ExternalIssueSnapshot,
+  ExternalTaskSource,
+  ExternalTransitionInput,
+  ImportCandidatesInput,
+  TaskActor,
+  TaskComment,
+  TaskDecision,
+  TaskDecisionInput,
+  TaskDependency,
+  TaskEvent,
+  TaskEventInput,
+  TaskExternalRef,
+  TaskExternalRefInput,
+  TaskFieldGroup,
+  TaskFieldOwner,
+  TaskFieldOwnership,
+  TaskMessageKind,
+  TaskPlan,
+  TaskRecord,
+  TaskRevision,
+  TaskRevisionInput,
+  TaskSource,
+  TaskStatus,
+  TaskStep,
+  TaskTrackerClient,
+} from "../domain/taskTracker/types.js";
