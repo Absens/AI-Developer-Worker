@@ -205,6 +205,27 @@ describe("internal task tracker queue", () => {
     expect(claim?.task.id).toBe("high");
   });
 
+  it("does not claim tasks outside the worker repository tag profile", async () => {
+    const client = new InMemoryTaskTrackerClient();
+    await client.createTask(baseTaskInput({ id: "old", tags: ["ai_dev"] }));
+    await client.createTask(baseTaskInput({ id: "live", tags: ["ai_dev_docker_test"] }));
+
+    const claim = await client.claimNextTask(
+      claimInput({
+        repositoryProfiles: [
+          {
+            name: "developer",
+            repoPathKey: "developer",
+            queues: ["DEV"],
+            tags: ["ai_dev_docker_test"],
+          },
+        ],
+      }),
+    );
+
+    expect(claim?.task.id).toBe("live");
+  });
+
   it("does not claim a task with an active blocking dependency", async () => {
     const client = new InMemoryTaskTrackerClient();
     await client.createTask(baseTaskInput({ id: "blocked" }));

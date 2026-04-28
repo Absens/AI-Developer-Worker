@@ -840,6 +840,7 @@ export interface ImportCandidatesInput {
   queue?: string;
   since?: string;
   limit?: number;
+  targetExternalKey?: string;
 }
 
 export interface ExternalIssueSnapshot {

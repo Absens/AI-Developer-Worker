@@ -143,6 +143,42 @@ describe("Yandex bridge", () => {
     expect(task?.revisions).toHaveLength(1);
   });
 
+  it("does not create ready internal tasks for non-open Yandex issues", async () => {
+    const source = new FakeYandexSource([
+      issue({
+        statusKey: "testing",
+        statusDisplay: "Тестируется",
+        logicalStatus: "review",
+      }),
+    ]);
+    const { bridge, tracker } = createBridge(source);
+
+    const result = await bridge.importCandidates();
+
+    expect(result).toMatchObject({ created: 0, updated: 0, commentsImported: 0 });
+    await expect(
+      tracker.findTaskByExternalRef(YANDEX_TRACKER_PROVIDER, "DEV-1"),
+    ).resolves.toBeNull();
+  });
+
+  it("does not create ready internal tasks when Yandex status is unmapped", async () => {
+    const source = new FakeYandexSource([
+      issue({
+        statusKey: "customTesting",
+        statusDisplay: "Custom testing status",
+        logicalStatus: undefined,
+      }),
+    ]);
+    const { bridge, tracker } = createBridge(source);
+
+    const result = await bridge.importCandidates();
+
+    expect(result).toMatchObject({ created: 0, updated: 0, commentsImported: 0 });
+    await expect(
+      tracker.findTaskByExternalRef(YANDEX_TRACKER_PROVIDER, "DEV-1"),
+    ).resolves.toBeNull();
+  });
+
   it("creates a reanalysis revision for changed Yandex human input during active work", async () => {
     const source = new FakeYandexSource([issue()]);
     const { bridge, tracker } = createBridge(source);

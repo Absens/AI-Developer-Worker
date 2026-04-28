@@ -268,7 +268,29 @@ export class YandexTrackerClient implements TrackerClient {
     extractCollection(response);
   }
 
-  async findCandidateIssues(input: { queue?: string; tag?: string } = {}): Promise<TrackerIssue[]> {
+  async findCandidateIssues(
+    input: { queue?: string; tag?: string; issueKey?: string } = {},
+  ): Promise<TrackerIssue[]> {
+    if (input.issueKey) {
+      const issue = await this.getIssue(input.issueKey);
+      const queue = input.queue ?? this.config.trackerDefaultQueue;
+      const tag = input.tag ?? this.config.trackerTag;
+      if (issue.queue !== queue || !issue.tags?.includes(tag)) {
+        this.logger.info("Fetched tracker target issue outside configured queue/tag.", {
+          issueKey: input.issueKey,
+          queue,
+          tag,
+        });
+        return [];
+      }
+      this.logger.info("Fetched tracker target issue.", {
+        issueKey: input.issueKey,
+        queue,
+        tag,
+      });
+      return [issue];
+    }
+
     const issues = await this.searchIssuesByTag(input);
     return issues
       .map((issue) => buildIssue(issue, this.determineLogicalStatus(buildIssue(issue))))

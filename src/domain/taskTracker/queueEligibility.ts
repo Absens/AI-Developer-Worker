@@ -79,6 +79,13 @@ export const taskMatchesRepositoryProfile = (
     ) {
       return false;
     }
+    if (
+      profile.tags &&
+      profile.tags.length > 0 &&
+      !profile.tags.some((tag) => task.tags.includes(tag))
+    ) {
+      return false;
+    }
 
     return true;
   });

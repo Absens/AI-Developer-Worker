@@ -11,7 +11,7 @@
     "transition": "needInfo"
   },
   "review": {
-    "statuses": ["inReview", "Ревью"],
+    "statuses": ["inReview", "Ревью", "testing", "test", "Тестируется", "На тестировании"],
     "transition": "inReview"
   },
   "failed": {

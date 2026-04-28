@@ -332,7 +332,11 @@ export class InternalWorkerOrchestrator {
   private async importExternalTasks(): Promise<void> {
     for (const bridge of this.yandexBridges) {
       const started = Date.now();
-      const result = await bridge.importCandidates();
+      const result = await bridge.importCandidates({
+        ...(this.config.targetIssueKey
+          ? { targetExternalKey: this.config.targetIssueKey }
+          : {}),
+      });
       this.telemetry.observeHistogram(
         "ai_developer_task_tracker_sync_duration_seconds",
         { provider: "yandex" },

@@ -429,6 +429,9 @@ const buildRepositoryProfileWhere = (
     if (profile.queues && profile.queues.length > 0) {
       parts.push(`t.queue = ANY(${addParam(profile.queues)}::text[])`);
     }
+    if (profile.tags && profile.tags.length > 0) {
+      parts.push(`t.tags && ${addParam(profile.tags)}::text[]`);
+    }
 
     return `(${parts.join(" AND ")})`;
   });

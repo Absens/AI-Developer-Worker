@@ -90,6 +90,9 @@ const revisionIdFor = (snapshot: ExternalIssueSnapshot): string =>
 const isActiveContextStatus = (status: TaskStatus): boolean =>
   ACTIVE_CONTEXT_STATUSES.has(status);
 
+const isWorkableNewExternalStatus = (status: string | undefined): boolean =>
+  status === "open";
+
 const latestQuestion = (comments: readonly TaskComment[]): TaskComment | undefined =>
   [...comments]
     .filter((comment) => comment.kind === "question")
@@ -108,7 +111,9 @@ export class YandexBridge {
     this.logger = options.logger ?? new Logger();
   }
 
-  async importCandidates(): Promise<YandexBridgeImportResult> {
+  async importCandidates(
+    input: { targetExternalKey?: string } = {},
+  ): Promise<YandexBridgeImportResult> {
     const result: YandexBridgeImportResult = {
       created: 0,
       updated: 0,
@@ -121,6 +126,7 @@ export class YandexBridge {
       const snapshots = await this.options.source.importCandidates({
         queue,
         ...(cursor ? { since: cursor.cursor } : {}),
+        ...(input.targetExternalKey ? { targetExternalKey: input.targetExternalKey } : {}),
       });
       for (const snapshot of snapshots) {
         const imported = await this.importSnapshot(snapshot);
@@ -331,6 +337,18 @@ export class YandexBridge {
       snapshot.provider,
       snapshot.externalKey,
     );
+    if (!existing && !isWorkableNewExternalStatus(snapshot.businessStatus)) {
+      this.logger.info("Skipping non-open Yandex issue during import.", {
+        externalKey: snapshot.externalKey,
+        businessStatus: snapshot.businessStatus ?? "unknown",
+      });
+      return {
+        created: false,
+        updated: false,
+        commentsImported: 0,
+      };
+    }
+
     const task = existing ?? (await this.createTaskFromSnapshot(snapshot));
     const externalRevisionId = revisionIdFor(snapshot);
     const storedAt = this.now().toISOString();

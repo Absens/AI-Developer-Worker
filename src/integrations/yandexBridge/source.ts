@@ -37,6 +37,7 @@ export class YandexExternalTaskSource implements YandexBridgeExternalSource {
     const issues = await this.tracker.findCandidateIssues({
       ...(input.queue ? { queue: input.queue } : {}),
       ...(this.tag ? { tag: this.tag } : {}),
+      ...(input.targetExternalKey ? { issueKey: input.targetExternalKey } : {}),
     });
     const limited = input.limit ? issues.slice(0, input.limit) : issues;
     const observedAt = this.now().toISOString();

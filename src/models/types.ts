@@ -796,7 +796,11 @@ export interface ReviewMetadata {
 
 export interface TrackerClient {
   checkReadAccess(): Promise<void>;
-  findCandidateIssues(input?: { queue?: string; tag?: string }): Promise<TrackerIssue[]>;
+  findCandidateIssues(input?: {
+    queue?: string;
+    tag?: string;
+    issueKey?: string;
+  }): Promise<TrackerIssue[]>;
   findOwnedIssues(statuses: LogicalStatus[]): Promise<TrackerIssue[]>;
   getIssue(issueKey: string): Promise<TrackerIssue>;
   getComments(issueKey: string): Promise<CommentWithMetadata[]>;
