@@ -195,6 +195,7 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
     <aside>
       <div class="tabs">
         <button class="active" data-tab="queue">Queue</button>
+        <button data-tab="proposals">Proposals</button>
         <button data-tab="create">Create</button>
         <button data-tab="ops">Operations</button>
       </div>
@@ -206,6 +207,9 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
           <label>Tag<input id="filterTag" placeholder="all"></label>
         </div>
         <div id="queue"></div>
+      </div>
+      <div id="proposalsTab" class="body stack hidden">
+        <div id="proposals"></div>
       </div>
       <div id="createTab" class="body stack hidden">
         <div class="grid">
@@ -239,6 +243,7 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
     const apiPath = ${JSON.stringify(input.apiPath)};
     const groups = ["ready", "awaiting_human", "review", "failed", "blocked"];
     let tasks = [];
+    let proposals = [];
     let selectedId = "";
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -273,6 +278,12 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
       const ops = await getJson("/operations");
       $("operations").innerHTML = '<div class="stack"><div><strong>Workers</strong><div class="muted">' + esc(ops.workers.map((worker) => worker.workerId + ":" + worker.state).join(", ") || "none") + '</div></div><div><strong>Active leases</strong><div class="muted">' + esc(ops.leases.map((lease) => lease.workerId + " -> " + lease.taskId).join(", ") || "none") + '</div></div><div><strong>Queue depth</strong><pre>' + esc(JSON.stringify(ops.queueDepth, null, 2)) + '</pre></div><div><strong>Repeated failures</strong><pre>' + esc(JSON.stringify(ops.repeatedFailures, null, 2)) + '</pre></div></div>';
     };
+    const renderProposals = () => {
+      $("proposals").innerHTML = proposals.length ? proposals.map((task) =>
+        '<div class="task-row ' + (task.id === selectedId ? "active" : "") + '" data-task="' + esc(task.id) + '"><div><div class="title">' + esc(task.title) + '</div><div class="muted">' + esc([task.repositoryName, task.proposal && task.proposal.autonomyLevel, task.proposal && task.proposal.policyDecision].filter(Boolean).join(" / ")) + '</div><div class="muted">' + esc(task.proposal ? task.proposal.policyReason : "") + '</div></div><span class="pill ' + esc(task.proposal ? task.proposal.supervisorStatus : task.status) + '">' + esc(task.proposal ? task.proposal.supervisorStatus : task.status) + '</span></div>'
+      ).join("") : '<div class="empty">None</div>';
+      document.querySelectorAll("[data-task]").forEach((node) => node.onclick = () => selectTask(node.dataset.task));
+    };
     const renderDetail = (data) => {
       const task = data.task;
       const q = [...task.clarificationQuestions].reverse().find((item) => item.status === "open");
@@ -281,6 +292,7 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
       $("detailTitle").textContent = task.title;
       $("detail").innerHTML = '<div class="toolbar"><span class="pill ' + esc(task.status) + '">' + esc(task.status) + '</span><button id="previewContext">Context</button><button data-cmd="mark-ready">Ready</button><button data-cmd="resume">Resume</button><button data-cmd="hold">Hold</button><button data-cmd="retry">Retry</button><button data-cmd="force-reanalysis">Reanalyze</button><button class="danger" data-cmd="cancel">Cancel</button></div><pre id="contextPreview" class="hidden"></pre>' +
         '<div class="grid"><div><strong>Goal</strong><p>' + esc(task.description) + '</p></div><div><strong>MR</strong><p>' + (mr ? '<a href="' + esc(mr.mergeRequest.url) + '" target="_blank" rel="noreferrer">' + esc(mr.mergeRequest.url) + '</a><br><span class="muted">' + esc(mr.branch) + '</span>' : '<span class="muted">None</span>') + '</p></div></div>' +
+        (task.proposal ? '<div><strong>Proposal</strong><pre>' + esc(JSON.stringify(task.proposal, null, 2)) + '</pre><div class="toolbar"><button class="primary" data-cmd="approve-proposal">Approve</button><button class="danger" data-cmd="reject-proposal">Reject</button></div></div>' : '') +
         '<div><strong>Acceptance criteria</strong><ul>' + task.acceptanceCriteria.map((item) => '<li>' + esc(item) + '</li>').join("") + '</ul></div>' +
         '<div><strong>Validation</strong><pre>' + esc(validation ? JSON.stringify(validation, null, 2) : "None") + '</pre></div>' +
         (q ? '<div><strong>Question</strong><p>' + esc(q.question.question) + '</p><label>Answer<textarea id="answerBody"></textarea></label><div class="toolbar"><button class="primary" id="answer">Answer</button><button id="answerResume">Answer + Resume</button></div></div>' : "") +
@@ -316,7 +328,9 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
     const refresh = async () => {
       const data = await getJson("/tasks" + query());
       tasks = data.tasks;
+      proposals = (await getJson("/proposals")).proposals;
       renderQueue();
+      renderProposals();
       await renderOperations().catch(() => undefined);
       $("status").textContent = "Updated " + new Date().toLocaleTimeString();
     };
@@ -340,7 +354,7 @@ export const renderTaskTrackerUiHtml = (input: { apiPath: string }): string => `
     ["filterRepo", "filterQueue", "filterStatus", "filterTag"].forEach((id) => $(id).onchange = () => refresh().catch((error) => $("status").textContent = error.message));
     document.querySelectorAll("[data-tab]").forEach((button) => button.onclick = () => {
       document.querySelectorAll("[data-tab]").forEach((entry) => entry.classList.toggle("active", entry === button));
-      ["queue", "create", "ops"].forEach((tab) => $(tab + "Tab").classList.toggle("hidden", button.dataset.tab !== tab));
+      ["queue", "proposals", "create", "ops"].forEach((tab) => $(tab + "Tab").classList.toggle("hidden", button.dataset.tab !== tab));
     });
     refresh().catch((error) => $("status").textContent = error.message);
   </script>

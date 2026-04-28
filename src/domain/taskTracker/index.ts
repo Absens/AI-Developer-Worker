@@ -1,6 +1,14 @@
 export { buildAgentTaskContext } from "./agentContext.js";
 export { AgentWorkflowService } from "./agentWorkflowService.js";
 export {
+  DEFAULT_AUTONOMY_POLICY_CONFIG,
+  LOW_RISK_TASK_TYPES,
+  buildProposalDuplicateSignature,
+  evaluateProposalPolicy,
+  normalizeAutonomyPolicyConfig,
+  normalizeProposalTitle,
+} from "./autonomyPolicy.js";
+export {
   FIELD_OWNERSHIP_RULES,
   FieldOwnershipError,
   assertOwnerCanUpdateFieldGroup,
@@ -8,9 +16,12 @@ export {
 } from "./fieldOwnership.js";
 export {
   DuplicateExternalRefError,
+  DuplicateTaskProposalError,
   LeaseExpiredError,
   LeaseNotFoundError,
   LeaseOwnershipError,
+  ProposalPolicyError,
+  TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
 } from "./errors.js";
@@ -40,6 +51,8 @@ export type {
   AgentRunStage,
   ArtifactRef,
   ArtifactRefInput,
+  ApproveProposalInput,
+  AutonomyLevel,
   ClaimedTask,
   ClarificationQuestionInput,
   ClarificationQuestionRecord,
@@ -65,7 +78,16 @@ export type {
   MemoryContextRef,
   MergeRequestRecord,
   MergeRequestRecordInput,
+  EvidenceRef,
+  EvidenceRefKind,
+  ProposalCleanupInput,
+  ProposalCleanupResult,
+  ProposalPolicyDecision,
+  ProposalPolicyEvaluation,
+  ProposalSupervisorStatus,
+  ProposeTaskInput,
   QualityGateRun,
+  RejectProposalInput,
   ReleaseLeaseInput,
   ReviewMetadataRecord,
   ReviewMetadataRecordInput,
@@ -89,6 +111,7 @@ export type {
   TaskPlan,
   TaskPlanStatus,
   TaskLeaseRecord,
+  TaskProposalRecord,
   TaskRecord,
   TaskRevision,
   TaskRevisionInput,

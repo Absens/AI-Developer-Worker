@@ -2,14 +2,28 @@ import { randomUUID } from "node:crypto";
 
 import { buildAgentTaskContext } from "./agentContext.js";
 import {
+  buildProposalDuplicateSignature,
+  createPolicyEvaluationRecord,
+  evaluateProposalPolicy,
+  evidenceRefsToArtifactInputs,
+  hasOverlappingEvidence,
+  isTerminalProposalTaskStatus,
+  normalizeAutonomyPolicyConfig,
+  normalizeProposalTitle,
+  repositoryPolicyFor,
+} from "./autonomyPolicy.js";
+import {
   FIELD_OWNERSHIP_RULES,
   assertOwnerCanUpdateFieldGroup,
 } from "./fieldOwnership.js";
 import {
   DuplicateExternalRefError,
+  DuplicateTaskProposalError,
   LeaseExpiredError,
   LeaseNotFoundError,
   LeaseOwnershipError,
+  ProposalPolicyError,
+  TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
 } from "./errors.js";
@@ -27,6 +41,7 @@ import type {
   AgentTaskContext,
   AgentRun,
   AgentRunInput,
+  ApproveProposalInput,
   ArtifactRef,
   ArtifactRefInput,
   ClaimedTask,
@@ -46,7 +61,13 @@ import type {
   MemoryContextRef,
   MergeRequestRecord,
   MergeRequestRecordInput,
+  ProposalCleanupInput,
+  ProposalCleanupResult,
+  ProposalPolicyDecision,
+  ProposalPolicyEvaluation,
+  ProposeTaskInput,
   QualityGateRun,
+  RejectProposalInput,
   ReleaseLeaseInput,
   ReviewMetadataRecord,
   ReviewMetadataRecordInput,
@@ -63,6 +84,7 @@ import type {
   TaskFieldOwnership,
   TaskPlan,
   TaskLeaseRecord,
+  TaskProposalRecord,
   TaskRecord,
   TaskRevision,
   TaskRevisionInput,
@@ -73,6 +95,7 @@ import type {
   ValidationRecordInput,
 } from "./types.js";
 import type {
+  AutonomyPolicyConfig,
   DecompositionPlan,
   SubtaskDraft,
   TaskAnalysisDecision,
@@ -80,6 +103,7 @@ import type {
 
 export interface InMemoryTaskTrackerOptions {
   now?: () => Date;
+  autonomyPolicy?: Partial<AutonomyPolicyConfig>;
 }
 
 const REQUIRED_EXECUTION_FIELDS = [
@@ -213,10 +237,15 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
   private readonly claimIdempotency = new Map<string, ClaimedTask | null>();
   private readonly heartbeatIdempotency = new Map<string, TaskLeaseRecord>();
   private readonly releaseIdempotency = new Set<string>();
+  private readonly proposalIdempotency = new Map<string, TaskRecord>();
+  private readonly proposalApprovalIdempotency = new Set<string>();
+  private readonly proposalRejectionIdempotency = new Set<string>();
   private readonly now: () => Date;
+  private readonly autonomyPolicy: AutonomyPolicyConfig;
 
   constructor(options: InMemoryTaskTrackerOptions = {}) {
     this.now = options.now ?? (() => new Date());
+    this.autonomyPolicy = normalizeAutonomyPolicyConfig(options.autonomyPolicy);
   }
 
   async listTasks(input: ListTasksInput = {}): Promise<TaskRecord[]> {
@@ -361,6 +390,315 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     this.tasks.set(task.id, task);
 
     return clone(task);
+  }
+
+  async proposeTask(input: ProposeTaskInput): Promise<TaskRecord> {
+    if (input.source !== "ai_proposal") {
+      throw new Error("proposeTask only accepts source=ai_proposal.");
+    }
+    if (input.idempotencyKey && this.proposalIdempotency.has(input.idempotencyKey)) {
+      return clone(this.proposalIdempotency.get(input.idempotencyKey) as TaskRecord);
+    }
+
+    const duplicateSignature = buildProposalDuplicateSignature(input);
+    const duplicate = this.findDuplicateProposal(input, duplicateSignature);
+    if (duplicate) {
+      throw new DuplicateTaskProposalError(duplicate.id, duplicateSignature);
+    }
+
+    const policy = evaluateProposalPolicy(
+      input,
+      this.autonomyPolicy,
+      this.countProposalWindows(input.repositoryName, this.now()),
+    );
+    if (policy.decision === "blocked") {
+      throw new ProposalPolicyError(policy.decision, policy.reason);
+    }
+
+    const createdAt = this.nowIso();
+    const status: TaskStatus = policy.autoApproved ? "ready" : "triage";
+    const task = await this.createTask({
+      title: input.title,
+      description: input.description,
+      source: {
+        kind: "ai_proposal",
+        provider: "ai_proposal",
+        ...(input.idempotencyKey ? { externalKey: input.idempotencyKey } : {}),
+      },
+      createdBy: { owner: "external_source", id: `ai:${input.proposedBy}` },
+      repositoryName: input.repositoryName,
+      repoPathKey: input.repoPathKey ?? input.repositoryName,
+      baseBranch: input.baseBranch ?? "main",
+      queue: input.queue ?? "AI_PROPOSALS",
+      tags: normalizeStringArray(["ai_proposal", ...(input.tags ?? [])]),
+      components: normalizeStringArray(input.components),
+      ...(input.priority ? { priority: input.priority } : {}),
+      status,
+      taskType: input.taskType ?? "unknown",
+      ...(input.promptProfileId ? { promptProfileId: input.promptProfileId } : {}),
+      acceptanceCriteria: input.suggestedAcceptanceCriteria,
+      riskFactors: input.riskFactors ?? [],
+      externalRefs: input.idempotencyKey
+        ? [{ provider: "ai_proposal", externalKey: input.idempotencyKey }]
+        : [],
+      createdAt,
+    });
+
+    const stored = this.requireTask(task.id);
+    const artifacts = this.createArtifactRefs(
+      stored,
+      evidenceRefsToArtifactInputs(input.evidenceRefs),
+      createdAt,
+    );
+    const policyEvaluation = createPolicyEvaluationRecord({
+      taskId: stored.id,
+      decision: policy.decision,
+      policy: policy.approvalPolicy,
+      allowed: policy.allowed,
+      autoApproved: policy.autoApproved,
+      reason: policy.reason,
+      autonomyLevel: input.autonomyLevel,
+      evidenceRefs: input.evidenceRefs,
+      createdAt,
+    });
+    stored.proposal = {
+      taskId: stored.id,
+      source: "ai_proposal",
+      proposedBy: input.proposedBy,
+      proposalReason: input.proposalReason,
+      evidenceRefs: input.evidenceRefs.map(clone),
+      suggestedAcceptanceCriteria: normalizeStringArray(
+        input.suggestedAcceptanceCriteria,
+      ),
+      supervisorStatus: policy.supervisorStatus,
+      approvalPolicy: policy.approvalPolicy,
+      autonomyLevel: input.autonomyLevel,
+      duplicateSignature,
+      ...(input.expectedBlastRadius
+        ? { expectedBlastRadius: input.expectedBlastRadius }
+        : {}),
+      cleanup: this.proposalCleanupMetadata(createdAt, policy.supervisorStatus),
+      policyEvaluation,
+      policyEvaluations: [policyEvaluation],
+      ...(policy.supervisorStatus === "auto_approved"
+        ? {
+            approvedBy: { owner: "policy_admin", id: "autonomy-policy" },
+            approvedAt: createdAt,
+          }
+        : {}),
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.recordProposalPolicyAudit(
+      stored,
+      policyEvaluation,
+      policy.supervisorStatus === "auto_approved"
+        ? "Proposal auto-approved by policy."
+        : "AI task proposal created.",
+      createdAt,
+    );
+    stored.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId: stored.id,
+      kind:
+        policy.supervisorStatus === "auto_approved"
+          ? "task_proposal_auto_approved"
+          : "task_proposal_created",
+      source: "policy_admin",
+      message: policy.reason,
+      payload: {
+        proposedBy: input.proposedBy,
+        proposalReason: input.proposalReason,
+        artifactIds: artifacts.map((artifact) => artifact.id),
+      },
+      createdAt,
+    });
+    stored.updatedAt = createdAt;
+
+    const result = clone(stored);
+    if (input.idempotencyKey) {
+      this.proposalIdempotency.set(input.idempotencyKey, result);
+    }
+    return clone(result);
+  }
+
+  async approveProposal(
+    taskId: string,
+    input: ApproveProposalInput,
+  ): Promise<void> {
+    const idempotencyKey = input.idempotencyKey
+      ? `${taskId}:${input.idempotencyKey}`
+      : undefined;
+    if (idempotencyKey && this.proposalApprovalIdempotency.has(idempotencyKey)) {
+      return;
+    }
+
+    const task = this.requireTask(taskId);
+    const proposal = this.requireProposal(task);
+    if (proposal.supervisorStatus === "approved") {
+      if (idempotencyKey) {
+        this.proposalApprovalIdempotency.add(idempotencyKey);
+      }
+      return;
+    }
+    if (proposal.supervisorStatus !== "proposed") {
+      throw new TaskProposalStateError(
+        taskId,
+        `expected proposed status, got ${proposal.supervisorStatus}.`,
+      );
+    }
+
+    assertReadyFields(task);
+    const createdAt = this.nowIso();
+    const previousStatus = task.status;
+    assertValidTaskStatusTransition(previousStatus, "ready");
+    task.status = "ready";
+    task.updatedAt = createdAt;
+    proposal.supervisorStatus = "approved";
+    proposal.approvedBy = clone(input.actor);
+    proposal.approvedAt = createdAt;
+    proposal.updatedAt = createdAt;
+
+    const evaluation = this.appendProposalPolicyEvaluation(task, {
+      decision: "approved",
+      actor: input.actor,
+      reason: input.reason ?? "Proposal approved by supervisor.",
+      createdAt,
+    });
+    this.recordProposalPolicyAudit(task, evaluation, "Proposal approved.", createdAt);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "task_proposal_approved",
+      source: input.actor.owner,
+      actor: clone(input.actor),
+      message: input.reason ?? "Proposal approved by supervisor.",
+      createdAt,
+    });
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "task_status_changed",
+      source: input.actor.owner,
+      actor: clone(input.actor),
+      message: input.reason ?? "Approved proposal moved to executable queue.",
+      payload: { from: previousStatus, to: "ready" },
+      createdAt,
+    });
+
+    if (idempotencyKey) {
+      this.proposalApprovalIdempotency.add(idempotencyKey);
+    }
+  }
+
+  async rejectProposal(
+    taskId: string,
+    input: RejectProposalInput,
+  ): Promise<void> {
+    const idempotencyKey = input.idempotencyKey
+      ? `${taskId}:${input.idempotencyKey}`
+      : undefined;
+    if (idempotencyKey && this.proposalRejectionIdempotency.has(idempotencyKey)) {
+      return;
+    }
+
+    const task = this.requireTask(taskId);
+    const proposal = this.requireProposal(task);
+    if (proposal.supervisorStatus === "rejected") {
+      if (idempotencyKey) {
+        this.proposalRejectionIdempotency.add(idempotencyKey);
+      }
+      return;
+    }
+    if (proposal.supervisorStatus !== "proposed") {
+      throw new TaskProposalStateError(
+        taskId,
+        `expected proposed status, got ${proposal.supervisorStatus}.`,
+      );
+    }
+
+    const createdAt = this.nowIso();
+    const previousStatus = task.status;
+    assertValidTaskStatusTransition(previousStatus, "cancelled");
+    task.status = "cancelled";
+    task.updatedAt = createdAt;
+    proposal.supervisorStatus = "rejected";
+    proposal.rejectedBy = clone(input.actor);
+    proposal.rejectedAt = createdAt;
+    proposal.rejectionReason = input.reason;
+    proposal.cleanup = this.proposalCleanupMetadata(createdAt, "rejected");
+    proposal.updatedAt = createdAt;
+
+    const evaluation = this.appendProposalPolicyEvaluation(task, {
+      decision: "rejected",
+      actor: input.actor,
+      reason: input.reason,
+      createdAt,
+    });
+    this.recordProposalPolicyAudit(task, evaluation, "Proposal rejected.", createdAt);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "task_proposal_rejected",
+      source: input.actor.owner,
+      actor: clone(input.actor),
+      message: input.reason,
+      createdAt,
+    });
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "task_status_changed",
+      source: input.actor.owner,
+      actor: clone(input.actor),
+      message: input.reason,
+      payload: { from: previousStatus, to: "cancelled" },
+      createdAt,
+    });
+
+    if (idempotencyKey) {
+      this.proposalRejectionIdempotency.add(idempotencyKey);
+    }
+  }
+
+  async cleanupProposals(
+    input: ProposalCleanupInput = {},
+  ): Promise<ProposalCleanupResult> {
+    const now = Date.parse(input.now ?? this.nowIso());
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const staleRejected: string[] = [];
+    const rejectedRetained: string[] = [];
+
+    for (const task of this.tasks.values()) {
+      if (staleRejected.length + rejectedRetained.length >= limit) {
+        break;
+      }
+      const proposal = task.proposal;
+      if (!proposal) {
+        continue;
+      }
+      if (
+        proposal.supervisorStatus === "proposed" &&
+        proposal.cleanup.staleAfter &&
+        Date.parse(proposal.cleanup.staleAfter) <= now
+      ) {
+        await this.rejectProposal(task.id, {
+          actor: { owner: "policy_admin", id: "proposal-cleanup" },
+          reason: "Stale proposal rejected by cleanup policy.",
+        });
+        staleRejected.push(task.id);
+        continue;
+      }
+      if (
+        proposal.supervisorStatus === "rejected" &&
+        proposal.cleanup.rejectedAfter &&
+        Date.parse(proposal.cleanup.rejectedAfter) <= now
+      ) {
+        rejectedRetained.push(task.id);
+      }
+    }
+
+    return { staleRejected, rejectedRetained };
   }
 
   async updateTaskRevision(
@@ -1214,6 +1552,159 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     if (idempotencyKey) {
       this.releaseIdempotency.add(idempotencyKey);
     }
+  }
+
+  private findDuplicateProposal(
+    input: ProposeTaskInput,
+    duplicateSignature: string,
+  ): TaskRecord | undefined {
+    const normalizedTitle = normalizeProposalTitle(input.title);
+    return [...this.tasks.values()].find((task) => {
+      if (task.repositoryName !== input.repositoryName) {
+        return false;
+      }
+      if (isTerminalProposalTaskStatus(task.status)) {
+        return false;
+      }
+      if (task.proposal?.supervisorStatus === "rejected") {
+        return false;
+      }
+      if (task.proposal?.duplicateSignature === duplicateSignature) {
+        return true;
+      }
+      if (normalizeProposalTitle(task.title) === normalizedTitle) {
+        return true;
+      }
+      return Boolean(
+        task.proposal &&
+          hasOverlappingEvidence(task.proposal.evidenceRefs, input.evidenceRefs),
+      );
+    });
+  }
+
+  private countProposalWindows(
+    repositoryName: string,
+    now: Date,
+  ): { daily: number; window: number } {
+    const repositoryPolicy = repositoryPolicyFor(this.autonomyPolicy, repositoryName);
+    const windowSeconds =
+      repositoryPolicy.windowSeconds ?? this.autonomyPolicy.defaultWindowSeconds;
+    const dayStart = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    );
+    const windowStart = now.getTime() - windowSeconds * 1000;
+    let daily = 0;
+    let window = 0;
+
+    for (const task of this.tasks.values()) {
+      if (!task.proposal || task.repositoryName !== repositoryName) {
+        continue;
+      }
+      const created = Date.parse(task.proposal.createdAt);
+      if (created >= dayStart) {
+        daily += 1;
+      }
+      if (created >= windowStart) {
+        window += 1;
+      }
+    }
+
+    return { daily, window };
+  }
+
+  private proposalCleanupMetadata(
+    createdAt: string,
+    supervisorStatus: TaskProposalRecord["supervisorStatus"],
+  ): TaskProposalRecord["cleanup"] {
+    const createdTime = Date.parse(createdAt);
+    const cleanup: TaskProposalRecord["cleanup"] = {
+      owner: "policy_admin",
+      staleAfter: new Date(createdTime + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    if (supervisorStatus === "rejected") {
+      cleanup.rejectedAfter = new Date(
+        createdTime + 90 * 24 * 60 * 60 * 1000,
+      ).toISOString();
+    }
+    return cleanup;
+  }
+
+  private requireProposal(task: TaskRecord): TaskProposalRecord {
+    if (!task.proposal) {
+      throw new TaskProposalStateError(task.id, "task has no proposal metadata.");
+    }
+    return task.proposal;
+  }
+
+  private appendProposalPolicyEvaluation(
+    task: TaskRecord,
+    input: {
+      decision: ProposalPolicyDecision;
+      actor: TaskActor;
+      reason: string;
+      createdAt: string;
+    },
+  ): ProposalPolicyEvaluation {
+    const proposal = this.requireProposal(task);
+    const evaluation = createPolicyEvaluationRecord({
+      taskId: task.id,
+      decision: input.decision,
+      policy: proposal.approvalPolicy,
+      allowed: input.decision === "approved",
+      autoApproved: false,
+      reason: input.reason,
+      autonomyLevel: proposal.autonomyLevel,
+      evidenceRefs: proposal.evidenceRefs,
+      createdAt: input.createdAt,
+    });
+    proposal.policyEvaluation = evaluation;
+    proposal.policyEvaluations.push(evaluation);
+    return evaluation;
+  }
+
+  private recordProposalPolicyAudit(
+    task: TaskRecord,
+    evaluation: ProposalPolicyEvaluation,
+    message: string,
+    createdAt: string,
+  ): void {
+    task.decisions.push({
+      id: `decision_${randomUUID()}`,
+      taskId: task.id,
+      kind: "policy",
+      schemaVersion: 1,
+      source: "policy_admin",
+      payload: clone({
+        proposal: {
+          decision: evaluation.decision,
+          policy: evaluation.policy,
+          allowed: evaluation.allowed,
+          autoApproved: evaluation.autoApproved,
+          reason: evaluation.reason,
+          autonomyLevel: evaluation.autonomyLevel,
+          evidenceRefs: evaluation.evidenceRefs,
+        },
+      }),
+      createdAt,
+    });
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId: task.id,
+      kind: "proposal_policy_decision",
+      source: "policy_admin",
+      message,
+      payload: {
+        decision: evaluation.decision,
+        policy: evaluation.policy,
+        allowed: evaluation.allowed,
+        autoApproved: evaluation.autoApproved,
+        reason: evaluation.reason,
+        evidenceRefs: evaluation.evidenceRefs,
+      },
+      createdAt,
+    });
   }
 
   private nowIso(): string {

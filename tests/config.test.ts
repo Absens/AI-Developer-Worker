@@ -127,6 +127,11 @@ describe("config", () => {
       dashboard: { enabled: false, path: "/dashboard", refreshSeconds: 10, apiPath: "/api" },
       alerts: { enabled: false, minSeverity: "warning" },
     });
+    expect(config.autonomy).toMatchObject({
+      aiProposalsEnabled: true,
+      autoExecuteLowRiskEnabled: false,
+      defaultAllowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
+    });
   });
 
   it("defaults task tracker provider to Yandex", () => {
@@ -198,6 +203,36 @@ describe("config", () => {
         intakeMode: "yandex_integration",
         yandexSyncEnabled: true,
       },
+    });
+  });
+
+  it("parses AI proposal autonomy policy options", () => {
+    const config = loadConfig({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "ai_proposed",
+      NODE_ENV: "test",
+      AI_PROPOSALS_ENABLED: "false",
+      AUTO_EXECUTE_LOW_RISK_ENABLED: "true",
+      AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON: "[\"documentation\",\"tests_only\"]",
+      AI_PROPOSAL_DAILY_LIMIT: "3",
+      AI_PROPOSAL_WINDOW_LIMIT: "2",
+      AI_PROPOSAL_WINDOW_SECONDS: "600",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.autonomy).toEqual({
+      aiProposalsEnabled: false,
+      autoExecuteLowRiskEnabled: true,
+      defaultAllowedTaskTypes: ["documentation", "tests_only"],
+      defaultDailyProposalLimit: 3,
+      defaultWindowProposalLimit: 2,
+      defaultWindowSeconds: 600,
+      repositories: {},
     });
   });
 

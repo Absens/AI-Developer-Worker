@@ -28,6 +28,30 @@ export type TaskType =
   | "documentation"
   | "unknown";
 
+export type AutonomyLevel =
+  | "proposal_only"
+  | "auto_triage"
+  | "auto_execute_low_risk";
+
+export interface RepositoryAutonomyPolicyConfig {
+  proposalsEnabled?: boolean;
+  autoExecuteLowRiskEnabled?: boolean;
+  allowedTaskTypes?: TaskType[];
+  dailyProposalLimit?: number;
+  windowProposalLimit?: number;
+  windowSeconds?: number;
+}
+
+export interface AutonomyPolicyConfig {
+  aiProposalsEnabled: boolean;
+  autoExecuteLowRiskEnabled: boolean;
+  defaultAllowedTaskTypes: TaskType[];
+  defaultDailyProposalLimit: number;
+  defaultWindowProposalLimit: number;
+  defaultWindowSeconds: number;
+  repositories: Record<string, RepositoryAutonomyPolicyConfig>;
+}
+
 export type DependencyUnknownStatusPolicy = "block" | "warn" | "ignore";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type MemoryBootstrapCodexSandbox = "inherit" | CodexSandbox;
@@ -388,6 +412,7 @@ export interface AppConfig {
   promptProfiles?: PromptProfileOverrideMap;
   memory?: MemoryConfig;
   observability?: ObservabilityConfig;
+  autonomy?: AutonomyPolicyConfig;
 }
 
 export type LockBackendKind = "none" | "tracker" | "redis" | "postgres";
@@ -462,6 +487,7 @@ export interface RepositoryProfile {
   gitRepositoryUrl?: string;
   promptProfiles?: PromptProfileOverrideMap;
   decomposition?: RepositoryDecompositionConfig;
+  autonomy?: RepositoryAutonomyPolicyConfig;
 }
 
 export interface GlobalWorkerConfig {
@@ -502,6 +528,7 @@ export interface GlobalWorkerConfig {
   repositories: RepositoryProfile[];
   memory?: MemoryConfig;
   observability?: ObservabilityConfig;
+  autonomy?: AutonomyPolicyConfig;
 }
 
 export interface RepositoryRuntimeConfig extends AppConfig {
@@ -821,6 +848,7 @@ export type {
   AgentRunStage,
   ArtifactRef,
   ArtifactRefInput,
+  ApproveProposalInput,
   ClaimedTask,
   ClarificationQuestionInput,
   ClarificationQuestionRecord,
@@ -845,7 +873,15 @@ export type {
   MemoryContextRef,
   MergeRequestRecord,
   MergeRequestRecordInput,
+  EvidenceRef,
+  ProposalCleanupInput,
+  ProposalCleanupResult,
+  ProposalPolicyDecision,
+  ProposalPolicyEvaluation,
+  ProposalSupervisorStatus,
+  ProposeTaskInput,
   QualityGateRun,
+  RejectProposalInput,
   ReleaseLeaseInput,
   ReviewMetadataRecord,
   ReviewMetadataRecordInput,
@@ -866,6 +902,7 @@ export type {
   TaskMessageKind,
   TaskPlan,
   TaskLeaseRecord,
+  TaskProposalRecord,
   TaskRecord,
   TaskRevision,
   TaskRevisionInput,

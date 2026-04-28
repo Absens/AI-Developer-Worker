@@ -3,8 +3,10 @@ import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
+import { DEFAULT_AUTONOMY_POLICY_CONFIG } from "./domain/taskTracker/autonomyPolicy.js";
 import type {
   AppConfig,
+  AutonomyPolicyConfig,
   CodexSandbox,
   CoordinationConfig,
   DependencyUnknownStatusPolicy,
@@ -14,6 +16,7 @@ import type {
   MemoryConfig,
   PriorityQueueConfig,
   PromptProfileOverrideMap,
+  RepositoryAutonomyPolicyConfig,
   RepositoryDecompositionConfig,
   RepositoryProfile,
   RepositoryRuntimeConfig,
@@ -289,6 +292,207 @@ const parseTaskMode = (input: string | undefined, key = "TASK_MODE"): WorkerTask
   throw new ConfigurationError(
     `${key} must be one of: auto, implement, decompose, analyze_only, human.`,
   );
+};
+
+const TASK_TYPE_VALUES = [
+  "frontend_ui_fix",
+  "backend_endpoint",
+  "tests_only",
+  "refactor",
+  "dependency_update",
+  "documentation",
+  "unknown",
+] as const;
+
+const parseTaskTypeArray = (
+  value: unknown,
+  key: string,
+  defaultValue: AutonomyPolicyConfig["defaultAllowedTaskTypes"],
+): AutonomyPolicyConfig["defaultAllowedTaskTypes"] => {
+  if (value === undefined || value === null) {
+    return [...defaultValue];
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new ConfigurationError(`${key} must be an array of task type strings.`);
+  }
+  const values = value.map((entry) => entry.trim()).filter(Boolean);
+  for (const taskType of values) {
+    if (!TASK_TYPE_VALUES.includes(taskType as any)) {
+      throw new ConfigurationError(
+        `${key} contains unsupported task type "${taskType}".`,
+      );
+    }
+  }
+  return values as AutonomyPolicyConfig["defaultAllowedTaskTypes"];
+};
+
+const parseTaskTypeArrayEnv = (
+  input: string | undefined,
+  key: string,
+  defaultValue: AutonomyPolicyConfig["defaultAllowedTaskTypes"],
+): AutonomyPolicyConfig["defaultAllowedTaskTypes"] => {
+  if (!input?.trim()) {
+    return [...defaultValue];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch (error) {
+    throw new ConfigurationError(`${key} must be valid JSON. ${(error as Error).message}`);
+  }
+  return parseTaskTypeArray(parsed, key, defaultValue);
+};
+
+const parseOptionalRepositoryAutonomyPolicy = (
+  value: unknown,
+  path: string,
+): RepositoryAutonomyPolicyConfig | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const raw = asRecord(value, path);
+  return {
+    ...(raw.proposalsEnabled !== undefined
+      ? {
+          proposalsEnabled: optionalBoolean(
+            raw.proposalsEnabled,
+            `${path}.proposalsEnabled`,
+            true,
+          ),
+        }
+      : {}),
+    ...(raw.autoExecuteLowRiskEnabled !== undefined
+      ? {
+          autoExecuteLowRiskEnabled: optionalBoolean(
+            raw.autoExecuteLowRiskEnabled,
+            `${path}.autoExecuteLowRiskEnabled`,
+            false,
+          ),
+        }
+      : {}),
+    ...(raw.allowedTaskTypes !== undefined
+      ? {
+          allowedTaskTypes: parseTaskTypeArray(
+            raw.allowedTaskTypes,
+            `${path}.allowedTaskTypes`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultAllowedTaskTypes,
+          ),
+        }
+      : {}),
+    ...(raw.dailyProposalLimit !== undefined
+      ? {
+          dailyProposalLimit: optionalPositiveInt(
+            raw.dailyProposalLimit,
+            `${path}.dailyProposalLimit`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultDailyProposalLimit,
+          ),
+        }
+      : {}),
+    ...(raw.windowProposalLimit !== undefined
+      ? {
+          windowProposalLimit: optionalPositiveInt(
+            raw.windowProposalLimit,
+            `${path}.windowProposalLimit`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowProposalLimit,
+          ),
+        }
+      : {}),
+    ...(raw.windowSeconds !== undefined
+      ? {
+          windowSeconds: optionalPositiveInt(
+            raw.windowSeconds,
+            `${path}.windowSeconds`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowSeconds,
+          ),
+        }
+      : {}),
+  };
+};
+
+const parseAutonomyConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+  repositories: RepositoryProfile[] = [],
+): AutonomyPolicyConfig => {
+  const rawRepositories = optionalRecord(rawValue?.repositories, "autonomy.repositories");
+  const repositoryPolicies: Record<string, RepositoryAutonomyPolicyConfig> = {};
+  if (rawRepositories) {
+    for (const [repositoryName, value] of Object.entries(rawRepositories)) {
+      const policy = parseOptionalRepositoryAutonomyPolicy(
+        value,
+        `autonomy.repositories.${repositoryName}`,
+      );
+      if (policy) {
+        repositoryPolicies[repositoryName] = policy;
+      }
+    }
+  }
+  for (const repository of repositories) {
+    if (repository.autonomy) {
+      repositoryPolicies[repository.name] = {
+        ...(repositoryPolicies[repository.name] ?? {}),
+        ...repository.autonomy,
+      };
+    }
+  }
+
+  return {
+    aiProposalsEnabled: env.AI_PROPOSALS_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.AI_PROPOSALS_ENABLED,
+          "AI_PROPOSALS_ENABLED",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.aiProposalsEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.aiProposalsEnabled,
+          "autonomy.aiProposalsEnabled",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.aiProposalsEnabled,
+        ),
+    autoExecuteLowRiskEnabled: env.AUTO_EXECUTE_LOW_RISK_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.AUTO_EXECUTE_LOW_RISK_ENABLED,
+          "AUTO_EXECUTE_LOW_RISK_ENABLED",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.autoExecuteLowRiskEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.autoExecuteLowRiskEnabled,
+          "autonomy.autoExecuteLowRiskEnabled",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.autoExecuteLowRiskEnabled,
+        ),
+    defaultAllowedTaskTypes: env.AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON?.trim()
+      ? parseTaskTypeArrayEnv(
+          env.AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON,
+          "AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultAllowedTaskTypes,
+        )
+      : parseTaskTypeArray(
+          rawValue?.defaultAllowedTaskTypes,
+          "autonomy.defaultAllowedTaskTypes",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultAllowedTaskTypes,
+        ),
+    defaultDailyProposalLimit: env.AI_PROPOSAL_DAILY_LIMIT?.trim()
+      ? parsePositiveInt(env.AI_PROPOSAL_DAILY_LIMIT, "AI_PROPOSAL_DAILY_LIMIT")
+      : optionalPositiveInt(
+          rawValue?.defaultDailyProposalLimit,
+          "autonomy.defaultDailyProposalLimit",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultDailyProposalLimit,
+        ),
+    defaultWindowProposalLimit: env.AI_PROPOSAL_WINDOW_LIMIT?.trim()
+      ? parsePositiveInt(env.AI_PROPOSAL_WINDOW_LIMIT, "AI_PROPOSAL_WINDOW_LIMIT")
+      : optionalPositiveInt(
+          rawValue?.defaultWindowProposalLimit,
+          "autonomy.defaultWindowProposalLimit",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowProposalLimit,
+        ),
+    defaultWindowSeconds: env.AI_PROPOSAL_WINDOW_SECONDS?.trim()
+      ? parsePositiveInt(env.AI_PROPOSAL_WINDOW_SECONDS, "AI_PROPOSAL_WINDOW_SECONDS")
+      : optionalPositiveInt(
+          rawValue?.defaultWindowSeconds,
+          "autonomy.defaultWindowSeconds",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowSeconds,
+        ),
+    repositories: repositoryPolicies,
+  };
 };
 
 const parseDependencyUnknownStatusPolicy = (
@@ -888,6 +1092,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   );
   const memory = parseMemoryConfig(env);
   const observability = parseObservabilityConfig(env);
+  const autonomy = parseAutonomyConfig(env);
 
   return {
     taskTracker,
@@ -1038,6 +1243,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     ),
     memory,
     observability,
+    autonomy,
   };
 };
 
@@ -1200,6 +1406,9 @@ const buildSingleRepositoryFleetConfig = (
           ? { maxSubtasks: config.decompositionMaxSubtasks }
           : {}),
       },
+      ...(config.autonomy?.repositories.default
+        ? { autonomy: config.autonomy.repositories.default }
+        : {}),
     },
   ];
   validateRepositoryProfiles(repositories);
@@ -1289,6 +1498,7 @@ const buildSingleRepositoryFleetConfig = (
     repositories,
     memory: config.memory,
     observability: config.observability,
+    ...(config.autonomy ? { autonomy: config.autonomy } : {}),
   };
 };
 
@@ -1396,6 +1606,14 @@ const parseRepositoryProfile = (
           ),
         }
       : {}),
+    ...(parseOptionalRepositoryAutonomyPolicy(raw.autonomy, `${path}.autonomy`)
+      ? {
+          autonomy: parseOptionalRepositoryAutonomyPolicy(
+            raw.autonomy,
+            `${path}.autonomy`,
+          ),
+        }
+      : {}),
   };
 };
 
@@ -1450,11 +1668,13 @@ const loadFleetConfigFromFile = (
   const memory = optionalRecord(root.memory, "memory");
   const observability = optionalRecord(root.observability, "observability");
   const alerts = optionalRecord(root.alerts, "alerts");
+  const autonomyRoot = optionalRecord(root.autonomy, "autonomy");
   if (!Array.isArray(root.repositories) || root.repositories.length === 0) {
     throw new ConfigurationError("repositories must be a non-empty array.");
   }
   const repositories = root.repositories.map(parseRepositoryProfile);
   validateRepositoryProfiles(repositories);
+  const autonomy = parseAutonomyConfig(env, autonomyRoot, repositories);
 
   const usesYandex = taskTrackerUsesYandex(taskTracker);
   const statusMapFile =
@@ -1723,6 +1943,7 @@ const loadFleetConfigFromFile = (
       ...(observability ?? {}),
       ...(alerts ? { alerts } : {}),
     }),
+    autonomy,
   };
 };
 
@@ -1844,4 +2065,5 @@ export const buildRepositoryRuntimeConfig = (
   ...(globalConfig.targetIssueKey ? { targetIssueKey: globalConfig.targetIssueKey } : {}),
   memory: globalConfig.memory,
   observability: globalConfig.observability,
+  ...(globalConfig.autonomy ? { autonomy: globalConfig.autonomy } : {}),
 });

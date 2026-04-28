@@ -2,6 +2,7 @@ import type {
   ClarificationQuestion,
   DecompositionPlan,
   HumanTaskCommand,
+  AutonomyLevel,
   LogicalStatus,
   MergeRequestInfo,
   QualityGateResult,
@@ -11,6 +12,8 @@ import type {
   TaskType,
   ValidationResult,
 } from "../../models/types.js";
+
+export type { AutonomyLevel } from "../../models/types.js";
 
 export const TASK_STATUSES = [
   "new",
@@ -90,7 +93,7 @@ export interface TaskExternalRefInput {
 }
 
 export interface TaskSource {
-  kind: "native" | "external" | "system";
+  kind: "native" | "external" | "system" | "ai_proposal";
   provider?: string;
   externalKey?: string;
 }
@@ -404,6 +407,7 @@ export const TASK_DECISION_KINDS = [
   "routing",
   "decomposition",
   "manual",
+  "policy",
 ] as const;
 
 export type TaskDecisionKind = (typeof TASK_DECISION_KINDS)[number];
@@ -488,6 +492,133 @@ export interface MemoryContextRecordInput {
   similarFailureCount: number;
 }
 
+export const EVIDENCE_REF_KINDS = [
+  "validation_failure",
+  "review_comment",
+  "ci_run",
+  "security_finding",
+  "memory_entry",
+  "file",
+  "metric",
+  "external_url",
+] as const;
+
+export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
+
+export interface EvidenceRef {
+  kind: EvidenceRefKind;
+  ref: string;
+  summary?: string;
+}
+
+export const PROPOSAL_SUPERVISOR_STATUSES = [
+  "proposed",
+  "approved",
+  "rejected",
+  "auto_approved",
+] as const;
+
+export type ProposalSupervisorStatus =
+  (typeof PROPOSAL_SUPERVISOR_STATUSES)[number];
+
+export const PROPOSAL_POLICY_DECISIONS = [
+  "blocked",
+  "requires_approval",
+  "auto_approved",
+  "approved",
+  "rejected",
+  "duplicate",
+] as const;
+
+export type ProposalPolicyDecision = (typeof PROPOSAL_POLICY_DECISIONS)[number];
+
+export interface ProposalPolicyEvaluation {
+  id: string;
+  taskId: string;
+  decision: ProposalPolicyDecision;
+  policy: string;
+  allowed: boolean;
+  autoApproved: boolean;
+  reason: string;
+  autonomyLevel: AutonomyLevel;
+  evidenceRefs: EvidenceRef[];
+  createdAt: string;
+}
+
+export interface TaskProposalRecord {
+  taskId: string;
+  source: "ai_proposal";
+  proposedBy: string;
+  proposalReason: string;
+  evidenceRefs: EvidenceRef[];
+  suggestedAcceptanceCriteria: string[];
+  supervisorStatus: ProposalSupervisorStatus;
+  approvalPolicy: string;
+  autonomyLevel: AutonomyLevel;
+  duplicateSignature: string;
+  expectedBlastRadius?: string;
+  cleanup: {
+    owner: "policy_admin";
+    staleAfter?: string;
+    rejectedAfter?: string;
+  };
+  policyEvaluation: ProposalPolicyEvaluation;
+  policyEvaluations: ProposalPolicyEvaluation[];
+  approvedBy?: TaskActor;
+  approvedAt?: string;
+  rejectedBy?: TaskActor;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProposeTaskInput {
+  source: "ai_proposal";
+  proposedBy: string;
+  repositoryName: string;
+  title: string;
+  description: string;
+  proposalReason: string;
+  evidenceRefs: EvidenceRef[];
+  suggestedAcceptanceCriteria: string[];
+  taskType?: TaskType;
+  promptProfileId?: string;
+  riskFactors?: string[];
+  expectedBlastRadius?: string;
+  autonomyLevel: AutonomyLevel;
+  approvalPolicy?: string;
+  idempotencyKey?: string;
+  repoPathKey?: string;
+  baseBranch?: string;
+  queue?: string;
+  tags?: string[];
+  components?: string[];
+  priority?: string;
+}
+
+export interface ApproveProposalInput {
+  actor: TaskActor;
+  reason?: string;
+  idempotencyKey?: string;
+}
+
+export interface RejectProposalInput {
+  actor: TaskActor;
+  reason: string;
+  idempotencyKey?: string;
+}
+
+export interface ProposalCleanupInput {
+  now?: string;
+  limit?: number;
+}
+
+export interface ProposalCleanupResult {
+  staleRejected: string[];
+  rejectedRetained: string[];
+}
+
 export interface TaskRecord {
   id: string;
   title: string;
@@ -529,6 +660,7 @@ export interface TaskRecord {
   decompositionDecisions: DecompositionDecisionRecord[];
   reviewMetadata: ReviewMetadataRecord[];
   memoryContextRefs: MemoryContextRef[];
+  proposal?: TaskProposalRecord;
   createdAt: string;
   updatedAt: string;
   lastSyncedAt?: string;
@@ -659,6 +791,10 @@ export interface TaskTrackerClient {
   listTasks(input?: ListTasksInput): Promise<TaskRecord[]>;
   listActiveLeases(): Promise<TaskLeaseRecord[]>;
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
+  proposeTask(input: ProposeTaskInput): Promise<TaskRecord>;
+  approveProposal(taskId: string, input: ApproveProposalInput): Promise<void>;
+  rejectProposal(taskId: string, input: RejectProposalInput): Promise<void>;
+  cleanupProposals(input?: ProposalCleanupInput): Promise<ProposalCleanupResult>;
   updateTaskRevision(taskId: string, input: TaskRevisionInput): Promise<TaskRecord>;
   updateExternalTaskFields(
     taskId: string,

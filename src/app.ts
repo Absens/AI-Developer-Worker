@@ -42,7 +42,10 @@ const createYandexBridgeStore = (
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
   const fleetConfig = loadFleetConfig(env);
-  const internalTaskTracker = createInternalTaskTrackerClient(fleetConfig.taskTracker);
+  const internalTaskTracker = createInternalTaskTrackerClient(
+    fleetConfig.taskTracker,
+    fleetConfig.autonomy,
+  );
   const observability = createObservabilityService(
     fleetConfig.observability,
     logger,

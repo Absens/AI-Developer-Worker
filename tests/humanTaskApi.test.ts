@@ -250,6 +250,61 @@ describe("Phase 7F human task API", () => {
     });
   });
 
+  it("creates and reviews AI proposals through the human API", async () => {
+    const { baseUrl, tracker } = await createServer();
+
+    const proposed = await requestJson(baseUrl, "/api/proposals", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({
+        proposedBy: "agent-1",
+        repositoryName: "developer",
+        title: "Document flaky test handling",
+        description: "Add a short runbook for flaky test handling.",
+        proposalReason: "Repeated validation failures mention the same flaky test.",
+        evidenceRefs: [
+          {
+            kind: "validation_failure",
+            ref: "quality-gate:test:flaky-check",
+            summary: "Same test failed twice.",
+          },
+        ],
+        suggestedAcceptanceCriteria: ["Runbook explains the flaky test flow."],
+        taskType: "documentation",
+      }),
+    });
+
+    expect(proposed.status).toBe(201);
+    expect(proposed.body.proposal).toMatchObject({
+      supervisorStatus: "proposed",
+      policyEvaluation: { decision: "requires_approval" },
+    });
+
+    const proposals = await requestJson(baseUrl, "/api/proposals");
+    expect(proposals.body.proposals[0]).toMatchObject({
+      id: proposed.body.task.id,
+      proposal: { supervisorStatus: "proposed" },
+    });
+
+    const approved = await requestJson(
+      baseUrl,
+      `/api/tasks/${proposed.body.task.id}/commands/approve-proposal`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+        body: JSON.stringify({ reason: "Safe documentation task." }),
+      },
+    );
+    expect(approved.body.task.status).toBe("ready");
+    expect(approved.body.task.proposal.supervisorStatus).toBe("approved");
+    expect((await tracker.getTask(proposed.body.task.id)).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "proposal_policy_decision" }),
+        expect.objectContaining({ kind: "task_proposal_approved" }),
+      ]),
+    );
+  });
+
   it("answers clarification, resumes, holds, retries, cancels, and approves decomposition", async () => {
     const tracker = new InMemoryTaskTrackerClient();
     const questionTask = await tracker.createTask(baseTaskInput({ id: "question-task" }));

@@ -4,6 +4,16 @@ import type { QueryResult, QueryResultRow } from "pg";
 
 import { buildAgentTaskContext } from "../../domain/taskTracker/agentContext.js";
 import {
+  buildProposalDuplicateSignature,
+  createPolicyEvaluationRecord,
+  evaluateProposalPolicy,
+  evidenceRefsToArtifactInputs,
+  isTerminalProposalTaskStatus,
+  normalizeAutonomyPolicyConfig,
+  normalizeProposalTitle,
+  repositoryPolicyFor,
+} from "../../domain/taskTracker/autonomyPolicy.js";
+import {
   FIELD_OWNERSHIP_RULES,
   assertOwnerCanUpdateFieldGroup,
 } from "../../domain/taskTracker/fieldOwnership.js";
@@ -16,9 +26,12 @@ import {
 import { assertValidTaskStatusTransition } from "../../domain/taskTracker/status.js";
 import {
   DuplicateExternalRefError,
+  DuplicateTaskProposalError,
   LeaseExpiredError,
   LeaseNotFoundError,
   LeaseOwnershipError,
+  ProposalPolicyError,
+  TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
 } from "../../domain/taskTracker/errors.js";
@@ -26,6 +39,7 @@ import type {
   AgentTaskContext,
   AgentRun,
   AgentRunInput,
+  ApproveProposalInput,
   ArtifactRef,
   ArtifactRefInput,
   ClaimedTask,
@@ -46,7 +60,14 @@ import type {
   MemoryContextRef,
   MergeRequestRecord,
   MergeRequestRecordInput,
+  EvidenceRef,
+  ProposalCleanupInput,
+  ProposalCleanupResult,
+  ProposalPolicyDecision,
+  ProposalPolicyEvaluation,
+  ProposeTaskInput,
   QualityGateRun,
+  RejectProposalInput,
   ReleaseLeaseInput,
   ReviewMetadataRecord,
   ReviewMetadataRecordInput,
@@ -64,6 +85,7 @@ import type {
   TaskFieldOwnership,
   TaskPlan,
   TaskRecord,
+  TaskProposalRecord,
   TaskRevision,
   TaskRevisionInput,
   TaskStatus,
@@ -74,6 +96,7 @@ import type {
   ValidationRecordInput,
 } from "../../domain/taskTracker/types.js";
 import type {
+  AutonomyPolicyConfig,
   DecompositionPlan,
   MergeRequestInfo,
   QualityGateResult,
@@ -95,6 +118,7 @@ export interface PostgresPoolLike extends PostgresQueryable {
 
 export interface PostgresTaskTrackerOptions {
   now?: () => Date;
+  autonomyPolicy?: Partial<AutonomyPolicyConfig>;
 }
 
 type TransactionClient = PostgresQueryable & { release?: () => void };
@@ -198,6 +222,51 @@ type MemoryContextRefRow = QueryResultRow & {
   knowledge_section_ids: string[];
   prompt_rule_ids: string[];
   similar_failure_count: number;
+  created_at: Date | string;
+};
+
+type TaskProposalRow = QueryResultRow & {
+  task_id: string;
+  source: "ai_proposal";
+  proposed_by: string;
+  proposal_reason: string;
+  suggested_acceptance_criteria: string[];
+  supervisor_status: TaskProposalRecord["supervisorStatus"];
+  approval_policy: string;
+  autonomy_level: TaskProposalRecord["autonomyLevel"];
+  duplicate_signature: string;
+  expected_blast_radius: string | null;
+  cleanup_owner: "policy_admin";
+  stale_after: Date | string | null;
+  rejected_after: Date | string | null;
+  approved_by: unknown | null;
+  approved_at: Date | string | null;
+  rejected_by: unknown | null;
+  rejected_at: Date | string | null;
+  rejection_reason: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type ProposalEvidenceRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  kind: EvidenceRef["kind"];
+  ref: string;
+  summary: string | null;
+  created_at: Date | string;
+};
+
+type ProposalPolicyEvaluationRow = QueryResultRow & {
+  id: string;
+  task_id: string;
+  decision: ProposalPolicyDecision;
+  policy: string;
+  allowed: boolean;
+  auto_approved: boolean;
+  reason: string;
+  autonomy_level: TaskProposalRecord["autonomyLevel"];
+  evidence_refs: unknown;
   created_at: Date | string;
 };
 
@@ -366,12 +435,14 @@ const buildRepositoryProfileWhere = (
 
 export class PostgresTaskTrackerClient implements TaskTrackerClient {
   private readonly now: () => Date;
+  private readonly autonomyPolicy: AutonomyPolicyConfig;
 
   constructor(
     private readonly db: PostgresQueryable,
     options: PostgresTaskTrackerOptions = {},
   ) {
     this.now = options.now ?? (() => new Date());
+    this.autonomyPolicy = normalizeAutonomyPolicyConfig(options.autonomyPolicy);
   }
 
   async listTasks(input: ListTasksInput = {}): Promise<TaskRecord[]> {
@@ -450,6 +521,421 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     });
 
     return clone(task);
+  }
+
+  async proposeTask(input: ProposeTaskInput): Promise<TaskRecord> {
+    if (input.source !== "ai_proposal") {
+      throw new Error("proposeTask only accepts source=ai_proposal.");
+    }
+
+    return this.withTransaction(async (client) => {
+      if (input.idempotencyKey) {
+        const existing = await this.findIdempotency<TaskRecord>(
+          client,
+          "proposeTask",
+          input.idempotencyKey,
+        );
+        if (existing.found) {
+          return clone(existing.response);
+        }
+      }
+
+      const duplicateSignature = buildProposalDuplicateSignature(input);
+      const duplicateTaskId = await this.findDuplicateProposalTaskId(
+        client,
+        input,
+        duplicateSignature,
+      );
+      if (duplicateTaskId) {
+        throw new DuplicateTaskProposalError(duplicateTaskId, duplicateSignature);
+      }
+
+      const policy = evaluateProposalPolicy(
+        input,
+        this.autonomyPolicy,
+        await this.countProposalWindows(client, input.repositoryName, this.now()),
+      );
+      if (policy.decision === "blocked") {
+        throw new ProposalPolicyError(policy.decision, policy.reason);
+      }
+
+      const createdAt = this.nowIso();
+      const task = this.createTaskRecord({
+        title: input.title,
+        description: input.description,
+        source: {
+          kind: "ai_proposal",
+          provider: "ai_proposal",
+          ...(input.idempotencyKey ? { externalKey: input.idempotencyKey } : {}),
+        },
+        createdBy: { owner: "external_source", id: `ai:${input.proposedBy}` },
+        repositoryName: input.repositoryName,
+        repoPathKey: input.repoPathKey ?? input.repositoryName,
+        baseBranch: input.baseBranch ?? "main",
+        queue: input.queue ?? "AI_PROPOSALS",
+        tags: normalizeStringArray(["ai_proposal", ...(input.tags ?? [])]),
+        components: normalizeStringArray(input.components),
+        ...(input.priority ? { priority: input.priority } : {}),
+        status: policy.autoApproved ? "ready" : "triage",
+        taskType: input.taskType ?? "unknown",
+        ...(input.promptProfileId ? { promptProfileId: input.promptProfileId } : {}),
+        acceptanceCriteria: input.suggestedAcceptanceCriteria,
+        riskFactors: input.riskFactors ?? [],
+        externalRefs: input.idempotencyKey
+          ? [{ provider: "ai_proposal", externalKey: input.idempotencyKey }]
+          : [],
+        createdAt,
+      });
+      const policyEvaluation = createPolicyEvaluationRecord({
+        taskId: task.id,
+        decision: policy.decision,
+        policy: policy.approvalPolicy,
+        allowed: policy.allowed,
+        autoApproved: policy.autoApproved,
+        reason: policy.reason,
+        autonomyLevel: input.autonomyLevel,
+        evidenceRefs: input.evidenceRefs,
+        createdAt,
+      });
+      task.proposal = {
+        taskId: task.id,
+        source: "ai_proposal",
+        proposedBy: input.proposedBy,
+        proposalReason: input.proposalReason,
+        evidenceRefs: input.evidenceRefs.map(clone),
+        suggestedAcceptanceCriteria: normalizeStringArray(
+          input.suggestedAcceptanceCriteria,
+        ),
+        supervisorStatus: policy.supervisorStatus,
+        approvalPolicy: policy.approvalPolicy,
+        autonomyLevel: input.autonomyLevel,
+        duplicateSignature,
+        ...(input.expectedBlastRadius
+          ? { expectedBlastRadius: input.expectedBlastRadius }
+          : {}),
+        cleanup: this.proposalCleanupMetadata(createdAt, policy.supervisorStatus),
+        policyEvaluation,
+        policyEvaluations: [policyEvaluation],
+        ...(policy.supervisorStatus === "auto_approved"
+          ? {
+              approvedBy: { owner: "policy_admin", id: "autonomy-policy" },
+              approvedAt: createdAt,
+            }
+          : {}),
+        createdAt,
+        updatedAt: createdAt,
+      };
+
+      await this.assertExternalRefsAvailable(client, task.externalRefs);
+      await this.insertTaskRecord(client, task);
+      await this.insertArtifacts(
+        client,
+        task.id,
+        evidenceRefsToArtifactInputs(input.evidenceRefs),
+        createdAt,
+      );
+      await this.insertProposalRecord(client, task.proposal);
+      await this.insertProposalEvidence(client, task.id, input.evidenceRefs, createdAt);
+      await this.insertProposalPolicyEvaluation(client, policyEvaluation);
+      await this.insertProposalPolicyAudit(
+        client,
+        task.id,
+        policyEvaluation,
+        policy.supervisorStatus === "auto_approved"
+          ? "Proposal auto-approved by policy."
+          : "AI task proposal created.",
+        createdAt,
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId: task.id,
+        kind:
+          policy.supervisorStatus === "auto_approved"
+            ? "task_proposal_auto_approved"
+            : "task_proposal_created",
+        source: "policy_admin",
+        message: policy.reason,
+        payload: {
+          proposedBy: input.proposedBy,
+          proposalReason: input.proposalReason,
+        },
+        createdAt,
+      });
+      await this.recordProposalRateWindow(client, input.repositoryName, this.now());
+
+      const result = await this.getTaskUsing(client, task.id);
+      if (input.idempotencyKey) {
+        await this.storeIdempotency(client, "proposeTask", input.idempotencyKey, result);
+      }
+      return result;
+    });
+  }
+
+  async approveProposal(
+    taskId: string,
+    input: ApproveProposalInput,
+  ): Promise<void> {
+    const operation = `approveProposal:${taskId}`;
+    await this.withTransaction(async (client) => {
+      if (input.idempotencyKey) {
+        const existing = await this.findIdempotency<null>(
+          client,
+          operation,
+          input.idempotencyKey,
+        );
+        if (existing.found) {
+          return;
+        }
+      }
+
+      const task = await this.getTaskUsing(client, taskId);
+      const proposal = this.requireProposal(task);
+      if (proposal.supervisorStatus === "approved") {
+        if (input.idempotencyKey) {
+          await this.storeIdempotency(client, operation, input.idempotencyKey, null);
+        }
+        return;
+      }
+      if (proposal.supervisorStatus !== "proposed") {
+        throw new TaskProposalStateError(
+          taskId,
+          `expected proposed status, got ${proposal.supervisorStatus}.`,
+        );
+      }
+
+      assertReadyFields(task);
+      assertValidTaskStatusTransition(task.status, "ready");
+      const createdAt = this.nowIso();
+      await client.query(
+        `
+          UPDATE task_proposals
+          SET supervisor_status = 'approved',
+              approved_by = $2::jsonb,
+              approved_at = $3,
+              updated_at = $3
+          WHERE task_id = $1
+        `,
+        [taskId, JSON.stringify(input.actor), createdAt],
+      );
+      await client.query(
+        "UPDATE tasks SET status = 'ready', updated_at = $2 WHERE id = $1",
+        [taskId, createdAt],
+      );
+      await this.updateDuplicateSignatureStatus(client, taskId, "approved", null);
+
+      const evaluation = createPolicyEvaluationRecord({
+        taskId,
+        decision: "approved",
+        policy: proposal.approvalPolicy,
+        allowed: true,
+        autoApproved: false,
+        reason: input.reason ?? "Proposal approved by supervisor.",
+        autonomyLevel: proposal.autonomyLevel,
+        evidenceRefs: proposal.evidenceRefs,
+        createdAt,
+      });
+      await this.insertProposalPolicyEvaluation(client, evaluation);
+      await this.insertProposalPolicyAudit(
+        client,
+        taskId,
+        evaluation,
+        "Proposal approved.",
+        createdAt,
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "task_proposal_approved",
+        source: input.actor.owner,
+        actor: clone(input.actor),
+        message: input.reason ?? "Proposal approved by supervisor.",
+        createdAt,
+      });
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "task_status_changed",
+        source: input.actor.owner,
+        actor: clone(input.actor),
+        message: input.reason ?? "Approved proposal moved to executable queue.",
+        payload: { from: task.status, to: "ready" },
+        createdAt,
+      });
+
+      if (input.idempotencyKey) {
+        await this.storeIdempotency(client, operation, input.idempotencyKey, null);
+      }
+    });
+  }
+
+  async rejectProposal(
+    taskId: string,
+    input: RejectProposalInput,
+  ): Promise<void> {
+    const operation = `rejectProposal:${taskId}`;
+    await this.withTransaction(async (client) => {
+      if (input.idempotencyKey) {
+        const existing = await this.findIdempotency<null>(
+          client,
+          operation,
+          input.idempotencyKey,
+        );
+        if (existing.found) {
+          return;
+        }
+      }
+
+      const task = await this.getTaskUsing(client, taskId);
+      const proposal = this.requireProposal(task);
+      if (proposal.supervisorStatus === "rejected") {
+        if (input.idempotencyKey) {
+          await this.storeIdempotency(client, operation, input.idempotencyKey, null);
+        }
+        return;
+      }
+      if (proposal.supervisorStatus !== "proposed") {
+        throw new TaskProposalStateError(
+          taskId,
+          `expected proposed status, got ${proposal.supervisorStatus}.`,
+        );
+      }
+
+      assertValidTaskStatusTransition(task.status, "cancelled");
+      const createdAt = this.nowIso();
+      const cleanup = this.proposalCleanupMetadata(createdAt, "rejected");
+      await client.query(
+        `
+          UPDATE task_proposals
+          SET supervisor_status = 'rejected',
+              rejected_by = $2::jsonb,
+              rejected_at = $3,
+              rejection_reason = $4,
+              rejected_after = $5,
+              updated_at = $3
+          WHERE task_id = $1
+        `,
+        [
+          taskId,
+          JSON.stringify(input.actor),
+          createdAt,
+          input.reason,
+          cleanup.rejectedAfter ?? null,
+        ],
+      );
+      await client.query(
+        `
+          UPDATE proposal_cleanup_metadata
+          SET rejected_after = $2,
+              last_evaluated_at = $3
+          WHERE task_id = $1
+        `,
+        [taskId, cleanup.rejectedAfter ?? null, createdAt],
+      );
+      await client.query(
+        "UPDATE tasks SET status = 'cancelled', updated_at = $2 WHERE id = $1",
+        [taskId, createdAt],
+      );
+      await this.updateDuplicateSignatureStatus(client, taskId, "rejected", createdAt);
+
+      const evaluation = createPolicyEvaluationRecord({
+        taskId,
+        decision: "rejected",
+        policy: proposal.approvalPolicy,
+        allowed: false,
+        autoApproved: false,
+        reason: input.reason,
+        autonomyLevel: proposal.autonomyLevel,
+        evidenceRefs: proposal.evidenceRefs,
+        createdAt,
+      });
+      await this.insertProposalPolicyEvaluation(client, evaluation);
+      await this.insertProposalPolicyAudit(
+        client,
+        taskId,
+        evaluation,
+        "Proposal rejected.",
+        createdAt,
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "task_proposal_rejected",
+        source: input.actor.owner,
+        actor: clone(input.actor),
+        message: input.reason,
+        createdAt,
+      });
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "task_status_changed",
+        source: input.actor.owner,
+        actor: clone(input.actor),
+        message: input.reason,
+        payload: { from: task.status, to: "cancelled" },
+        createdAt,
+      });
+
+      if (input.idempotencyKey) {
+        await this.storeIdempotency(client, operation, input.idempotencyKey, null);
+      }
+    });
+  }
+
+  async cleanupProposals(
+    input: ProposalCleanupInput = {},
+  ): Promise<ProposalCleanupResult> {
+    const nowIso = input.now ?? this.nowIso();
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const stale = await this.db.query<{ task_id: string }>(
+      `
+        SELECT task_id
+        FROM task_proposals
+        WHERE supervisor_status = 'proposed'
+          AND stale_after IS NOT NULL
+          AND stale_after <= $1
+        ORDER BY stale_after, task_id
+        LIMIT $2
+      `,
+      [nowIso, limit],
+    );
+    const staleRejected: string[] = [];
+    for (const row of stale.rows) {
+      await this.rejectProposal(row.task_id, {
+        actor: { owner: "policy_admin", id: "proposal-cleanup" },
+        reason: "Stale proposal rejected by cleanup policy.",
+      });
+      staleRejected.push(row.task_id);
+    }
+
+    const rejectedRetained: string[] = [];
+    await this.withTransaction(async (client) => {
+      const retained = await client.query<{ task_id: string }>(
+        `
+          SELECT task_id
+          FROM task_proposals
+          WHERE supervisor_status = 'rejected'
+            AND rejected_after IS NOT NULL
+            AND rejected_after <= $1
+          ORDER BY rejected_after, task_id
+          LIMIT $2
+        `,
+        [nowIso, Math.max(limit - staleRejected.length, 0)],
+      );
+      for (const row of retained.rows) {
+        await client.query(
+          `
+            UPDATE proposal_cleanup_metadata
+            SET last_evaluated_at = $2
+            WHERE task_id = $1
+          `,
+          [row.task_id, nowIso],
+        );
+        rejectedRetained.push(row.task_id);
+      }
+    });
+
+    return { staleRejected, rejectedRetained };
   }
 
   async updateTaskRevision(
@@ -1939,6 +2425,195 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     return artifacts;
   }
 
+  private async insertProposalRecord(
+    client: PostgresQueryable,
+    proposal: TaskProposalRecord,
+  ): Promise<void> {
+    await client.query(
+      `
+        INSERT INTO task_proposals (
+          task_id, source, proposed_by, proposal_reason,
+          suggested_acceptance_criteria, supervisor_status, approval_policy,
+          autonomy_level, duplicate_signature, expected_blast_radius,
+          cleanup_owner, stale_after, rejected_after, approved_by, approved_at,
+          rejected_by, rejected_at, rejection_reason, created_at, updated_at
+        )
+        VALUES (
+          $1, $2, $3, $4,
+          $5, $6, $7,
+          $8, $9, $10,
+          $11, $12, $13, $14::jsonb, $15,
+          $16::jsonb, $17, $18, $19, $20
+        )
+      `,
+      [
+        proposal.taskId,
+        proposal.source,
+        proposal.proposedBy,
+        proposal.proposalReason,
+        proposal.suggestedAcceptanceCriteria,
+        proposal.supervisorStatus,
+        proposal.approvalPolicy,
+        proposal.autonomyLevel,
+        proposal.duplicateSignature,
+        proposal.expectedBlastRadius ?? null,
+        proposal.cleanup.owner,
+        proposal.cleanup.staleAfter ?? null,
+        proposal.cleanup.rejectedAfter ?? null,
+        proposal.approvedBy ? JSON.stringify(proposal.approvedBy) : null,
+        proposal.approvedAt ?? null,
+        proposal.rejectedBy ? JSON.stringify(proposal.rejectedBy) : null,
+        proposal.rejectedAt ?? null,
+        proposal.rejectionReason ?? null,
+        proposal.createdAt,
+        proposal.updatedAt,
+      ],
+    );
+    await client.query(
+      `
+        INSERT INTO task_proposal_duplicate_signatures (
+          duplicate_signature, task_id, repository_name, supervisor_status,
+          created_at, terminal_at
+        )
+        SELECT $1, $2, repository_name, $3, $4, $5
+        FROM tasks
+        WHERE id = $2
+        ON CONFLICT (duplicate_signature)
+        DO UPDATE SET
+          task_id = EXCLUDED.task_id,
+          repository_name = EXCLUDED.repository_name,
+          supervisor_status = EXCLUDED.supervisor_status,
+          created_at = EXCLUDED.created_at,
+          terminal_at = EXCLUDED.terminal_at
+      `,
+      [
+        proposal.duplicateSignature,
+        proposal.taskId,
+        proposal.supervisorStatus,
+        proposal.createdAt,
+        proposal.supervisorStatus === "rejected" ? proposal.updatedAt : null,
+      ],
+    );
+    await client.query(
+      `
+        INSERT INTO proposal_cleanup_metadata (
+          task_id, cleanup_owner, stale_after, rejected_after, last_evaluated_at
+        )
+        VALUES ($1, $2, $3, $4, $5)
+      `,
+      [
+        proposal.taskId,
+        proposal.cleanup.owner,
+        proposal.cleanup.staleAfter ?? null,
+        proposal.cleanup.rejectedAfter ?? null,
+        proposal.createdAt,
+      ],
+    );
+  }
+
+  private async insertProposalEvidence(
+    client: PostgresQueryable,
+    taskId: string,
+    evidenceRefs: readonly EvidenceRef[],
+    createdAt: string,
+  ): Promise<void> {
+    for (const evidence of evidenceRefs) {
+      await client.query(
+        `
+          INSERT INTO task_proposal_evidence (
+            id, task_id, kind, ref, summary, created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          `proposal_evidence_${randomUUID()}`,
+          taskId,
+          evidence.kind,
+          evidence.ref,
+          evidence.summary ?? null,
+          createdAt,
+        ],
+      );
+    }
+  }
+
+  private async insertProposalPolicyEvaluation(
+    client: PostgresQueryable,
+    evaluation: ProposalPolicyEvaluation,
+  ): Promise<void> {
+    await client.query(
+      `
+        INSERT INTO autonomy_policy_evaluations (
+          id, task_id, decision, policy, allowed, auto_approved, reason,
+          autonomy_level, evidence_refs, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+      `,
+      [
+        evaluation.id,
+        evaluation.taskId,
+        evaluation.decision,
+        evaluation.policy,
+        evaluation.allowed,
+        evaluation.autoApproved,
+        evaluation.reason,
+        evaluation.autonomyLevel,
+        JSON.stringify(evaluation.evidenceRefs),
+        evaluation.createdAt,
+      ],
+    );
+  }
+
+  private async insertProposalPolicyAudit(
+    client: PostgresQueryable,
+    taskId: string,
+    evaluation: ProposalPolicyEvaluation,
+    message: string,
+    createdAt: string,
+  ): Promise<void> {
+    await client.query(
+      `
+        INSERT INTO task_decisions (
+          id, task_id, kind, schema_version, source, author_id, worker_id,
+          payload, created_at
+        )
+        VALUES ($1, $2, 'policy', 1, 'policy_admin', NULL, NULL, $3::jsonb, $4)
+      `,
+      [
+        `decision_${randomUUID()}`,
+        taskId,
+        JSON.stringify({
+          proposal: {
+            decision: evaluation.decision,
+            policy: evaluation.policy,
+            allowed: evaluation.allowed,
+            autoApproved: evaluation.autoApproved,
+            reason: evaluation.reason,
+            autonomyLevel: evaluation.autonomyLevel,
+            evidenceRefs: evaluation.evidenceRefs,
+          },
+        }),
+        createdAt,
+      ],
+    );
+    await this.insertEvent(client, {
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "proposal_policy_decision",
+      source: "policy_admin",
+      message,
+      payload: {
+        decision: evaluation.decision,
+        policy: evaluation.policy,
+        allowed: evaluation.allowed,
+        autoApproved: evaluation.autoApproved,
+        reason: evaluation.reason,
+        evidenceRefs: evaluation.evidenceRefs,
+      },
+      createdAt,
+    });
+  }
+
   private async getTaskUsing(
     client: PostgresQueryable,
     taskId: string,
@@ -1968,6 +2643,9 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       mergeRequests,
       reviewMetadata,
       memoryContextRefs,
+      proposalRows,
+      proposalEvidenceRows,
+      proposalPolicyEvaluationRows,
     ] = await Promise.all([
       client.query("SELECT * FROM task_external_refs WHERE task_id = $1 ORDER BY created_at, id", [
         taskId,
@@ -2033,6 +2711,15 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       client.query("SELECT * FROM memory_context_refs WHERE task_id = $1 ORDER BY created_at, id", [
         taskId,
       ]),
+      client.query("SELECT * FROM task_proposals WHERE task_id = $1", [taskId]),
+      client.query(
+        "SELECT * FROM task_proposal_evidence WHERE task_id = $1 ORDER BY created_at, id",
+        [taskId],
+      ),
+      client.query(
+        "SELECT * FROM autonomy_policy_evaluations WHERE task_id = $1 ORDER BY created_at, id",
+        [taskId],
+      ),
     ]);
 
     const artifactRecords = artifacts.rows.map((artifact) =>
@@ -2129,6 +2816,21 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       memoryContextRefs: memoryContextRefs.rows.map((ref) =>
         this.mapMemoryContextRef(ref as MemoryContextRefRow),
       ),
+      ...(proposalRows.rows[0]
+        ? {
+            proposal: this.mapProposalRecord(
+              proposalRows.rows[0] as TaskProposalRow,
+              proposalEvidenceRows.rows.map(
+                (evidence) => this.mapProposalEvidence(evidence as ProposalEvidenceRow),
+              ),
+              proposalPolicyEvaluationRows.rows.map((evaluation) =>
+                this.mapProposalPolicyEvaluation(
+                  evaluation as ProposalPolicyEvaluationRow,
+                ),
+              ),
+            ),
+          }
+        : {}),
       createdAt: toIso(row.created_at),
       updatedAt: toIso(row.updated_at),
       ...(optionalIso(row.last_synced_at)
@@ -2437,6 +3139,87 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     };
   }
 
+  private mapProposalRecord(
+    row: TaskProposalRow,
+    evidenceRefs: EvidenceRef[],
+    policyEvaluations: ProposalPolicyEvaluation[],
+  ): TaskProposalRecord {
+    const fallbackEvaluation =
+      policyEvaluations.at(-1) ??
+      createPolicyEvaluationRecord({
+        taskId: row.task_id,
+        decision:
+          row.supervisor_status === "auto_approved"
+            ? "auto_approved"
+            : "requires_approval",
+        policy: row.approval_policy,
+        allowed: row.supervisor_status !== "rejected",
+        autoApproved: row.supervisor_status === "auto_approved",
+        reason: "Policy evaluation was not recorded.",
+        autonomyLevel: row.autonomy_level,
+        evidenceRefs,
+        createdAt: toIso(row.created_at),
+      });
+
+    return {
+      taskId: row.task_id,
+      source: row.source,
+      proposedBy: row.proposed_by,
+      proposalReason: row.proposal_reason,
+      evidenceRefs,
+      suggestedAcceptanceCriteria: row.suggested_acceptance_criteria ?? [],
+      supervisorStatus: row.supervisor_status,
+      approvalPolicy: row.approval_policy,
+      autonomyLevel: row.autonomy_level,
+      duplicateSignature: row.duplicate_signature,
+      ...(row.expected_blast_radius
+        ? { expectedBlastRadius: row.expected_blast_radius }
+        : {}),
+      cleanup: {
+        owner: row.cleanup_owner,
+        ...(row.stale_after ? { staleAfter: toIso(row.stale_after) } : {}),
+        ...(row.rejected_after ? { rejectedAfter: toIso(row.rejected_after) } : {}),
+      },
+      policyEvaluation: fallbackEvaluation,
+      policyEvaluations:
+        policyEvaluations.length > 0 ? policyEvaluations : [fallbackEvaluation],
+      ...(row.approved_by ? { approvedBy: row.approved_by as TaskActor } : {}),
+      ...(row.approved_at ? { approvedAt: toIso(row.approved_at) } : {}),
+      ...(row.rejected_by ? { rejectedBy: row.rejected_by as TaskActor } : {}),
+      ...(row.rejected_at ? { rejectedAt: toIso(row.rejected_at) } : {}),
+      ...(row.rejection_reason ? { rejectionReason: row.rejection_reason } : {}),
+      createdAt: toIso(row.created_at),
+      updatedAt: toIso(row.updated_at),
+    };
+  }
+
+  private mapProposalEvidence(row: ProposalEvidenceRow): EvidenceRef {
+    return {
+      kind: row.kind,
+      ref: row.ref,
+      ...(row.summary ? { summary: row.summary } : {}),
+    };
+  }
+
+  private mapProposalPolicyEvaluation(
+    row: ProposalPolicyEvaluationRow,
+  ): ProposalPolicyEvaluation {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      decision: row.decision,
+      policy: row.policy,
+      allowed: row.allowed,
+      autoApproved: row.auto_approved,
+      reason: row.reason,
+      autonomyLevel: row.autonomy_level,
+      evidenceRefs: Array.isArray(row.evidence_refs)
+        ? (row.evidence_refs as EvidenceRef[])
+        : [],
+      createdAt: toIso(row.created_at),
+    };
+  }
+
   private async ensureTaskExists(
     client: PostgresQueryable,
     taskId: string,
@@ -2483,6 +3266,155 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         throw new DuplicateExternalRefError(ref.provider, ref.externalKey);
       }
     }
+  }
+
+  private async findDuplicateProposalTaskId(
+    client: PostgresQueryable,
+    input: ProposeTaskInput,
+    duplicateSignature: string,
+  ): Promise<string | null> {
+    const evidenceRefs = input.evidenceRefs.map((ref) => ref.ref.toLowerCase());
+    const evidenceKinds = input.evidenceRefs.map((ref) => ref.kind);
+    const result = await client.query<{ task_id: string; title: string; status: string }>(
+      `
+        SELECT t.id AS task_id, t.title, t.status
+        FROM tasks t
+        LEFT JOIN task_proposals p ON p.task_id = t.id
+        WHERE t.repository_name = $1
+          AND t.status NOT IN ('done', 'failed', 'cancelled')
+          AND coalesce(p.supervisor_status, 'active') <> 'rejected'
+          AND (
+            p.duplicate_signature = $2
+            OR EXISTS (
+              SELECT 1
+              FROM task_proposal_evidence evidence
+              WHERE evidence.task_id = t.id
+                AND evidence.kind = ANY($3::text[])
+                AND lower(evidence.ref) = ANY($4::text[])
+            )
+          )
+        ORDER BY t.created_at, t.id
+        LIMIT 1
+      `,
+      [input.repositoryName, duplicateSignature, evidenceKinds, evidenceRefs],
+    );
+    if (result.rows[0]?.task_id) {
+      return result.rows[0].task_id;
+    }
+
+    const normalizedTitle = normalizeProposalTitle(input.title);
+    const titleResult = await client.query<{ id: string; title: string; status: string }>(
+      `
+        SELECT id, title, status
+        FROM tasks
+        WHERE repository_name = $1
+          AND status NOT IN ('done', 'failed', 'cancelled')
+        ORDER BY created_at, id
+      `,
+      [input.repositoryName],
+    );
+    const titleDuplicate = titleResult.rows.find(
+      (row) =>
+        !isTerminalProposalTaskStatus(row.status) &&
+        normalizeProposalTitle(row.title) === normalizedTitle,
+    );
+    return titleDuplicate?.id ?? null;
+  }
+
+  private async countProposalWindows(
+    client: PostgresQueryable,
+    repositoryName: string,
+    now: Date,
+  ): Promise<{ daily: number; window: number }> {
+    const repositoryPolicy = repositoryPolicyFor(this.autonomyPolicy, repositoryName);
+    const windowSeconds =
+      repositoryPolicy.windowSeconds ?? this.autonomyPolicy.defaultWindowSeconds;
+    const dayStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    ).toISOString();
+    const windowStart = new Date(now.getTime() - windowSeconds * 1000).toISOString();
+    const result = await client.query<{ daily: string; window: string }>(
+      `
+        SELECT
+          count(*) FILTER (WHERE p.created_at >= $2) AS daily,
+          count(*) FILTER (WHERE p.created_at >= $3) AS window
+        FROM task_proposals p
+        JOIN tasks t ON t.id = p.task_id
+        WHERE t.repository_name = $1
+      `,
+      [repositoryName, dayStart, windowStart],
+    );
+    return {
+      daily: Number(result.rows[0]?.daily ?? 0),
+      window: Number(result.rows[0]?.window ?? 0),
+    };
+  }
+
+  private proposalCleanupMetadata(
+    createdAt: string,
+    supervisorStatus: TaskProposalRecord["supervisorStatus"],
+  ): TaskProposalRecord["cleanup"] {
+    const createdTime = Date.parse(createdAt);
+    const cleanup: TaskProposalRecord["cleanup"] = {
+      owner: "policy_admin",
+      staleAfter: new Date(createdTime + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    if (supervisorStatus === "rejected") {
+      cleanup.rejectedAfter = new Date(
+        createdTime + 90 * 24 * 60 * 60 * 1000,
+      ).toISOString();
+    }
+    return cleanup;
+  }
+
+  private requireProposal(task: TaskRecord): TaskProposalRecord {
+    if (!task.proposal) {
+      throw new TaskProposalStateError(task.id, "task has no proposal metadata.");
+    }
+    return task.proposal;
+  }
+
+  private async updateDuplicateSignatureStatus(
+    client: PostgresQueryable,
+    taskId: string,
+    supervisorStatus: TaskProposalRecord["supervisorStatus"],
+    terminalAt: string | null,
+  ): Promise<void> {
+    await client.query(
+      `
+        UPDATE task_proposal_duplicate_signatures
+        SET supervisor_status = $2,
+            terminal_at = $3
+        WHERE task_id = $1
+      `,
+      [taskId, supervisorStatus, terminalAt],
+    );
+  }
+
+  private async recordProposalRateWindow(
+    client: PostgresQueryable,
+    repositoryName: string,
+    now: Date,
+  ): Promise<void> {
+    const repositoryPolicy = repositoryPolicyFor(this.autonomyPolicy, repositoryName);
+    const windowSeconds =
+      repositoryPolicy.windowSeconds ?? this.autonomyPolicy.defaultWindowSeconds;
+    const windowStartMs =
+      Math.floor(now.getTime() / (windowSeconds * 1000)) * windowSeconds * 1000;
+    const windowStart = new Date(windowStartMs).toISOString();
+    await client.query(
+      `
+        INSERT INTO proposal_rate_limit_windows (
+          repository_name, window_start, window_seconds, proposal_count, updated_at
+        )
+        VALUES ($1, $2, $3, 1, $4)
+        ON CONFLICT (repository_name, window_start, window_seconds)
+        DO UPDATE SET
+          proposal_count = proposal_rate_limit_windows.proposal_count + 1,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [repositoryName, windowStart, windowSeconds, now.toISOString()],
+    );
   }
 
   private async selectClaimCandidate(

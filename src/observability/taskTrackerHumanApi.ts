@@ -2,15 +2,20 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type {
   CreateTaskInput,
+  EvidenceRef,
   ListTasksInput,
+  ProposeTaskInput,
   TaskActor,
   TaskRecord,
   TaskStatus,
   TaskTrackerClient,
 } from "../domain/taskTracker/types.js";
 import {
+  DuplicateTaskProposalError,
   DuplicateExternalRefError,
   InvalidTaskStatusTransitionError,
+  ProposalPolicyError,
+  TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
 } from "../domain/taskTracker/index.js";
@@ -40,7 +45,9 @@ type CommandName =
   | "cancel"
   | "retry"
   | "force-reanalysis"
-  | "approve-decomposition";
+  | "approve-decomposition"
+  | "approve-proposal"
+  | "reject-proposal";
 
 const ROLE_RANK: Record<TaskTrackerHumanRole, number> = {
   viewer: 0,
@@ -57,6 +64,8 @@ const COMMAND_ROLE: Record<CommandName, TaskTrackerHumanRole> = {
   retry: "operator",
   "force-reanalysis": "operator",
   "approve-decomposition": "developer",
+  "approve-proposal": "developer",
+  "reject-proposal": "developer",
 };
 
 const TASK_TEMPLATE_IDS = [
@@ -66,6 +75,17 @@ const TASK_TEMPLATE_IDS = [
   "refactor",
   "dependency_update",
   "documentation",
+] as const;
+
+const EVIDENCE_KINDS = [
+  "validation_failure",
+  "review_comment",
+  "ci_run",
+  "security_finding",
+  "memory_entry",
+  "file",
+  "metric",
+  "external_url",
 ] as const;
 
 class HttpApiError extends Error {
@@ -258,6 +278,15 @@ const responseForError = (error: unknown): { statusCode: number; message: string
   if (error instanceof DuplicateExternalRefError) {
     return { statusCode: 409, message: error.message };
   }
+  if (error instanceof DuplicateTaskProposalError) {
+    return { statusCode: 409, message: error.message };
+  }
+  if (error instanceof ProposalPolicyError) {
+    return { statusCode: 403, message: error.message };
+  }
+  if (error instanceof TaskProposalStateError) {
+    return { statusCode: 409, message: error.message };
+  }
   return {
     statusCode: 500,
     message: error instanceof Error ? error.message : String(error),
@@ -275,6 +304,7 @@ export class TaskTrackerHumanApi {
     return (
       path === `${apiPath}/tasks` ||
       path === `${apiPath}/tasks:bulk-create` ||
+      path === `${apiPath}/proposals` ||
       path === `${apiPath}/operations` ||
       path.startsWith(`${apiPath}/tasks/`)
     );
@@ -318,6 +348,31 @@ export class TaskTrackerHumanApi {
           tracker.listActiveLeases(),
         ]);
         json(response, 200, this.buildOperationsSnapshot(tasks, leases));
+        return;
+      }
+
+      if (request.method === "GET" && route === "/proposals") {
+        const auth = this.requireAuth(request, "viewer");
+        const supervisorStatus = optionalString(url.searchParams.get("supervisorStatus"));
+        const tasks = (await tracker.listTasks({ limit: 500 })).filter(
+          (task) =>
+            task.proposal &&
+            (!supervisorStatus ||
+              task.proposal.supervisorStatus === supervisorStatus),
+        );
+        json(response, 200, {
+          proposals: tasks.map((task) => this.summarizeProposal(task)),
+          role: auth.role,
+          generatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      if (request.method === "POST" && route === "/proposals") {
+        const auth = this.requireAuth(request, "operator");
+        const body = requireObject(await this.readJson(request), "request body");
+        const task = await tracker.proposeTask(this.proposeTaskInputFromBody(body, auth));
+        json(response, 201, { task, proposal: task.proposal });
         return;
       }
 
@@ -678,6 +733,89 @@ export class TaskTrackerHumanApi {
     return command && command in COMMAND_ROLE ? command : undefined;
   }
 
+  private parseEvidenceRefs(value: unknown): EvidenceRef[] {
+    if (!Array.isArray(value) || value.length === 0) {
+      throw new HttpApiError(400, "evidenceRefs must be a non-empty array.");
+    }
+    return value.map((entry, index) => {
+      const raw = requireObject(entry, `evidenceRefs[${index}]`);
+      const kind = requiredString(raw.kind, `evidenceRefs[${index}].kind`);
+      if (!EVIDENCE_KINDS.includes(kind as any)) {
+        throw new HttpApiError(400, `Unsupported evidence kind: ${kind}`);
+      }
+      return {
+        kind: kind as EvidenceRef["kind"],
+        ref: requiredString(raw.ref, `evidenceRefs[${index}].ref`),
+        ...(optionalString(raw.summary)
+          ? { summary: optionalString(raw.summary) }
+          : {}),
+      };
+    });
+  }
+
+  private parseAutonomyLevel(value: unknown): ProposeTaskInput["autonomyLevel"] {
+    const level = optionalString(value) ?? "proposal_only";
+    if (
+      level === "proposal_only" ||
+      level === "auto_triage" ||
+      level === "auto_execute_low_risk"
+    ) {
+      return level;
+    }
+    throw new HttpApiError(
+      400,
+      "autonomyLevel must be one of: proposal_only, auto_triage, auto_execute_low_risk.",
+    );
+  }
+
+  private proposeTaskInputFromBody(
+    body: Record<string, unknown>,
+    auth: AuthContext,
+  ): ProposeTaskInput {
+    return {
+      source: "ai_proposal",
+      proposedBy: optionalString(body.proposedBy) ?? auth.actor.id,
+      repositoryName: requiredString(body.repositoryName, "repositoryName"),
+      title: requiredString(body.title, "title"),
+      description: requiredString(body.description, "description"),
+      proposalReason: requiredString(body.proposalReason, "proposalReason"),
+      evidenceRefs: this.parseEvidenceRefs(body.evidenceRefs),
+      suggestedAcceptanceCriteria:
+        optionalStringArray(body.suggestedAcceptanceCriteria) ??
+        optionalStringArray(body.acceptanceCriteria) ??
+        [],
+      ...(TASK_TEMPLATE_IDS.includes(optionalString(body.taskType) as any)
+        ? { taskType: optionalString(body.taskType) as ProposeTaskInput["taskType"] }
+        : {}),
+      ...(optionalString(body.promptProfileId)
+        ? { promptProfileId: optionalString(body.promptProfileId) }
+        : {}),
+      ...(body.riskFactors !== undefined
+        ? { riskFactors: optionalStringArray(body.riskFactors) ?? [] }
+        : {}),
+      ...(optionalString(body.expectedBlastRadius)
+        ? { expectedBlastRadius: optionalString(body.expectedBlastRadius) }
+        : {}),
+      autonomyLevel: this.parseAutonomyLevel(body.autonomyLevel),
+      ...(optionalString(body.approvalPolicy)
+        ? { approvalPolicy: optionalString(body.approvalPolicy) }
+        : {}),
+      ...(optionalString(body.idempotencyKey)
+        ? { idempotencyKey: optionalString(body.idempotencyKey) }
+        : {}),
+      ...(optionalString(body.repoPathKey)
+        ? { repoPathKey: optionalString(body.repoPathKey) }
+        : {}),
+      ...(optionalString(body.baseBranch) ? { baseBranch: optionalString(body.baseBranch) } : {}),
+      ...(optionalString(body.queue) ? { queue: optionalString(body.queue) } : {}),
+      ...(body.tags !== undefined ? { tags: optionalStringArray(body.tags) ?? [] } : {}),
+      ...(body.components !== undefined
+        ? { components: optionalStringArray(body.components) ?? [] }
+        : {}),
+      ...(optionalString(body.priority) ? { priority: optionalString(body.priority) } : {}),
+    };
+  }
+
   private async createTaskFromBody(
     tracker: TaskTrackerClient,
     body: Record<string, unknown>,
@@ -858,6 +996,40 @@ export class TaskTrackerHumanApi {
       });
       return;
     }
+    if (command === "approve-proposal") {
+      await tracker.approveProposal(taskId, {
+        actor: auth.actor,
+        reason: optionalString(body.reason) ?? "Proposal approved from review API.",
+      });
+      return;
+    }
+    if (command === "reject-proposal") {
+      await tracker.rejectProposal(taskId, {
+        actor: auth.actor,
+        reason: optionalString(body.reason) ?? "Proposal rejected from review API.",
+      });
+      return;
+    }
+  }
+
+  private summarizeProposal(task: TaskRecord): Record<string, unknown> {
+    const proposal = task.proposal;
+    return {
+      ...summarizeTask(task),
+      proposal: proposal
+        ? {
+            supervisorStatus: proposal.supervisorStatus,
+            approvalPolicy: proposal.approvalPolicy,
+            autonomyLevel: proposal.autonomyLevel,
+            proposedBy: proposal.proposedBy,
+            proposalReason: proposal.proposalReason,
+            policyDecision: proposal.policyEvaluation.decision,
+            policyReason: proposal.policyEvaluation.reason,
+            evidenceRefs: proposal.evidenceRefs,
+            createdAt: proposal.createdAt,
+          }
+        : undefined,
+    };
   }
 
   private buildTaskDetail(

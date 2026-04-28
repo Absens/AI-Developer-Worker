@@ -13,6 +13,35 @@ export class DuplicateExternalRefError extends Error {
   }
 }
 
+export class DuplicateTaskProposalError extends Error {
+  constructor(
+    readonly taskId: string,
+    readonly duplicateSignature: string,
+  ) {
+    super(
+      `Task proposal duplicates existing non-terminal task ${taskId} with signature ${duplicateSignature}.`,
+    );
+  }
+}
+
+export class ProposalPolicyError extends Error {
+  constructor(
+    readonly decision: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export class TaskProposalStateError extends Error {
+  constructor(
+    readonly taskId: string,
+    message: string,
+  ) {
+    super(`Task proposal ${taskId} cannot be changed: ${message}`);
+  }
+}
+
 export class TaskReadinessError extends Error {
   constructor(readonly missingFields: string[]) {
     super(`Task is missing required execution fields: ${missingFields.join(", ")}.`);
