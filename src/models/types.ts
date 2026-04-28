@@ -31,6 +31,43 @@ export type TaskType =
 export type DependencyUnknownStatusPolicy = "block" | "warn" | "ignore";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type MemoryBootstrapCodexSandbox = "inherit" | CodexSandbox;
+export type TaskTrackerProvider = "yandex" | "internal";
+export type TaskIntakeMode =
+  | "standalone"
+  | "yandex_integration"
+  | "hybrid"
+  | "system_only"
+  | "ai_proposed";
+export type TaskTrackerStorageAdapter = "postgres" | "memory";
+
+export interface BaseInternalTaskTrackerConfig {
+  intakeMode: TaskIntakeMode;
+  yandexSyncEnabled: boolean;
+}
+
+export interface PostgresInternalTaskTrackerConfig
+  extends BaseInternalTaskTrackerConfig {
+  storage: "postgres";
+  databaseUrl: string;
+}
+
+export interface MemoryInternalTaskTrackerConfig extends BaseInternalTaskTrackerConfig {
+  storage: "memory";
+  databaseUrl?: string;
+}
+
+export type InternalTaskTrackerConfig =
+  | PostgresInternalTaskTrackerConfig
+  | MemoryInternalTaskTrackerConfig;
+
+export type TaskTrackerConfig =
+  | {
+      provider: "yandex";
+    }
+  | {
+      provider: "internal";
+      internal: InternalTaskTrackerConfig;
+    };
 
 export interface MemoryConfig {
   enabled: boolean;
@@ -268,6 +305,7 @@ export interface TrackerIssueLink {
 export type TrackerOrgHeader = "X-Org-ID" | "X-Cloud-Org-ID";
 
 export interface AppConfig {
+  taskTracker?: TaskTrackerConfig;
   trackerToken: string;
   trackerOrgHeader: TrackerOrgHeader;
   trackerOrgId: string;
@@ -412,6 +450,7 @@ export interface RepositoryProfile {
 }
 
 export interface GlobalWorkerConfig {
+  taskTracker?: TaskTrackerConfig;
   workerId: string;
   pollIntervalMinutes: number;
   pollIntervalMs: number;

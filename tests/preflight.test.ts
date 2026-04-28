@@ -301,4 +301,44 @@ describe("PreflightService", () => {
     });
     expect(checks.at(-1)?.details).toContain("TEST_COMMAND failed");
   });
+
+  it("checks internal tracker storage without calling Yandex tracker", async () => {
+    const tracker = new FakeTrackerClient();
+    const service = new PreflightService(
+      createConfig({
+        taskTracker: {
+          provider: "internal",
+          internal: {
+            storage: "postgres",
+            databaseUrl: "postgres://tracker:secret@localhost/tasks",
+            intakeMode: "standalone",
+            yandexSyncEnabled: false,
+          },
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      successfulCommand,
+    );
+
+    const checks = await service.run();
+
+    expect(checks.map((check) => check.name)).toEqual([
+      "Config load",
+      "Internal tracker storage",
+      "Codex auth",
+      "Git repository",
+      "GitLab read",
+      "GitLab write",
+      "Target commands",
+    ]);
+    expect(checks.find((check) => check.name === "Internal tracker storage")).toMatchObject({
+      status: "pass",
+    });
+    expect(tracker.readChecks).toBe(0);
+    expect(tracker.comments).toEqual([]);
+  });
 });

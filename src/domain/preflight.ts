@@ -60,6 +60,30 @@ export class PreflightService {
         details: "Configuration and Tracker status map loaded successfully.",
       },
     ];
+    const internalTracker =
+      this.config.taskTracker?.provider === "internal"
+        ? this.config.taskTracker.internal
+        : undefined;
+
+    if (internalTracker) {
+      checks.push({
+        name: "Internal tracker storage",
+        status: "pass",
+        details:
+          internalTracker.storage === "postgres"
+            ? "PostgreSQL storage is configured for the internal task tracker."
+            : "In-memory internal task tracker storage is configured for test/local smoke.",
+      });
+
+      if (internalTracker.yandexSyncEnabled) {
+        checks.push({
+          name: "Yandex sync bridge",
+          status: "fail",
+          details:
+            "YANDEX_SYNC_ENABLED=true is parsed, but the Yandex bridge is scheduled for Phase 7E and is not available in Phase 7C.",
+        });
+      }
+    }
 
     await this.record(checks, "Codex auth", this.assertCodexAuthenticated, () =>
       `Codex authentication is available for CODEX_HOME=${this.config.codexHome}.`,
@@ -67,14 +91,16 @@ export class PreflightService {
     await this.record(checks, "Git repository", () => this.git.assertRepositoryReady(), () =>
       `Repository is ready at ${this.config.repoPath}.`,
     );
-    await this.record(checks, "Tracker read", () => this.checkTrackerRead(), () =>
-      this.config.trackerPreflightIssueKey
-        ? `Read access verified with issue ${this.config.trackerPreflightIssueKey}.`
-        : `Read access verified with queue ${this.config.trackerDefaultQueue} and tag ${this.config.trackerTag}.`,
-    );
-    await this.record(checks, "Tracker write", () => this.checkTrackerWrite(), (details) =>
-      details,
-    );
+    if (!internalTracker) {
+      await this.record(checks, "Tracker read", () => this.checkTrackerRead(), () =>
+        this.config.trackerPreflightIssueKey
+          ? `Read access verified with issue ${this.config.trackerPreflightIssueKey}.`
+          : `Read access verified with queue ${this.config.trackerDefaultQueue} and tag ${this.config.trackerTag}.`,
+      );
+      await this.record(checks, "Tracker write", () => this.checkTrackerWrite(), (details) =>
+        details,
+      );
+    }
     await this.record(checks, "GitLab read", () => this.gitlab.checkReadAccess(), () =>
       `Read access verified for GitLab project ${this.config.gitlabProjectId}.`,
     );

@@ -8,6 +8,8 @@ import { buildRepositoryContext } from "./domain/repositoryContext.js";
 import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
+import { createInternalTaskTrackerClient } from "./integrations/internalTracker/index.js";
+import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
 import { createObservabilityService } from "./observability/service.js";
 import { Logger } from "./utils/logger.js";
@@ -25,6 +27,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     throw new Error("No repository profiles configured.");
   }
 
+  const internalTaskTracker = createInternalTaskTrackerClient(fleetConfig.taskTracker);
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
   const lockBackend =
     fleetConfig.coordination.lockBackend === "none"
@@ -36,7 +39,14 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
 
   if (env.WORKER_CONFIG_FILE?.trim()) {
     const contexts = fleetConfig.repositories.map((profile) =>
-      buildRepositoryContext(fleetConfig, profile, logger, lockBackend, observability),
+      buildRepositoryContext(
+        fleetConfig,
+        profile,
+        logger,
+        lockBackend,
+        observability,
+        internalTaskTracker,
+      ),
     );
     const orchestrator = new FleetOrchestrator(
       fleetConfig,
@@ -58,6 +68,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       orchestrator,
       preflight,
       observability,
+      taskTracker: internalTaskTracker,
       assertRepositoryReady: async () => {
         await Promise.all(contexts.map((context) => context.assertRepositoryReady()));
       },
@@ -68,7 +79,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   }
 
   const config = primaryConfig;
-  const tracker = new YandexTrackerClient(config, logger);
+  const tracker = createRuntimeTrackerClient(config, logger, internalTaskTracker);
   const git = new RepositoryGitService(config, logger);
   const gitlab = new GitLabApiClient(config, logger);
   const codex = new CliCodexRunner(config, logger);
@@ -100,6 +111,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     orchestrator,
     preflight,
     observability,
+    taskTracker: internalTaskTracker,
     assertRepositoryReady: () => git.assertRepositoryReady(),
     assertCodexAuthenticated: checkCodexAuth,
   };
