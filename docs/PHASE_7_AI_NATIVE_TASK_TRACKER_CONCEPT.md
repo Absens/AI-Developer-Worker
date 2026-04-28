@@ -109,6 +109,7 @@ AI Task Tracker должен поддерживать несколько intake 
 | `yandex_integration` | Bridge импортирует issue из Yandex Tracker в AI Task Tracker и зеркалит digest/status обратно. | Команды, где Yandex остаётся внешним корпоративным каналом или legacy board. |
 | `hybrid` | Задачи можно создавать и внутри AI Task Tracker, и импортировать из Yandex. | Переходный период или команды, где AI-задачи живут отдельно от общих бизнес-задач. |
 | `system_only` | Задачи создают CI, incident system, monitoring, product backend или другой service account. | Автоматические исправления, dependency updates, регулярные code health задачи. |
+| `ai_proposed` | AI предлагает задачи на основе failures, review feedback, observability, memory или code health signals. | Управляемая автономия: AI может находить работу сам, но выполнение идёт по approval/policy. |
 
 Yandex integration mode должен быть адаптером, а не фундаментальным предположением доменной модели.
 
@@ -137,8 +138,14 @@ Yandex integration mode должен быть адаптером, а не фун
 
 - `id` - stable internal id, например `task_01...`;
 - `externalRefs` - ссылки на Yandex issue, GitLab MR, future providers;
-- `source` - `ui`, `api`, `webhook`, `yandex`, `decomposition`, `system`;
+- `source` - `ui`, `api`, `webhook`, `yandex`, `decomposition`, `system`, `ai_proposal`;
 - `createdBy` - human user, service account, bridge or worker id;
+- `proposedBy` - optional AI agent/worker id for AI-created proposals;
+- `proposalReason` - why the task exists;
+- `evidenceRefs` - links to failures, events, files, reviews, metrics or memory entries;
+- `autonomyLevel` - `proposal_only`, `auto_triage`, `auto_execute_low_risk`;
+- `approvalPolicy` - policy that must approve before execution;
+- `supervisorStatus` - `proposed`, `approved`, `rejected`, `auto_approved`;
 - `title`, `description`, `humanSummary`;
 - `repositoryName`, `repoPathKey`, `baseBranch`;
 - `queue`, `tags`, `components`, `priority`, `deadline`;
@@ -393,6 +400,41 @@ AI Task Tracker должен уметь принимать задачи напр
 
 System-created task обязательно должна иметь `source`, `createdBy`, idempotency key и raw source payload для аудита.
 
+### AI-proposed tasks
+
+AI может не только выполнять входящие задачи, но и предлагать новые задачи для улучшения проекта. Это не должно превращаться в бесконтрольное самоисполнение: по умолчанию AI-created task создаётся в статусе `triage` с `supervisorStatus=proposed`.
+
+Источники AI proposals:
+
+- повторяющиеся validation failures;
+- повторяющиеся review comments;
+- flaky tests;
+- устаревшие dependencies;
+- security scan findings;
+- observability alerts;
+- memory/review learning entries;
+- code health signals, например большие файлы, дублирование, отсутствие тестов;
+- TODO/FIXME или known pitfalls из repository knowledge base.
+
+AI proposal должен содержать:
+
+- `proposalReason` - короткое объяснение, зачем нужна задача;
+- `evidenceRefs` - ссылки на события, файлы, MR discussions, failed gates или memory entries;
+- suggested `repositoryName`, `taskType`, `promptProfileId`, `riskFactors`;
+- suggested acceptance criteria;
+- `autonomyLevel`;
+- expected blast radius.
+
+Рекомендуемые уровни автономии:
+
+| Autonomy level | Meaning |
+| --- | --- |
+| `proposal_only` | AI только предлагает задачу. Человек должен approve/mark-ready. |
+| `auto_triage` | AI может заполнить routing, criteria and risk analysis, но execution ждёт approval. |
+| `auto_execute_low_risk` | AI может сам перевести в `ready` только задачи, разрешённые policy: docs, tests-only, small dependency patch, flaky test fix. |
+
+Для production MVP безопасный default: `proposal_only`. Более высокий уровень автономии должен включаться per repository и per task type.
+
 ### Task creation API
 
 ```http
@@ -423,9 +465,12 @@ POST /api/tasks
 
 ```http
 POST /api/tasks:bulk-create
+POST /api/tasks:propose
 POST /api/tasks/{taskId}/revisions
 POST /api/tasks/{taskId}/attachments
 POST /api/tasks/{taskId}/commands/mark-ready
+POST /api/tasks/{taskId}/commands/approve-proposal
+POST /api/tasks/{taskId}/commands/reject-proposal
 ```
 
 ### Templates
@@ -515,6 +560,8 @@ POST /api/agent/tasks/{taskId}/merge-requests
 
 Хранит quality gate results, artifact refs, branch, MR URL и MR iid.
 
+GitLab review discussions не нужно зеркалить в task timeline на каждом poll. MVP policy: импортировать unresolved discussions при входе задачи в `review` и непосредственно перед `review_fix`. Позже можно добавить GitLab webhook или incremental sync для активных MR.
+
 ### Lease heartbeat
 
 ```http
@@ -545,6 +592,15 @@ POST /api/agent/leases/{leaseId}:release
 - preview agent context перед переводом в `ready`;
 - кнопки save draft, mark ready, request human triage.
 
+### AI proposals view
+
+- список задач, предложенных AI;
+- группировка по repository, source signal and risk;
+- proposal reason and evidence refs;
+- suggested acceptance criteria and blast radius;
+- approve, reject, edit, merge with existing task;
+- policy badge: manual approval required or auto-approved.
+
 ### Task detail
 
 Экран задачи:
@@ -562,6 +618,8 @@ POST /api/agent/leases/{leaseId}:release
 - dependencies with reasons;
 - status of each child;
 - ability to approve created subtasks before syncing to Yandex.
+
+Default policy: internal child tasks are not mirrored to Yandex automatically. Child tasks are created in AI Task Tracker first, then mirrored only after human approval or an explicit repository policy.
 
 ### Operations view
 
@@ -654,8 +712,11 @@ Status sync должен быть idempotent и писать audit event с ре
 ```typescript
 export interface TaskTrackerClient {
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
+  proposeTask(input: ProposeTaskInput): Promise<TaskRecord>;
   updateTaskRevision(taskId: string, input: TaskRevisionInput): Promise<TaskRecord>;
   markReady(taskId: string, reason?: string): Promise<void>;
+  approveProposal(taskId: string, input: ApproveProposalInput): Promise<void>;
+  rejectProposal(taskId: string, input: RejectProposalInput): Promise<void>;
   claimNextTask(input: ClaimTaskInput): Promise<ClaimedTask | null>;
   getTask(taskId: string): Promise<TaskRecord>;
   appendEvent(taskId: string, input: TaskEventInput): Promise<void>;
@@ -694,6 +755,7 @@ export interface ExternalTaskSource {
 5. `WorkerOrchestrator` заменить `TrackerIssue` на neutral `TaskRecord` в новых paths.
 6. Prompt builder должен получать `AgentTaskContext`, а не собирать контекст из комментариев.
 7. Observability events писать и в текущий event store, и в task timeline, затем объединить storage.
+8. AI-created work сначала писать через `proposeTask`, а не напрямую в executable queue.
 
 Новые настройки:
 
@@ -739,7 +801,7 @@ Phase 5 memory остаётся отдельным store. AI Task Tracker дол
 
 ## Storage
 
-Для production MVP рекомендуется PostgreSQL. SQLite можно оставить для local dev/smoke tests.
+Для production MVP PostgreSQL обязателен. SQLite можно оставить только для local dev, unit tests and smoke tests.
 
 Почему PostgreSQL:
 
@@ -759,6 +821,7 @@ Phase 5 memory остаётся отдельным store. AI Task Tracker дол
 | `task_events` | Append-only timeline. |
 | `task_comments` | Human and AI-visible discussion. |
 | `task_decisions` | Analysis, routing, decomposition, manual decisions. |
+| `task_proposals` | AI proposal metadata, evidence refs, autonomy level and supervisor decision. |
 | `task_plans` | Persisted plans. |
 | `task_steps` | Step state machine. |
 | `agent_runs` | Codex/AI engine executions. |
@@ -785,6 +848,37 @@ MVP должен оставаться self-hosted.
 - integration tokens never stored in task payloads;
 - preflight checks for DB, Yandex sync, GitLab sync and worker API.
 
+Minimum auth model for the first writable UI/API:
+
+- no anonymous mutations;
+- agent API uses service tokens;
+- human UI uses session auth or trusted reverse proxy/OIDC before exposure outside localhost;
+- roles: `viewer`, `developer`, `operator`, `admin`;
+- task mutations require `developer` or higher;
+- operational settings and integration tokens require `admin`.
+
+Yandex can remain a familiar external board, but AI Task Tracker is the official board for AI-work. If a team wants Yandex visibility, Yandex receives mirrored digest/status updates; canonical execution state stays inside AI Task Tracker.
+
+Retention defaults:
+
+- raw Codex logs: 30 days;
+- validation artifacts: 30 days by default, 90 days for failed tasks;
+- compact summaries, events, decisions and task history: at least 1 year;
+- all retention values configurable per deployment.
+
+Для AI-initiated work нужны дополнительные guardrails:
+
+- global kill switch for AI proposals and auto-execution;
+- per repository `allowedAutonomyLevel`;
+- per task type allowlist;
+- max proposals per day/window;
+- mandatory human approval for high-risk task types and broad file changes;
+- duplicate detection before creating a proposal;
+- audit trail with evidence refs and policy decision;
+- clear owner for rejected/stale proposals cleanup.
+
+Default for the first release: `auto_execute_low_risk` is disabled globally. It can be enabled only by explicit repository policy and only for documentation, tests-only changes without production code, small dependency patch/minor updates, flaky test fixes, and formatting/lint-only fixes. It must stay disabled for security-sensitive code, auth, payments, database migrations, public API changes, broad refactors, and multi-repository changes.
+
 ## MVP milestones
 
 ### 7.1 Schema and contracts
@@ -798,6 +892,7 @@ MVP должен оставаться self-hosted.
 
 - Реализовать claim, lease heartbeat/release, task read, event append.
 - Реализовать direct task creation, revision update, attachments metadata and mark-ready command.
+- Реализовать AI proposal API: propose, approve, reject, duplicate detection.
 - Перенести priority queue scoring в tracker claim path.
 - Добавить idempotency keys.
 - Покрыть concurrency tests для двойного claim.
@@ -807,6 +902,7 @@ MVP должен оставаться self-hosted.
 - Поддержать `standalone`, `yandex_integration`, `hybrid`, `system_only` intake modes.
 - Добавить UI/API создание задач без Yandex.
 - Добавить webhook/API path для system-created tasks.
+- Добавить `ai_proposed` intake path как proposal-only по умолчанию.
 - Import queue/tag issues into internal tasks.
 - Export digest comments and status transitions.
 - Import `/resume`, `/skip`, `/cancel` and human answers.
@@ -823,6 +919,7 @@ MVP должен оставаться self-hosted.
 
 - Queue view.
 - Task detail.
+- AI proposals review view.
 - Awaiting human workflow.
 - Failed task diagnostics.
 - MR and validation summary.
@@ -840,6 +937,7 @@ MVP должен оставаться self-hosted.
 - Worker can process a task end-to-end using AI Task Tracker as primary task state store.
 - A human can create a task directly in AI Task Tracker without any Yandex issue.
 - A system/service account can create a task through API with idempotency key and audit trail.
+- AI can create proposal tasks with evidence refs, but they do not enter executable queue without approval or explicit low-risk policy.
 - In Yandex integration mode, Yandex issue remains visible and receives compact status/comment digests.
 - No `AI LEASE` comments are required in Yandex for internal mode.
 - A human can answer an AI question from internal UI; in Yandex integration mode the same answer can also come from Yandex comment.
@@ -848,14 +946,15 @@ MVP должен оставаться self-hosted.
 - Concurrent workers cannot claim the same task or repository lease.
 - Current tests for Yandex direct mode continue to pass until fallback is intentionally removed.
 
-## Open questions
+## Product decisions
 
-- Should internal child tasks always be mirrored to Yandex, or only after human approval?
-- Is PostgreSQL mandatory for first MVP, or do we need SQLite-only local mode?
-- Should GitLab review discussions be mirrored into task timeline on every poll or only when review fix starts?
-- What is the minimum human auth model acceptable for the first UI?
-- Do managers need Yandex as the official status board after internal UI exists, or only as intake/source?
-- How long should raw Codex logs and validation artifacts be retained?
+- Internal child tasks are created in AI Task Tracker first and mirrored to Yandex only after human approval or explicit repository policy.
+- PostgreSQL is mandatory for production MVP; SQLite is only for local dev/tests.
+- GitLab review discussions are imported when a task enters `review` and before `review_fix`, not on every poll.
+- Writable human UI/API requires auth from the first version: service tokens for agents, session/reverse-proxy/OIDC auth for humans, and RBAC.
+- AI Task Tracker is the official board for AI-work; Yandex is optional intake/source/mirror.
+- Raw Codex logs default to 30-day retention; validation artifacts default to 30 days, 90 days for failed tasks; compact task history stays for at least 1 year.
+- `auto_execute_low_risk` is disabled by default and allowed only by explicit repository policy for docs, tests-only, small dependency patch/minor update, flaky test fix, and formatting/lint-only tasks.
 
 ## Main risks
 
