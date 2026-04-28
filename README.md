@@ -1,47 +1,91 @@
 # AI Developer Worker
 
-Node.js/TypeScript worker that polls Yandex Tracker, runs `codex-cli` against one or more configured project repositories, validates the result, and creates or reuses a GitLab merge request.
+Node.js/TypeScript воркер, который опрашивает Yandex Tracker, запускает `codex-cli` в целевом репозитории, валидирует результат и создает или переиспользует merge request в GitLab.
 
-## What it does
+Проект рассчитан на запуск как локально, так и в Docker. Основной сценарий: воркер берет подходящую задачу Tracker, готовит ветку в смонтированном checkout, передает задачу Codex, прогоняет проверки качества, публикует изменения в GitLab и обновляет задачу комментариями/статусами.
 
-For each cycle the worker:
+## Что делает воркер
 
-1. Restores an unfinished task for the current `WORKER_ID`, if one exists.
-2. Otherwise selects an eligible Tracker issue by lease-aware priority scoring. In legacy `.env` mode this uses `TRACKER_DEFAULT_QUEUE` and `TRACKER_TAG`; in fleet mode it uses repository profiles from `WORKER_CONFIG_FILE`.
-3. Runs structured task analysis, stores `AI ANALYSIS:`, chooses a prompt profile, and either implements, asks for clarification, decomposes, or parks the task for manual review.
-4. Enforces `blockedBy` dependencies before acquiring leases or touching git state.
-5. Moves the issue through logical statuses from `TRACKER_STATUS_MAP_FILE`.
-6. Prepares `feature/ai-task-{tracker_id}` in the mounted local clone when implementation is allowed.
-7. Runs structured `codex exec`, then tests and lint.
-8. Commits, pushes, publishes an MR, and updates Tracker comments/status.
+За один цикл воркер:
 
-If Codex needs business clarification, it returns exactly one `AI_QUESTION:` line, the worker stores the Codex `threadId`, and later resumes that session after a human answer.
+1. Восстанавливает незавершенную задачу текущего `WORKER_ID`, если такая есть.
+2. Иначе выбирает подходящую задачу Tracker с учетом lease-aware priority scoring.
+3. Делает структурированный анализ задачи, сохраняет комментарий `AI ANALYSIS:` и выбирает режим обработки.
+4. Проверяет зависимости `blockedBy` до получения lease и до изменения git-состояния.
+5. Переводит задачу по логическим статусам из `TRACKER_STATUS_MAP_FILE`.
+6. Готовит ветку `feature/ai-task-{tracker_id}` в локальном checkout целевого репозитория.
+7. Запускает `codex exec`, затем настроенные проверки качества.
+8. Создает commit, push, merge request и обновляет Tracker.
 
-## Quick Start
+Если Codex не может продолжить без бизнес-уточнения, он возвращает одну строку `AI_QUESTION:`. Воркер сохраняет `threadId`, переводит задачу в ожидание ответа и позже возобновляет тот же Codex-сеанс после комментария человека.
 
-1. Copy [.env.example](/C:/Users/gabba/projects/developer/.env.example) to `.env` and fill in Tracker/GitLab/Codex settings
-2. Build the image: `docker build -t ai-developer-worker .`
-3. Create a dedicated Docker `CODEX_HOME` and run `codex login` inside it
-4. Mount a real target git clone into `/workspace/project`
-5. First run with `WORKER_RUN_ONCE=true`
-6. Switch to continuous mode only after the one-shot run succeeds
+## Структура проекта
 
-The container does not perform OAuth login on startup. If `CODEX_HOME` is missing or unauthenticated, startup fails before the worker touches Tracker.
+- [src/](src/) - runtime-код воркера.
+- [src/domain/](src/domain/) - оркестрация, маршрутизация задач, сборка prompt-ов и проверки качества.
+- [src/integrations/](src/integrations/) - адаптеры Tracker, GitLab, Git и Codex.
+- [src/observability/](src/observability/) - health/readiness, метрики, dashboard API и оповещения.
+- [src/utils/](src/utils/) - запуск shell-команд, retry, логирование и общие helper-ы.
+- [tests/](tests/) - unit и smoke tests на Vitest.
+- [scripts/](scripts/) - операционные helper-ы, включая bootstrap Codex auth.
+- [docs/](docs/) - runbook-и по окружению, Docker, fleet mode, memory и observability.
+- [config/](config/) - пример карты статусов Tracker.
 
-## Development Commands
+## Быстрый старт
 
-- `npm install` install dependencies
-- `npm run typecheck` run TypeScript checks
-- `npm test` run the full Vitest suite
-- `npm run test:smoke` run the end-to-end smoke harness
-- `npm run build` build production output into `dist/`
-- `npm run dev` start the worker with `tsx` and load `.env`
-- `npm run memory:validate` validate the file-backed memory store
-- `npm run bootstrap:codex-home` copy an existing Codex auth directory into a target path or mounted volume
+1. Установите зависимости: `npm install`.
+2. Скопируйте [.env.example](.env.example) в `.env` и заполните Tracker, GitLab, Codex и git-настройки.
+3. Проверьте `TRACKER_STATUS_MAP_FILE`; пример лежит в [config/trackerStatusMap.example.json](config/trackerStatusMap.example.json).
+4. Подготовьте локальный checkout целевого репозитория и убедитесь, что в нем настроены fetch/push credentials.
+5. Выполните preflight: `npm run preflight`.
+6. Первый рабочий запуск делайте с `WORKER_RUN_ONCE=true`.
+7. Переключайте воркер в непрерывный режим только после успешного one-shot запуска.
 
-## Key Configuration
+Контейнер не выполняет OAuth login при старте. Если `CODEX_HOME` отсутствует или не аутентифицирован, startup завершается до того, как воркер начнет менять Tracker или GitLab.
 
-Required:
+## Запуск в Docker
+
+Соберите образ:
+
+```bash
+docker build -t ai-developer-worker .
+```
+
+Для Docker Compose задайте в `.env`:
+
+```env
+HOST_CODEX_HOME=C:/Users/you/.codex
+TARGET_REPO_PATH=C:/path/to/target/repository
+CODEX_HOME=/codex-home
+REPO_PATH=/workspace/project
+WORKER_RUN_ONCE=true
+```
+
+Затем запустите:
+
+```bash
+docker compose up --build
+```
+
+Для долгоживущего воркера предпочтительнее отдельный writable volume `CODEX_HOME`, а не прямой bind mount host `~/.codex`. Подробности и Windows-команды есть в [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) и [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md).
+
+## Команды разработки
+
+- `npm install` - установить зависимости.
+- `npm run typecheck` - запустить строгую проверку TypeScript без emit.
+- `npm test` - запустить весь набор Vitest.
+- `npm run test:smoke` - запустить end-to-end smoke test с mock Tracker/GitLab и реальным git flow.
+- `npm run build` - собрать production bundle в `dist/`.
+- `npm run dev` - запустить воркер через `tsx` с `.env`.
+- `npm run preflight` - проверить конфигурацию, Codex auth, git, Tracker, GitLab и target commands без обработки очереди.
+- `npm run memory:validate` - проверить файловое хранилище repository memory.
+- `npm run bootstrap:codex-home` - скопировать существующую Codex auth directory в целевой путь или mounted volume.
+
+Проект требует Node.js `>=22.0.0`.
+
+## Основная конфигурация
+
+Минимально нужны:
 
 - `TRACKER_TOKEN`
 - `TRACKER_ORG_ID`
@@ -49,65 +93,99 @@ Required:
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
 - `GITLAB_PROJECT_ID`
-- `GIT_REMOTE_NAME=origin` by default
-- optional `GIT_REPOSITORY_TOKEN` and `GIT_REPOSITORY_URL` for HTTPS git auth bootstrap
-- optional `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` for commit identity inside Docker
 - `MAX_FIX_ATTEMPTS`
 - `WORKER_ID`
 
-Common optional values:
+Часто настраиваются:
 
 - `TRACKER_TAG=ai_dev`
 - `TRACKER_DEFAULT_QUEUE=FRONTEND`
 - `REPO_PATH=/workspace/project`
 - `BASE_BRANCH=main`
+- `GIT_REMOTE_NAME=origin`
+- `GIT_REPOSITORY_URL` и `GIT_REPOSITORY_TOKEN` для HTTPS git auth bootstrap.
+- `GIT_AUTHOR_NAME` и `GIT_AUTHOR_EMAIL` для commit identity внутри Docker.
+- `TEST_COMMAND`, `LINT_COMMAND`, `TYPE_CHECK_COMMAND`, `BUILD_COMMAND` и другие проверки качества целевого репозитория.
 - `POLL_INTERVAL_MINUTES=30`
 - `CODEX_HOME=/codex-home`
 - `CODEX_CLI_COMMAND=codex`
-- `CODEX_CLI_ARGS_JSON=[]` for launcher/global Codex flags before `exec`
+- `CODEX_CLI_ARGS_JSON=[]`
+- `CODEX_EXEC_ARGS_JSON=[]`
 - `CODEX_SANDBOX=danger-full-access`
-- `CODEX_MODEL=...`
-- `CODEX_PROFILE=...`
-- `CODEX_EXEC_ARGS_JSON=[]` for flags accepted by `codex exec --help`
-- `CODEX_TIMEOUT_SECONDS=1800`
-- `CODEX_PROGRESS_LOG_INTERVAL_SECONDS=30`
+- `CODEX_MODEL` и `CODEX_PROFILE`, если нужен явный выбор Codex-конфигурации.
 - `WORKER_RUN_ONCE=true|false`
-- `HOST_CODEX_HOME=C:/Users/.../.codex` for optional Compose bootstrap on Windows
-- `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` for multi-repository fleet mode
-- `LOCK_BACKEND=tracker`, `LOCK_TTL_SECONDS=900`, `LOCK_HEARTBEAT_SECONDS=60` for Tracker-comment leases
-- `TASK_MODE=auto|implement|decompose|analyze_only|human` for Phase 4 routing
-- `CONFIDENCE_IMPLEMENT_THRESHOLD=70`, `CONFIDENCE_HUMAN_THRESHOLD=40`, `CONFIDENCE_PRIORITY_WEIGHT=2`
-- `DECOMPOSITION_DRY_RUN=true` for safe epic split previews
-- `DEPENDENCY_ENFORCEMENT=true`, `DEPENDENCY_UNKNOWN_STATUS_POLICY=block` for blocked-task filtering
-- `MEMORY_ENABLED=false`, `MEMORY_DIR=/workspace/ai-developer-memory` for Phase 5 repository memory
-- `OBSERVABILITY_ENABLED=false`, `OBSERVABILITY_PORT=9464`, `METRICS_ENABLED=true` for Phase 6 health, readiness, and Prometheus metrics
-- `DASHBOARD_ENABLED=false`, `DASHBOARD_BEARER_TOKEN=...` for the read-only dashboard/API
-- `ALERTS_ENABLED=false`, `ALERT_CHANNELS=webhook|slack|telegram` for event-based notifications
+- `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` для fleet mode.
 
-For Codex CLI 0.124.0, global flags such as `--search` and
-`--ask-for-approval never` must go in `CODEX_CLI_ARGS_JSON`, for example
-`["--search","--ask-for-approval","never"]`. `CODEX_EXEC_ARGS_JSON` is only
-for exec-level flags such as `["--add-dir","/workspace/shared"]`.
+Для Codex CLI `0.124.0` глобальные флаги вроде `--search` и `--ask-for-approval never` должны находиться в `CODEX_CLI_ARGS_JSON`, например:
 
-## Documentation Map
+```json
+["--search", "--ask-for-approval", "never"]
+```
 
-- Environment variables and where to get them: [docs/ENV_CONFIGURATION.md](/C:/Users/gabba/projects/developer/docs/ENV_CONFIGURATION.md)
-- Fleet config and operational coordination: [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md)
-- Repository memory lifecycle: [docs/MEMORY_LIFECYCLE.md](/C:/Users/gabba/projects/developer/docs/MEMORY_LIFECYCLE.md)
-- Observability, dashboard, metrics, probes, and alerts: [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md)
-- Local Docker behavior and prerequisites: [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md)
-- Windows PowerShell copy-paste commands: [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md)
-- Codex auth troubleshooting, including `refresh_token_reused`: [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md)
-- Codex CLI update procedure and compatibility checks: [docs/CODEX_CLI_UPDATE_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/CODEX_CLI_UPDATE_RUNBOOK.md)
-- Compose file: [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml)
-- Contributor conventions: [AGENTS.md](/C:/Users/gabba/projects/developer/AGENTS.md)
+`CODEX_EXEC_ARGS_JSON` предназначен только для аргументов уровня `codex exec`, например:
 
-## Notes
+```json
+["--add-dir", "/workspace/shared"]
+```
 
-- Prefer a dedicated writable Docker volume for `CODEX_HOME` over binding the host `~/.codex` directly.
-- For long-running workers, log in directly inside that dedicated `CODEX_HOME`; do not rely on a copied host `auth.json` while host Codex is also running.
-- The worker expects the mounted target repository to already have working git fetch/pull/push credentials.
-- If the mounted repository still uses an SSH remote, the worker can rewrite `origin` to HTTPS and use `GIT_REPOSITORY_TOKEN` or `GITLAB_TOKEN` for git auth.
-- The worker also needs a git author identity. Either configure `user.name` and `user.email` in the mounted repository, or pass `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` into the container.
-- The container installs `git`, `curl`, `jq`, `ripgrep`, and pinned `@openai/codex@0.124.0` by default. Override with `docker build --build-arg CODEX_CLI_VERSION=<version> ...` only after running the Codex CLI update runbook.
-- `CODEX_API_KEY` can be used as a direct non-interactive auth source. If you only have `OPENAI_API_KEY`, persist it into `CODEX_HOME` first with `printenv OPENAI_API_KEY | codex login --with-api-key`.
+Полная таблица переменных окружения находится в [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md).
+
+## Режимы работы
+
+`TASK_MODE` управляет маршрутизацией задач:
+
+- `auto` - режим по умолчанию; воркер следует структурированному `AI_ANALYSIS`.
+- `implement` - принудительно запускает реализацию.
+- `decompose` - просит Codex разложить задачу на подзадачи Tracker.
+- `analyze_only` - сохраняет анализ и останавливается.
+- `human` - переводит задачу в ручное удержание.
+
+Для ручной отладки одной задачи задайте:
+
+```env
+TARGET_ISSUE_KEY=FRONTEND-42
+WORKER_RUN_ONCE=true
+```
+
+В этом режиме воркер загружает только указанную задачу и не сканирует очередь.
+
+## Проверки качества
+
+Перед публикацией merge request воркер проверяет наличие изменений в целевом репозитории и запускает настроенные проверки качества в порядке:
+
+```text
+typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visual_regression
+```
+
+`TEST_COMMAND` и `LINT_COMMAND` имеют значения по умолчанию. Остальные проверки включаются только если задана соответствующая переменная с командой. Любой ненулевой exit code блокирует публикацию и передается обратно в Codex fix prompt вместе с stdout/stderr.
+
+## Fleet, memory и observability
+
+Fleet mode включается через `WORKER_CONFIG_FILE` и позволяет одному процессу обслуживать несколько репозиториев. Координация между воркерами выполняется через Tracker-комментарии `AI LEASE:`.
+
+Repository memory по умолчанию выключена. При `MEMORY_ENABLED=true` prompts получают компактный repository context из approved rules, manual knowledge и похожих failure entries. Перед production-включением запустите `npm run memory:validate`.
+
+Observability по умолчанию выключена. При `OBSERVABILITY_ENABLED=true` воркер поднимает HTTP-сервер для `/healthz`, `/readyz`, `/metrics`, опциональных dashboard/API и оповещений. Dashboard включайте только на доверенном интерфейсе и защищайте `DASHBOARD_BEARER_TOKEN`.
+
+## Документация
+
+- [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md) - все переменные окружения и источники значений.
+- [docs/FLEET_OPERATIONAL_RUNBOOK.md](docs/FLEET_OPERATIONAL_RUNBOOK.md) - fleet config, leases и операционная координация.
+- [docs/MEMORY_LIFECYCLE.md](docs/MEMORY_LIFECYCLE.md) - lifecycle repository memory.
+- [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) - dashboard, metrics, probes и alerts.
+- [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) - локальный Docker-запуск и prerequisites.
+- [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md) - команды для Windows PowerShell.
+- [docs/CODEX_AUTH_TROUBLESHOOTING.md](docs/CODEX_AUTH_TROUBLESHOOTING.md) - диагностика Codex auth, включая `refresh_token_reused`.
+- [docs/CODEX_CLI_UPDATE_RUNBOOK.md](docs/CODEX_CLI_UPDATE_RUNBOOK.md) - обновление Codex CLI и compatibility checks.
+- [compose.yaml](compose.yaml) - Compose-конфигурация.
+- [AGENTS.md](AGENTS.md) - правила для участников и coding conventions.
+
+## Важные замечания
+
+- Не коммитьте `.env`, `.codex-home/` и любое состояние Codex auth.
+- В Docker используйте отдельный writable `CODEX_HOME` volume.
+- Целевой репозиторий должен иметь рабочие credentials для `git fetch`, `git pull` и `git push`.
+- Если remote целевого репозитория использует SSH, воркер может переписать `origin` на HTTPS и использовать `GIT_REPOSITORY_TOKEN` или `GITLAB_TOKEN`.
+- Для commit внутри Docker задайте `GIT_AUTHOR_NAME` и `GIT_AUTHOR_EMAIL` либо настройте `user.name` и `user.email` в целевом checkout.
+- Dockerfile устанавливает `git`, `curl`, `jq`, `ripgrep`, `openssh-client` и зафиксированную версию `@openai/codex@0.124.0`.
+- `CODEX_API_KEY` можно использовать как прямой источник неинтерактивной аутентификации. Если есть только `OPENAI_API_KEY`, заранее сохраните его в `CODEX_HOME` через `printenv OPENAI_API_KEY | codex login --with-api-key`.
