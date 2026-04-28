@@ -18,9 +18,14 @@ internal task -> claim -> analysis -> implementation -> validation -> MR publish
 - Record analysis decisions in the internal tracker.
 - Record clarification questions and human answers in the internal tracker.
 - Record agent runs.
+- Record task plan and step transitions for the implicit plan.
 - Record validation runs.
+- Record validation artifact refs and compact diagnostics.
 - Record merge request metadata.
 - Record review-fix metadata.
+- Record decomposition decisions, create internal child tasks, and link typed
+  dependencies when the existing decomposition path is used.
+- Record memory context snapshot refs when memory context is added to a prompt.
 - Keep `commentProtocol.ts` only for Yandex direct mode and bridge
   compatibility.
 - Add smoke or integration test for internal task execution.
@@ -31,6 +36,7 @@ internal task -> claim -> analysis -> implementation -> validation -> MR publish
 - Human UI.
 - AI proposals.
 - Full decomposition approval UI.
+- Yandex mirroring of child tasks created through decomposition.
 - Removing Yandex direct worker path.
 
 ## Current Code To Touch
@@ -57,22 +63,49 @@ Extend the internal tracker contract with:
 
 ```typescript
 recordAnalysis(taskId: string, decision: TaskAnalysisDecision): Promise<void>;
+recordTaskStep(taskId: string, input: TaskStepRecordInput): Promise<void>;
 askClarification(taskId: string, question: ClarificationQuestion): Promise<void>;
 recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void>;
 recordAgentRun(taskId: string, input: AgentRunInput): Promise<void>;
 recordValidation(taskId: string, input: ValidationRecordInput): Promise<void>;
 recordMergeRequest(taskId: string, input: MergeRequestRecordInput): Promise<void>;
 recordReviewMetadata(taskId: string, input: ReviewMetadataRecordInput): Promise<void>;
+recordDecomposition(taskId: string, plan: DecompositionPlan): Promise<void>;
+createChildTasks(taskId: string, subtasks: SubtaskDraft[]): Promise<TaskRecord[]>;
+linkDependency(input: LinkTaskDependencyInput): Promise<void>;
+recordMemoryContext(taskId: string, input: MemoryContextRecordInput): Promise<void>;
 ```
 
 Add:
 
 - `AgentRun`;
 - `TaskDecision`;
+- `TaskPlan`;
+- `TaskStep`;
 - `QualityGateRun`;
 - `MergeRequestRecord`;
 - `ClarificationQuestionRecord`;
-- `HumanAnswerRecord`.
+- `HumanAnswerRecord`;
+- `DecompositionDecisionRecord`;
+- `TaskDependencyRecord`;
+- `ArtifactRef`;
+- `MemoryContextRef`.
+
+## Storage Shape
+
+Add or activate persisted storage for:
+
+- `agent_runs`;
+- `quality_gate_runs`;
+- merge request metadata, either as `artifacts`/external refs or a dedicated
+  `merge_requests` table if the implementation needs queryable MR fields;
+- review metadata for unresolved GitLab discussions imported at `review` and
+  before `review_fix`;
+- memory context refs attached to the task, run, or prompt snapshot.
+
+Use the Phase 7A `task_plans`, `task_steps`, `task_decisions`,
+`task_dependencies`, and `artifacts` tables instead of creating parallel
+runtime-only structures.
 
 ## Migration Strategy
 
@@ -90,12 +123,15 @@ path unless the path is explicitly a compatibility bridge.
 
 1. Define provider-neutral `ExecutableTaskContext`.
 2. Adapt prompt builder to accept `AgentTaskContext` or a normalized context.
-3. Add internal state writer methods for analysis, clarification, validation,
-   MR publish, and review fix.
+3. Add internal state writer methods for analysis, plan steps, clarification,
+   validation, MR publish, review fix, decomposition, dependencies, artifacts,
+   and memory context refs.
 4. Implement internal execution path behind `TASK_TRACKER_PROVIDER=internal`.
 5. Keep Yandex path unchanged.
-6. Add tests for internal execution.
-7. Run typecheck, unit tests, and smoke tests.
+6. Ensure decomposition creates internal child tasks first and does not mirror
+   them to Yandex in internal mode.
+7. Add tests for internal execution.
+8. Run typecheck, unit tests, and smoke tests.
 
 ## Tests
 
@@ -107,6 +143,11 @@ Add tests for:
 - human answer plus resume continues execution;
 - validation failure writes diagnostic and failure status;
 - successful publish records MR URL, branch, and validation summary;
+- implicit plan steps are updated across analysis, implementation, validation,
+  publish, and review fix;
+- decomposition stores a decision, creates internal child tasks, and links
+  parent/child dependencies;
+- memory context refs are stored when memory context is used;
 - Yandex direct mode tests still pass.
 
 Add or adapt a smoke test:
@@ -123,6 +164,10 @@ internal tracker -> mock GitLab -> worker -> MR ready
   not written in internal mode.
 - Current Yandex direct mode remains functional.
 - Restart recovery uses internal DB/task state for internal mode.
+- Internal mode records an implicit plan, step state, agent runs, decisions,
+  quality gates, MR metadata, and artifact refs.
+- Decomposition creates internal child tasks first and leaves Yandex mirroring to
+  the bridge policy.
 - `npm run typecheck` passes.
 - `npm test` passes.
 - `npm run test:smoke` passes or the reason it cannot run is documented.
@@ -156,4 +201,3 @@ Implement Phase 7D from docs/phase-7/PHASE_7D_WORKER_MIGRATION_PLAN.md.
 Make internal tracker mode execute tasks end-to-end without Yandex comments.
 Keep Yandex direct mode passing.
 ```
-

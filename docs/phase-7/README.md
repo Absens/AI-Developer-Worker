@@ -17,7 +17,8 @@ The phases are ordered as vertical slices:
 4. migrate worker execution;
 5. restore Yandex Tracker compatibility through a bridge;
 6. add the human UI;
-7. add AI proposals and autonomy controls.
+7. add AI proposals and autonomy controls;
+8. harden production storage, retention, metrics, and runbooks.
 
 ## Execution Rules
 
@@ -29,6 +30,8 @@ The phases are ordered as vertical slices:
 - After each phase, run at least `npm run typecheck` and `npm test`.
 - Run `npm run test:smoke` when a phase changes worker orchestration, Git,
   GitLab, Yandex integration, or end-to-end task flow.
+- Do not accept an in-memory tracker as a production internal provider. In-memory
+  storage is only for unit tests, local smoke paths, and explicit test adapters.
 - Commit each phase separately with a short imperative commit message.
 
 ## Phase Index
@@ -42,6 +45,7 @@ The phases are ordered as vertical slices:
 | 7E | `PHASE_7E_YANDEX_BRIDGE_PLAN.md` | Yandex becomes source/mirror, not runtime state store. |
 | 7F | `PHASE_7F_HUMAN_UI_PLAN.md` | Minimal human workflow UI/API. |
 | 7G | `PHASE_7G_AI_PROPOSALS_PLAN.md` | Controlled AI-created task proposals. |
+| 7H | `PHASE_7H_OPERATIONAL_HARDENING_PLAN.md` | Production storage, retention, metrics, and runbooks. |
 
 ## Recommended Codex Prompt Pattern
 
@@ -66,3 +70,16 @@ The first usable internal runtime should exist by the end of Phase 7D:
 Yandex compatibility returns in Phase 7E. Human usability arrives in Phase 7F.
 Autonomy and AI-created work are deliberately postponed until Phase 7G.
 
+## Production Cut Lines
+
+The internal tracker is not production-ready until:
+
+- PostgreSQL-backed storage is implemented for tasks, revisions, events,
+  comments, decisions, plans, steps, leases, dependencies, artifacts, proposals,
+  and sync cursors;
+- claim and lease operations use database transactions and cannot be backed by
+  the in-memory adapter outside tests;
+- restart recovery uses persisted DB state, including active runs, plans,
+  leases, and review/validation records;
+- retention, redaction, preflight, metrics, backup/restore, and auth alignment
+  are completed in Phase 7H.

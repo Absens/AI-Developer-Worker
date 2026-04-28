@@ -15,6 +15,7 @@ not enter the executable queue without approval or an explicit low-risk policy.
 - Evidence refs.
 - Duplicate detection.
 - Approval and rejection workflow.
+- `supervisorStatus` and `approvalPolicy` fields for proposal lifecycle.
 - Autonomy policy evaluator.
 - Global kill switch.
 - Per-repository autonomy limits.
@@ -22,6 +23,8 @@ not enter the executable queue without approval or an explicit low-risk policy.
 - Daily/window proposal limits.
 - Cleanup for stale or rejected proposals.
 - Proposal review view or API if Phase 7F UI exists.
+- Policy decision audit event for every proposal, approval, rejection, and
+  auto-approval.
 
 ## What Is Out Of Scope
 
@@ -77,6 +80,7 @@ export interface ProposeTaskInput {
   riskFactors?: string[];
   expectedBlastRadius?: string;
   autonomyLevel: AutonomyLevel;
+  approvalPolicy?: string;
   idempotencyKey?: string;
 }
 ```
@@ -88,6 +92,25 @@ proposeTask(input: ProposeTaskInput): Promise<TaskRecord>;
 approveProposal(taskId: string, input: ApproveProposalInput): Promise<void>;
 rejectProposal(taskId: string, input: RejectProposalInput): Promise<void>;
 ```
+
+Proposal records must preserve:
+
+- `supervisorStatus`: `proposed`, `approved`, `rejected`, `auto_approved`;
+- `approvalPolicy`;
+- policy evaluation result and reason;
+- stale/rejected cleanup owner;
+- evidence refs as artifact refs or external refs, not raw secret-bearing logs.
+
+## Storage Shape
+
+Add or activate persisted storage for:
+
+- `task_proposals`;
+- proposal evidence refs;
+- proposal duplicate signatures;
+- autonomy policy evaluations;
+- proposal rate-limit windows;
+- stale/rejected proposal cleanup metadata.
 
 ## Default Policy
 
@@ -136,10 +159,11 @@ is stable.
 4. Implement `proposeTask`.
 5. Implement duplicate detection.
 6. Implement approval and rejection.
-7. Ensure proposals do not enter executable queue unless approved or explicitly
+7. Record policy decision audit events.
+8. Ensure proposals do not enter executable queue unless approved or explicitly
    auto-approved by policy.
-8. Add proposal list/review API and UI if Phase 7F exists.
-9. Add tests.
+9. Add proposal list/review API and UI if Phase 7F exists.
+10. Add tests.
 
 ## Duplicate Detection
 
@@ -163,6 +187,8 @@ Add tests for:
 - proposal does not enter claim queue by default;
 - approval moves proposal to executable path;
 - rejection prevents execution;
+- every proposal, approval, rejection, and auto-approval writes a policy audit
+  event;
 - global kill switch blocks new proposals;
 - duplicate proposal is rejected or merged;
 - `auto_execute_low_risk` works only when repository policy allows it;
@@ -175,6 +201,7 @@ Add tests for:
   low-risk policy.
 - Duplicate proposals are controlled.
 - Every approval/rejection is audited.
+- Every policy decision is stored with evidence refs and reason.
 - Global kill switch disables proposals and auto-execution.
 - Policy prevents high-risk autonomous work.
 - `npm run typecheck` passes.
@@ -208,4 +235,3 @@ Implement Phase 7G from docs/phase-7/PHASE_7G_AI_PROPOSALS_PLAN.md.
 Add AI proposal creation, policy controls, duplicate detection, and approval
 workflow. Keep auto-execution disabled by default.
 ```
-

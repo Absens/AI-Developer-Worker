@@ -19,6 +19,10 @@ or updates internal tasks, and workers operate on internal `taskId` values.
 - Import human comments.
 - Import `/resume`, `/skip`, `/cancel`.
 - Import direct answer to the latest AI question.
+- Mark imported task revisions as `requiresReanalysis` and emit a
+  `context_changed` event when external human input changes during active work.
+- Mirror decomposition child tasks to Yandex only after explicit approval or an
+  explicit repository policy.
 - Maintain sync cursors.
 - Keep current Yandex direct mode as fallback.
 
@@ -28,6 +32,8 @@ or updates internal tasks, and workers operate on internal `taskId` values.
 - Mirroring the full internal technical timeline to Yandex.
 - Writing `AI LEASE` comments in internal mode.
 - Replacing GitLab review as the review source of truth.
+- Automatically mirroring internal child tasks to Yandex without policy or
+  approval.
 - Human UI beyond what previous phases already provide.
 
 ## Current Code To Touch
@@ -59,6 +65,18 @@ Add:
 - `ImportedHumanCommand`;
 - `ExternalFieldOwnership`.
 
+## Storage Shape
+
+Add or activate persisted storage for:
+
+- `sync_cursors`;
+- raw external issue snapshots for diagnostics;
+- external field ownership metadata;
+- imported human commands and imported comment ids for deduplication;
+- digest export idempotency records;
+- optional child-task mirror approvals, if not already represented as task
+  decisions.
+
 ## Import Rules
 
 Import should be idempotent by:
@@ -79,6 +97,8 @@ For Yandex:
 
 The bridge should not directly rewrite active execution state. It should record
 the new revision and mark the task as context-changed for internal handling.
+The worker or a human action inside the internal tracker decides whether to
+continue, rerun analysis, or move the task to human review.
 
 ## Export Rules
 
@@ -97,6 +117,11 @@ Do not export:
 - every heartbeat;
 - full agent logs;
 - every low-level timeline event.
+
+Child task export is disabled by default. If enabled by repository policy or
+explicit human approval, the bridge exports only the approved child tasks and
+stores the created Yandex issue keys as external refs on those internal child
+tasks.
 
 ## Status Sync
 
@@ -139,10 +164,12 @@ The bridge must avoid importing its own digest comments as human commands.
 3. Implement idempotent import.
 4. Implement revision creation for changed Yandex input.
 5. Implement command/comment import.
-6. Implement digest export.
-7. Implement status sync.
-8. Add bridge tests.
-9. Add smoke path:
+6. Implement context-changed audit events for active tasks.
+7. Implement digest export.
+8. Implement optional child-task mirroring with approval/policy checks.
+9. Implement status sync.
+10. Add bridge tests.
+11. Add smoke path:
    `mock Yandex -> internal tracker -> worker -> mock GitLab -> Yandex digest`.
 
 ## Tests
@@ -155,6 +182,11 @@ Add tests for:
 - `/resume` comment imports as an internal command;
 - bridge ignores its own digest comments;
 - digest export is idempotent;
+- changed Yandex human input on an active task sets `requiresReanalysis` and
+  emits `context_changed`;
+- child tasks are not mirrored by default;
+- approved child-task mirroring stores Yandex external refs on internal child
+  tasks;
 - status sync writes expected Yandex transition;
 - Yandex direct mode still passes current tests.
 
@@ -164,6 +196,8 @@ Add tests for:
 - Yandex issue remains visible and receives compact status/comment digests.
 - No `AI LEASE` comments are required in Yandex for internal mode.
 - Human answer can come from internal UI/API or Yandex comment.
+- Decomposition child tasks are internal first and mirrored to Yandex only after
+  explicit approval or repository policy.
 - Current direct Yandex fallback remains available.
 - `npm run typecheck` passes.
 - `npm test` passes.
@@ -203,4 +237,3 @@ Implement Phase 7E from docs/phase-7/PHASE_7E_YANDEX_BRIDGE_PLAN.md.
 Add the optional Yandex bridge so Yandex is a source/mirror, not the worker
 runtime store. Keep Yandex direct mode as fallback.
 ```
-

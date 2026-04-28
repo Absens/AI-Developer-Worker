@@ -14,6 +14,8 @@ worker to complete tasks through the internal tracker.
 - Add internal tracker configuration parsing.
 - Add provider factory or application wiring.
 - Add DB preflight placeholder for internal mode.
+- Add storage-adapter validation so production internal mode requires
+  PostgreSQL-backed storage.
 - Keep Yandex as the default provider.
 - Add tests for valid and invalid config combinations.
 
@@ -65,6 +67,16 @@ system_only
 ai_proposed
 ```
 
+Optional test-only adapter setting, if the implementation needs one:
+
+```env
+TASK_TRACKER_STORAGE=memory
+```
+
+`TASK_TRACKER_STORAGE=memory` must be accepted only under test/local smoke
+configuration. Production internal mode must fail fast unless it has a
+PostgreSQL database URL and a PostgreSQL adapter.
+
 For this phase, unsupported runtime combinations may be parsed but fail with a
 clear preflight/config error.
 
@@ -72,11 +84,13 @@ clear preflight/config error.
 
 1. Add config types and parsing.
 2. Add validation for provider and intake combinations.
-3. Add internal tracker factory placeholder.
-4. Wire application construction so Yandex remains default.
-5. Add preflight result for internal tracker DB configuration.
-6. Add tests.
-7. Run verification commands.
+3. Add validation for storage adapter and database URL requirements.
+4. Add internal tracker factory placeholder or PostgreSQL-backed factory if
+   Phase 7B already added it.
+5. Wire application construction so Yandex remains default.
+6. Add preflight result for internal tracker DB configuration.
+7. Add tests.
+8. Run verification commands.
 
 ## Config Validation Rules
 
@@ -84,6 +98,8 @@ clear preflight/config error.
 - `TASK_TRACKER_PROVIDER=yandex` should preserve current required Yandex config.
 - `TASK_TRACKER_PROVIDER=internal` requires `TASK_TRACKER_DATABASE_URL` unless an
   explicit local test adapter is configured.
+- Explicit local test adapters must be disabled by default and must not be
+  selected implicitly in production.
 - `YANDEX_SYNC_ENABLED=true` requires `TASK_INTAKE_MODE=yandex_integration` or
   `hybrid`.
 - `YANDEX_SYNC_ENABLED=false` is valid for `standalone`, `system_only`, and
@@ -100,6 +116,7 @@ Add tests for:
 - invalid intake mode is rejected;
 - Yandex sync without Yandex integration mode is rejected;
 - internal mode without DB config is rejected unless a test adapter is enabled;
+- memory/test adapter is rejected outside explicit test/local smoke mode;
 - current Yandex configuration tests still pass.
 
 ## Acceptance Criteria
@@ -107,6 +124,8 @@ Add tests for:
 - The app can start in current Yandex mode exactly as before.
 - The app can be configured for internal mode without referencing Yandex as the
   primary runtime provider.
+- Internal production mode requires PostgreSQL-backed storage and cannot
+  silently fall back to in-memory state.
 - Invalid config combinations fail before worker execution starts.
 - Current tests for Yandex direct mode pass.
 - `npm run typecheck` passes.
@@ -138,4 +157,3 @@ Implement Phase 7C from docs/phase-7/PHASE_7C_PROVIDER_FLAG_PLAN.md.
 Add provider config and application wiring only.
 Do not migrate worker execution and keep Yandex direct mode as default.
 ```
-
