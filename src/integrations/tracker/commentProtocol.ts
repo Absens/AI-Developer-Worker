@@ -19,6 +19,7 @@ const REVIEW_PREFIX = "AI REVIEW:";
 const LEASE_PREFIX = "AI LEASE:";
 const ANALYSIS_PREFIX = "AI ANALYSIS:";
 const DECOMPOSITION_PREFIX = "AI DECOMPOSITION:";
+const DIGEST_PREFIX = "AI DIGEST:";
 const JSON_BLOCK_START = "```json";
 const JSON_BLOCK_END = "```";
 const DEFAULT_RESUME_HINT =
@@ -405,6 +406,23 @@ const parseStructuredServiceComment = (
         details: normalizeString(jsonPayload.summary),
       };
     }
+
+    if (kind === "AI DIGEST") {
+      const taskId = normalizeString(jsonPayload.taskId);
+      const digestKind = normalizeString(jsonPayload.digestKind);
+      if (!taskId || !digestKind) {
+        return undefined;
+      }
+
+      return {
+        kind,
+        worker,
+        taskId,
+        digestKind,
+        externalKey: normalizeString(jsonPayload.externalKey),
+        details: normalizeString(jsonPayload.details),
+      };
+    }
   }
 
   const parsed = parseKeyValueLines(body);
@@ -631,6 +649,29 @@ export const formatLeaseComment = (lease: TaskLease): string =>
       .join("\n"),
   );
 
+export const formatDigestComment = (
+  worker: string,
+  input: {
+    taskId: string;
+    digestKind: string;
+    details: string;
+    externalKey?: string;
+    payload?: Record<string, unknown>;
+  },
+): string =>
+  buildStructuredComment(
+    DIGEST_PREFIX,
+    {
+      worker,
+      taskId: input.taskId,
+      digestKind: input.digestKind,
+      details: input.details,
+      ...(input.externalKey ? { externalKey: input.externalKey } : {}),
+      ...(input.payload ? { payload: input.payload } : {}),
+    },
+    input.details,
+  );
+
 export const parseServiceComment = (
   text: string,
 ): ParsedServiceComment | undefined =>
@@ -640,7 +681,8 @@ export const parseServiceComment = (
   parseStructuredServiceComment(REVIEW_PREFIX, "AI REVIEW", text) ??
   parseStructuredServiceComment(LEASE_PREFIX, "AI LEASE", text) ??
   parseStructuredServiceComment(ANALYSIS_PREFIX, "AI ANALYSIS", text) ??
-  parseStructuredServiceComment(DECOMPOSITION_PREFIX, "AI DECOMPOSITION", text);
+  parseStructuredServiceComment(DECOMPOSITION_PREFIX, "AI DECOMPOSITION", text) ??
+  parseStructuredServiceComment(DIGEST_PREFIX, "AI DIGEST", text);
 
 export const decorateComments = (
   comments: TrackerComment[],

@@ -36,6 +36,7 @@ import type {
   CommentInput,
   CreateTaskInput,
   DecompositionDecisionRecord,
+  ExternalTaskFieldUpdateInput,
   HumanAnswerInput,
   HumanAnswerRecord,
   LeaseHeartbeatInput,
@@ -96,6 +97,11 @@ const normalizeStringArray = (values: readonly string[] | undefined): string[] =
 
 const externalRefKey = (provider: string, externalKey: string): string =>
   `${provider.trim().toLowerCase()}:${externalKey.trim().toLowerCase()}`;
+
+const hasOwn = <T extends object, K extends PropertyKey>(
+  value: T,
+  key: K,
+): value is T & Record<K, unknown> => Object.prototype.hasOwnProperty.call(value, key);
 
 const requireRevisionOwner = (owner: TaskFieldOwner): "human" | "external_source" => {
   assertOwnerCanUpdateFieldGroup(owner, "human_input");
@@ -339,6 +345,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       missingContext: normalizeStringArray(input.missingContext ?? task.missingContext),
       ...(input.externalSnapshot ? { externalSnapshot: clone(input.externalSnapshot) } : {}),
       ...(input.externalRevisionId ? { externalRevisionId: input.externalRevisionId } : {}),
+      ...(input.requiresReanalysis ? { requiresReanalysis: true } : {}),
       ...(input.reason ? { reason: input.reason } : {}),
       createdAt,
     };
@@ -367,9 +374,125 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
         input.owner === "external_source"
           ? "External source update recorded as a task revision."
           : "Task revision recorded.",
-      payload: { revisionNumber: revision.revisionNumber },
+      payload: {
+        revisionNumber: revision.revisionNumber,
+        requiresReanalysis: revision.requiresReanalysis === true,
+      },
       createdAt,
     });
+
+    return clone(task);
+  }
+
+  async updateExternalTaskFields(
+    taskId: string,
+    input: ExternalTaskFieldUpdateInput,
+  ): Promise<TaskRecord> {
+    if (input.owner !== "external_source") {
+      throw new Error("Only external_source can update external task fields.");
+    }
+
+    const task = this.requireTask(taskId);
+    const updatedAt = this.nowIso();
+    const changedFields: string[] = [];
+
+    if (hasOwn(input, "queue")) {
+      task.queue = typeof input.queue === "string" && input.queue.trim() ? input.queue : undefined;
+      changedFields.push("queue");
+    }
+    if (input.tags !== undefined) {
+      task.tags = normalizeStringArray(input.tags);
+      changedFields.push("tags");
+    }
+    if (input.components !== undefined) {
+      task.components = normalizeStringArray(input.components);
+      changedFields.push("components");
+    }
+    if (hasOwn(input, "priority")) {
+      task.priority =
+        typeof input.priority === "string" && input.priority.trim()
+          ? input.priority
+          : undefined;
+      changedFields.push("priority");
+    }
+    if (hasOwn(input, "deadline")) {
+      task.deadline =
+        typeof input.deadline === "string" && input.deadline.trim()
+          ? input.deadline
+          : undefined;
+      changedFields.push("deadline");
+    }
+    if (hasOwn(input, "businessStatus")) {
+      task.businessStatus =
+        typeof input.businessStatus === "string" && input.businessStatus.trim()
+          ? input.businessStatus
+          : undefined;
+      changedFields.push("businessStatus");
+    }
+    if (input.lastSyncedAt) {
+      task.lastSyncedAt = input.lastSyncedAt;
+    }
+    if (input.externalRef) {
+      const ref = task.externalRefs.find(
+        (candidate) =>
+          externalRefKey(candidate.provider, candidate.externalKey) ===
+          externalRefKey(input.externalRef!.provider, input.externalRef!.externalKey),
+      );
+      if (ref) {
+        if (hasOwn(input.externalRef, "businessStatus")) {
+          ref.businessStatus =
+            typeof input.externalRef.businessStatus === "string" &&
+            input.externalRef.businessStatus.trim()
+              ? input.externalRef.businessStatus
+              : undefined;
+        }
+        if (input.externalRef.lastSeenAt) {
+          ref.lastSeenAt = input.externalRef.lastSeenAt;
+        }
+      }
+    }
+
+    task.updatedAt = updatedAt;
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "external_fields_updated",
+      source: input.owner,
+      actor: clone(input.author),
+      ...(input.reason ? { message: input.reason } : {}),
+      payload: { changedFields },
+      createdAt: updatedAt,
+    });
+
+    return clone(task);
+  }
+
+  async attachExternalRef(
+    taskId: string,
+    input: TaskExternalRefInput,
+  ): Promise<TaskRecord> {
+    const task = this.requireTask(taskId);
+    this.assertExternalRefsAvailable([input]);
+    const createdAt = this.nowIso();
+    const ref = createExternalRefs(taskId, [input], createdAt)[0];
+    if (!ref) {
+      throw new Error("External ref was not created.");
+    }
+
+    task.externalRefs.push(ref);
+    this.externalRefIndex.set(externalRefKey(ref.provider, ref.externalKey), task.id);
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId,
+      kind: "external_ref_attached",
+      source: "external_source",
+      payload: {
+        provider: ref.provider,
+        externalKey: ref.externalKey,
+      },
+      createdAt,
+    });
+    task.updatedAt = createdAt;
 
     return clone(task);
   }
@@ -382,6 +505,14 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
 
   async getTask(taskId: string): Promise<TaskRecord> {
     return clone(this.requireTask(taskId));
+  }
+
+  async findTaskByExternalRef(
+    provider: string,
+    externalKey: string,
+  ): Promise<TaskRecord | null> {
+    const taskId = this.externalRefIndex.get(externalRefKey(provider, externalKey));
+    return taskId ? clone(this.requireTask(taskId)) : null;
   }
 
   async getAgentTaskContext(taskId: string): Promise<AgentTaskContext> {

@@ -533,7 +533,8 @@ export type ServiceCommentKind =
   | "AI REVIEW"
   | "AI LEASE"
   | "AI ANALYSIS"
-  | "AI DECOMPOSITION";
+  | "AI DECOMPOSITION"
+  | "AI DIGEST";
 export type ClarificationMode = "clarification";
 export type WaitingReason = "clarification" | "failure_recovery" | "manual_hold";
 export type LeaseKind = "task" | "repository";
@@ -594,6 +595,9 @@ export interface ParsedServiceComment {
   parentIssueKey?: string;
   createdIssueKeys?: string[];
   dryRun?: boolean;
+  taskId?: string;
+  digestKind?: string;
+  externalKey?: string;
 }
 
 export interface TaskLease {
@@ -811,12 +815,15 @@ export type {
   CreateTaskInput,
   DecompositionDecisionRecord,
   ExportDigestInput,
+  ExternalFieldOwnership,
   ExternalIssueSnapshot,
   ExternalTaskSource,
+  ExternalTaskFieldUpdateInput,
   ExternalTransitionInput,
   HumanAnswerInput,
   HumanAnswerRecord,
   ImportCandidatesInput,
+  ImportedHumanCommand,
   LeaseHeartbeatInput,
   LinkTaskDependencyInput,
   MemoryContextRecordInput,
@@ -852,5 +859,6 @@ export type {
   TaskStep,
   TaskStepRecordInput,
   TaskTrackerClient,
+  SyncCursor,
   ValidationRecordInput,
 } from "../domain/taskTracker/types.js";

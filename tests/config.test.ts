@@ -175,11 +175,15 @@ describe("config", () => {
   });
 
   it("parses internal task tracker Yandex integration mode", () => {
+    const statusMapFile = createStatusMapFile();
     const config = loadConfig({
       TASK_TRACKER_PROVIDER: "internal",
       TASK_TRACKER_DATABASE_URL: "postgresql://tracker:secret@localhost/tasks",
       TASK_INTAKE_MODE: "yandex_integration",
       YANDEX_SYNC_ENABLED: "true",
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
       GITLAB_URL: "https://gitlab.example.com/",
       GITLAB_TOKEN: "gitlab-token",
       GITLAB_PROJECT_ID: "123",

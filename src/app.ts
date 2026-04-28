@@ -1,3 +1,5 @@
+import { Pool } from "pg";
+
 import { buildRepositoryRuntimeConfig, loadFleetConfig } from "./config.js";
 import { assertCodexAuthenticated } from "./integrations/codex/auth.js";
 import { FleetOrchestrator } from "./domain/fleetOrchestrator.js";
@@ -12,8 +14,30 @@ import { GitLabApiClient } from "./integrations/gitlab/client.js";
 import { createInternalTaskTrackerClient } from "./integrations/internalTracker/index.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
+import {
+  InMemoryYandexBridgeStore,
+  PostgresYandexBridgeStore,
+  YandexBridge,
+  YandexExternalTaskSource,
+  type YandexBridgeStore,
+} from "./integrations/yandexBridge/index.js";
 import { createObservabilityService } from "./observability/service.js";
 import { Logger } from "./utils/logger.js";
+
+const createYandexBridgeStore = (
+  taskTracker: ReturnType<typeof loadFleetConfig>["taskTracker"],
+): YandexBridgeStore => {
+  if (taskTracker?.provider !== "internal") {
+    return new InMemoryYandexBridgeStore();
+  }
+  if (!taskTracker.internal.yandexSyncEnabled || taskTracker.internal.storage === "memory") {
+    return new InMemoryYandexBridgeStore();
+  }
+
+  return new PostgresYandexBridgeStore(
+    new Pool({ connectionString: taskTracker.internal.databaseUrl }),
+  );
+};
 
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
@@ -30,10 +54,38 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
 
   const internalTaskTracker = createInternalTaskTrackerClient(fleetConfig.taskTracker);
   const internalMode = fleetConfig.taskTracker?.provider === "internal";
+  const internalConfig =
+    fleetConfig.taskTracker?.provider === "internal"
+      ? fleetConfig.taskTracker.internal
+      : undefined;
   if (internalMode && !internalTaskTracker) {
     throw new Error("TASK_TRACKER_PROVIDER=internal requires an internal task tracker client.");
   }
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
+  const yandexBridgeStore = createYandexBridgeStore(fleetConfig.taskTracker);
+  const yandexBridges =
+    internalConfig?.yandexSyncEnabled && internalTaskTracker
+      ? fleetConfig.repositories.map((profile) => {
+          const config = buildRepositoryRuntimeConfig(fleetConfig, profile);
+          return new YandexBridge({
+            taskTracker: internalTaskTracker,
+            source: new YandexExternalTaskSource(
+              new YandexTrackerClient(config, logger),
+              config.trackerTag,
+            ),
+            store: yandexBridgeStore,
+            repository: {
+              repositoryName: profile.name,
+              repoPathKey: profile.name,
+              baseBranch: profile.baseBranch,
+              queues: profile.queues,
+              tags: profile.tags,
+            },
+            workerId: fleetConfig.workerId,
+            logger,
+          });
+        })
+      : [];
   const lockBackend =
     fleetConfig.coordination.lockBackend === "none"
       ? new NoopLockBackend()
@@ -61,6 +113,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
           logger,
           undefined,
           observability,
+          yandexBridges,
         )
       : new FleetOrchestrator(
           fleetConfig,
@@ -83,6 +136,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       preflight,
       observability,
       taskTracker: internalTaskTracker,
+      yandexBridges,
       assertRepositoryReady: async () => {
         await Promise.all(contexts.map((context) => context.assertRepositoryReady()));
       },
@@ -114,6 +168,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
         logger,
         undefined,
         observability,
+        yandexBridges,
       )
     : new WorkerOrchestrator(
         config,
@@ -143,6 +198,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     preflight,
     observability,
     taskTracker: internalTaskTracker,
+    yandexBridges,
     assertRepositoryReady: () => git.assertRepositoryReady(),
     assertCodexAuthenticated: checkCodexAuth,
   };

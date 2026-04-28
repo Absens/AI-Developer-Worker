@@ -78,9 +78,9 @@ export class PreflightService {
       if (internalTracker.yandexSyncEnabled) {
         checks.push({
           name: "Yandex sync bridge",
-          status: "fail",
+          status: "pass",
           details:
-            "YANDEX_SYNC_ENABLED=true is parsed, but the Yandex bridge is scheduled for Phase 7E and is not available in Phase 7C.",
+            "YANDEX_SYNC_ENABLED=true is configured; Yandex is used as an external source/mirror for internal tasks.",
         });
       }
     }

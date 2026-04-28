@@ -61,6 +61,7 @@ import {
   runQualityGates,
 } from "./qualityGates.js";
 import type { RepositoryWorkerContext } from "./repositoryContext.js";
+import type { YandexBridge } from "../integrations/yandexBridge/index.js";
 import type { TaskEventType } from "../observability/events.js";
 import {
   noopObservability,
@@ -251,6 +252,7 @@ export class InternalWorkerOrchestrator {
     private readonly logger: Logger,
     memoryStore?: MemoryStore,
     private readonly telemetry: ObservabilityTelemetry = noopObservability,
+    private readonly yandexBridges: YandexBridge[] = [],
   ) {
     this.workflow = new AgentWorkflowService(taskTracker);
     this.memoryStore = memoryStore ?? (
@@ -292,6 +294,7 @@ export class InternalWorkerOrchestrator {
       state: "polling",
       stage: "internal_polling",
     });
+    await this.importExternalTasks();
 
     const claim = await this.workflow.claimTask({
       workerId: this.config.workerId,
@@ -310,6 +313,20 @@ export class InternalWorkerOrchestrator {
 
     const context = this.contextForClaim(claim);
     return this.withLeaseHeartbeat(claim, () => this.processClaimedTask(context, claim));
+  }
+
+  private async importExternalTasks(): Promise<void> {
+    for (const bridge of this.yandexBridges) {
+      await bridge.importCandidates();
+    }
+  }
+
+  private async syncExternalMirror(taskId: string): Promise<void> {
+    for (const bridge of this.yandexBridges) {
+      await bridge.exportTaskDigests(taskId);
+      await bridge.syncTaskStatus(taskId);
+      await bridge.mirrorApprovedChildTasks(taskId);
+    }
   }
 
   private contextForClaim(claim: ClaimedTask): InternalExecutionContext {
@@ -385,6 +402,7 @@ export class InternalWorkerOrchestrator {
 
     try {
       const outcome = await this.processTask(context, claim);
+      await this.syncExternalMirror(claim.task.id);
       this.telemetry.recordTaskFinished(
         this.taskContext(context, claim.task.id),
         outcome === "waiting" ? "waiting" : "processed",
@@ -404,11 +422,13 @@ export class InternalWorkerOrchestrator {
           Date.now() - startedAt,
           error.message,
         );
+        await this.syncExternalMirror(claim.task.id);
         return "waiting";
       }
 
       const message = error instanceof Error ? error.message : String(error);
       await this.finalizeFailure(context, claim.task.id, message);
+      await this.syncExternalMirror(claim.task.id);
       this.telemetry.recordTaskFinished(
         this.taskContext(context, claim.task.id),
         "failed",

@@ -110,6 +110,7 @@ export interface TaskRevision {
   missingContext: string[];
   externalSnapshot?: Record<string, unknown>;
   externalRevisionId?: string;
+  requiresReanalysis?: boolean;
   reason?: string;
   createdAt: string;
 }
@@ -126,6 +127,26 @@ export interface TaskRevisionInput {
   missingContext?: string[];
   externalSnapshot?: Record<string, unknown>;
   externalRevisionId?: string;
+  requiresReanalysis?: boolean;
+  reason?: string;
+}
+
+export interface ExternalTaskFieldUpdateInput {
+  owner: TaskFieldOwner;
+  author: TaskActor;
+  queue?: string | null;
+  tags?: string[];
+  components?: string[];
+  priority?: string | null;
+  deadline?: string | null;
+  businessStatus?: string | null;
+  externalRef?: {
+    provider: string;
+    externalKey: string;
+    businessStatus?: string | null;
+    lastSeenAt?: string;
+  };
+  lastSyncedAt?: string;
   reason?: string;
 }
 
@@ -627,8 +648,14 @@ export interface AgentTaskContext {
 export interface TaskTrackerClient {
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
   updateTaskRevision(taskId: string, input: TaskRevisionInput): Promise<TaskRecord>;
+  updateExternalTaskFields(
+    taskId: string,
+    input: ExternalTaskFieldUpdateInput,
+  ): Promise<TaskRecord>;
+  attachExternalRef(taskId: string, input: TaskExternalRefInput): Promise<TaskRecord>;
   markReady(taskId: string, reason?: string): Promise<void>;
   getTask(taskId: string): Promise<TaskRecord>;
+  findTaskByExternalRef(provider: string, externalKey: string): Promise<TaskRecord | null>;
   getAgentTaskContext(taskId: string): Promise<AgentTaskContext>;
   appendEvent(taskId: string, input: TaskEventInput): Promise<void>;
   appendComment(taskId: string, input: CommentInput): Promise<void>;
@@ -670,6 +697,7 @@ export interface ImportCandidatesInput {
 export interface ExternalIssueSnapshot {
   provider: string;
   externalKey: string;
+  externalUrl?: string;
   title: string;
   description: string;
   businessStatus?: string;
@@ -679,6 +707,7 @@ export interface ExternalIssueSnapshot {
   priority?: string;
   deadline?: string;
   payload: Record<string, unknown>;
+  sourceUpdatedAt?: string;
   observedAt: string;
 }
 
@@ -702,4 +731,32 @@ export interface ExternalTaskSource {
   importCandidates(input: ImportCandidatesInput): Promise<ExternalIssueSnapshot[]>;
   exportDigest(input: ExportDigestInput): Promise<void>;
   transitionExternal(input: ExternalTransitionInput): Promise<void>;
+}
+
+export interface SyncCursor {
+  provider: string;
+  scope: string;
+  cursor: string;
+  updatedAt: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface ImportedHumanCommand {
+  provider: string;
+  externalKey: string;
+  externalCommentId: string;
+  taskId: string;
+  author?: TaskActor;
+  body: string;
+  command?: HumanTaskCommand;
+  importedAt: string;
+}
+
+export interface ExternalFieldOwnership {
+  provider: string;
+  externalKey: string;
+  taskId: string;
+  owner: TaskFieldOwner;
+  fields: string[];
+  updatedAt: string;
 }

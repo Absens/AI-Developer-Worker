@@ -494,6 +494,10 @@ const parseTaskTrackerConfig = (
   };
 };
 
+const taskTrackerUsesYandex = (taskTracker: TaskTrackerConfig): boolean =>
+  taskTracker.provider === "yandex" ||
+  (taskTracker.provider === "internal" && taskTracker.internal.yandexSyncEnabled);
+
 const optionalPositiveInt = (
   value: unknown,
   key: string,
@@ -866,8 +870,8 @@ const loadStatusMapFromFile = (
 
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   const taskTracker = parseTaskTrackerConfig(env);
-  const usesYandexDirect = taskTracker.provider === "yandex";
-  const trackerStatusMap = usesYandexDirect
+  const usesYandex = taskTrackerUsesYandex(taskTracker);
+  const trackerStatusMap = usesYandex
     ? loadStatusMapFromFile(env)
     : DEFAULT_INTERNAL_TRACKER_STATUS_MAP;
   const pollIntervalMinutes = parsePositiveInt(
@@ -887,13 +891,13 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
 
   return {
     taskTracker,
-    trackerToken: usesYandexDirect
+    trackerToken: usesYandex
       ? requireEnv(env, "TRACKER_TOKEN")
       : env.TRACKER_TOKEN?.trim() || "",
-    trackerOrgHeader: usesYandexDirect
+    trackerOrgHeader: usesYandex
       ? parseTrackerOrgHeader(env.TRACKER_ORG_HEADER)
       : parseTrackerOrgHeader(undefined),
-    trackerOrgId: usesYandexDirect
+    trackerOrgId: usesYandex
       ? requireEnv(env, "TRACKER_ORG_ID")
       : env.TRACKER_ORG_ID?.trim() || "",
     trackerDefaultQueue: env.TRACKER_DEFAULT_QUEUE?.trim() || "FRONTEND",
@@ -1452,8 +1456,9 @@ const loadFleetConfigFromFile = (
   const repositories = root.repositories.map(parseRepositoryProfile);
   validateRepositoryProfiles(repositories);
 
+  const usesYandex = taskTrackerUsesYandex(taskTracker);
   const statusMapFile =
-    taskTracker.provider === "yandex"
+    usesYandex
       ? optionalString(tracker.statusMapFile, "tracker.statusMapFile") ??
         requireEnv(env, "TRACKER_STATUS_MAP_FILE")
       : undefined;
@@ -1612,7 +1617,7 @@ const loadFleetConfigFromFile = (
       : {}),
     tracker: {
       token:
-        taskTracker.provider === "yandex"
+        usesYandex
           ? resolveEnvReference(
               env,
               tracker,
@@ -1625,14 +1630,14 @@ const loadFleetConfigFromFile = (
             optionalString(tracker.token, "tracker.token") ||
             "",
       orgHeader:
-        taskTracker.provider === "yandex"
+        usesYandex
           ? parseTrackerOrgHeader(
               optionalString(tracker.orgHeader, "tracker.orgHeader") ??
                 env.TRACKER_ORG_HEADER,
             )
           : parseTrackerOrgHeader(undefined),
       orgId:
-        taskTracker.provider === "yandex"
+        usesYandex
           ? resolveEnvReference(
               env,
               tracker,

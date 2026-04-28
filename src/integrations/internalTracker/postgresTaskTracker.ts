@@ -36,6 +36,7 @@ import type {
   CommentInput,
   CreateTaskInput,
   DecompositionDecisionRecord,
+  ExternalTaskFieldUpdateInput,
   HumanAnswerInput,
   HumanAnswerRecord,
   LeaseHeartbeatInput,
@@ -215,6 +216,11 @@ const normalizeStringArray = (values: readonly string[] | undefined): string[] =
 
 const externalRefKey = (provider: string, externalKey: string): string =>
   `${provider.trim().toLowerCase()}:${externalKey.trim().toLowerCase()}`;
+
+const hasOwn = <T extends object, K extends PropertyKey>(
+  value: T,
+  key: K,
+): value is T & Record<K, unknown> => Object.prototype.hasOwnProperty.call(value, key);
 
 const REQUIRED_EXECUTION_FIELDS = [
   "repositoryName",
@@ -413,6 +419,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         ...(input.externalRevisionId
           ? { externalRevisionId: input.externalRevisionId }
           : {}),
+        ...(input.requiresReanalysis ? { requiresReanalysis: true } : {}),
         ...(input.reason ? { reason: input.reason } : {}),
         createdAt,
       };
@@ -461,9 +468,162 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
           input.owner === "external_source"
             ? "External source update recorded as a task revision."
             : "Task revision recorded.",
-        payload: { revisionNumber: revision.revisionNumber },
+        payload: {
+          revisionNumber: revision.revisionNumber,
+          requiresReanalysis: revision.requiresReanalysis === true,
+        },
         createdAt,
       });
+
+      return this.getTaskUsing(client, taskId);
+    });
+  }
+
+  async updateExternalTaskFields(
+    taskId: string,
+    input: ExternalTaskFieldUpdateInput,
+  ): Promise<TaskRecord> {
+    if (input.owner !== "external_source") {
+      throw new Error("Only external_source can update external task fields.");
+    }
+
+    return this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      const updatedAt = this.nowIso();
+      const changedFields: string[] = [];
+      const values: unknown[] = [taskId];
+      const assignments: string[] = [];
+      const setField = (column: string, value: unknown): void => {
+        values.push(value);
+        assignments.push(`${column} = $${values.length}`);
+      };
+
+      if (hasOwn(input, "queue")) {
+        setField("queue", typeof input.queue === "string" && input.queue.trim() ? input.queue : null);
+        changedFields.push("queue");
+      }
+      if (input.tags !== undefined) {
+        setField("tags", normalizeStringArray(input.tags));
+        changedFields.push("tags");
+      }
+      if (input.components !== undefined) {
+        setField("components", normalizeStringArray(input.components));
+        changedFields.push("components");
+      }
+      if (hasOwn(input, "priority")) {
+        setField(
+          "priority",
+          typeof input.priority === "string" && input.priority.trim()
+            ? input.priority
+            : null,
+        );
+        changedFields.push("priority");
+      }
+      if (hasOwn(input, "deadline")) {
+        setField(
+          "deadline",
+          typeof input.deadline === "string" && input.deadline.trim()
+            ? input.deadline
+            : null,
+        );
+        changedFields.push("deadline");
+      }
+      if (hasOwn(input, "businessStatus")) {
+        setField(
+          "business_status",
+          typeof input.businessStatus === "string" && input.businessStatus.trim()
+            ? input.businessStatus
+            : null,
+        );
+        changedFields.push("businessStatus");
+      }
+      if (input.lastSyncedAt) {
+        setField("last_synced_at", input.lastSyncedAt);
+      }
+      setField("updated_at", updatedAt);
+
+      await client.query(
+        `
+          UPDATE tasks
+          SET ${assignments.join(", ")}
+          WHERE id = $1
+        `,
+        values,
+      );
+
+      if (input.externalRef) {
+        const refValues: unknown[] = [taskId, input.externalRef.provider, input.externalRef.externalKey];
+        const refAssignments: string[] = [];
+        const setRefField = (column: string, value: unknown): void => {
+          refValues.push(value);
+          refAssignments.push(`${column} = $${refValues.length}`);
+        };
+        if (hasOwn(input.externalRef, "businessStatus")) {
+          setRefField(
+            "business_status",
+            typeof input.externalRef.businessStatus === "string" &&
+              input.externalRef.businessStatus.trim()
+              ? input.externalRef.businessStatus
+              : null,
+          );
+        }
+        if (input.externalRef.lastSeenAt) {
+          setRefField("last_seen_at", input.externalRef.lastSeenAt);
+        }
+        if (refAssignments.length > 0) {
+          await client.query(
+            `
+              UPDATE task_external_refs
+              SET ${refAssignments.join(", ")}
+              WHERE task_id = $1
+                AND lower(provider) = lower($2)
+                AND lower(external_key) = lower($3)
+            `,
+            refValues,
+          );
+        }
+      }
+
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "external_fields_updated",
+        source: input.owner,
+        actor: clone(input.author),
+        ...(input.reason ? { message: input.reason } : {}),
+        payload: { changedFields },
+        createdAt: updatedAt,
+      });
+
+      return this.getTaskUsing(client, taskId);
+    });
+  }
+
+  async attachExternalRef(
+    taskId: string,
+    input: TaskExternalRefInput,
+  ): Promise<TaskRecord> {
+    return this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      const createdAt = this.nowIso();
+      const ref = createExternalRefs(taskId, [input], createdAt)[0];
+      if (!ref) {
+        throw new Error("External ref was not created.");
+      }
+      await this.assertExternalRefsAvailable(client, [ref]);
+      await this.insertExternalRef(client, ref);
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: "external_ref_attached",
+        source: "external_source",
+        payload: {
+          provider: ref.provider,
+          externalKey: ref.externalKey,
+        },
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
 
       return this.getTaskUsing(client, taskId);
     });
@@ -477,6 +637,23 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
 
   async getTask(taskId: string): Promise<TaskRecord> {
     return this.getTaskUsing(this.db, taskId);
+  }
+
+  async findTaskByExternalRef(
+    provider: string,
+    externalKey: string,
+  ): Promise<TaskRecord | null> {
+    const result = await this.db.query<{ task_id: string }>(
+      `
+        SELECT task_id
+        FROM task_external_refs
+        WHERE lower(provider) = lower($1) AND lower(external_key) = lower($2)
+        LIMIT 1
+      `,
+      [provider, externalKey],
+    );
+    const taskId = result.rows[0]?.task_id;
+    return taskId ? this.getTask(taskId) : null;
   }
 
   async getAgentTaskContext(taskId: string): Promise<AgentTaskContext> {
@@ -1575,14 +1752,14 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         INSERT INTO task_revisions (
           id, task_id, revision_number, owner, author, title, description,
           human_summary, acceptance_criteria, constraints, risk_factors,
-          missing_context, external_snapshot, external_revision_id, reason,
-          created_at
+          missing_context, external_snapshot, external_revision_id,
+          requires_reanalysis, reason, created_at
         )
         VALUES (
           $1, $2, $3, $4, $5::jsonb, $6, $7,
           $8, $9, $10, $11,
-          $12, $13::jsonb, $14, $15,
-          $16
+          $12, $13::jsonb, $14,
+          $15, $16, $17
         )
       `,
       [
@@ -1600,6 +1777,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         revision.missingContext,
         revision.externalSnapshot ? JSON.stringify(revision.externalSnapshot) : null,
         revision.externalRevisionId ?? null,
+        revision.requiresReanalysis === true,
         revision.reason ?? null,
         revision.createdAt,
       ],
@@ -1923,6 +2101,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       ...(row.external_revision_id
         ? { externalRevisionId: String(row.external_revision_id) }
         : {}),
+      ...(row.requires_reanalysis ? { requiresReanalysis: true } : {}),
       ...(row.reason ? { reason: String(row.reason) } : {}),
       createdAt: toIso(row.created_at),
     };
