@@ -341,6 +341,9 @@ export const mapProposalSummary = (value: unknown): ProposalSummaryDto => {
             ...(optionalString(entry['summary']) ? { summary: optionalString(entry['summary']) } : {}),
           })) }
         : {}),
+      ...(Array.isArray(proposal['suggestedAcceptanceCriteria'])
+        ? { suggestedAcceptanceCriteria: stringArray(proposal['suggestedAcceptanceCriteria']) }
+        : {}),
       createdAt: stringValue(proposal['createdAt']),
     },
   };

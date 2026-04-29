@@ -95,3 +95,399 @@ select {
   font-weight: 650;
   overflow-wrap: anywhere;
 }
+
+.page__header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.queue-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.4fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.queue-left,
+.queue-right,
+.queue-groups,
+.workflow-detail,
+.proposal-list,
+.stack,
+.create-form {
+  display: grid;
+  gap: 12px;
+}
+
+.queue-right {
+  position: sticky;
+  top: 74px;
+  max-height: calc(100vh - 92px);
+  overflow: auto;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.filter-grid--compact {
+  grid-template-columns: minmax(220px, 320px) auto;
+}
+
+.field,
+.form-section {
+  display: grid;
+  gap: 6px;
+}
+
+.field > span,
+.field-label {
+  color: var(--console-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.field input,
+.field textarea,
+.field p-select,
+.field p-multiselect {
+  width: 100%;
+}
+
+.filter-actions,
+.action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.action-bar--end {
+  justify-content: flex-end;
+}
+
+.queue-group {
+  min-height: 144px;
+}
+
+.queue-group__header,
+.detail-header,
+.proposal-row,
+.child-row,
+.lease-row,
+.timeline-item__meta {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.queue-group__header h2,
+.proposal-row h2,
+.detail-header h2,
+.form-section h2,
+.surface h3,
+.surface h4 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.queue-group__header h2,
+.form-section h2,
+.surface h3 {
+  font-size: 16px;
+}
+
+.surface h4 {
+  font-size: 13px;
+}
+
+.task-row-list,
+.child-list,
+.timeline-list,
+.lease-list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-row {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  min-height: 92px;
+  padding: 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--console-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-row:hover,
+.task-row--selected {
+  border-color: var(--console-focus);
+  background: #f2fbf9;
+}
+
+.task-row__title {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.task-row__meta,
+.task-row__footer,
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.task-row__summary,
+.task-row__footer,
+.muted {
+  color: var(--console-muted);
+}
+
+.task-row__summary {
+  font-size: 13px;
+}
+
+.detail-header {
+  align-items: center;
+}
+
+.detail-header__title {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.field-grid--compact {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.field-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.lead {
+  font-weight: 650;
+}
+
+.prewrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.compact-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.compact-list li + li {
+  margin-top: 4px;
+}
+
+.summary-block {
+  display: grid;
+  gap: 6px;
+}
+
+.external-link {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--console-link);
+  overflow-wrap: anywhere;
+}
+
+.question-block,
+.answer-grid,
+.evidence-list {
+  display: grid;
+  gap: 10px;
+}
+
+.child-row,
+.lease-row,
+.timeline-item,
+.evidence-item {
+  padding: 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-panel-muted);
+}
+
+.lease-row > div {
+  display: grid;
+  gap: 2px;
+}
+
+.timeline-item {
+  display: grid;
+  gap: 5px;
+}
+
+.timeline-item p,
+.summary-block p,
+.proposal-row p,
+.question-block p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal-row__main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.proposal-row__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 120px;
+}
+
+.evidence-list {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.evidence-item {
+  display: grid;
+  gap: 4px;
+}
+
+.eyebrow {
+  color: var(--console-muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 28px;
+  text-align: center;
+}
+
+.empty-state i {
+  color: var(--console-muted);
+  font-size: 24px;
+}
+
+.empty-state h2,
+.empty-state p {
+  margin: 0;
+}
+
+.loading-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 52px;
+}
+
+.dialog-scroll {
+  max-height: min(70vh, 680px);
+  overflow: auto;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.preview-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-panel-muted);
+}
+
+.preview-row--wide {
+  grid-column: 1 / -1;
+}
+
+.preview-row span {
+  color: var(--console-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.preview-row pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.form-section {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.form-section:last-of-type {
+  border-bottom: 0;
+}
+
+.error-text {
+  color: #b42318;
+}
+
+@media (max-width: 1180px) {
+  .queue-layout,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .queue-right {
+    position: static;
+    max-height: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .page__header,
+  .filter-grid,
+  .filter-grid--compact,
+  .field-grid,
+  .preview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-header,
+  .proposal-row,
+  .child-row {
+    display: grid;
+  }
+
+  .proposal-row__actions {
+    flex-direction: row;
+  }
+}

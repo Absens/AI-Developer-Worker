@@ -1,20 +1,22 @@
 import { Component, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute } from '@angular/router';
-import { MessageModule } from 'primeng/message';
+import { map } from 'rxjs';
+
+import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
 
 @Component({
   selector: 'app-task-detail-page',
-  imports: [MessageModule],
+  imports: [TaskDetailPanelComponent],
   template: `
     <section class="page">
-      <header class="page__header">
-        <h1>Task Detail</h1>
-        <p>Deep link target: {{ taskId }}</p>
-      </header>
-      <p-message severity="secondary" text="Detail, timeline, validation, MR, and question workflows are Phase 8B scope." />
+      <app-task-detail-panel [taskId]="taskId()" [fullPage]="true" />
     </section>
   `,
 })
 export class TaskDetailPageComponent {
-  protected readonly taskId = inject(ActivatedRoute).snapshot.paramMap.get('taskId') || '';
+  private readonly route = inject(ActivatedRoute);
+  protected readonly taskId = toSignal(this.route.paramMap.pipe(map((params) => params.get('taskId') ?? '')), {
+    initialValue: '',
+  });
 }

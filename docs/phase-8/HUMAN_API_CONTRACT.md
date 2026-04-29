@@ -422,6 +422,7 @@ export interface ProposalSummaryDto extends TaskSummaryDto {
     policyDecision?: string;
     policyReason?: string;
     evidenceRefs?: EvidenceRefDto[];
+    suggestedAcceptanceCriteria?: string[];
     createdAt: string;
   };
 }

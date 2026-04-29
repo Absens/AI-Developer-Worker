@@ -1069,6 +1069,7 @@ export class TaskTrackerHumanApi {
             policyDecision: proposal.policyEvaluation.decision,
             policyReason: proposal.policyEvaluation.reason,
             evidenceRefs: proposal.evidenceRefs,
+            suggestedAcceptanceCriteria: proposal.suggestedAcceptanceCriteria,
             createdAt: proposal.createdAt,
           }
         : undefined,

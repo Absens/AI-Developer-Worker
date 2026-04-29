@@ -95,7 +95,7 @@
     top: 57px;
     z-index: 9;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     border-right: 0;
     border-bottom: 1px solid var(--console-border);
     overflow-x: auto;

@@ -310,7 +310,10 @@ describe("Phase 7F human task API", () => {
     const proposals = await requestJson(baseUrl, "/api/proposals");
     expect(proposals.body.proposals[0]).toMatchObject({
       id: proposed.body.task.id,
-      proposal: { supervisorStatus: "proposed" },
+      proposal: {
+        supervisorStatus: "proposed",
+        suggestedAcceptanceCriteria: ["Runbook explains the flaky test flow."],
+      },
     });
 
     const approved = await requestJson(

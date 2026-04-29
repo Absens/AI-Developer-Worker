@@ -32,7 +32,6 @@ export class App {
   protected readonly navItems = [
     { label: 'Queue', icon: 'pi pi-list', route: '/' },
     { label: 'Create', icon: 'pi pi-plus-circle', route: '/new' },
-    { label: 'Task detail', icon: 'pi pi-file-edit', route: '/sample-task' },
     { label: 'Proposals', icon: 'pi pi-verified', route: '/proposals' },
     { label: 'Operations', icon: 'pi pi-server', route: '/operations' },
   ];
