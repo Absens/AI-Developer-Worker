@@ -124,6 +124,8 @@ Copy-Item .env.example .env
 | `TASK_TRACKER_UI_PORT` | Нет | `9464` | Alias для порта HTTP-сервера при включении task tracker UI. |
 | `TASK_TRACKER_UI_PATH` | Нет | `/tasks` | HTML path для human task UI. |
 | `TASK_TRACKER_UI_API_PATH` | Нет | `/api` | JSON API prefix для human task API. |
+| `TASK_TRACKER_UI_ASSET_PATH` | Нет | `/tasks/assets` | Path для Angular assets. Должен находиться внутри `TASK_TRACKER_UI_PATH`. |
+| `TASK_TRACKER_UI_STATIC_DIR` | Нет | Не задано | Директория built Angular bundle, обычно `web/dist/task-tracker-console/browser`. Если задана, startup проверяет наличие `index.html`. |
 | `TASK_TRACKER_HUMAN_AUTH_MODE` | Нет | `trusted_proxy` | Auth mode для UI/API: `trusted_proxy`, `bearer` или local-only `localhost`. |
 | `TASK_TRACKER_TRUSTED_USER_HEADER` | Нет | `x-task-tracker-user` | Header с authenticated user от trusted reverse proxy. |
 | `TASK_TRACKER_TRUSTED_ROLE_HEADER` | Нет | `x-task-tracker-role` | Header с ролью `viewer`, `developer`, `operator` или `admin`. |
@@ -275,19 +277,39 @@ DASHBOARD_BEARER_TOKEN=change-me
 
 Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).
 
-## Phase 7F: internal task UI
+## Phase 8A: Angular internal task UI
 
-При `TASK_TRACKER_PROVIDER=internal` можно включить minimal human workflow UI/API:
+При `TASK_TRACKER_PROVIDER=internal` можно включить human UI/API. Phase 8A
+serves the Angular console when a built bundle is configured:
 
 ```env
 TASK_TRACKER_UI_ENABLED=true
 TASK_TRACKER_UI_BIND_HOST=127.0.0.1
 TASK_TRACKER_UI_PORT=9464
+TASK_TRACKER_UI_STATIC_DIR=web/dist/task-tracker-console/browser
 TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
 TASK_TRACKER_SYSTEM_TOKEN=change-me
 ```
 
-UI доступен на `/tasks`, JSON API - на `/api/tasks`. Мутации требуют trusted proxy user/role headers или service bearer token; anonymous writes отклоняются.
+UI доступен на `/tasks`, JSON API - на `/api`, а Angular dev server proxies
+`/api` к Node.js server:
+
+```bash
+npm install --prefix web
+npm run web:dev
+```
+
+Production bundle build:
+
+```bash
+npm run web:build
+```
+
+During Phase 8A only, when `TASK_TRACKER_UI_ENABLED=true` but
+`TASK_TRACKER_UI_STATIC_DIR` is not set, `/tasks` keeps serving the old embedded
+Phase 7F HTML fallback. Angular deep links require the static bundle. Mutations
+require trusted proxy user/role headers or service bearer token; anonymous
+writes are rejected.
 
 ## Phase 7H: internal tracker hardening
 

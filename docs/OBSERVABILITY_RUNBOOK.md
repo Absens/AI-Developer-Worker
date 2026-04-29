@@ -82,6 +82,8 @@ Internal task UI/API:
 TASK_TRACKER_UI_ENABLED=false
 TASK_TRACKER_UI_PATH=/tasks
 TASK_TRACKER_UI_API_PATH=/api
+TASK_TRACKER_UI_ASSET_PATH=/tasks/assets
+TASK_TRACKER_UI_STATIC_DIR=web/dist/task-tracker-console/browser
 TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
 TASK_TRACKER_TRUSTED_USER_HEADER=x-task-tracker-user
 TASK_TRACKER_TRUSTED_ROLE_HEADER=x-task-tracker-role
@@ -89,10 +91,31 @@ TASK_TRACKER_AGENT_TOKEN=
 TASK_TRACKER_SYSTEM_TOKEN=
 ```
 
-When enabled with `TASK_TRACKER_PROVIDER=internal`, `/tasks` serves the Phase 7F
-operations UI and `/api/tasks` exposes the human JSON API. Writes require a
-trusted proxy role header (`developer`, `operator`, or `admin`) or the system
-bearer token for idempotent system-created tasks.
+When enabled with `TASK_TRACKER_PROVIDER=internal`, `/tasks` serves the Angular
+console when `TASK_TRACKER_UI_STATIC_DIR` points at a built bundle. The server
+validates that directory at startup and serves Angular deep links without
+swallowing `/api`, `/metrics`, `/healthz`, or `/readyz`. During Phase 8A only,
+if no static directory is configured, `/tasks` serves the old embedded Phase 7F
+HTML fallback and Angular deep links return `404`.
+
+Local Angular development:
+
+```bash
+npm install --prefix web
+npm run web:dev
+```
+
+The Angular dev server runs at `http://127.0.0.1:4200/tasks` and proxies `/api`
+to the Node.js observability server on `http://127.0.0.1:9464`.
+
+Production bundle:
+
+```bash
+npm run web:build
+```
+
+Writes require a trusted proxy role header (`developer`, `operator`, or
+`admin`) or the system bearer token for idempotent system-created tasks.
 
 Event store:
 

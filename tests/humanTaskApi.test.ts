@@ -145,6 +145,33 @@ describe("Phase 7F human task API", () => {
     const html = await fetch(`${baseUrl}/tasks`);
     expect(await html.text()).toContain("Internal Task Tracker");
 
+    const session = await requestJson(baseUrl, "/api/session", {
+      headers: developerHeaders,
+    });
+    expect(session.status).toBe(200);
+    expect(session.body).toMatchObject({
+      user: { id: "dev-1", displayName: "dev-1", service: "human" },
+      role: "developer",
+      authMode: "trusted_proxy",
+      apiPath: "/api",
+      uiPath: "/tasks",
+      capabilities: {
+        canReadTasks: true,
+        canCreateTask: true,
+        canHold: false,
+        canCreateSystemTask: false,
+      },
+    });
+
+    const systemSession = await requestJson(baseUrl, "/api/session", {
+      headers: { authorization: "Bearer system-token" },
+    });
+    expect(systemSession.body).toMatchObject({
+      user: { id: "system", service: "system" },
+      role: "admin",
+      capabilities: { canCreateSystemTask: true },
+    });
+
     const listed = await requestJson(baseUrl, "/api/tasks?status=ready");
     expect(listed.status).toBe(200);
     expect(listed.body.tasks[0]).toMatchObject({

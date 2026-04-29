@@ -333,64 +333,149 @@ const parseAlertsConfig = (
 const parseTaskTrackerUiConfig = (
   env: NodeJS.ProcessEnv,
   rawValue?: Record<string, unknown>,
-): TaskTrackerUiConfig => ({
-  enabled: env.TASK_TRACKER_UI_ENABLED?.trim()
-    ? parseBoolean(env.TASK_TRACKER_UI_ENABLED, "TASK_TRACKER_UI_ENABLED", false)
-    : optionalBoolean(rawValue?.enabled, "observability.taskTrackerUi.enabled", false),
-  path: normalizePath(
+): TaskTrackerUiConfig => {
+  const path = normalizePath(
     env.TASK_TRACKER_UI_PATH?.trim() ||
       optionalString(rawValue?.path, "observability.taskTrackerUi.path") ||
       "/tasks",
     "TASK_TRACKER_UI_PATH",
-  ),
-  apiPath: normalizePath(
+  );
+  const assetPath = normalizePath(
+    env.TASK_TRACKER_UI_ASSET_PATH?.trim() ||
+      optionalString(rawValue?.assetPath, "observability.taskTrackerUi.assetPath") ||
+      `${path}/assets`,
+    "TASK_TRACKER_UI_ASSET_PATH",
+  );
+
+  if (assetPath === path || !assetPath.startsWith(`${path}/`)) {
+    throw new ConfigurationError(
+      "TASK_TRACKER_UI_ASSET_PATH must be inside TASK_TRACKER_UI_PATH.",
+    );
+  }
+
+  return {
+    enabled: env.TASK_TRACKER_UI_ENABLED?.trim()
+      ? parseBoolean(env.TASK_TRACKER_UI_ENABLED, "TASK_TRACKER_UI_ENABLED", false)
+      : optionalBoolean(rawValue?.enabled, "observability.taskTrackerUi.enabled", false),
+    path,
+    apiPath: normalizePath(
     env.TASK_TRACKER_UI_API_PATH?.trim() ||
       optionalString(rawValue?.apiPath, "observability.taskTrackerUi.apiPath") ||
       "/api",
     "TASK_TRACKER_UI_API_PATH",
-  ),
-  authMode: env.TASK_TRACKER_HUMAN_AUTH_MODE?.trim()
-    ? parseTaskTrackerHumanAuthMode(
-        env.TASK_TRACKER_HUMAN_AUTH_MODE,
-        "TASK_TRACKER_HUMAN_AUTH_MODE",
-        "trusted_proxy",
-      )
-    : parseTaskTrackerHumanAuthMode(
-        optionalString(rawValue?.authMode, "observability.taskTrackerUi.authMode"),
-        "observability.taskTrackerUi.authMode",
-        "trusted_proxy",
-      ),
-  trustedUserHeader:
-    env.TASK_TRACKER_TRUSTED_USER_HEADER?.trim().toLowerCase() ||
-    optionalString(
-      rawValue?.trustedUserHeader,
-      "observability.taskTrackerUi.trustedUserHeader",
-    )?.toLowerCase() ||
-    "x-task-tracker-user",
-  trustedRoleHeader:
-    env.TASK_TRACKER_TRUSTED_ROLE_HEADER?.trim().toLowerCase() ||
-    optionalString(
-      rawValue?.trustedRoleHeader,
-      "observability.taskTrackerUi.trustedRoleHeader",
-    )?.toLowerCase() ||
-    "x-task-tracker-role",
-  ...(env.TASK_TRACKER_AGENT_TOKEN?.trim() ||
-  optionalString(rawValue?.agentToken, "observability.taskTrackerUi.agentToken")
-    ? {
-        agentToken:
-          env.TASK_TRACKER_AGENT_TOKEN?.trim() ||
-          optionalString(rawValue?.agentToken, "observability.taskTrackerUi.agentToken"),
+    ),
+    assetPath,
+    ...(env.TASK_TRACKER_UI_STATIC_DIR?.trim() ||
+    optionalString(rawValue?.staticDir, "observability.taskTrackerUi.staticDir")
+      ? {
+          staticDir:
+            env.TASK_TRACKER_UI_STATIC_DIR?.trim() ||
+            optionalString(rawValue?.staticDir, "observability.taskTrackerUi.staticDir"),
+        }
+      : {}),
+    authMode: env.TASK_TRACKER_HUMAN_AUTH_MODE?.trim()
+      ? parseTaskTrackerHumanAuthMode(
+          env.TASK_TRACKER_HUMAN_AUTH_MODE,
+          "TASK_TRACKER_HUMAN_AUTH_MODE",
+          "trusted_proxy",
+        )
+      : parseTaskTrackerHumanAuthMode(
+          optionalString(rawValue?.authMode, "observability.taskTrackerUi.authMode"),
+          "observability.taskTrackerUi.authMode",
+          "trusted_proxy",
+        ),
+    trustedUserHeader:
+      env.TASK_TRACKER_TRUSTED_USER_HEADER?.trim().toLowerCase() ||
+      optionalString(
+        rawValue?.trustedUserHeader,
+        "observability.taskTrackerUi.trustedUserHeader",
+      )?.toLowerCase() ||
+      "x-task-tracker-user",
+    trustedRoleHeader:
+      env.TASK_TRACKER_TRUSTED_ROLE_HEADER?.trim().toLowerCase() ||
+      optionalString(
+        rawValue?.trustedRoleHeader,
+        "observability.taskTrackerUi.trustedRoleHeader",
+      )?.toLowerCase() ||
+      "x-task-tracker-role",
+    ...(env.TASK_TRACKER_AGENT_TOKEN?.trim() ||
+    optionalString(rawValue?.agentToken, "observability.taskTrackerUi.agentToken")
+      ? {
+          agentToken:
+            env.TASK_TRACKER_AGENT_TOKEN?.trim() ||
+            optionalString(rawValue?.agentToken, "observability.taskTrackerUi.agentToken"),
+        }
+      : {}),
+    ...(env.TASK_TRACKER_SYSTEM_TOKEN?.trim() ||
+    optionalString(rawValue?.systemToken, "observability.taskTrackerUi.systemToken")
+      ? {
+          systemToken:
+            env.TASK_TRACKER_SYSTEM_TOKEN?.trim() ||
+            optionalString(rawValue?.systemToken, "observability.taskTrackerUi.systemToken"),
+        }
+      : {}),
+  };
+};
+
+const isPathPrefix = (parent: string, child: string): boolean =>
+  parent === "/" || child.startsWith(`${parent}/`);
+
+const validateRouteConflicts = (config: ObservabilityConfig): void => {
+  type Route = { label: string; path: string };
+  const routes: Route[] = [
+    { label: "HEALTH_PATH", path: config.health.path },
+    { label: "READY_PATH", path: config.health.readinessPath },
+  ];
+
+  if (config.metrics.enabled) {
+    routes.push({ label: "METRICS_PATH", path: config.metrics.path });
+  }
+  if (config.dashboard.enabled) {
+    routes.push({ label: "DASHBOARD_PATH", path: config.dashboard.path });
+    routes.push({ label: "DASHBOARD_API_PATH", path: config.dashboard.apiPath });
+  }
+  if (config.taskTrackerUi.enabled) {
+    routes.push({ label: "TASK_TRACKER_UI_PATH", path: config.taskTrackerUi.path });
+    routes.push({
+      label: "TASK_TRACKER_UI_API_PATH",
+      path: config.taskTrackerUi.apiPath,
+    });
+    routes.push({
+      label: "TASK_TRACKER_UI_ASSET_PATH",
+      path: config.taskTrackerUi.assetPath,
+    });
+  }
+
+  for (let leftIndex = 0; leftIndex < routes.length; leftIndex += 1) {
+    const left = routes[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < routes.length; rightIndex += 1) {
+      const right = routes[rightIndex];
+      if (!left || !right) {
+        continue;
       }
-    : {}),
-  ...(env.TASK_TRACKER_SYSTEM_TOKEN?.trim() ||
-  optionalString(rawValue?.systemToken, "observability.taskTrackerUi.systemToken")
-    ? {
-        systemToken:
-          env.TASK_TRACKER_SYSTEM_TOKEN?.trim() ||
-          optionalString(rawValue?.systemToken, "observability.taskTrackerUi.systemToken"),
+
+      const isAllowedUiAssetNesting =
+        config.taskTrackerUi.enabled &&
+        ((left.label === "TASK_TRACKER_UI_PATH" &&
+          right.label === "TASK_TRACKER_UI_ASSET_PATH") ||
+          (left.label === "TASK_TRACKER_UI_ASSET_PATH" &&
+            right.label === "TASK_TRACKER_UI_PATH"));
+      if (isAllowedUiAssetNesting) {
+        continue;
       }
-    : {}),
-});
+
+      if (
+        left.path === right.path ||
+        isPathPrefix(left.path, right.path) ||
+        isPathPrefix(right.path, left.path)
+      ) {
+        throw new ConfigurationError(
+          `${left.label} (${left.path}) conflicts with ${right.label} (${right.path}).`,
+        );
+      }
+    }
+  }
+};
 
 export const parseObservabilityConfig = (
   env: NodeJS.ProcessEnv = process.env,
@@ -432,7 +517,7 @@ export const parseObservabilityConfig = (
     optionalString(rawValue?.host, "observability.host") ||
     "127.0.0.1";
 
-  return {
+  const config: ObservabilityConfig = {
     enabled: env.OBSERVABILITY_ENABLED?.trim()
       ? parseBoolean(env.OBSERVABILITY_ENABLED, "OBSERVABILITY_ENABLED", false)
       : optionalBoolean(rawValue?.enabled, "observability.enabled", false),
@@ -551,6 +636,9 @@ export const parseObservabilityConfig = (
         optionalRecord((rawValue as Record<string, unknown> | undefined)?.alerts, "alerts"),
     ),
   };
+
+  validateRouteConflicts(config);
+  return config;
 };
 
 export const defaultObservabilityConfig = (): ObservabilityConfig =>

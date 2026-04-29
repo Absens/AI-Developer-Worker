@@ -497,6 +497,8 @@ describe("config", () => {
       TASK_TRACKER_UI_PORT: "9666",
       TASK_TRACKER_UI_PATH: "/tracker",
       TASK_TRACKER_UI_API_PATH: "/tracker-api",
+      TASK_TRACKER_UI_ASSET_PATH: "/tracker/assets",
+      TASK_TRACKER_UI_STATIC_DIR: "/tmp/task-tracker-console",
       TASK_TRACKER_HUMAN_AUTH_MODE: "trusted_proxy",
       TASK_TRACKER_TRUSTED_USER_HEADER: "x-user",
       TASK_TRACKER_TRUSTED_ROLE_HEADER: "x-role",
@@ -513,6 +515,8 @@ describe("config", () => {
         enabled: true,
         path: "/tracker",
         apiPath: "/tracker-api",
+        assetPath: "/tracker/assets",
+        staticDir: "/tmp/task-tracker-console",
         authMode: "trusted_proxy",
         trustedUserHeader: "x-user",
         trustedRoleHeader: "x-role",
@@ -520,6 +524,44 @@ describe("config", () => {
         systemToken: "system-token",
       },
     });
+  });
+
+  it("rejects ambiguous task tracker UI routes", () => {
+    const statusMapFile = createStatusMapFile();
+    const baseEnv = {
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TASK_TRACKER_UI_ENABLED: "true",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    };
+
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        TASK_TRACKER_UI_PATH: "/metrics",
+      }),
+    ).toThrow(/TASK_TRACKER_UI_PATH.*METRICS_PATH|METRICS_PATH.*TASK_TRACKER_UI_PATH/);
+
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        TASK_TRACKER_UI_ASSET_PATH: "/assets",
+      }),
+    ).toThrow(/TASK_TRACKER_UI_ASSET_PATH/);
+
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        DASHBOARD_ENABLED: "true",
+      }),
+    ).toThrow(
+      /TASK_TRACKER_UI_API_PATH.*DASHBOARD_API_PATH|DASHBOARD_API_PATH.*TASK_TRACKER_UI_API_PATH/,
+    );
   });
 
   it("accepts explicit memory options", () => {

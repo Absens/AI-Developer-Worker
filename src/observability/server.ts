@@ -1,5 +1,7 @@
+import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { extname, isAbsolute, relative, resolve } from "node:path";
 
 import type { ObservabilityConfig, TaskTrackerClient } from "../models/types.js";
 import type { AlertService } from "./alerts.js";
@@ -48,6 +50,52 @@ const text = (
   response.end(body);
 };
 
+const buffer = (
+  response: ServerResponse,
+  statusCode: number,
+  body: Buffer,
+  contentType: string,
+): void => {
+  response.writeHead(statusCode, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+  });
+  response.end(body);
+};
+
+const contentTypeForPath = (path: string): string => {
+  switch (extname(path).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".ico":
+      return "image/x-icon";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".woff2":
+      return "font/woff2";
+    default:
+      return "application/octet-stream";
+  }
+};
+
+const isInsideDirectory = (root: string, candidate: string): boolean => {
+  const path = relative(root, candidate);
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+};
+
 const parseLimit = (url: URL, defaultValue: number): number => {
   const raw = url.searchParams.get("limit");
   if (!raw) {
@@ -85,6 +133,8 @@ export class ObservabilityHttpServer {
     if (this.server) {
       return;
     }
+
+    await this.assertStaticBundle();
 
     this.server = createServer((request, response) => {
       this.handle(request, response).catch((error) => {
@@ -176,28 +226,17 @@ export class ObservabilityHttpServer {
       return;
     }
 
-    const taskTrackerUiPath = config.taskTrackerUi.path;
-    if (
-      config.taskTrackerUi.enabled &&
-      (path === taskTrackerUiPath || path === `${taskTrackerUiPath}/`)
-    ) {
+    if (config.taskTrackerUi.enabled && this.taskTrackerHumanApi.isApiRoute(path)) {
+      await this.taskTrackerHumanApi.handle(request, path, url, response);
+      return;
+    }
+
+    if (config.taskTrackerUi.enabled && this.isTaskTrackerUiRoute(path)) {
       if (request.method !== "GET") {
         text(response, 405, "method not allowed");
         return;
       }
-      text(
-        response,
-        200,
-        renderTaskTrackerUiHtml({
-          apiPath: config.taskTrackerUi.apiPath,
-        }),
-        "text/html; charset=utf-8",
-      );
-      return;
-    }
-
-    if (config.taskTrackerUi.enabled && this.taskTrackerHumanApi.isApiRoute(path)) {
-      await this.taskTrackerHumanApi.handle(request, path, url, response);
+      await this.serveTaskTrackerUi(path, response);
       return;
     }
 
@@ -238,6 +277,96 @@ export class ObservabilityHttpServer {
     }
 
     text(response, 404, "not found");
+  }
+
+  private async assertStaticBundle(): Promise<void> {
+    const staticDir = this.input.config.taskTrackerUi.staticDir;
+    if (!this.input.config.taskTrackerUi.enabled || !staticDir) {
+      return;
+    }
+
+    const root = resolve(staticDir);
+    const indexPath = resolve(root, "index.html");
+    try {
+      const directoryStat = await stat(root);
+      if (!directoryStat.isDirectory()) {
+        throw new Error("not a directory");
+      }
+      const indexStat = await stat(indexPath);
+      if (!indexStat.isFile()) {
+        throw new Error("index.html is not a file");
+      }
+    } catch (error) {
+      throw new Error(
+        `Angular static bundle is not available at ${root}. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private isTaskTrackerUiRoute(path: string): boolean {
+    const uiPath = this.input.config.taskTrackerUi.path;
+    return path === uiPath || path.startsWith(`${uiPath}/`);
+  }
+
+  private async serveTaskTrackerUi(
+    path: string,
+    response: ServerResponse,
+  ): Promise<void> {
+    const { taskTrackerUi } = this.input.config;
+    if (!taskTrackerUi.staticDir) {
+      if (path === taskTrackerUi.path) {
+        text(
+          response,
+          200,
+          renderTaskTrackerUiHtml({
+            apiPath: taskTrackerUi.apiPath,
+          }),
+          "text/html; charset=utf-8",
+        );
+        return;
+      }
+      text(response, 404, "Angular static bundle is not configured.");
+      return;
+    }
+
+    const root = resolve(taskTrackerUi.staticDir);
+    const relativeUrlPath =
+      path === taskTrackerUi.path ? "" : path.slice(taskTrackerUi.path.length + 1);
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(relativeUrlPath);
+    } catch {
+      text(response, 400, "invalid static asset path");
+      return;
+    }
+
+    const indexPath = resolve(root, "index.html");
+    const candidatePath = decodedPath ? resolve(root, decodedPath) : indexPath;
+    if (!isInsideDirectory(root, candidatePath)) {
+      text(response, 400, "invalid static asset path");
+      return;
+    }
+
+    try {
+      const fileStat = await stat(candidatePath);
+      if (fileStat.isFile()) {
+        buffer(response, 200, await readFile(candidatePath), contentTypeForPath(candidatePath));
+        return;
+      }
+    } catch {
+      // Missing files fall through to either a clear asset 404 or Angular index fallback.
+    }
+
+    const isAssetPath =
+      path === taskTrackerUi.assetPath || path.startsWith(`${taskTrackerUi.assetPath}/`);
+    if (isAssetPath || extname(decodedPath)) {
+      text(response, 404, "Angular static asset not found.");
+      return;
+    }
+
+    buffer(response, 200, await readFile(indexPath), "text/html; charset=utf-8");
   }
 
   private async handleApi(

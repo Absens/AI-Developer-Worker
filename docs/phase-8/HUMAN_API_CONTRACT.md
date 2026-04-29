@@ -23,6 +23,14 @@ In development, the Angular dev server should proxy `/api` to the existing
 Node.js observability server. In production, the Node.js server remains the API
 and static asset host.
 
+Phase 8A static serving is enabled by `TASK_TRACKER_UI_STATIC_DIR`. When it is
+set, the Node.js server validates the directory at startup, serves Angular files
+under `/tasks`, serves assets under `/tasks/assets`, and falls back to
+`index.html` for Angular deep links. `/api/...`, `/metrics`, `/healthz`, and
+`/readyz` keep route precedence. During Phase 8A only, if
+`TASK_TRACKER_UI_ENABLED=true` and no static directory is configured, `/tasks`
+serves the old embedded HTML UI as a temporary compatibility fallback.
+
 ## Auth Contract
 
 The backend is always the security boundary. The frontend may hide or disable

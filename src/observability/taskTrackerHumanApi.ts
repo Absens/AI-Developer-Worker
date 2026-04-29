@@ -303,6 +303,7 @@ export class TaskTrackerHumanApi {
       return false;
     }
     return (
+      path === `${apiPath}/session` ||
       path === `${apiPath}/tasks` ||
       path === `${apiPath}/tasks:bulk-create` ||
       path === `${apiPath}/proposals` ||
@@ -318,8 +319,15 @@ export class TaskTrackerHumanApi {
     response: ServerResponse,
   ): Promise<void> {
     try {
-      const tracker = this.requireTracker();
       const route = path.slice(this.input.config.apiPath.length) || "/";
+
+      if (request.method === "GET" && route === "/session") {
+        const auth = this.requireAuth(request, "viewer");
+        json(response, 200, this.buildSession(auth));
+        return;
+      }
+
+      const tracker = this.requireTracker();
 
       if (request.method === "GET" && route === "/tasks") {
         const auth = this.requireAuth(request, "viewer");
@@ -558,6 +566,40 @@ export class TaskTrackerHumanApi {
       throw new HttpApiError(503, "Internal task tracker is not configured.");
     }
     return this.input.taskTracker;
+  }
+
+  private buildSession(auth: AuthContext): Record<string, unknown> {
+    const canRole = (role: TaskTrackerHumanRole): boolean =>
+      ROLE_RANK[auth.role] >= ROLE_RANK[role];
+
+    return {
+      user: {
+        id: auth.actor.id,
+        ...(auth.actor.displayName ? { displayName: auth.actor.displayName } : {}),
+        service: auth.service,
+      },
+      role: auth.role,
+      authMode: this.input.config.authMode,
+      capabilities: {
+        canReadTasks: canRole("viewer"),
+        canCreateTask: canRole("developer"),
+        canUpdateTask: canRole("developer"),
+        canAnswer: canRole("developer"),
+        canResume: canRole("developer"),
+        canCancel: canRole("developer"),
+        canHold: canRole("operator"),
+        canRetry: canRole("operator"),
+        canForceReanalysis: canRole("operator"),
+        canApproveProposal: canRole("developer"),
+        canRejectProposal: canRole("developer"),
+        canApproveDecomposition: canRole("developer"),
+        canReadOperations: canRole("viewer"),
+        canCreateSystemTask: auth.service === "system" && canRole("admin"),
+      },
+      apiPath: this.input.config.apiPath,
+      uiPath: this.input.config.path,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   private requireCreateAuth(

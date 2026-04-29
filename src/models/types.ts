@@ -158,6 +158,8 @@ export interface TaskTrackerUiConfig {
   enabled: boolean;
   path: string;
   apiPath: string;
+  assetPath: string;
+  staticDir?: string;
   authMode: TaskTrackerHumanAuthMode;
   trustedUserHeader: string;
   trustedRoleHeader: string;

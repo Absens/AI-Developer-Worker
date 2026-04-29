@@ -1,0 +1,59 @@
+<p-toast />
+<p-confirmDialog />
+
+<div class="console-shell">
+  <p-toolbar styleClass="console-toolbar">
+    <div class="console-toolbar__start">
+      <div>
+        <div class="console-title">Task Tracker Console</div>
+        <div class="console-subtitle">Human operations</div>
+      </div>
+    </div>
+    <div class="console-toolbar__end">
+      @if (sessionService.session(); as session) {
+        <span class="console-user">{{ session.user.displayName || session.user.id }}</span>
+        <p-tag [value]="session.role" severity="info" />
+      } @else {
+        <span class="console-user">Session pending</span>
+      }
+    </div>
+  </p-toolbar>
+
+  <div class="console-layout">
+    <nav class="console-nav" aria-label="Task tracker navigation">
+      @for (item of navItems; track item.route) {
+        <a
+          class="console-nav__link"
+          [routerLink]="item.route"
+          routerLinkActive="console-nav__link--active"
+          [routerLinkActiveOptions]="{ exact: item.route === '/' }"
+        >
+          <i [class]="item.icon" aria-hidden="true"></i>
+          <span>{{ item.label }}</span>
+        </a>
+      }
+    </nav>
+
+    <main class="console-main">
+      @if (sessionService.error(); as error) {
+        <p-message severity="error" [text]="error" />
+        <button
+          pButton
+          type="button"
+          icon="pi pi-refresh"
+          label="Retry session"
+          severity="secondary"
+          (click)="retrySession()"
+        ></button>
+      }
+
+      @if (sessionService.loading()) {
+        <div class="console-loading" aria-live="polite">
+          <p-progressSpinner ariaLabel="Loading session" />
+        </div>
+      }
+
+      <router-outlet />
+    </main>
+  </div>
+</div>
