@@ -22,6 +22,7 @@ const fetchText = async (baseUrl: string, path: string, token?: string) => {
   return {
     status: response.status,
     contentType: response.headers.get("content-type"),
+    cacheControl: response.headers.get("cache-control"),
     body: await response.text(),
   };
 };
@@ -152,6 +153,11 @@ describe("ObservabilityHttpServer", () => {
       "utf8",
     );
     writeFileSync(join(staticDir, "main.js"), "console.log('task console');", "utf8");
+    writeFileSync(
+      join(staticDir, "main.abcdef123.js"),
+      "console.log('hashed task console');",
+      "utf8",
+    );
     writeFileSync(join(staticDir, "assets", "logo.txt"), "asset", "utf8");
     const config = {
       ...defaultObservabilityConfig(),
@@ -183,14 +189,29 @@ describe("ObservabilityHttpServer", () => {
     const index = await fetchText(baseUrl, "/tasks");
     expect(index.status).toBe(200);
     expect(index.contentType).toContain("text/html");
+    expect(index.cacheControl).toBe("no-store");
     expect(index.body).toContain("<app-root>");
-    expect((await fetchText(baseUrl, "/tasks/main.js")).body).toContain("task console");
-    expect((await fetchText(baseUrl, "/tasks/assets/logo.txt")).body).toBe("asset");
-    expect((await fetchText(baseUrl, "/tasks/task-123")).body).toContain("<app-root>");
+    const plainScript = await fetchText(baseUrl, "/tasks/main.js");
+    expect(plainScript.body).toContain("task console");
+    expect(plainScript.cacheControl).toBe("public, max-age=300");
+    const hashedScript = await fetchText(baseUrl, "/tasks/main.abcdef123.js");
+    expect(hashedScript.body).toContain("hashed task console");
+    expect(hashedScript.cacheControl).toBe("public, max-age=31536000, immutable");
+    const asset = await fetchText(baseUrl, "/tasks/assets/logo.txt");
+    expect(asset.body).toBe("asset");
+    expect(asset.cacheControl).toBe("public, max-age=300");
+    const deepLink = await fetchText(baseUrl, "/tasks/task-123");
+    expect(deepLink.body).toContain("<app-root>");
+    expect(deepLink.cacheControl).toBe("no-store");
     const missingAsset = await fetchText(baseUrl, "/tasks/assets/missing.txt");
     expect(missingAsset.status).toBe(404);
     expect(missingAsset.body).toContain("Angular static asset not found");
 
+    for (const reservedPath of ["/healthz", "/readyz", "/metrics", "/api/session"]) {
+      const response = await fetchText(baseUrl, reservedPath);
+      expect(response.status).not.toBe(404);
+      expect(response.body).not.toContain("<app-root>");
+    }
     expect((await fetchText(baseUrl, "/healthz")).status).toBe(200);
     expect((await fetchText(baseUrl, "/readyz")).status).toBe(200);
     expect((await fetchText(baseUrl, "/metrics")).contentType).toContain("text/plain");
@@ -231,7 +252,7 @@ describe("ObservabilityHttpServer", () => {
     await expect(server.start()).rejects.toThrow(/Angular static bundle is not available/);
   });
 
-  it("keeps the embedded task UI as a Phase 8A fallback when no static bundle is configured", async () => {
+  it("does not serve the removed embedded task UI when no static bundle is configured", async () => {
     const config = {
       ...defaultObservabilityConfig(),
       enabled: true,
@@ -258,9 +279,12 @@ describe("ObservabilityHttpServer", () => {
     const address = server.address() as AddressInfo;
     const baseUrl = `http://127.0.0.1:${address.port}`;
 
-    expect((await fetchText(baseUrl, "/tasks")).body).toContain("Internal Task Tracker");
+    const ui = await fetchText(baseUrl, "/tasks");
+    expect(ui.status).toBe(503);
+    expect(ui.body).toContain("Angular static bundle is not configured");
+    expect(ui.body).not.toContain("Internal Task Tracker");
     const deepLink = await fetchText(baseUrl, "/tasks/task-123");
-    expect(deepLink.status).toBe(404);
+    expect(deepLink.status).toBe(503);
     expect(deepLink.body).toContain("Angular static bundle is not configured");
   });
 });

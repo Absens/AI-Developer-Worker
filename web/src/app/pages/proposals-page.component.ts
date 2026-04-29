@@ -38,7 +38,7 @@ interface PendingProposalAction {
     TextareaModule,
   ],
   template: `
-    <section class="page proposals-page">
+    <section class="page proposals-page" data-testid="proposals-page">
       <header class="page__header">
         <h1>Proposals</h1>
         <p>Review AI-proposed tasks using supervisor status, policy context, and evidence refs.</p>
@@ -59,6 +59,7 @@ interface PendingProposalAction {
           <button
             pButton
             type="button"
+            data-testid="proposals-refresh"
             icon="pi pi-refresh"
             label="Refresh"
             severity="secondary"
@@ -85,7 +86,7 @@ interface PendingProposalAction {
       } @else {
         <div class="proposal-list">
           @for (proposal of proposals(); track proposal.id) {
-            <article class="surface proposal-row">
+            <article class="surface proposal-row" [attr.data-testid]="'proposal-row-' + proposal.id">
               <div class="proposal-row__main">
                 <div class="eyebrow">{{ proposal.id }}</div>
                 <h2><a [routerLink]="['/', proposal.id]">{{ proposal.title }}</a></h2>
@@ -156,6 +157,7 @@ interface PendingProposalAction {
                   <button
                     pButton
                     type="button"
+                    [attr.data-testid]="'proposal-approve-' + proposal.id"
                     icon="pi pi-check"
                     label="Approve"
                     (click)="openAction(proposal, 'approve-proposal')"
@@ -163,6 +165,7 @@ interface PendingProposalAction {
                   <button
                     pButton
                     type="button"
+                    [attr.data-testid]="'proposal-reject-' + proposal.id"
                     icon="pi pi-times"
                     label="Reject"
                     severity="danger"
@@ -183,6 +186,7 @@ interface PendingProposalAction {
       [modal]="true"
       [style]="{ width: 'min(560px, 94vw)' }"
     >
+      <div data-testid="proposal-command-dialog">
       @if (pendingAction(); as action) {
         <div class="stack">
           <p>{{ action.proposal.title }}</p>
@@ -190,16 +194,19 @@ interface PendingProposalAction {
             <span>Reason <strong aria-label="required">*</strong></span>
             <textarea
               pTextarea
+              data-testid="proposal-reason"
+              autofocus
               rows="4"
               [formControl]="reasonControl"
               placeholder="Record the review reason"
             ></textarea>
           </label>
           <div class="action-bar action-bar--end">
-            <button pButton type="button" label="Cancel" severity="secondary" (click)="closeDialog()"></button>
+            <button pButton type="button" data-testid="proposal-cancel" label="Cancel" severity="secondary" (click)="closeDialog()"></button>
             <button
               pButton
               type="button"
+              data-testid="proposal-confirm"
               icon="pi pi-check"
               label="Confirm"
               [disabled]="reasonControl.invalid || submitting()"
@@ -208,6 +215,7 @@ interface PendingProposalAction {
           </div>
         </div>
       }
+      </div>
     </p-dialog>
   `,
 })
@@ -274,6 +282,9 @@ export class ProposalsPageComponent implements OnInit {
     });
     this.reasonControl.reset('');
     this.dialogVisible.set(true);
+    setTimeout(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-testid="proposal-reason"]')?.focus();
+    });
   }
 
   protected submitAction(): void {

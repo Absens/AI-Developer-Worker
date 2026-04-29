@@ -78,7 +78,7 @@ const arrayText = (value: unknown): string | undefined =>
     TooltipModule,
   ],
   template: `
-    <section class="detail-panel" [class.detail-panel--page]="fullPage">
+    <section class="detail-panel" data-testid="detail-panel" [class.detail-panel--page]="fullPage">
       @if (!currentTaskId()) {
         <div class="empty-state">
           <i class="pi pi-file-edit" aria-hidden="true"></i>
@@ -106,7 +106,7 @@ const arrayText = (value: unknown): string | undefined =>
         }
 
         @if (detail(); as response) {
-          <article class="workflow-detail">
+          <article class="workflow-detail" data-testid="task-detail">
             <header class="detail-header surface">
               <div class="detail-header__title">
                 <div class="eyebrow">{{ response.task.id }}</div>
@@ -129,6 +129,7 @@ const arrayText = (value: unknown): string | undefined =>
                 <button
                   pButton
                   type="button"
+                  data-testid="preview-context-button"
                   icon="pi pi-eye"
                   label="Preview context"
                   severity="secondary"
@@ -138,6 +139,7 @@ const arrayText = (value: unknown): string | undefined =>
                   <button
                     pButton
                     type="button"
+                    [attr.data-testid]="'command-' + policy.command"
                     [icon]="policy.icon"
                     [label]="policy.label"
                     [severity]="policy.command === 'cancel' ? 'danger' : 'secondary'"
@@ -286,10 +288,11 @@ const arrayText = (value: unknown): string | undefined =>
                     @if (question.options?.length) {
                       <div class="tag-row">
                         @for (option of question.options; track option) {
-                          <button
-                            pButton
-                            type="button"
-                            [label]="option"
+                      <button
+                        pButton
+                        type="button"
+                        [attr.data-testid]="'answer-option-' + option"
+                        [label]="option"
                             severity="secondary"
                             size="small"
                             (click)="useAnswerOption(question, option)"
@@ -304,6 +307,7 @@ const arrayText = (value: unknown): string | undefined =>
                   <div class="answer-grid">
                     <textarea
                       pTextarea
+                      data-testid="answer-textarea"
                       rows="4"
                       [formControl]="answerControl"
                       placeholder="Answer the selected question"
@@ -313,6 +317,7 @@ const arrayText = (value: unknown): string | undefined =>
                       <button
                         pButton
                         type="button"
+                        data-testid="answer-button"
                         label="Answer"
                         icon="pi pi-reply"
                         [disabled]="answerControl.invalid || submitting()"
@@ -321,6 +326,7 @@ const arrayText = (value: unknown): string | undefined =>
                       <button
                         pButton
                         type="button"
+                        data-testid="answer-resume-button"
                         label="Answer and resume"
                         icon="pi pi-play"
                         severity="secondary"
@@ -351,6 +357,7 @@ const arrayText = (value: unknown): string | undefined =>
                         <button
                           pButton
                           type="button"
+                          [attr.data-testid]="'approve-decomposition-' + child.id"
                           label="Approve mirroring"
                           icon="pi pi-check"
                           severity="secondary"
@@ -420,6 +427,7 @@ const arrayText = (value: unknown): string | undefined =>
       [style]="{ width: 'min(860px, 94vw)' }"
       contentStyleClass="dialog-scroll"
     >
+      <div data-testid="context-dialog">
       @if (contextLoading()) {
         <div class="loading-row"><p-progressSpinner ariaLabel="Loading context" /> Loading preview</div>
       } @else if (contextError()) {
@@ -437,6 +445,7 @@ const arrayText = (value: unknown): string | undefined =>
           }
         </div>
       }
+      </div>
     </p-dialog>
 
     <p-dialog
@@ -446,6 +455,7 @@ const arrayText = (value: unknown): string | undefined =>
       [modal]="true"
       [style]="{ width: 'min(560px, 94vw)' }"
     >
+      <div data-testid="command-dialog">
       @if (pendingCommand(); as command) {
         <div class="stack">
           <p>{{ command.help }}</p>
@@ -463,6 +473,8 @@ const arrayText = (value: unknown): string | undefined =>
             </span>
             <textarea
               pTextarea
+              data-testid="command-reason"
+              autofocus
               rows="4"
               [formControl]="reasonControl"
               placeholder="Record the operational reason"
@@ -472,6 +484,7 @@ const arrayText = (value: unknown): string | undefined =>
             <button
               pButton
               type="button"
+              data-testid="command-cancel"
               label="Cancel"
               severity="secondary"
               (click)="closeCommandDialog()"
@@ -479,6 +492,7 @@ const arrayText = (value: unknown): string | undefined =>
             <button
               pButton
               type="button"
+              data-testid="command-confirm"
               label="Confirm"
               icon="pi pi-check"
               [disabled]="reasonMissing() || submitting()"
@@ -487,6 +501,7 @@ const arrayText = (value: unknown): string | undefined =>
           </div>
         </div>
       }
+      </div>
     </p-dialog>
   `,
 })
@@ -642,6 +657,7 @@ export class TaskDetailPanelComponent {
     });
     this.reasonControl.reset('');
     this.commandVisibleDialog.set(true);
+    this.focusCommandReason();
   }
 
   protected openDecompositionApproval(child: ChildTaskSummaryDto): void {
@@ -654,6 +670,7 @@ export class TaskDetailPanelComponent {
     });
     this.reasonControl.reset('');
     this.commandVisibleDialog.set(true);
+    this.focusCommandReason();
   }
 
   protected reasonMissing(): boolean {
@@ -699,6 +716,13 @@ export class TaskDetailPanelComponent {
     });
     this.reasonControl.reset('');
     this.commandVisibleDialog.set(true);
+    this.focusCommandReason();
+  }
+
+  private focusCommandReason(): void {
+    setTimeout(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-testid="command-reason"]')?.focus();
+    });
   }
 
   private postAnswer(includeResume: boolean): void {

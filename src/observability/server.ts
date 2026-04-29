@@ -11,7 +11,6 @@ import type { WorkerStateRegistry } from "./state.js";
 import { renderDashboardHtml } from "./dashboardAssets.js";
 import { redactSecrets } from "./redaction.js";
 import { TaskTrackerHumanApi } from "./taskTrackerHumanApi.js";
-import { renderTaskTrackerUiHtml } from "./taskTrackerUiAssets.js";
 
 export interface ReadinessState {
   ready: boolean;
@@ -55,10 +54,11 @@ const buffer = (
   statusCode: number,
   body: Buffer,
   contentType: string,
+  cacheControl = "no-store",
 ): void => {
   response.writeHead(statusCode, {
     "content-type": contentType,
-    "cache-control": "no-store",
+    "cache-control": cacheControl,
   });
   response.end(body);
 };
@@ -73,6 +73,8 @@ const contentTypeForPath = (path: string): string => {
       return "text/css; charset=utf-8";
     case ".json":
       return "application/json; charset=utf-8";
+    case ".txt":
+      return "text/plain; charset=utf-8";
     case ".svg":
       return "image/svg+xml";
     case ".ico":
@@ -89,6 +91,38 @@ const contentTypeForPath = (path: string): string => {
     default:
       return "application/octet-stream";
   }
+};
+
+const HASHED_ASSET_PATTERN = /(?:[.-])[a-z0-9]{8,}(?:\.|$)/i;
+const CACHEABLE_ASSET_EXTENSIONS = new Set([
+  ".css",
+  ".gif",
+  ".ico",
+  ".jpg",
+  ".jpeg",
+  ".js",
+  ".json",
+  ".png",
+  ".svg",
+  ".webp",
+  ".woff2",
+]);
+
+const cacheControlForStaticPath = (
+  filePath: string,
+  isAssetPath: boolean,
+): string => {
+  const extension = extname(filePath).toLowerCase();
+  if (extension === ".html") {
+    return "no-store";
+  }
+  if (CACHEABLE_ASSET_EXTENSIONS.has(extension) && HASHED_ASSET_PATTERN.test(filePath)) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (isAssetPath || CACHEABLE_ASSET_EXTENSIONS.has(extension)) {
+    return "public, max-age=300";
+  }
+  return "no-store";
 };
 
 const isInsideDirectory = (root: string, candidate: string): boolean => {
@@ -316,18 +350,7 @@ export class ObservabilityHttpServer {
   ): Promise<void> {
     const { taskTrackerUi } = this.input.config;
     if (!taskTrackerUi.staticDir) {
-      if (path === taskTrackerUi.path) {
-        text(
-          response,
-          200,
-          renderTaskTrackerUiHtml({
-            apiPath: taskTrackerUi.apiPath,
-          }),
-          "text/html; charset=utf-8",
-        );
-        return;
-      }
-      text(response, 404, "Angular static bundle is not configured.");
+      text(response, 503, "Angular static bundle is not configured.");
       return;
     }
 
@@ -344,6 +367,8 @@ export class ObservabilityHttpServer {
 
     const indexPath = resolve(root, "index.html");
     const candidatePath = decodedPath ? resolve(root, decodedPath) : indexPath;
+    const isAssetPath =
+      path === taskTrackerUi.assetPath || path.startsWith(`${taskTrackerUi.assetPath}/`);
     if (!isInsideDirectory(root, candidatePath)) {
       text(response, 400, "invalid static asset path");
       return;
@@ -352,21 +377,31 @@ export class ObservabilityHttpServer {
     try {
       const fileStat = await stat(candidatePath);
       if (fileStat.isFile()) {
-        buffer(response, 200, await readFile(candidatePath), contentTypeForPath(candidatePath));
+        buffer(
+          response,
+          200,
+          await readFile(candidatePath),
+          contentTypeForPath(candidatePath),
+          cacheControlForStaticPath(candidatePath, isAssetPath),
+        );
         return;
       }
     } catch {
       // Missing files fall through to either a clear asset 404 or Angular index fallback.
     }
 
-    const isAssetPath =
-      path === taskTrackerUi.assetPath || path.startsWith(`${taskTrackerUi.assetPath}/`);
     if (isAssetPath || extname(decodedPath)) {
       text(response, 404, "Angular static asset not found.");
       return;
     }
 
-    buffer(response, 200, await readFile(indexPath), "text/html; charset=utf-8");
+    buffer(
+      response,
+      200,
+      await readFile(indexPath),
+      "text/html; charset=utf-8",
+      "no-store",
+    );
   }
 
   private async handleApi(

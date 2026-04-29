@@ -119,7 +119,7 @@ Copy-Item .env.example .env
 | `DASHBOARD_REFRESH_SECONDS` | Нет | `10` | Browser polling interval для обновления dashboard API. |
 | `DASHBOARD_API_PATH` | Нет | `/api` | Read-only dashboard API path prefix. |
 | `DASHBOARD_BEARER_TOKEN` | Нет | Не задано | Необязательный bearer token, защищающий `/dashboard` и `/api/*`. |
-| `TASK_TRACKER_UI_ENABLED` | Нет | `false` | Включает Phase 7F human UI/API для internal tracker workflows. Может поднять HTTP-сервер даже при `OBSERVABILITY_ENABLED=false`. |
+| `TASK_TRACKER_UI_ENABLED` | Нет | `false` | Включает Angular human UI/API для internal tracker workflows. Может поднять HTTP-сервер даже при `OBSERVABILITY_ENABLED=false`. |
 | `TASK_TRACKER_UI_BIND_HOST` | Нет | `127.0.0.1` | Alias для bind host HTTP-сервера при включении task tracker UI. |
 | `TASK_TRACKER_UI_PORT` | Нет | `9464` | Alias для порта HTTP-сервера при включении task tracker UI. |
 | `TASK_TRACKER_UI_PATH` | Нет | `/tasks` | HTML path для human task UI. |
@@ -129,7 +129,7 @@ Copy-Item .env.example .env
 | `TASK_TRACKER_HUMAN_AUTH_MODE` | Нет | `trusted_proxy` | Auth mode для UI/API: `trusted_proxy`, `bearer` или local-only `localhost`. |
 | `TASK_TRACKER_TRUSTED_USER_HEADER` | Нет | `x-task-tracker-user` | Header с authenticated user от trusted reverse proxy. |
 | `TASK_TRACKER_TRUSTED_ROLE_HEADER` | Нет | `x-task-tracker-role` | Header с ролью `viewer`, `developer`, `operator` или `admin`. |
-| `TASK_TRACKER_AGENT_TOKEN` | Нет | Не задано | Bearer token для agent/service operational access к Phase 7F API. |
+| `TASK_TRACKER_AGENT_TOKEN` | Нет | Не задано | Bearer token для agent/service operational access к human API. |
 | `TASK_TRACKER_SYSTEM_TOKEN` | Нет | Не задано | Bearer token для system-created task API и idempotent bulk/create paths. |
 | `ALERTS_ENABLED` | Нет | `false` | Включает event-based alert evaluation и notification sinks. |
 | `ALERT_CHANNELS` | Нет | Не задано | Channels через запятую: `webhook`, `slack`, `telegram`. |
@@ -277,10 +277,10 @@ DASHBOARD_BEARER_TOKEN=change-me
 
 Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).
 
-## Phase 8A: Angular internal task UI
+## Phase 8D: Angular internal task UI
 
-При `TASK_TRACKER_PROVIDER=internal` можно включить human UI/API. Phase 8A
-serves the Angular console when a built bundle is configured:
+При `TASK_TRACKER_PROVIDER=internal` можно включить human UI/API. Angular
+console является primary human UI; старый embedded HTML task UI удален.
 
 ```env
 TASK_TRACKER_UI_ENABLED=true
@@ -291,25 +291,38 @@ TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
 TASK_TRACKER_SYSTEM_TOKEN=change-me
 ```
 
-UI доступен на `/tasks`, JSON API - на `/api`, а Angular dev server proxies
-`/api` к Node.js server:
+UI доступен на `/tasks`, JSON API - на `/api`, Angular assets - на
+`/tasks/assets`. Deep links вроде `/tasks/ready-task` обслуживаются через
+Angular `index.html`; `/api`, `/metrics`, `/healthz` и `/readyz` остаются
+backend routes. Если `TASK_TRACKER_UI_ENABLED=true`, но
+`TASK_TRACKER_UI_STATIC_DIR` не задан, `/tasks` возвращает явный `503` вместо
+fallback UI, а JSON API routes продолжают работать.
+
+Angular dev server proxies `/api` к Node.js server:
 
 ```bash
 npm install --prefix web
 npm run web:dev
 ```
 
-Production bundle build:
+Production bundle build and checks:
 
 ```bash
+npm run web:typecheck
+npm run web:test
 npm run web:build
+npm run web:e2e
 ```
 
-During Phase 8A only, when `TASK_TRACKER_UI_ENABLED=true` but
-`TASK_TRACKER_UI_STATIC_DIR` is not set, `/tasks` keeps serving the old embedded
-Phase 7F HTML fallback. Angular deep links require the static bundle. Mutations
-require trusted proxy user/role headers or service bearer token; anonymous
-writes are rejected.
+Docker builds the Angular bundle into the image and sets
+`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
+Self-hosted deployments may still mount a prebuilt bundle at that path or
+override the variable.
+
+Mutations require backend authorization. Browser deployments should use
+trusted proxy headers or localhost development mode. Bearer mode is intended
+for service clients or a reverse proxy that injects `Authorization`; the
+Angular app does not store bearer tokens in browser storage.
 
 ## Phase 7H: internal tracker hardening
 

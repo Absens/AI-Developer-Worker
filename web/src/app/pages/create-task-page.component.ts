@@ -65,27 +65,28 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
     TextareaModule,
   ],
   template: `
-    <section class="page create-page">
+    <section class="page create-page" data-testid="create-page">
       <header class="page__header">
         <h1>Create Task</h1>
         <p>Create a human draft or send a validated task directly to the ready queue.</p>
       </header>
 
       @if (!canCreateTask()) {
-        <p-message severity="warn" text="Your current session cannot create tasks." />
+        <p-message data-testid="create-unauthorized" severity="warn" text="Your current session cannot create tasks." />
       }
 
       @if (error()) {
-        <p-message severity="error" [text]="error() || 'Create failed'" />
+        <p-message data-testid="create-error" severity="error" [text]="error() || 'Create failed'" />
       }
 
-      <form class="surface create-form" [formGroup]="form" (ngSubmit)="createDraft()">
+      <form class="surface create-form" data-testid="create-form" [formGroup]="form" (ngSubmit)="createDraft()">
         <div class="form-section">
           <h2>Template</h2>
           <div class="field-grid">
             <label class="field">
               <span>Task template</span>
               <p-select
+                data-testid="create-task-type"
                 formControlName="taskType"
                 [options]="templates"
                 optionLabel="label"
@@ -96,7 +97,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             </label>
             <label class="field">
               <span>Prompt profile</span>
-              <input pInputText formControlName="promptProfileId" placeholder="frontend_ui_fix" />
+              <input pInputText data-testid="create-prompt-profile" formControlName="promptProfileId" placeholder="frontend_ui_fix" />
             </label>
           </div>
           @if (selectedTemplate(); as template) {
@@ -108,7 +109,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <h2>Task</h2>
           <label class="field">
             <span>Title *</span>
-            <input pInputText formControlName="title" placeholder="Short imperative task title" />
+            <input pInputText data-testid="create-title" formControlName="title" placeholder="Short imperative task title" />
             @if (hasError('title')) {
               <small class="error-text">Title is required.</small>
             }
@@ -118,6 +119,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             <span>Description *</span>
             <textarea
               pTextarea
+              data-testid="create-description"
               rows="8"
               formControlName="description"
               placeholder="Describe the requested change, context, and target behavior."
@@ -129,7 +131,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
 
           <label class="field">
             <span>Human summary</span>
-            <input pInputText formControlName="humanSummary" placeholder="Optional operator summary" />
+            <input pInputText data-testid="create-human-summary" formControlName="humanSummary" placeholder="Optional operator summary" />
           </label>
         </div>
 
@@ -138,23 +140,23 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <div class="field-grid">
             <label class="field">
               <span>Repository</span>
-              <input pInputText formControlName="repositoryName" placeholder="developer" />
+              <input pInputText data-testid="create-repository" formControlName="repositoryName" placeholder="developer" />
             </label>
             <label class="field">
               <span>Repo path key</span>
-              <input pInputText formControlName="repoPathKey" placeholder="developer" />
+              <input pInputText data-testid="create-repo-path-key" formControlName="repoPathKey" placeholder="developer" />
             </label>
             <label class="field">
               <span>Base branch</span>
-              <input pInputText formControlName="baseBranch" placeholder="main" />
+              <input pInputText data-testid="create-base-branch" formControlName="baseBranch" placeholder="main" />
             </label>
             <label class="field">
               <span>Queue</span>
-              <input pInputText formControlName="queue" placeholder="DEV" />
+              <input pInputText data-testid="create-queue" formControlName="queue" placeholder="DEV" />
             </label>
             <label class="field">
               <span>Priority</span>
-              <input pInputText formControlName="priority" placeholder="normal" />
+              <input pInputText data-testid="create-priority" formControlName="priority" placeholder="normal" />
             </label>
           </div>
         </div>
@@ -164,14 +166,14 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <div class="field-grid">
             <label class="field">
               <span>Tags</span>
-              <input pInputText formControlName="tags" placeholder="ai_dev,frontend" />
+              <input pInputText data-testid="create-tags" formControlName="tags" placeholder="ai_dev,frontend" />
               @if (hasError('tags')) {
                 <small class="error-text">Tags may use letters, numbers, dot, underscore, colon, and dash.</small>
               }
             </label>
             <label class="field">
               <span>Components</span>
-              <input pInputText formControlName="components" placeholder="web,api" />
+              <input pInputText data-testid="create-components" formControlName="components" placeholder="web,api" />
               @if (hasError('components')) {
                 <small class="error-text">Components use the same format as tags.</small>
               }
@@ -182,6 +184,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             <span>Acceptance criteria</span>
             <textarea
               pTextarea
+              data-testid="create-acceptance"
               rows="5"
               formControlName="acceptanceCriteria"
               placeholder="One criterion per line"
@@ -194,15 +197,15 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <div class="field-grid">
             <label class="field">
               <span>Constraints</span>
-              <textarea pTextarea rows="4" formControlName="constraints" placeholder="One per line"></textarea>
+              <textarea pTextarea data-testid="create-constraints" rows="4" formControlName="constraints" placeholder="One per line"></textarea>
             </label>
             <label class="field">
               <span>Risk factors</span>
-              <textarea pTextarea rows="4" formControlName="riskFactors" placeholder="One per line"></textarea>
+              <textarea pTextarea data-testid="create-risk-factors" rows="4" formControlName="riskFactors" placeholder="One per line"></textarea>
             </label>
             <label class="field">
               <span>Missing context</span>
-              <textarea pTextarea rows="4" formControlName="missingContext" placeholder="One per line"></textarea>
+              <textarea pTextarea data-testid="create-missing-context" rows="4" formControlName="missingContext" placeholder="One per line"></textarea>
             </label>
           </div>
         </div>
@@ -211,6 +214,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <button
             pButton
             type="button"
+            data-testid="create-preview"
             icon="pi pi-eye"
             label="Preview entered context"
             severity="secondary"
@@ -220,6 +224,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <button
             pButton
             type="submit"
+            data-testid="create-draft"
             icon="pi pi-save"
             label="Save draft"
             severity="secondary"
@@ -228,6 +233,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
           <button
             pButton
             type="button"
+            data-testid="create-ready"
             icon="pi pi-check-circle"
             label="Create ready"
             [disabled]="submitting() || !canCreateTask()"
@@ -245,6 +251,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
       [style]="{ width: 'min(760px, 94vw)' }"
       contentStyleClass="dialog-scroll"
     >
+      <div data-testid="create-preview-dialog">
       <p class="muted">
         This preview is generated from the current form values. Backend agent context preview is available after task creation.
       </p>
@@ -255,6 +262,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             <pre>{{ row.value }}</pre>
           </div>
         }
+      </div>
       </div>
     </p-dialog>
   `,

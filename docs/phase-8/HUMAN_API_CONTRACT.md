@@ -23,13 +23,16 @@ In development, the Angular dev server should proxy `/api` to the existing
 Node.js observability server. In production, the Node.js server remains the API
 and static asset host.
 
-Phase 8A static serving is enabled by `TASK_TRACKER_UI_STATIC_DIR`. When it is
-set, the Node.js server validates the directory at startup, serves Angular files
-under `/tasks`, serves assets under `/tasks/assets`, and falls back to
-`index.html` for Angular deep links. `/api/...`, `/metrics`, `/healthz`, and
-`/readyz` keep route precedence. During Phase 8A only, if
-`TASK_TRACKER_UI_ENABLED=true` and no static directory is configured, `/tasks`
-serves the old embedded HTML UI as a temporary compatibility fallback.
+Static serving is enabled by `TASK_TRACKER_UI_STATIC_DIR`. When it is set, the
+Node.js server validates the directory at startup, serves Angular files under
+`/tasks`, serves assets under `/tasks/assets`, and falls back to `index.html`
+for Angular deep links. `/api/...`, `/metrics`, `/healthz`, and `/readyz` keep
+route precedence. After Phase 8D there is no embedded HTML task UI fallback; if
+`TASK_TRACKER_UI_ENABLED=true` but no static bundle is configured, `/tasks`
+returns a clear service-unavailable response while JSON API routes keep working.
+`index.html` and frontend route fallbacks are served with `cache-control:
+no-store`; hashed Angular assets are served with long immutable cache headers;
+non-hashed assets use conservative short caching.
 
 ## Auth Contract
 

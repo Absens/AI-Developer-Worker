@@ -28,6 +28,9 @@ Set-Location C:\Users\gabba\projects\developer
 docker build -t ai-developer-worker .
 ```
 
+This build also runs the Angular console build and includes the static bundle
+inside the image at `/workspace/web/dist/task-tracker-console/browser`.
+
 ### 4. Create a dedicated Docker volume for Codex auth
 
 ```powershell
@@ -95,6 +98,9 @@ For internal tracker production mode, set:
 TASK_TRACKER_PROVIDER=internal
 TASK_TRACKER_STORAGE=postgres
 TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+TASK_TRACKER_UI_ENABLED=true
+TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser
+TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
 ```
 
 Apply migrations and run preflight before continuous processing:
@@ -103,6 +109,11 @@ Apply migrations and run preflight before continuous processing:
 docker compose run --rm worker npm run tracker:migrate
 docker compose run --rm worker npm run preflight
 ```
+
+With the UI enabled, open `http://localhost:9464/tasks`. The old embedded task
+UI is not served anymore; missing Angular assets produce an explicit error.
+For production browser access, use trusted proxy headers. Do not put bearer
+tokens into browser storage.
 
 ### 6. Set the path to the target project
 

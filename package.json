@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "web:dev": "npm --prefix web run start",
     "web:build": "npm --prefix web run build",
+    "web:e2e": "npm --prefix web run e2e",
     "web:test": "npm --prefix web run test",
     "web:typecheck": "npm --prefix web run typecheck"
   },

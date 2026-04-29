@@ -10,6 +10,7 @@ import { InMemoryEventStore } from "../src/observability/events.js";
 import { InMemoryMetricsRegistry } from "../src/observability/metrics.js";
 import { ObservabilityHttpServer } from "../src/observability/server.js";
 import { InMemoryWorkerStateRegistry } from "../src/observability/state.js";
+import type { TaskTrackerUiConfig } from "../src/models/types.js";
 
 const servers: ObservabilityHttpServer[] = [];
 
@@ -52,18 +53,22 @@ const viewerHeaders = {
   "x-task-tracker-role": "viewer",
 };
 
-const createServer = async (tracker = new InMemoryTaskTrackerClient()) => {
+const createServer = async (
+  tracker = new InMemoryTaskTrackerClient(),
+  taskTrackerUiOverrides: Partial<TaskTrackerUiConfig> = {},
+) => {
   const config = {
     ...defaultObservabilityConfig(),
     enabled: false,
     host: "127.0.0.1",
     port: 0,
     baseUrl: "http://127.0.0.1",
-    taskTrackerUi: {
-      ...defaultObservabilityConfig().taskTrackerUi,
-      enabled: true,
-      systemToken: "system-token",
-    },
+      taskTrackerUi: {
+        ...defaultObservabilityConfig().taskTrackerUi,
+        enabled: true,
+        systemToken: "system-token",
+        ...taskTrackerUiOverrides,
+      },
   };
   const metrics = new InMemoryMetricsRegistry();
   const state = new InMemoryWorkerStateRegistry();
@@ -113,7 +118,7 @@ describe("Phase 7F human task API", () => {
     }
   });
 
-  it("serves the task UI and read endpoints", async () => {
+  it("serves read endpoints without falling back to the removed embedded task UI", async () => {
     const tracker = new InMemoryTaskTrackerClient();
     const task = await tracker.createTask(baseTaskInput({ id: "task-read" }));
     await tracker.recordValidation(task.id, {
@@ -144,7 +149,8 @@ describe("Phase 7F human task API", () => {
     const { baseUrl } = await createServer(tracker);
 
     const html = await fetch(`${baseUrl}/tasks`);
-    expect(await html.text()).toContain("Internal Task Tracker");
+    expect(html.status).toBe(503);
+    expect(await html.text()).not.toContain("Internal Task Tracker");
 
     const session = await requestJson(baseUrl, "/api/session", {
       headers: developerHeaders,
@@ -233,6 +239,47 @@ describe("Phase 7F human task API", () => {
       },
     );
     expect(ready.body.task.status).toBe("ready");
+  });
+
+  it("reports bearer and localhost session behavior without browser token storage", async () => {
+    const bearerServer = await createServer(new InMemoryTaskTrackerClient(), {
+      authMode: "bearer",
+      agentToken: "agent-token",
+    });
+
+    const anonymousBearer = await requestJson(bearerServer.baseUrl, "/api/session");
+    expect(anonymousBearer.status).toBe(401);
+
+    const agentSession = await requestJson(bearerServer.baseUrl, "/api/session", {
+      headers: { authorization: "Bearer agent-token" },
+    });
+    expect(agentSession.body).toMatchObject({
+      user: { id: "agent-api", service: "agent" },
+      role: "operator",
+      authMode: "bearer",
+      capabilities: {
+        canReadTasks: true,
+        canCreateTask: true,
+        canHold: true,
+        canCreateSystemTask: false,
+      },
+    });
+
+    const localhostServer = await createServer(new InMemoryTaskTrackerClient(), {
+      authMode: "localhost",
+    });
+    const localhostSession = await requestJson(localhostServer.baseUrl, "/api/session");
+    expect(localhostSession.body).toMatchObject({
+      user: { id: "localhost", displayName: "Localhost", service: "localhost" },
+      role: "admin",
+      authMode: "localhost",
+      capabilities: {
+        canReadTasks: true,
+        canCreateTask: true,
+        canHold: true,
+        canCreateSystemTask: false,
+      },
+    });
   });
 
   it("creates system tasks idempotently with audit metadata", async () => {

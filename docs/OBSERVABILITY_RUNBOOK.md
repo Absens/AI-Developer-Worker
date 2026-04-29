@@ -94,9 +94,16 @@ TASK_TRACKER_SYSTEM_TOKEN=
 When enabled with `TASK_TRACKER_PROVIDER=internal`, `/tasks` serves the Angular
 console when `TASK_TRACKER_UI_STATIC_DIR` points at a built bundle. The server
 validates that directory at startup and serves Angular deep links without
-swallowing `/api`, `/metrics`, `/healthz`, or `/readyz`. During Phase 8A only,
-if no static directory is configured, `/tasks` serves the old embedded Phase 7F
-HTML fallback and Angular deep links return `404`.
+swallowing `/api`, `/metrics`, `/healthz`, or `/readyz`. There is no embedded
+task UI fallback after Phase 8D; if the UI is enabled without a static bundle,
+`/tasks` returns a clear `503` and JSON API routes keep working.
+
+Static cache behavior:
+
+- `index.html` and Angular route fallbacks use `cache-control: no-store`;
+- hashed Angular JS/CSS/media files use long immutable cache headers;
+- non-hashed files under `/tasks/assets` use conservative short caching;
+- missing assets return `404` rather than `index.html`.
 
 Local Angular development:
 
@@ -111,11 +118,22 @@ to the Node.js observability server on `http://127.0.0.1:9464`.
 Production bundle:
 
 ```bash
+npm run web:typecheck
+npm run web:test
 npm run web:build
+npm run web:e2e
 ```
 
-Writes require a trusted proxy role header (`developer`, `operator`, or
-`admin`) or the system bearer token for idempotent system-created tasks.
+Docker builds this bundle into the image and sets
+`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
+You can still mount a prebuilt bundle and override `TASK_TRACKER_UI_STATIC_DIR`
+for self-hosted deployments.
+
+Writes require backend authorization. In `trusted_proxy` mode, put the server
+behind a proxy that injects the trusted user and role headers. In `bearer`
+mode, use service clients or a reverse proxy that injects `Authorization`; the
+Angular app does not provide a token entry field and does not store bearer
+tokens in browser storage. `localhost` mode is development-only.
 
 Event store:
 
@@ -247,7 +265,13 @@ readinessProbe:
 
 - Keep `OBSERVABILITY_HOST=127.0.0.1` unless the worker runs on a private network.
 - Set `DASHBOARD_BEARER_TOKEN` before exposing dashboard/API outside localhost.
-- The dashboard is read-only; no task mutation endpoints are implemented.
+- The older observability dashboard is read-only and remains focused on worker
+  health, recent events, and Prometheus-oriented summaries.
+- The Angular task tracker console is the primary human workflow UI for
+  creating, answering, approving, retrying, and supervising internal tracker
+  tasks.
+- The backend human API remains the authorization boundary; Angular role-aware
+  controls are only usability hints.
 - Event messages and details pass through secret redaction and diagnostic truncation.
 - Dashboard APIs may show issue keys and MR URLs; metrics labels do not.
 

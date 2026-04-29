@@ -128,7 +128,7 @@ export const formatDuration = (seconds: number | undefined): string => {
     TextareaModule,
   ],
   template: `
-    <section class="page operations-page">
+    <section class="page operations-page" data-testid="operations-page">
       <header class="page__header">
         <div>
           <h1>Operations</h1>
@@ -139,6 +139,7 @@ export const formatDuration = (seconds: number | undefined): string => {
             pButton
             type="button"
             aria-label="Refresh operations"
+            data-testid="operations-refresh"
             icon="pi pi-refresh"
             label="Refresh"
             severity="secondary"
@@ -347,6 +348,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                       <button
                         pButton
                         type="button"
+                        [attr.data-testid]="'operation-details-' + task.id"
                         icon="pi pi-info-circle"
                         label="Details"
                         severity="secondary"
@@ -356,6 +358,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         <button
                           pButton
                           type="button"
+                          [attr.data-testid]="'operation-retry-' + task.id"
                           icon="pi pi-refresh"
                           label="Retry"
                           (click)="openTaskAction(task, 'retry')"
@@ -365,6 +368,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         <button
                           pButton
                           type="button"
+                          [attr.data-testid]="'operation-hold-' + task.id"
                           icon="pi pi-pause"
                           label="Hold"
                           severity="secondary"
@@ -407,6 +411,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                       <button
                         pButton
                         type="button"
+                        [attr.data-testid]="'operation-details-' + task.id"
                         icon="pi pi-info-circle"
                         label="Details"
                         severity="secondary"
@@ -416,6 +421,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         <button
                           pButton
                           type="button"
+                          [attr.data-testid]="'operation-retry-' + task.id"
                           icon="pi pi-refresh"
                           label="Retry"
                           (click)="openTaskAction(task, 'retry')"
@@ -425,6 +431,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         <button
                           pButton
                           type="button"
+                          [attr.data-testid]="'operation-hold-' + task.id"
                           icon="pi pi-pause"
                           label="Hold"
                           severity="secondary"
@@ -467,10 +474,17 @@ export const formatDuration = (seconds: number | undefined): string => {
                 <td>{{ task.activeWorker || 'none' }}</td>
                 <td>
                   <div class="row-actions">
-                    <a pButton [routerLink]="['/', task.id]" icon="pi pi-reply" label="Answer"></a>
+                    <a
+                      pButton
+                      [routerLink]="['/', task.id]"
+                      [attr.data-testid]="'operation-open-waiting-' + task.id"
+                      [icon]="canAnswer() ? 'pi pi-reply' : 'pi pi-eye'"
+                      [label]="canAnswer() ? 'Answer' : 'Open'"
+                    ></a>
                     <button
                       pButton
                       type="button"
+                      [attr.data-testid]="'operation-details-' + task.id"
                       icon="pi pi-info-circle"
                       label="Details"
                       severity="secondary"
@@ -480,6 +494,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                       <button
                         pButton
                         type="button"
+                        [attr.data-testid]="'operation-hold-' + task.id"
                         icon="pi pi-pause"
                         label="Hold"
                         severity="secondary"
@@ -603,6 +618,7 @@ export const formatDuration = (seconds: number | undefined): string => {
       [modal]="true"
       [style]="{ width: 'min(560px, 94vw)' }"
     >
+      <div data-testid="operation-command-dialog">
       @if (pendingAction(); as action) {
         <div class="stack">
           <p>{{ action.task.title }}</p>
@@ -613,16 +629,19 @@ export const formatDuration = (seconds: number | undefined): string => {
             <span>Reason <strong aria-label="required">*</strong></span>
             <textarea
               pTextarea
+              data-testid="operation-reason"
+              autofocus
               rows="4"
               [formControl]="reasonControl"
               placeholder="Record the operator reason"
             ></textarea>
           </label>
           <div class="action-bar action-bar--end">
-            <button pButton type="button" label="Cancel" severity="secondary" (click)="closeCommandDialog()"></button>
+            <button pButton type="button" data-testid="operation-cancel" label="Cancel" severity="secondary" (click)="closeCommandDialog()"></button>
             <button
               pButton
               type="button"
+              data-testid="operation-confirm"
               icon="pi pi-check"
               label="Confirm"
               [disabled]="reasonControl.invalid || submitting()"
@@ -631,6 +650,7 @@ export const formatDuration = (seconds: number | undefined): string => {
           </div>
         </div>
       }
+      </div>
     </p-dialog>
   `,
 })
@@ -738,6 +758,10 @@ export class OperationsPageComponent implements OnInit {
     return canUseCapability(this.session.session(), 'canHold') && HOLDABLE_STATUSES.has(task.status);
   }
 
+  protected canAnswer(): boolean {
+    return canUseCapability(this.session.session(), 'canAnswer');
+  }
+
   protected openTaskAction(
     task: TaskSummaryDto,
     command: Extract<TaskCommandName, 'retry' | 'hold'>,
@@ -750,6 +774,9 @@ export class OperationsPageComponent implements OnInit {
     this.commandError.set(undefined);
     this.reasonControl.reset('');
     this.commandDialogVisible.set(true);
+    setTimeout(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-testid="operation-reason"]')?.focus();
+    });
   }
 
   protected submitTaskAction(): void {

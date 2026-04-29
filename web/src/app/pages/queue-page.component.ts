@@ -13,10 +13,12 @@ import { TagModule } from 'primeng/tag';
 
 import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
 import { TaskStatusDto, TaskSummaryDto } from '../models/human-api.dto';
+import { SessionService } from '../services/session.service';
 import { TaskApiService, TaskListFilters } from '../services/task-api.service';
 import {
   QUEUE_GROUP_STATUSES,
   TASK_STATUSES,
+  canUseCapability,
   formatDate,
   statusLabel,
   statusSeverity,
@@ -44,16 +46,18 @@ interface QueueGroup {
     TaskDetailPanelComponent,
   ],
   template: `
-    <section class="page queue-page">
+    <section class="page queue-page" data-testid="queue-page">
       <header class="page__header">
         <div>
           <h1>Queue</h1>
           <p>Tasks grouped by operational state. Filters and selection are encoded in the URL.</p>
         </div>
-        <a pButton routerLink="/new" icon="pi pi-plus-circle" label="Create task"></a>
+        @if (canCreateTask()) {
+          <a pButton routerLink="/new" icon="pi pi-plus-circle" label="Create task" data-testid="queue-create-task"></a>
+        }
       </header>
 
-      <div class="queue-layout">
+      <div class="queue-layout" data-testid="queue-layout">
         <div class="queue-left">
           <form class="surface filter-grid" [formGroup]="filters" aria-label="Task filters">
             <label class="field">
@@ -92,6 +96,7 @@ interface QueueGroup {
               <button
                 pButton
                 type="button"
+                data-testid="queue-reset-filters"
                 icon="pi pi-filter-slash"
                 label="Reset"
                 severity="secondary"
@@ -100,6 +105,7 @@ interface QueueGroup {
               <button
                 pButton
                 type="button"
+                data-testid="queue-refresh"
                 icon="pi pi-refresh"
                 label="Refresh"
                 severity="secondary"
@@ -150,6 +156,7 @@ interface QueueGroup {
                         <button
                           type="button"
                           class="task-row"
+                          [attr.data-testid]="'task-row-' + task.id"
                           [class.task-row--selected]="task.id === selectedId()"
                           (click)="selectTask(task.id)"
                         >
@@ -200,6 +207,7 @@ interface QueueGroup {
 })
 export class QueuePageComponent implements OnInit {
   private readonly taskApi = inject(TaskApiService);
+  private readonly session = inject(SessionService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -272,6 +280,10 @@ export class QueuePageComponent implements OnInit {
 
   protected selectTask(taskId: string): void {
     this.navigateWithFilters(taskId);
+  }
+
+  protected canCreateTask(): boolean {
+    return canUseCapability(this.session.session(), 'canCreateTask');
   }
 
   protected resetFilters(): void {
