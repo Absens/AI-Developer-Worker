@@ -87,6 +87,7 @@ const createServer = async (tracker = new InMemoryTaskTrackerClient()) => {
   const address = server.address() as AddressInfo;
   return {
     tracker,
+    state,
     baseUrl: `http://127.0.0.1:${address.port}`,
   };
 };
@@ -445,5 +446,128 @@ describe("Phase 7F human task API", () => {
       body: JSON.stringify(createBody),
     });
     expect(anonymous.status).toBe(401);
+  });
+
+  it("returns an operations snapshot with safe allowlisted diagnostics", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const failed = await tracker.createTask(baseTaskInput({ id: "failed-ops" }));
+    const claimed = await tracker.claimNextTask({
+      workerId: "worker-1",
+      repositoryProfiles: [{ name: "developer", repoPathKey: "developer", queues: ["DEV"] }],
+      leaseTtlSeconds: 60,
+    });
+    expect(claimed?.task.id).toBe("failed-ops");
+    await tracker.recordAgentRun(failed.id, {
+      workerId: "worker-1",
+      stage: "implementation",
+      status: "failed",
+      exitCode: 1,
+      diagnostic: `TOKEN=super-secret ${"x".repeat(1500)}`,
+    });
+    await tracker.recordAgentRun(failed.id, {
+      workerId: "worker-1",
+      stage: "validation",
+      status: "failed",
+      diagnostic: "Second failure.",
+    });
+    await tracker.recordValidation(failed.id, {
+      workerId: "worker-1",
+      status: "failed",
+      summary: "Unit tests failed.",
+      validation: {
+        changed: true,
+        testsPassed: false,
+        lintPassed: true,
+        gates: [],
+        diagnostic: "Authorization: Bearer super-secret-token",
+      },
+    });
+    await tracker.recordValidation(failed.id, {
+      workerId: "worker-1",
+      status: "failed",
+      summary: "Unit tests failed again.",
+      validation: {
+        changed: true,
+        testsPassed: false,
+        lintPassed: true,
+        gates: [],
+        diagnostic: "Repeated validation failure.",
+      },
+    });
+    await tracker.setStatus(failed.id, "failed", "Validation failed.");
+    const waiting = await tracker.createTask(baseTaskInput({ id: "waiting-ops" }));
+    await tracker.setStatus(waiting.id, "claimed");
+    await tracker.setStatus(waiting.id, "awaiting_human");
+    await tracker.askClarification(waiting.id, {
+      workerId: "worker-1",
+      summary: "Need API choice.",
+      blockingReason: "Variant is unclear.",
+      question: "Use v1 or v2?",
+      options: ["v1", "v2"],
+      resumeHint: "Reply with /resume.",
+    });
+    const { baseUrl, state } = await createServer(tracker);
+    state.update({
+      workerId: "worker-1",
+      state: "processing",
+      repositoryName: "developer",
+      issueKey: failed.id,
+      stage: "validation",
+      error: "Last run failed.",
+    });
+
+    const operations = await requestJson(baseUrl, "/api/operations", {
+      headers: viewerHeaders,
+    });
+
+    expect(operations.status).toBe(200);
+    expect(operations.body.workers[0]).toMatchObject({
+      workerId: "worker-1",
+      currentTaskId: "failed-ops",
+      currentIssueKey: "failed-ops",
+      currentStage: "validation",
+      lastErrorSummary: "Last run failed.",
+    });
+    expect(operations.body.queueDepth).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          repositoryName: "developer",
+          queue: "DEV",
+          status: "failed",
+          priority: "normal",
+          depth: 1,
+        }),
+      ]),
+    );
+    expect(operations.body.failedTasks[0]).toMatchObject({
+      id: "failed-ops",
+      activeWorker: "worker-1",
+    });
+    expect(operations.body.repeatedFailures[0]).toMatchObject({ id: "failed-ops" });
+    expect(operations.body.waitingForHuman[0]).toMatchObject({
+      id: "waiting-ops",
+      blockerReason: "Variant is unclear.",
+    });
+    const diagnostic = operations.body.taskDiagnostics.find(
+      (entry: { taskId: string }) => entry.taskId === "failed-ops",
+    );
+    expect(diagnostic).toMatchObject({
+      taskId: "failed-ops",
+      failedAgentRuns: 2,
+      repeatedValidationFailures: 2,
+      latestFailedAgentRun: {
+        workerId: "worker-1",
+        status: "failed",
+      },
+      latestValidation: {
+        status: "failed",
+        summary: "Unit tests failed.",
+      },
+    });
+    expect(diagnostic.latestFailedAgentRun.diagnostic).not.toContain("super-secret");
+    expect(JSON.stringify(diagnostic)).not.toContain("Bearer super-secret-token");
+    expect(JSON.stringify(diagnostic)).not.toContain("threadId");
+    expect(JSON.stringify(diagnostic)).not.toContain("payload");
+    expect(diagnostic.latestFailedAgentRun.diagnostic.length).toBeLessThan(1300);
   });
 });

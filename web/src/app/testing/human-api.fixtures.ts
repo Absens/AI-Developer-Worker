@@ -258,12 +258,83 @@ export const proposedTask: ProposalSummaryDto = {
 };
 
 export const operationsSnapshot: OperationsSnapshotDto = {
-  workers: [{ workerId: 'worker-1', state: 'idle', repositoryName: 'developer', updatedAt: now }],
+  workers: [
+    {
+      workerId: 'worker-1',
+      state: 'processing',
+      repositoryName: 'developer',
+      currentTaskId: 'awaiting-task',
+      currentStage: 'implementation',
+      startedAt: '2026-04-29T07:00:00.000Z',
+      lastHeartbeatAt: now,
+      updatedAt: now,
+    },
+  ],
   leases: awaitingTaskDetail.activeLeases,
   repositories: ['developer'],
-  queueDepth: [{ repositoryName: 'developer', queue: 'DEV', status: 'ready', depth: 1 }],
+  queueDepth: [{ repositoryName: 'developer', queue: 'DEV', status: 'ready', priority: 'normal', depth: 1 }],
   failedTasks: [failedTask],
   repeatedFailures: [failedTask],
   waitingForHuman: [awaitingHumanTask],
+  taskDiagnostics: [
+    {
+      taskId: failedTask.id,
+      failedAgentRuns: 2,
+      repeatedValidationFailures: 2,
+      latestFailedAgentRun: {
+        id: 'run-1',
+        workerId: 'worker-1',
+        stage: 'implementation',
+        status: 'failed',
+        exitCode: 1,
+        diagnostic: 'Codex implementation failed after the validation command.',
+        startedAt: '2026-04-29T07:30:00.000Z',
+        completedAt: '2026-04-29T07:40:00.000Z',
+      },
+      latestValidation: {
+        id: 'validation-ops-1',
+        workerId: 'worker-1',
+        status: 'failed',
+        changed: true,
+        testsPassed: false,
+        lintPassed: true,
+        summary: 'Unit tests failed.',
+        diagnostic: 'Expected queue refresh to keep stale data visible.',
+        createdAt: '2026-04-29T07:42:00.000Z',
+      },
+      recentEvents: [
+        {
+          id: 'event-failed-1',
+          kind: 'validation_recorded',
+          source: 'worker_agent',
+          message: 'Validation failed.',
+          createdAt: '2026-04-29T07:42:00.000Z',
+        },
+      ],
+      updatedAt: failedTask.updatedAt,
+    },
+    {
+      taskId: awaitingHumanTask.id,
+      failedAgentRuns: 0,
+      repeatedValidationFailures: 0,
+      latestQuestion: {
+        id: 'question-1',
+        summary: 'Need API choice.',
+        blockingReason: 'Variant is unclear.',
+        question: 'Use v1 or v2?',
+        createdAt: '2026-04-29T07:45:00.000Z',
+      },
+      recentEvents: [
+        {
+          id: 'event-waiting-1',
+          kind: 'clarification_requested',
+          source: 'worker_agent',
+          message: 'Question sent to human.',
+          createdAt: '2026-04-29T07:45:00.000Z',
+        },
+      ],
+      updatedAt: awaitingHumanTask.updatedAt,
+    },
+  ],
   generatedAt: now,
 };

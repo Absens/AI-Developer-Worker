@@ -1,11 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type {
+  AgentRun,
   CreateTaskInput,
   EvidenceRef,
   ListTasksInput,
+  QualityGateRun,
   ProposeTaskInput,
   TaskActor,
+  TaskEvent,
+  TaskLeaseRecord,
   TaskRecord,
   TaskStatus,
   TaskTrackerClient,
@@ -88,6 +92,8 @@ const EVIDENCE_KINDS = [
   "metric",
   "external_url",
 ] as const;
+
+const MAX_OPERATIONS_DIAGNOSTIC_CHARS = 1200;
 
 class HttpApiError extends Error {
   constructor(
@@ -223,6 +229,26 @@ const latestAgentRun = (task: TaskRecord) =>
   [...task.agentRuns].sort((left, right) =>
     (right.completedAt ?? right.startedAt).localeCompare(left.completedAt ?? left.startedAt),
   )[0];
+
+const latestFailedAgentRun = (task: TaskRecord) =>
+  task.agentRuns
+    .filter((run) => run.status === "failed")
+    .sort((left, right) =>
+      (right.completedAt ?? right.startedAt).localeCompare(
+        left.completedAt ?? left.startedAt,
+      ),
+    )[0];
+
+const truncateDiagnostic = (value: string | undefined): string | undefined => {
+  const textValue = optionalString(value);
+  if (!textValue) {
+    return undefined;
+  }
+  if (textValue.length <= MAX_OPERATIONS_DIAGNOSTIC_CHARS) {
+    return textValue;
+  }
+  return `${textValue.slice(0, MAX_OPERATIONS_DIAGNOSTIC_CHARS)}\n[diagnostic truncated]`;
+};
 
 const summarizeTask = (
   task: TaskRecord,
@@ -1128,38 +1154,150 @@ export class TaskTrackerHumanApi {
     tasks: TaskRecord[],
     leases: Awaited<ReturnType<TaskTrackerClient["listActiveLeases"]>>,
   ): Record<string, unknown> {
+    const workerByTask = new Map(
+      leases.filter((lease) => lease.kind === "task").map((lease) => [
+        lease.taskId,
+        lease.workerId,
+      ]),
+    );
+    const taskLeaseByWorker = new Map<string, TaskLeaseRecord>();
+    for (const lease of leases) {
+      if (lease.kind === "task" && !taskLeaseByWorker.has(lease.workerId)) {
+        taskLeaseByWorker.set(lease.workerId, lease);
+      }
+    }
     const queueDepth = new Map<string, number>();
     for (const task of tasks) {
-      const key = [
+      const key = JSON.stringify([
         task.repositoryName ?? "unassigned",
         task.queue ?? "unassigned",
         task.status,
-      ].join(":");
+        task.priority ?? "unassigned",
+      ]);
       queueDepth.set(key, (queueDepth.get(key) ?? 0) + 1);
+    }
+    const failedTasks = tasks.filter((task) => task.status === "failed");
+    const repeatedFailures = tasks.filter(
+      (task) =>
+        task.agentRuns.filter((run) => run.status === "failed").length > 1 ||
+        task.qualityGateRuns.filter((run) => run.status === "failed").length > 1,
+    );
+    const waitingForHuman = tasks.filter((task) => task.status === "awaiting_human");
+    const diagnosticTasks = new Map<string, TaskRecord>();
+    for (const task of [...failedTasks, ...repeatedFailures, ...waitingForHuman]) {
+      diagnosticTasks.set(task.id, task);
     }
 
     return {
-      workers: this.input.state.listWorkers(),
+      workers: this.input.state.listWorkers().map((worker) => {
+        const taskLease = taskLeaseByWorker.get(worker.workerId);
+        return {
+          ...worker,
+          ...(taskLease?.taskId ? { currentTaskId: taskLease.taskId } : {}),
+          ...(worker.currentIssueKey ? { issueKey: worker.currentIssueKey } : {}),
+          ...(worker.currentStage ? { stage: worker.currentStage } : {}),
+          updatedAt: worker.lastHeartbeatAt,
+        };
+      }),
       leases,
       repositories: this.input.repositories(),
       queueDepth: [...queueDepth.entries()].map(([key, depth]) => {
-        const [repositoryName, queue, status] = key.split(":");
-        return { repositoryName, queue, status, depth };
+        const [repositoryName, queue, status, priority] = JSON.parse(key) as string[];
+        return { repositoryName, queue, status, priority, depth };
       }),
-      failedTasks: tasks.filter((task) => task.status === "failed").map((task) =>
-        summarizeTask(task),
+      failedTasks: failedTasks.map((task) => summarizeTask(task, workerByTask.get(task.id))),
+      repeatedFailures: repeatedFailures.map((task) =>
+        summarizeTask(task, workerByTask.get(task.id)),
       ),
-      repeatedFailures: tasks
-        .filter(
-          (task) =>
-            task.agentRuns.filter((run) => run.status === "failed").length > 1 ||
-            task.qualityGateRuns.filter((run) => run.status === "failed").length > 1,
-        )
-        .map((task) => summarizeTask(task)),
-      waitingForHuman: tasks
-        .filter((task) => task.status === "awaiting_human")
-        .map((task) => summarizeTask(task)),
+      waitingForHuman: waitingForHuman.map((task) =>
+        summarizeTask(task, workerByTask.get(task.id)),
+      ),
+      taskDiagnostics: [...diagnosticTasks.values()].map((task) =>
+        this.buildOperationTaskDiagnostic(task),
+      ),
       generatedAt: new Date().toISOString(),
+    };
+  }
+
+  private buildOperationTaskDiagnostic(task: TaskRecord): Record<string, unknown> {
+    const latestFailure = latestFailedAgentRun(task);
+    const latestValidation = latestByCreatedAt(task.qualityGateRuns);
+    const openQuestion = [...task.clarificationQuestions]
+      .reverse()
+      .find((question) => question.status === "open");
+
+    return {
+      taskId: task.id,
+      repeatedValidationFailures:
+        task.qualityGateRuns.filter((run) => run.status === "failed").length,
+      failedAgentRuns: task.agentRuns.filter((run) => run.status === "failed").length,
+      ...(latestFailure
+        ? { latestFailedAgentRun: this.summarizeAgentRun(latestFailure) }
+        : {}),
+      ...(latestValidation
+        ? { latestValidation: this.summarizeQualityGateRun(latestValidation) }
+        : {}),
+      ...(openQuestion
+        ? {
+            latestQuestion: {
+              id: openQuestion.id,
+              summary: openQuestion.question.summary,
+              blockingReason: openQuestion.question.blockingReason,
+              question: truncateDiagnostic(openQuestion.question.question),
+              createdAt: openQuestion.createdAt,
+            },
+          }
+        : {}),
+      recentEvents: [...task.events]
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 5)
+        .map((event) => this.summarizeEvent(event)),
+      updatedAt: task.updatedAt,
+    };
+  }
+
+  private summarizeAgentRun(run: AgentRun): Record<string, unknown> {
+    return {
+      id: run.id,
+      workerId: run.workerId,
+      stage: run.stage,
+      status: run.status,
+      ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
+      ...(run.timedOut !== undefined ? { timedOut: run.timedOut } : {}),
+      ...(truncateDiagnostic(run.finalMessage)
+        ? { finalMessage: truncateDiagnostic(run.finalMessage) }
+        : {}),
+      ...(truncateDiagnostic(run.diagnostic)
+        ? { diagnostic: truncateDiagnostic(run.diagnostic) }
+        : {}),
+      startedAt: run.startedAt,
+      ...(run.completedAt ? { completedAt: run.completedAt } : {}),
+    };
+  }
+
+  private summarizeQualityGateRun(run: QualityGateRun): Record<string, unknown> {
+    return {
+      id: run.id,
+      workerId: run.workerId,
+      status: run.status,
+      changed: run.changed,
+      testsPassed: run.testsPassed,
+      lintPassed: run.lintPassed,
+      ...(truncateDiagnostic(run.summary) ? { summary: truncateDiagnostic(run.summary) } : {}),
+      ...(truncateDiagnostic(run.diagnostic)
+        ? { diagnostic: truncateDiagnostic(run.diagnostic) }
+        : {}),
+      createdAt: run.createdAt,
+    };
+  }
+
+  private summarizeEvent(event: TaskEvent): Record<string, unknown> {
+    return {
+      id: event.id,
+      kind: event.kind,
+      source: event.source,
+      ...(truncateDiagnostic(event.message) ? { message: truncateDiagnostic(event.message) } : {}),
+      createdAt: event.createdAt,
     };
   }
 }

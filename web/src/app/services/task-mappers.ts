@@ -7,6 +7,11 @@ import {
   HumanAnswerDto,
   LeaseDto,
   MergeRequestSummaryDto,
+  OperationAgentRunSummaryDto,
+  OperationEventSummaryDto,
+  OperationQuestionSummaryDto,
+  OperationTaskDiagnosticDto,
+  OperationValidationSummaryDto,
   OperationsSnapshotDto,
   ProposalListResponseDto,
   ProposalSummaryDto,
@@ -357,9 +362,34 @@ export const mapWorker = (value: unknown): WorkerSnapshotDto => {
     ...(optionalString(raw['repositoryName'])
       ? { repositoryName: optionalString(raw['repositoryName']) }
       : {}),
-    ...(optionalString(raw['issueKey']) ? { issueKey: optionalString(raw['issueKey']) } : {}),
-    ...(optionalString(raw['stage']) ? { stage: optionalString(raw['stage']) } : {}),
-    ...(optionalString(raw['updatedAt']) ? { updatedAt: optionalString(raw['updatedAt']) } : {}),
+    ...(optionalString(raw['currentTaskId'])
+      ? { currentTaskId: optionalString(raw['currentTaskId']) }
+      : {}),
+    ...(optionalString(raw['currentIssueKey'] ?? raw['issueKey'])
+      ? { currentIssueKey: optionalString(raw['currentIssueKey'] ?? raw['issueKey']) }
+      : {}),
+    ...(optionalString(raw['issueKey'] ?? raw['currentIssueKey'])
+      ? { issueKey: optionalString(raw['issueKey'] ?? raw['currentIssueKey']) }
+      : {}),
+    ...(optionalString(raw['currentStage'] ?? raw['stage'])
+      ? { currentStage: optionalString(raw['currentStage'] ?? raw['stage']) }
+      : {}),
+    ...(optionalString(raw['stage'] ?? raw['currentStage'])
+      ? { stage: optionalString(raw['stage'] ?? raw['currentStage']) }
+      : {}),
+    ...(optionalString(raw['startedAt']) ? { startedAt: optionalString(raw['startedAt']) } : {}),
+    ...(optionalString(raw['lastHeartbeatAt'] ?? raw['updatedAt'])
+      ? { lastHeartbeatAt: optionalString(raw['lastHeartbeatAt'] ?? raw['updatedAt']) }
+      : {}),
+    ...(optionalString(raw['updatedAt'] ?? raw['lastHeartbeatAt'])
+      ? { updatedAt: optionalString(raw['updatedAt'] ?? raw['lastHeartbeatAt']) }
+      : {}),
+    ...(optionalString(raw['lastErrorSummary'])
+      ? { lastErrorSummary: optionalString(raw['lastErrorSummary']) }
+      : {}),
+    ...(typeof raw['activeLeaseAgeSeconds'] === 'number'
+      ? { activeLeaseAgeSeconds: raw['activeLeaseAgeSeconds'] }
+      : {}),
   };
 };
 
@@ -369,7 +399,101 @@ export const mapQueueDepth = (value: unknown): QueueDepthDto => {
     repositoryName: stringValue(raw['repositoryName']),
     queue: stringValue(raw['queue']),
     status: stringValue(raw['status']),
+    ...(optionalString(raw['priority']) ? { priority: optionalString(raw['priority']) } : {}),
     depth: typeof raw['depth'] === 'number' ? raw['depth'] : 0,
+  };
+};
+
+export const mapOperationAgentRun = (value: unknown): OperationAgentRunSummaryDto | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const raw = record(value);
+  return {
+    ...(optionalString(raw['id']) ? { id: optionalString(raw['id']) } : {}),
+    ...(optionalString(raw['workerId']) ? { workerId: optionalString(raw['workerId']) } : {}),
+    ...(optionalString(raw['stage']) ? { stage: optionalString(raw['stage']) } : {}),
+    ...(optionalString(raw['status']) ? { status: optionalString(raw['status']) } : {}),
+    ...(typeof raw['exitCode'] === 'number' ? { exitCode: raw['exitCode'] } : {}),
+    ...(typeof raw['timedOut'] === 'boolean' ? { timedOut: raw['timedOut'] } : {}),
+    ...(optionalString(raw['finalMessage'])
+      ? { finalMessage: optionalString(raw['finalMessage']) }
+      : {}),
+    ...(optionalString(raw['diagnostic']) ? { diagnostic: optionalString(raw['diagnostic']) } : {}),
+    ...(optionalString(raw['startedAt']) ? { startedAt: optionalString(raw['startedAt']) } : {}),
+    ...(optionalString(raw['completedAt'])
+      ? { completedAt: optionalString(raw['completedAt']) }
+      : {}),
+  };
+};
+
+export const mapOperationValidation = (
+  value: unknown,
+): OperationValidationSummaryDto | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const raw = record(value);
+  return {
+    ...(optionalString(raw['id']) ? { id: optionalString(raw['id']) } : {}),
+    ...(optionalString(raw['workerId']) ? { workerId: optionalString(raw['workerId']) } : {}),
+    status: stringValue(raw['status']),
+    ...(typeof raw['changed'] === 'boolean' ? { changed: raw['changed'] } : {}),
+    ...(typeof raw['testsPassed'] === 'boolean' ? { testsPassed: raw['testsPassed'] } : {}),
+    ...(typeof raw['lintPassed'] === 'boolean' ? { lintPassed: raw['lintPassed'] } : {}),
+    ...(optionalString(raw['summary']) ? { summary: optionalString(raw['summary']) } : {}),
+    ...(optionalString(raw['diagnostic']) ? { diagnostic: optionalString(raw['diagnostic']) } : {}),
+    createdAt: stringValue(raw['createdAt']),
+  };
+};
+
+export const mapOperationQuestion = (
+  value: unknown,
+): OperationQuestionSummaryDto | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const raw = record(value);
+  return {
+    id: stringValue(raw['id']),
+    ...(optionalString(raw['summary']) ? { summary: optionalString(raw['summary']) } : {}),
+    ...(optionalString(raw['blockingReason'])
+      ? { blockingReason: optionalString(raw['blockingReason']) }
+      : {}),
+    ...(optionalString(raw['question']) ? { question: optionalString(raw['question']) } : {}),
+    createdAt: stringValue(raw['createdAt']),
+  };
+};
+
+export const mapOperationEvent = (value: unknown): OperationEventSummaryDto => {
+  const raw = record(value);
+  return {
+    ...(optionalString(raw['id']) ? { id: optionalString(raw['id']) } : {}),
+    kind: stringValue(raw['kind']),
+    ...(optionalString(raw['source']) ? { source: optionalString(raw['source']) } : {}),
+    ...(optionalString(raw['message']) ? { message: optionalString(raw['message']) } : {}),
+    createdAt: stringValue(raw['createdAt']),
+  };
+};
+
+export const mapOperationTaskDiagnostic = (value: unknown): OperationTaskDiagnosticDto => {
+  const raw = record(value);
+  return {
+    taskId: stringValue(raw['taskId']),
+    ...(mapOperationAgentRun(raw['latestFailedAgentRun'])
+      ? { latestFailedAgentRun: mapOperationAgentRun(raw['latestFailedAgentRun']) }
+      : {}),
+    ...(mapOperationValidation(raw['latestValidation'])
+      ? { latestValidation: mapOperationValidation(raw['latestValidation']) }
+      : {}),
+    ...(mapOperationQuestion(raw['latestQuestion'])
+      ? { latestQuestion: mapOperationQuestion(raw['latestQuestion']) }
+      : {}),
+    failedAgentRuns: typeof raw['failedAgentRuns'] === 'number' ? raw['failedAgentRuns'] : 0,
+    repeatedValidationFailures:
+      typeof raw['repeatedValidationFailures'] === 'number' ? raw['repeatedValidationFailures'] : 0,
+    recentEvents: records(raw['recentEvents']).map(mapOperationEvent),
+    updatedAt: stringValue(raw['updatedAt']),
   };
 };
 
@@ -383,6 +507,9 @@ export const mapOperationsSnapshot = (value: unknown): OperationsSnapshotDto => 
     failedTasks: records(raw['failedTasks']).map(mapTaskSummary),
     repeatedFailures: records(raw['repeatedFailures']).map(mapTaskSummary),
     waitingForHuman: records(raw['waitingForHuman']).map(mapTaskSummary),
+    ...(Array.isArray(raw['taskDiagnostics'])
+      ? { taskDiagnostics: records(raw['taskDiagnostics']).map(mapOperationTaskDiagnostic) }
+      : {}),
     generatedAt: stringValue(raw['generatedAt']),
   };
 };

@@ -259,6 +259,7 @@ export interface OperationsSnapshotDto {
   failedTasks: TaskSummaryDto[];
   repeatedFailures: TaskSummaryDto[];
   waitingForHuman: TaskSummaryDto[];
+  taskDiagnostics?: OperationTaskDiagnosticDto[];
   generatedAt: string;
 }
 
@@ -266,16 +267,76 @@ export interface WorkerSnapshotDto {
   workerId: string;
   state: string;
   repositoryName?: string;
+  currentTaskId?: string;
+  currentIssueKey?: string;
   issueKey?: string;
+  currentStage?: string;
   stage?: string;
+  startedAt?: string;
+  lastHeartbeatAt?: string;
   updatedAt?: string;
+  lastErrorSummary?: string;
+  activeLeaseAgeSeconds?: number;
 }
 
 export interface QueueDepthDto {
   repositoryName: string;
   queue: string;
   status: string;
+  priority?: string;
   depth: number;
+}
+
+export interface OperationTaskDiagnosticDto {
+  taskId: string;
+  latestFailedAgentRun?: OperationAgentRunSummaryDto;
+  latestValidation?: OperationValidationSummaryDto;
+  latestQuestion?: OperationQuestionSummaryDto;
+  failedAgentRuns: number;
+  repeatedValidationFailures: number;
+  recentEvents: OperationEventSummaryDto[];
+  updatedAt: string;
+}
+
+export interface OperationAgentRunSummaryDto {
+  id?: string;
+  workerId?: string;
+  stage?: string;
+  status?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  finalMessage?: string;
+  diagnostic?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface OperationValidationSummaryDto {
+  id?: string;
+  workerId?: string;
+  status: string;
+  changed?: boolean;
+  testsPassed?: boolean;
+  lintPassed?: boolean;
+  summary?: string;
+  diagnostic?: string;
+  createdAt: string;
+}
+
+export interface OperationQuestionSummaryDto {
+  id: string;
+  summary?: string;
+  blockingReason?: string;
+  question?: string;
+  createdAt: string;
+}
+
+export interface OperationEventSummaryDto {
+  id?: string;
+  kind: string;
+  source?: string;
+  message?: string;
+  createdAt: string;
 }
 
 export interface AgentContextPreviewResponseDto {

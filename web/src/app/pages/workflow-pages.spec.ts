@@ -11,6 +11,11 @@ import { TaskDetailPanelComponent } from '../components/task-detail-panel.compon
 import { SessionService } from '../services/session.service';
 import { TASK_COMMAND_POLICIES } from '../utils/task-ui';
 import { CreateTaskPageComponent } from './create-task-page.component';
+import {
+  OperationsPageComponent,
+  classifyHeartbeat,
+  heartbeatAgeSeconds,
+} from './operations-page.component';
 import { ProposalsPageComponent } from './proposals-page.component';
 import { QueuePageComponent } from './queue-page.component';
 import {
@@ -20,6 +25,7 @@ import {
   draftTask,
   failedTask,
   mrValidationTaskDetail,
+  operationsSnapshot,
   operatorSession,
   proposedTask,
   readyTask,
@@ -289,5 +295,143 @@ describe('ProposalsPageComponent', () => {
       role: 'developer',
       generatedAt: '2026-04-29T08:01:00.000Z',
     });
+  });
+});
+
+describe('OperationsPageComponent', () => {
+  afterEach(() => TestBed.inject(HttpTestingController).verify());
+
+  it('classifies worker heartbeat age with Phase 8C thresholds', async () => {
+    await configure([]);
+    const generatedAt = '2026-04-29T08:00:00.000Z';
+
+    expect(
+      heartbeatAgeSeconds(
+        { workerId: 'worker-1', state: 'idle', lastHeartbeatAt: '2026-04-29T07:59:30.000Z' },
+        generatedAt,
+      ),
+    ).toBe(30);
+    expect(
+      classifyHeartbeat(
+        { workerId: 'worker-1', state: 'idle', lastHeartbeatAt: '2026-04-29T07:59:30.000Z' },
+        generatedAt,
+      ),
+    ).toBe('healthy');
+    expect(
+      classifyHeartbeat(
+        { workerId: 'worker-1', state: 'idle', lastHeartbeatAt: '2026-04-29T07:58:00.000Z' },
+        generatedAt,
+      ),
+    ).toBe('warning');
+    expect(
+      classifyHeartbeat(
+        { workerId: 'worker-1', state: 'idle', lastHeartbeatAt: '2026-04-29T07:54:00.000Z' },
+        generatedAt,
+      ),
+    ).toBe('error');
+  });
+
+  it('renders overview counters, worker heartbeats, leases, queue depth, and task links', async () => {
+    const http = await configure([OperationsPageComponent]);
+    loadSession(http, operatorSession);
+
+    const fixture = TestBed.createComponent(OperationsPageComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/operations').flush(operationsSnapshot);
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    const text = element.textContent ?? '';
+    expect(text).toContain('Active Workers');
+    expect(text).toContain('Ready Queue');
+    expect(text).toContain('Worker Heartbeats');
+    expect(text).toContain('worker-1');
+    expect(text).toContain('Healthy');
+    expect(text).toContain('Active Leases');
+    expect(text).toContain('lease-1');
+    expect(text).toContain('Queue Depth');
+    expect(text).toContain('normal');
+    expect(text).toContain('Failed Tasks');
+    expect(text).toContain('Retry');
+    expect(text).toContain('Hold');
+    expect([...element.querySelectorAll('a')].some((anchor) => anchor.textContent?.includes('awaiting-task'))).toBeTrue();
+  });
+
+  it('renders failed task diagnostics from allowlisted operations fields', async () => {
+    const http = await configure([OperationsPageComponent]);
+    loadSession(http, operatorSession);
+
+    const fixture = TestBed.createComponent(OperationsPageComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/operations').flush(operationsSnapshot);
+
+    (fixture.componentInstance as unknown as { openDiagnostics: (task: typeof failedTask) => void }).openDiagnostics(failedTask);
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('Diagnostic Detail');
+    expect(text).toContain('Unit tests failed.');
+    expect(text).toContain('Codex implementation failed');
+    expect(text).toContain('Recent Lifecycle Events');
+    expect(text).toContain('Validation failed.');
+  });
+
+  it('renders waiting-for-human tasks with approximate waiting duration and answer links', async () => {
+    const http = await configure([OperationsPageComponent]);
+    loadSession(http, operatorSession);
+
+    const fixture = TestBed.createComponent(OperationsPageComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/operations').flush(operationsSnapshot);
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('Waiting For Human');
+    expect(text).toContain('Need API choice.');
+    expect(text).toContain('Approx.');
+    expect(text).toContain('Answer');
+  });
+
+  it('preserves the last snapshot and marks it stale after a manual refresh failure', async () => {
+    const http = await configure([OperationsPageComponent]);
+    loadSession(http, operatorSession);
+
+    const fixture = TestBed.createComponent(OperationsPageComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/operations').flush(operationsSnapshot);
+    fixture.detectChanges();
+
+    const refresh = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh operations"]',
+    );
+    expect(refresh).not.toBeNull();
+    refresh?.click();
+    fixture.detectChanges();
+
+    http.expectOne('/api/operations').flush(
+      { status: 'error', error: 'backend unavailable' },
+      { status: 503, statusText: 'Service Unavailable' },
+    );
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('worker-1');
+    expect(text).toContain('Showing last successful snapshot');
+    expect(text).toContain('backend unavailable');
+  });
+
+  it('hides retry and hold actions for viewer sessions', async () => {
+    const http = await configure([OperationsPageComponent]);
+    loadSession(http, viewerSession);
+
+    const fixture = TestBed.createComponent(OperationsPageComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/operations').flush(operationsSnapshot);
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).not.toContain('Retry');
+    expect(text).not.toContain('Hold');
+    expect(text).toContain('Details');
   });
 });
