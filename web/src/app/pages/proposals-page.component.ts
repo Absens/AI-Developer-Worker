@@ -40,13 +40,13 @@ interface PendingProposalAction {
   template: `
     <section class="page proposals-page" data-testid="proposals-page">
       <header class="page__header">
-        <h1>Proposals</h1>
-        <p>Review AI-proposed tasks using supervisor status, policy context, and evidence refs.</p>
+        <h1>Предложения</h1>
+        <p>Проверяйте задачи, предложенные AI, с учетом статуса супервизора, политики и доказательств.</p>
       </header>
 
       <div class="surface filter-grid filter-grid--compact">
         <label class="field">
-          <span>Supervisor status</span>
+          <span>Статус супервизора</span>
           <p-select
             [formControl]="statusFilter"
             [options]="statusOptions"
@@ -61,7 +61,7 @@ interface PendingProposalAction {
             type="button"
             data-testid="proposals-refresh"
             icon="pi pi-refresh"
-            label="Refresh"
+            label="Обновить"
             severity="secondary"
             (click)="load()"
           ></button>
@@ -74,14 +74,14 @@ interface PendingProposalAction {
 
       @if (loading()) {
         <div class="loading-row" aria-live="polite">
-          <p-progressSpinner ariaLabel="Loading proposals" />
-          <span>Loading proposals</span>
+          <p-progressSpinner ariaLabel="Загрузка предложений" />
+          <span>Загрузка предложений</span>
         </div>
       } @else if (proposals().length === 0) {
         <div class="empty-state surface">
           <i class="pi pi-verified" aria-hidden="true"></i>
-          <h2>No proposals found</h2>
-          <p>Change the supervisor-status filter or wait for new AI proposals.</p>
+          <h2>Предложения не найдены</h2>
+          <p>Измените фильтр статуса супервизора или дождитесь новых AI-предложений.</p>
         </div>
       } @else {
         <div class="proposal-list">
@@ -106,29 +106,29 @@ interface PendingProposalAction {
 
                 <div class="field-grid field-grid--compact">
                   <div>
-                    <span class="field-label">Proposed by</span>
-                    <span>{{ proposal.proposal.proposedBy || 'Unknown' }}</span>
+                    <span class="field-label">Предложил</span>
+                    <span>{{ proposal.proposal.proposedBy || 'Неизвестно' }}</span>
                   </div>
                   <div>
-                    <span class="field-label">Policy decision</span>
-                    <span>{{ proposal.proposal.policyDecision || 'Unknown' }}</span>
+                    <span class="field-label">Решение политики</span>
+                    <span>{{ proposal.proposal.policyDecision || 'Неизвестно' }}</span>
                   </div>
                   <div>
-                    <span class="field-label">Created</span>
+                    <span class="field-label">Создано</span>
                     <span>{{ formatDate(proposal.proposal.createdAt) }}</span>
                   </div>
                 </div>
 
                 @if (proposal.proposal.policyReason) {
                   <div class="summary-block">
-                    <h3>Policy Reason</h3>
+                    <h3>Причина политики</h3>
                     <p>{{ truncate(proposal.proposal.policyReason, 420) }}</p>
                   </div>
                 }
 
                 @if (proposal.proposal.suggestedAcceptanceCriteria?.length) {
                   <div class="summary-block">
-                    <h3>Suggested Acceptance Criteria</h3>
+                    <h3>Предложенные критерии приемки</h3>
                     <ul class="compact-list">
                       @for (criterion of proposal.proposal.suggestedAcceptanceCriteria; track criterion) {
                         <li>{{ criterion }}</li>
@@ -159,7 +159,7 @@ interface PendingProposalAction {
                     type="button"
                     [attr.data-testid]="'proposal-approve-' + proposal.id"
                     icon="pi pi-check"
-                    label="Approve"
+                    label="Одобрить"
                     (click)="openAction(proposal, 'approve-proposal')"
                   ></button>
                   <button
@@ -167,7 +167,7 @@ interface PendingProposalAction {
                     type="button"
                     [attr.data-testid]="'proposal-reject-' + proposal.id"
                     icon="pi pi-times"
-                    label="Reject"
+                    label="Отклонить"
                     severity="danger"
                     (click)="openAction(proposal, 'reject-proposal')"
                   ></button>
@@ -180,7 +180,7 @@ interface PendingProposalAction {
     </section>
 
     <p-dialog
-      [header]="pendingAction()?.label || 'Review proposal'"
+      [header]="pendingAction()?.label || 'Проверка предложения'"
       [visible]="dialogVisible()"
       (visibleChange)="dialogVisible.set($event)"
       [modal]="true"
@@ -191,24 +191,24 @@ interface PendingProposalAction {
         <div class="stack">
           <p>{{ action.proposal.title }}</p>
           <label class="field">
-            <span>Reason <strong aria-label="required">*</strong></span>
+            <span>Причина <strong aria-label="обязательно">*</strong></span>
             <textarea
               pTextarea
               data-testid="proposal-reason"
               autofocus
               rows="4"
               [formControl]="reasonControl"
-              placeholder="Record the review reason"
+              placeholder="Укажите причину проверки"
             ></textarea>
           </label>
           <div class="action-bar action-bar--end">
-            <button pButton type="button" data-testid="proposal-cancel" label="Cancel" severity="secondary" (click)="closeDialog()"></button>
+            <button pButton type="button" data-testid="proposal-cancel" label="Отмена" severity="secondary" (click)="closeDialog()"></button>
             <button
               pButton
               type="button"
               data-testid="proposal-confirm"
               icon="pi pi-check"
-              label="Confirm"
+              label="Подтвердить"
               [disabled]="reasonControl.invalid || submitting()"
               (click)="submitAction()"
             ></button>
@@ -226,10 +226,10 @@ export class ProposalsPageComponent implements OnInit {
   private readonly messages = inject(MessageService);
 
   protected readonly statusOptions = [
-    { label: 'Proposed', value: 'proposed' },
-    { label: 'Approved', value: 'approved' },
-    { label: 'Rejected', value: 'rejected' },
-    { label: 'All', value: '' },
+    { label: 'Предложено', value: 'proposed' },
+    { label: 'Одобрено', value: 'approved' },
+    { label: 'Отклонено', value: 'rejected' },
+    { label: 'Все', value: '' },
   ];
   protected readonly statusFilter = new FormControl<string>('proposed', { nonNullable: true });
   protected readonly reasonControl = new FormControl<string>('', {
@@ -278,7 +278,7 @@ export class ProposalsPageComponent implements OnInit {
     this.pendingAction.set({
       proposal,
       command,
-      label: command === 'approve-proposal' ? 'Approve proposal' : 'Reject proposal',
+      label: command === 'approve-proposal' ? 'Одобрить предложение' : 'Отклонить предложение',
     });
     this.reasonControl.reset('');
     this.dialogVisible.set(true);
@@ -298,7 +298,7 @@ export class ProposalsPageComponent implements OnInit {
       .run(action.proposal.id, action.command, { reason: this.reasonControl.value.trim() })
       .subscribe({
         next: () => {
-          this.messages.add({ severity: 'success', summary: `${action.label} completed.` });
+          this.messages.add({ severity: 'success', summary: `${action.label}: выполнено.` });
           this.closeDialog();
           this.submitting.set(false);
           this.load();
@@ -306,7 +306,7 @@ export class ProposalsPageComponent implements OnInit {
         error: (error: unknown) => {
           this.messages.add({
             severity: 'error',
-            summary: 'Proposal action failed',
+            summary: 'Действие с предложением не выполнено',
             detail: error instanceof Error ? error.message : String(error),
           });
           this.submitting.set(false);
