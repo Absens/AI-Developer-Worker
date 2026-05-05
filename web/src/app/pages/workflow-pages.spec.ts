@@ -257,7 +257,7 @@ describe('CreateTaskPageComponent', () => {
     });
     component.openPreview();
     fixture.detectChanges();
-    expect((fixture.nativeElement as HTMLElement).textContent).toContain('generated from the current form values');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('сформирован из текущих значений формы');
 
     component.createReady();
     const create = http.expectOne('/api/tasks');

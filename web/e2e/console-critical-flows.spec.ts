@@ -120,7 +120,7 @@ test.describe.serial('task tracker console production flows', () => {
     const page = developer.page;
 
     await page.goto('/tasks/new');
-    await expect(page.getByLabel('Title *')).toBeVisible();
+    await expect(page.getByLabel('Название *')).toBeVisible();
     await page.getByTestId('nav-queue').focus();
     await page.keyboard.press('Tab');
     await expect(page.getByTestId('nav-create')).toBeFocused();

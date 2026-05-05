@@ -67,36 +67,36 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
   template: `
     <section class="page create-page" data-testid="create-page">
       <header class="page__header">
-        <h1>Create Task</h1>
-        <p>Create a human draft or send a validated task directly to the ready queue.</p>
+        <h1>Создать задачу</h1>
+        <p>Создайте черновик для человека или сразу отправьте проверенную задачу в готовую очередь.</p>
       </header>
 
       @if (!canCreateTask()) {
-        <p-message data-testid="create-unauthorized" severity="warn" text="Your current session cannot create tasks." />
+        <p-message data-testid="create-unauthorized" severity="warn" text="Текущая сессия не может создавать задачи." />
       }
 
       @if (error()) {
-        <p-message data-testid="create-error" severity="error" [text]="error() || 'Create failed'" />
+        <p-message data-testid="create-error" severity="error" [text]="error() || 'Не удалось создать задачу'" />
       }
 
       <form class="surface create-form" data-testid="create-form" [formGroup]="form" (ngSubmit)="createDraft()">
         <div class="form-section">
-          <h2>Template</h2>
+          <h2>Шаблон</h2>
           <div class="field-grid">
             <label class="field">
-              <span>Task template</span>
+              <span>Шаблон задачи</span>
               <p-select
                 data-testid="create-task-type"
                 formControlName="taskType"
                 [options]="templates"
                 optionLabel="label"
                 optionValue="value"
-                placeholder="Select template"
+                placeholder="Выберите шаблон"
                 (onChange)="applyTemplate()"
               />
             </label>
             <label class="field">
-              <span>Prompt profile</span>
+              <span>Профиль промпта</span>
               <input pInputText data-testid="create-prompt-profile" formControlName="promptProfileId" placeholder="frontend_ui_fix" />
             </label>
           </div>
@@ -106,106 +106,106 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
         </div>
 
         <div class="form-section">
-          <h2>Task</h2>
+          <h2>Задача</h2>
           <label class="field">
-            <span>Title *</span>
-            <input pInputText data-testid="create-title" formControlName="title" placeholder="Short imperative task title" />
+            <span>Название *</span>
+            <input pInputText data-testid="create-title" formControlName="title" placeholder="Короткое название задачи в повелительном стиле" />
             @if (hasError('title')) {
-              <small class="error-text">Title is required.</small>
+              <small class="error-text">Укажите название.</small>
             }
           </label>
 
           <label class="field">
-            <span>Description *</span>
+            <span>Описание *</span>
             <textarea
               pTextarea
               data-testid="create-description"
               rows="8"
               formControlName="description"
-              placeholder="Describe the requested change, context, and target behavior."
+              placeholder="Опишите изменение, контекст и ожидаемое поведение."
             ></textarea>
             @if (hasError('description')) {
-              <small class="error-text">Description is required.</small>
+              <small class="error-text">Укажите описание.</small>
             }
           </label>
 
           <label class="field">
-            <span>Human summary</span>
-            <input pInputText data-testid="create-human-summary" formControlName="humanSummary" placeholder="Optional operator summary" />
+            <span>Кратко для человека</span>
+            <input pInputText data-testid="create-human-summary" formControlName="humanSummary" placeholder="Необязательное резюме для оператора" />
           </label>
         </div>
 
         <div class="form-section">
-          <h2>Routing</h2>
+          <h2>Маршрутизация</h2>
           <div class="field-grid">
             <label class="field">
-              <span>Repository</span>
+              <span>Репозиторий</span>
               <input pInputText data-testid="create-repository" formControlName="repositoryName" placeholder="developer" />
             </label>
             <label class="field">
-              <span>Repo path key</span>
+              <span>Ключ пути репозитория</span>
               <input pInputText data-testid="create-repo-path-key" formControlName="repoPathKey" placeholder="developer" />
             </label>
             <label class="field">
-              <span>Base branch</span>
+              <span>Базовая ветка</span>
               <input pInputText data-testid="create-base-branch" formControlName="baseBranch" placeholder="main" />
             </label>
             <label class="field">
-              <span>Queue</span>
+              <span>Очередь</span>
               <input pInputText data-testid="create-queue" formControlName="queue" placeholder="DEV" />
             </label>
             <label class="field">
-              <span>Priority</span>
+              <span>Приоритет</span>
               <input pInputText data-testid="create-priority" formControlName="priority" placeholder="normal" />
             </label>
           </div>
         </div>
 
         <div class="form-section">
-          <h2>Context</h2>
+          <h2>Контекст</h2>
           <div class="field-grid">
             <label class="field">
-              <span>Tags</span>
+              <span>Теги</span>
               <input pInputText data-testid="create-tags" formControlName="tags" placeholder="ai_dev,frontend" />
               @if (hasError('tags')) {
-                <small class="error-text">Tags may use letters, numbers, dot, underscore, colon, and dash.</small>
+                <small class="error-text">В тегах можно использовать буквы, цифры, точку, подчеркивание, двоеточие и дефис.</small>
               }
             </label>
             <label class="field">
-              <span>Components</span>
+              <span>Компоненты</span>
               <input pInputText data-testid="create-components" formControlName="components" placeholder="web,api" />
               @if (hasError('components')) {
-                <small class="error-text">Components use the same format as tags.</small>
+                <small class="error-text">Для компонентов используется тот же формат, что и для тегов.</small>
               }
             </label>
           </div>
 
           <label class="field">
-            <span>Acceptance criteria</span>
+            <span>Критерии приемки</span>
             <textarea
               pTextarea
               data-testid="create-acceptance"
               rows="5"
               formControlName="acceptanceCriteria"
-              placeholder="One criterion per line"
+              placeholder="Один критерий на строку"
             ></textarea>
             @if (hasError('acceptanceCriteria')) {
-              <small class="error-text">Each criterion must contain at least 3 characters.</small>
+              <small class="error-text">Каждый критерий должен содержать минимум 3 символа.</small>
             }
           </label>
 
           <div class="field-grid">
             <label class="field">
-              <span>Constraints</span>
-              <textarea pTextarea data-testid="create-constraints" rows="4" formControlName="constraints" placeholder="One per line"></textarea>
+              <span>Ограничения</span>
+              <textarea pTextarea data-testid="create-constraints" rows="4" formControlName="constraints" placeholder="По одному на строку"></textarea>
             </label>
             <label class="field">
-              <span>Risk factors</span>
-              <textarea pTextarea data-testid="create-risk-factors" rows="4" formControlName="riskFactors" placeholder="One per line"></textarea>
+              <span>Риски</span>
+              <textarea pTextarea data-testid="create-risk-factors" rows="4" formControlName="riskFactors" placeholder="По одному на строку"></textarea>
             </label>
             <label class="field">
-              <span>Missing context</span>
-              <textarea pTextarea data-testid="create-missing-context" rows="4" formControlName="missingContext" placeholder="One per line"></textarea>
+              <span>Недостающий контекст</span>
+              <textarea pTextarea data-testid="create-missing-context" rows="4" formControlName="missingContext" placeholder="По одному на строку"></textarea>
             </label>
           </div>
         </div>
@@ -216,7 +216,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             type="button"
             data-testid="create-preview"
             icon="pi pi-eye"
-            label="Preview entered context"
+            label="Предпросмотр контекста"
             severity="secondary"
             [disabled]="form.controls.title.invalid || form.controls.description.invalid"
             (click)="openPreview()"
@@ -226,7 +226,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             type="submit"
             data-testid="create-draft"
             icon="pi pi-save"
-            label="Save draft"
+            label="Сохранить черновик"
             severity="secondary"
             [disabled]="submitting() || !canCreateTask()"
           ></button>
@@ -235,7 +235,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
             type="button"
             data-testid="create-ready"
             icon="pi pi-check-circle"
-            label="Create ready"
+            label="Создать готовую"
             [disabled]="submitting() || !canCreateTask()"
             (click)="createReady()"
           ></button>
@@ -244,7 +244,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
     </section>
 
     <p-dialog
-      header="Entered Context Preview"
+      header="Предпросмотр введенного контекста"
       [visible]="previewVisible()"
       (visibleChange)="previewVisible.set($event)"
       [modal]="true"
@@ -253,7 +253,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
     >
       <div data-testid="create-preview-dialog">
       <p class="muted">
-        This preview is generated from the current form values. Backend agent context preview is available after task creation.
+        Этот предпросмотр сформирован из текущих значений формы. Предпросмотр контекста backend-агента будет доступен после создания задачи.
       </p>
       <div class="preview-grid">
         @for (row of previewRows(); track row.label) {
@@ -277,50 +277,50 @@ export class CreateTaskPageComponent {
     {
       label: 'Backend endpoint',
       value: 'backend_endpoint',
-      description: 'API, handler, validation, authorization, or persistence work.',
-      acceptanceCriteria: ['Endpoint success and failure paths are covered.', 'Authorization behavior is verified.'],
-      constraints: ['Preserve existing public contracts unless explicitly requested.'],
-      riskFactors: ['Backward-incompatible API behavior.', 'Missing validation or authorization.'],
+      description: 'Работа с API, обработчиком, валидацией, авторизацией или хранением данных.',
+      acceptanceCriteria: ['Пути успеха и ошибки endpoint покрыты.', 'Поведение авторизации проверено.'],
+      constraints: ['Сохранять существующие публичные контракты, если явно не указано обратное.'],
+      riskFactors: ['Обратно несовместимое поведение API.', 'Недостающая валидация или авторизация.'],
     },
     {
-      label: 'Frontend UI fix',
+      label: 'Frontend UI',
       value: 'frontend_ui_fix',
-      description: 'Component, layout, accessibility, or workflow UI work.',
-      acceptanceCriteria: ['Affected UI state renders correctly.', 'Responsive and interaction states are verified.'],
-      constraints: ['Follow the existing design system and component patterns.'],
-      riskFactors: ['Visual regression in adjacent states.', 'Keyboard or focus behavior regressions.'],
+      description: 'Работа с компонентом, layout, доступностью или UI-сценарием.',
+      acceptanceCriteria: ['Затронутое состояние UI отображается корректно.', 'Адаптивность и интерактивные состояния проверены.'],
+      constraints: ['Следовать существующей дизайн-системе и паттернам компонентов.'],
+      riskFactors: ['Визуальная регрессия в соседних состояниях.', 'Регрессии клавиатуры или фокуса.'],
     },
     {
-      label: 'Tests only',
+      label: 'Только тесты',
       value: 'tests_only',
-      description: 'Focused tests without production changes unless a real bug is exposed.',
-      acceptanceCriteria: ['The intended behavior is covered by tests.', 'Focused and broad test commands pass.'],
-      constraints: ['Avoid production changes unless required to make a real failing behavior pass.'],
-      riskFactors: ['Brittle assertions tied to implementation details.'],
+      description: 'Точечные тесты без production-изменений, кроме случаев, когда обнаружен реальный дефект.',
+      acceptanceCriteria: ['Ожидаемое поведение покрыто тестами.', 'Точечные и широкие проверки проходят.'],
+      constraints: ['Не менять production-код, если это не нужно для исправления реального падающего поведения.'],
+      riskFactors: ['Хрупкие проверки, привязанные к деталям реализации.'],
     },
     {
-      label: 'Refactor',
+      label: 'Рефакторинг',
       value: 'refactor',
-      description: 'Structure-preserving cleanup or extraction.',
-      acceptanceCriteria: ['Behavior is preserved.', 'Relevant checks pass after the refactor.'],
-      constraints: ['Keep churn scoped to the requested subsystem.'],
-      riskFactors: ['Behavior drift hidden by structural changes.'],
+      description: 'Очистка или извлечение без изменения поведения.',
+      acceptanceCriteria: ['Поведение сохранено.', 'Релевантные проверки проходят после рефакторинга.'],
+      constraints: ['Ограничить изменения запрошенной подсистемой.'],
+      riskFactors: ['Смещение поведения, скрытое структурными изменениями.'],
     },
     {
-      label: 'Dependency update',
+      label: 'Обновление зависимостей',
       value: 'dependency_update',
-      description: 'Dependency manifest and lockfile updates.',
-      acceptanceCriteria: ['Manifest and lockfile are consistent.', 'Build and tests pass with updated dependencies.'],
-      constraints: ['Keep unrelated dependency churn out of the change.'],
-      riskFactors: ['Transitive dependency breakage.', 'Runtime compatibility changes.'],
+      description: 'Изменения manifest и lockfile зависимостей.',
+      acceptanceCriteria: ['Manifest и lockfile согласованы.', 'Сборка и тесты проходят с обновленными зависимостями.'],
+      constraints: ['Не включать несвязанный churn зависимостей.'],
+      riskFactors: ['Поломки транзитивных зависимостей.', 'Изменения runtime-совместимости.'],
     },
     {
-      label: 'Documentation',
+      label: 'Документация',
       value: 'documentation',
-      description: 'Readme, runbook, or usage documentation.',
-      acceptanceCriteria: ['Commands and configuration names match the repository.', 'Docs are concise and actionable.'],
-      constraints: ['Avoid runtime code changes unless required to verify documentation.'],
-      riskFactors: ['Stale command examples.', 'Docs diverging from code behavior.'],
+      description: 'Readme, runbook или пользовательская документация.',
+      acceptanceCriteria: ['Команды и имена конфигурации соответствуют репозиторию.', 'Документация краткая и применимая.'],
+      constraints: ['Не менять runtime-код, если это не нужно для проверки документации.'],
+      riskFactors: ['Устаревшие примеры команд.', 'Расхождение документации с поведением кода.'],
     },
   ];
 
@@ -392,16 +392,16 @@ export class CreateTaskPageComponent {
     }
     const payload = this.buildPayload();
     this.previewRows.set([
-      { label: 'Title', value: payload.title },
-      { label: 'Description', value: payload.description },
-      { label: 'Repository', value: payload.repositoryName || 'Unassigned' },
-      { label: 'Queue', value: payload.queue || 'Unassigned' },
-      { label: 'Task Type', value: payload.taskType || 'Unspecified' },
-      { label: 'Tags', value: payload.tags?.join('\n') || 'None' },
-      { label: 'Acceptance Criteria', value: payload.acceptanceCriteria?.join('\n') || 'None' },
-      { label: 'Constraints', value: payload.constraints?.join('\n') || 'None' },
-      { label: 'Risk Factors', value: payload.riskFactors?.join('\n') || 'None' },
-      { label: 'Missing Context', value: payload.missingContext?.join('\n') || 'None' },
+      { label: 'Название', value: payload.title },
+      { label: 'Описание', value: payload.description },
+      { label: 'Репозиторий', value: payload.repositoryName || 'Не назначен' },
+      { label: 'Очередь', value: payload.queue || 'Не назначена' },
+      { label: 'Тип задачи', value: payload.taskType || 'Не указан' },
+      { label: 'Теги', value: payload.tags?.join('\n') || 'Нет' },
+      { label: 'Критерии приемки', value: payload.acceptanceCriteria?.join('\n') || 'Нет' },
+      { label: 'Ограничения', value: payload.constraints?.join('\n') || 'Нет' },
+      { label: 'Риски', value: payload.riskFactors?.join('\n') || 'Нет' },
+      { label: 'Недостающий контекст', value: payload.missingContext?.join('\n') || 'Нет' },
     ]);
     this.previewVisible.set(true);
   }
@@ -420,7 +420,7 @@ export class CreateTaskPageComponent {
       next: (response) => {
         this.messages.add({
           severity: 'success',
-          summary: status === 'ready' ? 'Ready task created' : 'Draft task created',
+          summary: status === 'ready' ? 'Готовая задача создана' : 'Черновик задачи создан',
         });
         this.router.navigate(['/', response.task.id]);
       },
