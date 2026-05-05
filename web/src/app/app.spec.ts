@@ -54,7 +54,7 @@ describe('App', () => {
     });
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('.console-title')?.textContent).toContain('Task Tracker Console');
+    expect(compiled.querySelector('.console-title')?.textContent).toContain('Консоль задач');
     expect(compiled.textContent).toContain('Viewer One');
     http.verify();
   });

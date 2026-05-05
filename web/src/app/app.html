@@ -5,8 +5,8 @@
   <p-toolbar styleClass="console-toolbar">
     <div class="console-toolbar__start">
       <div>
-        <div class="console-title">Task Tracker Console</div>
-        <div class="console-subtitle">Human operations</div>
+        <div class="console-title">Консоль задач</div>
+        <div class="console-subtitle">Операции с участием человека</div>
       </div>
     </div>
     <div class="console-toolbar__end">
@@ -15,13 +15,13 @@
         <p-tag [value]="authModeLabel()" [severity]="authModeSeverity()" />
         <p-tag [value]="session.role" severity="info" />
       } @else {
-        <span class="console-user">Session pending</span>
+        <span class="console-user">Сессия загружается</span>
       }
     </div>
   </p-toolbar>
 
   <div class="console-layout">
-    <nav class="console-nav" aria-label="Task tracker navigation">
+    <nav class="console-nav" aria-label="Навигация по задачам">
       @for (item of visibleNavItems(); track item.route) {
         <a
           class="console-nav__link"
@@ -44,7 +44,7 @@
           type="button"
           data-testid="session-retry"
           icon="pi pi-refresh"
-          label="Retry session"
+          label="Повторить сессию"
           severity="secondary"
           (click)="retrySession()"
         ></button>
@@ -52,7 +52,7 @@
 
       @if (sessionService.loading()) {
         <div class="console-loading" aria-live="polite">
-          <p-progressSpinner ariaLabel="Loading session" />
+          <p-progressSpinner ariaLabel="Загрузка сессии" />
         </div>
       }
 

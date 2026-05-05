@@ -39,23 +39,23 @@ interface NavItem {
 export class App {
   protected readonly sessionService = inject(SessionService);
   protected readonly navItems: NavItem[] = [
-    { label: 'Queue', icon: 'pi pi-list', route: '/', testId: 'nav-queue', capability: 'canReadTasks' },
+    { label: 'Очередь', icon: 'pi pi-list', route: '/', testId: 'nav-queue', capability: 'canReadTasks' },
     {
-      label: 'Create',
+      label: 'Создать',
       icon: 'pi pi-plus-circle',
       route: '/new',
       testId: 'nav-create',
       capability: 'canCreateTask',
     },
     {
-      label: 'Proposals',
+      label: 'Предложения',
       icon: 'pi pi-verified',
       route: '/proposals',
       testId: 'nav-proposals',
       capability: 'canReadTasks',
     },
     {
-      label: 'Operations',
+      label: 'Операции',
       icon: 'pi pi-server',
       route: '/operations',
       testId: 'nav-operations',
@@ -80,12 +80,12 @@ export class App {
   protected authModeLabel(): string {
     const authMode = this.sessionService.session()?.authMode;
     if (authMode === 'localhost') {
-      return 'Localhost dev';
+      return 'Локальная разработка';
     }
     if (authMode === 'bearer') {
       return 'Bearer';
     }
-    return 'Trusted proxy';
+    return 'Доверенный прокси';
   }
 
   protected authModeSeverity(): 'success' | 'info' | 'warn' | 'danger' | 'secondary' | 'contrast' {

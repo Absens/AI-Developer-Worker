@@ -89,12 +89,12 @@ describe('QueuePageComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Ready');
-    expect(text).toContain('Awaiting Human');
-    expect(text).toContain('Failed');
+    expect(text).toContain('Готова');
+    expect(text).toContain('Ждет человека');
+    expect(text).toContain('Ошибка');
     expect(text).toContain('Implement ready queue item');
     expect(text).toContain('Need API decision');
-    expect(text).toContain('Select a task');
+    expect(text).toContain('Выберите задачу');
   });
 });
 

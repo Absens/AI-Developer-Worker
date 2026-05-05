@@ -49,47 +49,47 @@ interface QueueGroup {
     <section class="page queue-page" data-testid="queue-page">
       <header class="page__header">
         <div>
-          <h1>Queue</h1>
-          <p>Tasks grouped by operational state. Filters and selection are encoded in the URL.</p>
+          <h1>Очередь</h1>
+          <p>Задачи сгруппированы по рабочему состоянию. Фильтры и выбор сохраняются в URL.</p>
         </div>
         @if (canCreateTask()) {
-          <a pButton routerLink="/new" icon="pi pi-plus-circle" label="Create task" data-testid="queue-create-task"></a>
+          <a pButton routerLink="/new" icon="pi pi-plus-circle" label="Создать задачу" data-testid="queue-create-task"></a>
         }
       </header>
 
       <div class="queue-layout" data-testid="queue-layout">
         <div class="queue-left">
-          <form class="surface filter-grid" [formGroup]="filters" aria-label="Task filters">
+          <form class="surface filter-grid" [formGroup]="filters" aria-label="Фильтры задач">
             <label class="field">
-              <span>Status</span>
+              <span>Статус</span>
               <p-multiselect
                 formControlName="status"
                 [options]="statusOptions"
                 optionLabel="label"
                 optionValue="value"
-                placeholder="Any status"
+                placeholder="Любой статус"
                 display="chip"
                 [showClear]="true"
               />
             </label>
             <label class="field">
-              <span>Repository</span>
+              <span>Репозиторий</span>
               <input pInputText formControlName="repository" placeholder="developer" />
             </label>
             <label class="field">
-              <span>Queue</span>
+              <span>Очередь</span>
               <input pInputText formControlName="queue" placeholder="DEV" />
             </label>
             <label class="field">
-              <span>Priority</span>
+              <span>Приоритет</span>
               <input pInputText formControlName="priority" placeholder="normal" />
             </label>
             <label class="field">
-              <span>Worker</span>
+              <span>Воркер</span>
               <input pInputText formControlName="worker" placeholder="worker-1" />
             </label>
             <label class="field">
-              <span>Tag</span>
+              <span>Тег</span>
               <input pInputText formControlName="tag" placeholder="ai_dev" />
             </label>
             <div class="filter-actions">
@@ -98,7 +98,7 @@ interface QueueGroup {
                 type="button"
                 data-testid="queue-reset-filters"
                 icon="pi pi-filter-slash"
-                label="Reset"
+                label="Сбросить"
                 severity="secondary"
                 (click)="resetFilters()"
               ></button>
@@ -107,7 +107,7 @@ interface QueueGroup {
                 type="button"
                 data-testid="queue-refresh"
                 icon="pi pi-refresh"
-                label="Refresh"
+                label="Обновить"
                 severity="secondary"
                 (click)="loadTasks()"
               ></button>
@@ -121,7 +121,7 @@ interface QueueGroup {
           @if (resultLimited()) {
             <p-message
               severity="warn"
-              text="Showing the first 100 results. Add filters to narrow the queue."
+              text="Показаны первые 100 результатов. Добавьте фильтры, чтобы сузить очередь."
             />
           }
 
@@ -137,8 +137,8 @@ interface QueueGroup {
             } @else if (tasks().length === 0) {
               <div class="empty-state surface">
                 <i class="pi pi-inbox" aria-hidden="true"></i>
-                <h2>No tasks match the filters</h2>
-                <p>Clear filters or create a new task to populate this queue.</p>
+                <h2>Нет задач по текущим фильтрам</h2>
+                <p>Сбросьте фильтры или создайте задачу для этой очереди.</p>
               </div>
             } @else {
               @for (group of groups(); track group.status) {
@@ -149,7 +149,7 @@ interface QueueGroup {
                   </header>
 
                   @if (group.tasks.length === 0) {
-                    <p class="muted">No tasks in this group.</p>
+                    <p class="muted">В этой группе нет задач.</p>
                   } @else {
                     <div class="task-row-list">
                       @for (task of group.tasks; track task.id) {
@@ -163,7 +163,7 @@ interface QueueGroup {
                           <span class="task-row__title">{{ task.title }}</span>
                           <span class="task-row__meta">
                             <p-tag [value]="statusLabel(task.status)" [severity]="statusSeverity(task.status)" />
-                            <span>{{ task.repositoryName || 'unassigned' }}</span>
+                            <span>{{ task.repositoryName || 'не назначено' }}</span>
                             @if (task.queue) {
                               <span>{{ task.queue }}</span>
                             }
@@ -195,7 +195,7 @@ interface QueueGroup {
           </div>
         </div>
 
-        <aside class="queue-right" aria-label="Selected task detail">
+        <aside class="queue-right" aria-label="Детали выбранной задачи">
           <app-task-detail-panel
             [taskId]="selectedId()"
             (taskChanged)="loadTasks()"
@@ -242,7 +242,7 @@ export class QueuePageComponent implements OnInit {
     }));
     const other = tasks.filter((task) => !QUEUE_GROUP_STATUSES.includes(task.status));
     return other.length
-      ? [...knownGroups, { status: 'other', label: 'Other', tasks: other }]
+      ? [...knownGroups, { status: 'other', label: 'Другое', tasks: other }]
       : knownGroups;
   });
 

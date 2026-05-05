@@ -8,10 +8,10 @@ import { ButtonModule } from 'primeng/button';
   template: `
     <section class="page">
       <header class="page__header">
-        <h1>Not Found</h1>
-        <p>The requested console route does not exist.</p>
+        <h1>Страница не найдена</h1>
+        <p>Такого раздела консоли нет.</p>
       </header>
-      <a pButton routerLink="/" icon="pi pi-list" label="Back to queue"></a>
+      <a pButton routerLink="/" icon="pi pi-list" label="К очереди"></a>
     </section>
   `,
 })
