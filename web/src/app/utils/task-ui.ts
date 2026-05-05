@@ -42,64 +42,83 @@ export interface CommandPolicy {
   help: string;
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  new: 'Новая',
+  triage: 'Триаж',
+  ready: 'Готова',
+  claimed: 'Назначена',
+  analyzing: 'Анализ',
+  awaiting_human: 'Ждет человека',
+  decomposing: 'Декомпозиция',
+  implementing: 'В работе',
+  validating: 'Проверка',
+  review: 'Ревью',
+  fixing_review: 'Исправление ревью',
+  blocked: 'Заблокирована',
+  done: 'Завершена',
+  failed: 'Ошибка',
+  cancelled: 'Отменена',
+};
+
 export const TASK_COMMAND_POLICIES: CommandPolicy[] = [
   {
     command: 'mark-ready',
-    label: 'Mark ready',
+    label: 'В готовые',
     icon: 'pi pi-check-circle',
     capability: 'canUpdateTask',
     statuses: ['new', 'triage', 'blocked'],
     reason: 'recommended',
-    help: 'Moves a draft or blocked task to the ready queue.',
+    help: 'Перемещает черновик или заблокированную задачу в очередь готовых.',
   },
   {
     command: 'resume',
-    label: 'Resume',
+    label: 'Возобновить',
     icon: 'pi pi-play',
     capability: 'canResume',
     statuses: ['awaiting_human', 'blocked'],
     reason: 'recommended',
-    help: 'Moves the task back to ready after human input.',
+    help: 'Возвращает задачу в готовую очередь после ответа человека.',
   },
   {
     command: 'cancel',
-    label: 'Cancel',
+    label: 'Отменить',
     icon: 'pi pi-times',
     capability: 'canCancel',
     hideOnTerminal: true,
     reason: 'required',
-    help: 'Cancels the task where the backend transition is valid.',
+    help: 'Отменяет задачу, если backend разрешает такой переход.',
   },
   {
     command: 'hold',
-    label: 'Hold',
+    label: 'Поставить на паузу',
     icon: 'pi pi-pause',
     capability: 'canHold',
     statuses: ['ready', 'claimed', 'analyzing', 'awaiting_human', 'implementing', 'validating', 'review'],
     reason: 'required',
-    help: 'Puts active or queued work on hold.',
+    help: 'Ставит активную или ожидающую задачу на паузу.',
   },
   {
     command: 'retry',
-    label: 'Retry',
+    label: 'Повторить',
     icon: 'pi pi-refresh',
     capability: 'canRetry',
     statuses: ['failed', 'blocked'],
     reason: 'required',
-    help: 'Queues failed or blocked work for another attempt.',
+    help: 'Возвращает ошибочную или заблокированную задачу на повторную попытку.',
   },
   {
     command: 'force-reanalysis',
-    label: 'Force reanalysis',
+    label: 'Переанализировать',
     icon: 'pi pi-search',
     capability: 'canForceReanalysis',
     hideOnTerminal: true,
     reason: 'required',
-    help: 'Records a manual reanalysis request; it does not guarantee an immediate restart.',
+    help: 'Записывает ручной запрос на повторный анализ без гарантии немедленного перезапуска.',
   },
 ];
 
 export const statusLabel = (status: string): string =>
+  STATUS_LABELS[status] ??
   status
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -142,13 +161,13 @@ export const commandVisible = (
 
 export const formatDate = (value: string | undefined): string => {
   if (!value) {
-    return 'Unknown';
+    return 'Неизвестно';
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat('ru-RU', {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(date);

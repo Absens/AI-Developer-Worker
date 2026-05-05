@@ -9,7 +9,7 @@ import { providePrimeNG } from 'primeng/config';
 
 import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
 import { SessionService } from '../services/session.service';
-import { TASK_COMMAND_POLICIES } from '../utils/task-ui';
+import { TASK_COMMAND_POLICIES, statusLabel } from '../utils/task-ui';
 import { CreateTaskPageComponent } from './create-task-page.component';
 import {
   OperationsPageComponent,
@@ -52,6 +52,22 @@ const loadSession = (http: HttpTestingController, session = developerSession): v
   TestBed.inject(SessionService).load();
   http.expectOne('/api/session').flush(session);
 };
+
+describe('task UI labels', () => {
+  it('renders Russian task status and command labels', () => {
+    expect(statusLabel('ready')).toBe('Готова');
+    expect(statusLabel('awaiting_human')).toBe('Ждет человека');
+    expect(statusLabel('fixing_review')).toBe('Исправление ревью');
+    expect(TASK_COMMAND_POLICIES.map((policy) => policy.label)).toEqual([
+      'В готовые',
+      'Возобновить',
+      'Отменить',
+      'Поставить на паузу',
+      'Повторить',
+      'Переанализировать',
+    ]);
+  });
+});
 
 describe('QueuePageComponent', () => {
   afterEach(() => TestBed.inject(HttpTestingController).verify());
