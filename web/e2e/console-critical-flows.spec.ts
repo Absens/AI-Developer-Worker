@@ -33,7 +33,7 @@ test.describe.serial('task tracker console production flows', () => {
     await expect(page.getByTestId('task-detail')).toContainText('Implement ready queue item');
 
     await page.getByTestId('preview-context-button').click();
-    await expect(page.getByTestId('context-dialog')).toContainText('Task ID');
+    await expect(page.getByTestId('context-dialog')).toContainText('ID задачи');
     await expect(page.getByTestId('context-dialog')).toContainText('ready-task');
     await page.keyboard.press('Escape');
 
@@ -57,7 +57,7 @@ test.describe.serial('task tracker console production flows', () => {
     await expect(page.getByTestId('command-reason')).toBeFocused();
     await page.getByTestId('command-reason').fill('Answer supplied.');
     await page.getByTestId('command-confirm').click();
-    await expect(page.getByTestId('task-detail')).toContainText('Ready');
+    await expect(page.getByTestId('task-detail')).toContainText('Готова');
 
     await page.goto('/tasks/proposals');
     await expect(page.getByTestId('proposals-page')).toBeVisible();

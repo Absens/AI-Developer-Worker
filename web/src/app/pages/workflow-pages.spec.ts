@@ -114,7 +114,7 @@ describe('TaskDetailPanelComponent', () => {
     expect(text).toContain('Task with MR and validation');
     expect(text).toContain('Tests passed.');
     expect(text).toContain('MR title');
-    expect(text).toContain('Cancel');
+    expect(text).toContain('Отменить');
   });
 
   it('hides mutation actions for a viewer session', async () => {
@@ -127,9 +127,9 @@ describe('TaskDetailPanelComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Preview context');
-    expect(text).not.toContain('Cancel');
-    expect(text).not.toContain('Hold');
+    expect(text).toContain('Предпросмотр контекста');
+    expect(text).not.toContain('Отменить');
+    expect(text).not.toContain('Поставить на паузу');
   });
 
   it('renders allowlisted agent context preview fields', async () => {
@@ -153,10 +153,10 @@ describe('TaskDetailPanelComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Task ID');
+    expect(text).toContain('ID задачи');
     expect(text).toContain('ready-task');
-    expect(text).toContain('Acceptance Criteria');
-    expect(text).toContain('Events');
+    expect(text).toContain('Критерии приемки');
+    expect(text).toContain('События');
   });
 
   it('answers and resumes through the answer endpoint with a resume command', async () => {

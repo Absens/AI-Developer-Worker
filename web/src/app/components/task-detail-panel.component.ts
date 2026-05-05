@@ -82,14 +82,14 @@ const arrayText = (value: unknown): string | undefined =>
       @if (!currentTaskId()) {
         <div class="empty-state">
           <i class="pi pi-file-edit" aria-hidden="true"></i>
-          <h2>Select a task</h2>
-          <p>Open a task from the queue to inspect context, validation, MR state, and workflow actions.</p>
+          <h2>Выберите задачу</h2>
+          <p>Откройте задачу из очереди, чтобы проверить контекст, валидацию, состояние MR и рабочие действия.</p>
         </div>
       } @else {
         @if (loading()) {
           <div class="loading-row" aria-live="polite">
-            <p-progressSpinner ariaLabel="Loading task" />
-            <span>Loading task detail</span>
+            <p-progressSpinner ariaLabel="Загрузка задачи" />
+            <span>Загрузка деталей задачи</span>
           </div>
         }
 
@@ -99,7 +99,7 @@ const arrayText = (value: unknown): string | undefined =>
             pButton
             type="button"
             icon="pi pi-refresh"
-            label="Retry"
+            label="Повторить"
             severity="secondary"
             (click)="reload()"
           ></button>
@@ -125,13 +125,13 @@ const arrayText = (value: unknown): string | undefined =>
                 </div>
               </div>
 
-              <div class="action-bar" aria-label="Task actions">
+              <div class="action-bar" aria-label="Действия с задачей">
                 <button
                   pButton
                   type="button"
                   data-testid="preview-context-button"
                   icon="pi pi-eye"
-                  label="Preview context"
+                  label="Предпросмотр контекста"
                   severity="secondary"
                   (click)="openAgentContext()"
                 ></button>
@@ -153,14 +153,14 @@ const arrayText = (value: unknown): string | undefined =>
 
             <div class="detail-grid">
               <section class="surface stack">
-                <h3>Goal</h3>
+                <h3>Цель</h3>
                 @if (response.task.humanSummary) {
                   <p class="lead">{{ response.task.humanSummary }}</p>
                 }
-                <p class="prewrap">{{ response.task.description || 'No description provided.' }}</p>
+                <p class="prewrap">{{ response.task.description || 'Описание не указано.' }}</p>
 
                 @if (response.task.acceptanceCriteria.length > 0) {
-                  <h4>Acceptance Criteria</h4>
+                  <h4>Критерии приемки</h4>
                   <ul class="compact-list">
                     @for (criterion of response.task.acceptanceCriteria; track criterion) {
                       <li>{{ criterion }}</li>
@@ -170,19 +170,19 @@ const arrayText = (value: unknown): string | undefined =>
 
                 <div class="field-grid">
                   <div>
-                    <span class="field-label">Repository</span>
-                    <span>{{ response.task.repositoryName || 'Unassigned' }}</span>
+                    <span class="field-label">Репозиторий</span>
+                    <span>{{ response.task.repositoryName || 'Не назначено' }}</span>
                   </div>
                   <div>
-                    <span class="field-label">Repo path key</span>
-                    <span>{{ response.task.repoPathKey || 'Unassigned' }}</span>
+                    <span class="field-label">Ключ пути репозитория</span>
+                    <span>{{ response.task.repoPathKey || 'Не назначено' }}</span>
                   </div>
                   <div>
-                    <span class="field-label">Base branch</span>
-                    <span>{{ response.task.baseBranch || 'Default' }}</span>
+                    <span class="field-label">Базовая ветка</span>
+                    <span>{{ response.task.baseBranch || 'По умолчанию' }}</span>
                   </div>
                   <div>
-                    <span class="field-label">Updated</span>
+                    <span class="field-label">Обновлено</span>
                     <span>{{ formatDate(response.task.updatedAt) }}</span>
                   </div>
                 </div>
@@ -197,7 +197,7 @@ const arrayText = (value: unknown): string | undefined =>
               </section>
 
               <section class="surface stack">
-                <h3>Execution</h3>
+                <h3>Выполнение</h3>
                 @if (response.activeLeases.length > 0) {
                   <div class="lease-list">
                     @for (lease of response.activeLeases; track lease.id) {
@@ -206,27 +206,27 @@ const arrayText = (value: unknown): string | undefined =>
                           <strong>{{ lease.workerId }}</strong>
                           <span>{{ lease.kind }}</span>
                         </div>
-                        <span>expires {{ formatDate(lease.expiresAt) }}</span>
+                        <span>истекает {{ formatDate(lease.expiresAt) }}</span>
                       </div>
                     }
                   </div>
                 } @else {
-                  <p class="muted">No active leases.</p>
+                  <p class="muted">Нет активных аренд.</p>
                 }
 
                 @if (response.task.latestAiSummary) {
                   <div>
-                    <h4>Latest AI Summary</h4>
+                    <h4>Последнее резюме AI</h4>
                     <p>{{ truncate(response.task.latestAiSummary, 360) }}</p>
                   </div>
                 }
 
                 @if (response.latestValidation || response.task.latestValidationSummary) {
                   <div class="summary-block">
-                    <h4>Validation</h4>
+                    <h4>Валидация</h4>
                     @if (response.latestValidation) {
                       <p-tag
-                        [value]="response.latestValidation.status || 'unknown'"
+                        [value]="response.latestValidation.status || 'неизвестно'"
                         [severity]="response.latestValidation.status === 'passed' ? 'success' : 'danger'"
                       />
                       <p>{{ truncate(response.latestValidation.summary || response.latestValidation.diagnostic, 360) }}</p>
@@ -253,12 +253,12 @@ const arrayText = (value: unknown): string | undefined =>
                     }
                     <div class="field-grid field-grid--compact">
                       <div>
-                        <span class="field-label">Branch</span>
-                        <span>{{ response.latestMergeRequest?.branch || response.task.branch || 'Unknown' }}</span>
+                        <span class="field-label">Ветка</span>
+                        <span>{{ response.latestMergeRequest?.branch || response.task.branch || 'Неизвестно' }}</span>
                       </div>
                       <div>
-                        <span class="field-label">Outcome</span>
-                        <span>{{ response.latestMergeRequest?.outcome || 'Unknown' }}</span>
+                        <span class="field-label">Результат</span>
+                        <span>{{ response.latestMergeRequest?.outcome || 'Неизвестно' }}</span>
                       </div>
                     </div>
                   </div>
@@ -267,7 +267,7 @@ const arrayText = (value: unknown): string | undefined =>
                 @if (response.diagnostics.repeatedValidationFailures > 0) {
                   <p-message
                     severity="warn"
-                    [text]="'Repeated validation failures: ' + response.diagnostics.repeatedValidationFailures"
+                    [text]="'Повторные ошибки валидации: ' + response.diagnostics.repeatedValidationFailures"
                   />
                 }
               </section>
@@ -275,11 +275,11 @@ const arrayText = (value: unknown): string | undefined =>
 
             @if (openQuestions().length > 0) {
               <section class="surface stack">
-                <h3>Open Question</h3>
+                <h3>Открытый вопрос</h3>
                 @for (question of openQuestions(); track question.id) {
                   <div class="question-block">
                     <div class="question-block__body">
-                      <strong>{{ question.summary || 'Clarification requested' }}</strong>
+                      <strong>{{ question.summary || 'Нужна информация' }}</strong>
                       <p>{{ question.question }}</p>
                       @if (question.blockingReason) {
                         <span class="muted">{{ question.blockingReason }}</span>
@@ -310,15 +310,15 @@ const arrayText = (value: unknown): string | undefined =>
                       data-testid="answer-textarea"
                       rows="4"
                       [formControl]="answerControl"
-                      placeholder="Answer the selected question"
-                      aria-label="Answer"
+                      placeholder="Ответьте на выбранный вопрос"
+                      aria-label="Ответить"
                     ></textarea>
                     <div class="action-bar">
                       <button
                         pButton
                         type="button"
                         data-testid="answer-button"
-                        label="Answer"
+                        label="Ответить"
                         icon="pi pi-reply"
                         [disabled]="answerControl.invalid || submitting()"
                         (click)="submitAnswer(false)"
@@ -327,7 +327,7 @@ const arrayText = (value: unknown): string | undefined =>
                         pButton
                         type="button"
                         data-testid="answer-resume-button"
-                        label="Answer and resume"
+                        label="Ответить и продолжить"
                         icon="pi pi-play"
                         severity="secondary"
                         [disabled]="answerControl.invalid || submitting()"
@@ -341,13 +341,13 @@ const arrayText = (value: unknown): string | undefined =>
 
             @if (response.children.length > 0) {
               <section class="surface stack">
-                <h3>Decomposition</h3>
+                <h3>Декомпозиция</h3>
                 <div class="child-list">
                   @for (child of response.children; track child.id) {
                     <div class="child-row">
                       <div>
                         <a [routerLink]="['/', child.id]">{{ child.title }}</a>
-                        <div class="muted">{{ child.dependencyReason || 'Child dependency' }}</div>
+                        <div class="muted">{{ child.dependencyReason || 'Дочерняя зависимость' }}</div>
                         <div class="tag-row">
                           <p-tag [value]="statusLabel(child.status)" [severity]="statusSeverity(child.status)" />
                           <p-tag [value]="child.externalMirrorStatus || 'internal_only'" severity="secondary" />
@@ -358,7 +358,7 @@ const arrayText = (value: unknown): string | undefined =>
                           pButton
                           type="button"
                           [attr.data-testid]="'approve-decomposition-' + child.id"
-                          label="Approve mirroring"
+                          label="Одобрить зеркалирование"
                           icon="pi pi-check"
                           severity="secondary"
                           (click)="openDecompositionApproval(child)"
@@ -372,15 +372,15 @@ const arrayText = (value: unknown): string | undefined =>
 
             <div class="detail-grid">
               <section class="surface stack">
-                <h3>Comments and Answers</h3>
+                <h3>Комментарии и ответы</h3>
                 @if (response.task.comments.length === 0 && response.task.humanAnswers.length === 0) {
-                  <p class="muted">No comments or answers yet.</p>
+                  <p class="muted">Комментариев и ответов пока нет.</p>
                 } @else {
                   <div class="timeline-list">
                     @for (comment of response.task.comments; track comment.id) {
                       <div class="timeline-item">
                         <div class="timeline-item__meta">
-                          <strong>{{ comment.author?.displayName || comment.author?.id || 'unknown' }}</strong>
+                          <strong>{{ comment.author?.displayName || comment.author?.id || 'неизвестно' }}</strong>
                           <span>{{ formatDate(comment.createdAt) }}</span>
                         </div>
                         <p>{{ truncate(comment.body, 500) }}</p>
@@ -391,9 +391,9 @@ const arrayText = (value: unknown): string | undefined =>
               </section>
 
               <section class="surface stack">
-                <h3>Timeline</h3>
+                <h3>Хронология</h3>
                 @if (response.task.events.length === 0) {
-                  <p class="muted">No timeline events.</p>
+                  <p class="muted">Событий пока нет.</p>
                 } @else {
                   <div class="timeline-list">
                     @for (event of response.task.events; track event.id || event.createdAt + event.kind) {
@@ -420,7 +420,7 @@ const arrayText = (value: unknown): string | undefined =>
     </section>
 
     <p-dialog
-      header="Agent Context Preview"
+      header="Предпросмотр контекста агента"
       [visible]="contextVisible()"
       (visibleChange)="contextVisible.set($event)"
       [modal]="true"
@@ -429,12 +429,12 @@ const arrayText = (value: unknown): string | undefined =>
     >
       <div data-testid="context-dialog">
       @if (contextLoading()) {
-        <div class="loading-row"><p-progressSpinner ariaLabel="Loading context" /> Loading preview</div>
+        <div class="loading-row"><p-progressSpinner ariaLabel="Загрузка контекста" /> Загрузка предпросмотра</div>
       } @else if (contextError()) {
-        <p-message severity="error" [text]="contextError() || 'Unable to load context'" />
+        <p-message severity="error" [text]="contextError() || 'Не удалось загрузить контекст'" />
       } @else {
         <p class="muted">
-          Showing allowlisted task context fields. Long values are truncated in this preview.
+          Показаны разрешенные поля контекста задачи. Длинные значения в предпросмотре сокращены.
         </p>
         <div class="preview-grid">
           @for (row of contextRows(); track row.label) {
@@ -449,7 +449,7 @@ const arrayText = (value: unknown): string | undefined =>
     </p-dialog>
 
     <p-dialog
-      [header]="pendingCommand()?.label || 'Confirm action'"
+      [header]="pendingCommand()?.label || 'Подтвердите действие'"
       [visible]="commandVisibleDialog()"
       (visibleChange)="commandVisibleDialog.set($event)"
       [modal]="true"
@@ -464,11 +464,11 @@ const arrayText = (value: unknown): string | undefined =>
           }
           <label class="field">
             <span>
-              Reason
+              Причина
               @if (command.reason === 'required') {
-                <strong aria-label="required">*</strong>
+                <strong aria-label="обязательно">*</strong>
               } @else if (command.reason === 'recommended') {
-                <span class="muted">(recommended)</span>
+                <span class="muted">(рекомендуется)</span>
               }
             </span>
             <textarea
@@ -477,7 +477,7 @@ const arrayText = (value: unknown): string | undefined =>
               autofocus
               rows="4"
               [formControl]="reasonControl"
-              placeholder="Record the operational reason"
+              placeholder="Укажите рабочую причину"
             ></textarea>
           </label>
           <div class="action-bar action-bar--end">
@@ -485,7 +485,7 @@ const arrayText = (value: unknown): string | undefined =>
               pButton
               type="button"
               data-testid="command-cancel"
-              label="Cancel"
+              label="Отмена"
               severity="secondary"
               (click)="closeCommandDialog()"
             ></button>
@@ -493,7 +493,7 @@ const arrayText = (value: unknown): string | undefined =>
               pButton
               type="button"
               data-testid="command-confirm"
-              label="Confirm"
+              label="Подтвердить"
               icon="pi pi-check"
               [disabled]="reasonMissing() || submitting()"
               (click)="submitPendingCommand()"
@@ -663,9 +663,9 @@ export class TaskDetailPanelComponent {
   protected openDecompositionApproval(child: ChildTaskSummaryDto): void {
     this.pendingCommand.set({
       command: 'approve-decomposition',
-      label: 'Approve decomposition mirroring',
+      label: 'Одобрить зеркалирование декомпозиции',
       reason: 'required',
-      help: 'Records approval for child task mirroring decisions.',
+      help: 'Записывает одобрение решений по зеркалированию дочерней задачи.',
       child,
     });
     this.reasonControl.reset('');
@@ -690,7 +690,7 @@ export class TaskDetailPanelComponent {
       this.reasonControl.markAsTouched();
       return;
     }
-    if (pending.label === 'Answer and resume') {
+    if (pending.label === 'Ответить и продолжить') {
       this.postAnswer(true);
       return;
     }
@@ -702,7 +702,7 @@ export class TaskDetailPanelComponent {
         ...(pending.command === 'approve-decomposition' ? { approve: true } : {}),
       })
       .subscribe({
-        next: () => this.afterMutation(`${pending.label} completed.`),
+        next: () => this.afterMutation(`${pending.label}: выполнено.`),
         error: (error: unknown) => this.afterMutationError(error),
       });
   }
@@ -710,9 +710,9 @@ export class TaskDetailPanelComponent {
   private openAnswerResumeDialog(): void {
     this.pendingCommand.set({
       command: 'resume',
-      label: 'Answer and resume',
+      label: 'Ответить и продолжить',
       reason: 'recommended',
-      help: 'Records the answer with a resume command so execution can continue.',
+      help: 'Записывает ответ вместе с командой возобновления, чтобы выполнение продолжилось.',
     });
     this.reasonControl.reset('');
     this.commandVisibleDialog.set(true);
@@ -745,7 +745,7 @@ export class TaskDetailPanelComponent {
           : {}),
       })
       .subscribe({
-        next: () => this.afterMutation(includeResume ? 'Answer recorded and resume requested.' : 'Answer recorded.'),
+        next: () => this.afterMutation(includeResume ? 'Ответ записан, возобновление запрошено.' : 'Ответ записан.'),
         error: (error: unknown) => this.afterMutationError(error),
       });
   }
@@ -762,7 +762,7 @@ export class TaskDetailPanelComponent {
   private afterMutationError(error: unknown): void {
     this.messages.add({
       severity: 'error',
-      summary: 'Action failed',
+      summary: 'Действие не выполнено',
       detail: error instanceof Error ? error.message : String(error),
     });
     this.submitting.set(false);
@@ -785,29 +785,29 @@ export class TaskDetailPanelComponent {
       }
     };
 
-    add('Task ID', raw['taskId']);
-    add('Status', raw['status']);
-    add('Title', raw['title']);
-    add('Description', raw['description'], true);
-    add('Human Summary', raw['humanSummary'], true);
-    add('Repository', raw['repositoryName']);
-    add('Repo Path Key', raw['repoPathKey']);
-    add('Base Branch', raw['baseBranch']);
-    add('Queue', raw['queue']);
-    add('Priority', raw['priority']);
-    add('Task Type', raw['taskType']);
-    add('Prompt Profile', raw['promptProfileId']);
-    add('Tags', arrayText(raw['tags']));
-    add('Components', arrayText(raw['components']));
-    add('Acceptance Criteria', arrayText(raw['acceptanceCriteria']), true);
-    add('Constraints', arrayText(raw['constraints']), true);
-    add('Risk Factors', arrayText(raw['riskFactors']), true);
-    add('Missing Context', arrayText(raw['missingContext']), true);
+    add('ID задачи', raw['taskId']);
+    add('Статус', raw['status']);
+    add('Название', raw['title']);
+    add('Описание', raw['description'], true);
+    add('Кратко для человека', raw['humanSummary'], true);
+    add('Репозиторий', raw['repositoryName']);
+    add('Ключ пути репозитория', raw['repoPathKey']);
+    add('Базовая ветка', raw['baseBranch']);
+    add('Очередь', raw['queue']);
+    add('Приоритет', raw['priority']);
+    add('Тип задачи', raw['taskType']);
+    add('Профиль промпта', raw['promptProfileId']);
+    add('Теги', arrayText(raw['tags']));
+    add('Компоненты', arrayText(raw['components']));
+    add('Критерии приемки', arrayText(raw['acceptanceCriteria']), true);
+    add('Ограничения', arrayText(raw['constraints']), true);
+    add('Риски', arrayText(raw['riskFactors']), true);
+    add('Недостающий контекст', arrayText(raw['missingContext']), true);
 
     const activePlan = record(raw['activePlan']);
     if (Object.keys(activePlan).length > 0) {
       add(
-        'Active Plan',
+        'Активный план',
         {
           status: activePlan['status'],
           steps: Array.isArray(activePlan['steps']) ? activePlan['steps'].length : 0,
@@ -817,9 +817,9 @@ export class TaskDetailPanelComponent {
       );
     }
 
-    add('Comments', Array.isArray(raw['comments']) ? raw['comments'].length : undefined);
-    add('Events', Array.isArray(raw['events']) ? raw['events'].length : undefined);
-    add('Decisions', Array.isArray(raw['decisions']) ? raw['decisions'].length : undefined);
+    add('Комментарии', Array.isArray(raw['comments']) ? raw['comments'].length : undefined);
+    add('События', Array.isArray(raw['events']) ? raw['events'].length : undefined);
+    add('Решения', Array.isArray(raw['decisions']) ? raw['decisions'].length : undefined);
     return rows;
   }
 }
