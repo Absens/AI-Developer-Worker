@@ -358,18 +358,18 @@ describe('OperationsPageComponent', () => {
 
     const element = fixture.nativeElement as HTMLElement;
     const text = element.textContent ?? '';
-    expect(text).toContain('Active Workers');
-    expect(text).toContain('Ready Queue');
-    expect(text).toContain('Worker Heartbeats');
+    expect(text).toContain('Активные воркеры');
+    expect(text).toContain('Готовая очередь');
+    expect(text).toContain('Пульс воркеров');
     expect(text).toContain('worker-1');
-    expect(text).toContain('Healthy');
-    expect(text).toContain('Active Leases');
+    expect(text).toContain('В норме');
+    expect(text).toContain('Активные аренды');
     expect(text).toContain('lease-1');
-    expect(text).toContain('Queue Depth');
+    expect(text).toContain('Глубина очереди');
     expect(text).toContain('normal');
-    expect(text).toContain('Failed Tasks');
-    expect(text).toContain('Retry');
-    expect(text).toContain('Hold');
+    expect(text).toContain('Задачи с ошибкой');
+    expect(text).toContain('Повторить');
+    expect(text).toContain('Поставить на паузу');
     expect([...element.querySelectorAll('a')].some((anchor) => anchor.textContent?.includes('awaiting-task'))).toBeTrue();
   });
 
@@ -385,10 +385,10 @@ describe('OperationsPageComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Diagnostic Detail');
+    expect(text).toContain('Детали диагностики');
     expect(text).toContain('Unit tests failed.');
     expect(text).toContain('Codex implementation failed');
-    expect(text).toContain('Recent Lifecycle Events');
+    expect(text).toContain('Последние события жизненного цикла');
     expect(text).toContain('Validation failed.');
   });
 
@@ -402,10 +402,10 @@ describe('OperationsPageComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Waiting For Human');
+    expect(text).toContain('Ждет человека');
     expect(text).toContain('Need API choice.');
-    expect(text).toContain('Approx.');
-    expect(text).toContain('Answer');
+    expect(text).toContain('Примерно');
+    expect(text).toContain('Ответить');
   });
 
   it('preserves the last snapshot and marks it stale after a manual refresh failure', async () => {
@@ -418,7 +418,7 @@ describe('OperationsPageComponent', () => {
     fixture.detectChanges();
 
     const refresh = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
-      'button[aria-label="Refresh operations"]',
+      'button[aria-label="Обновить операции"]',
     );
     expect(refresh).not.toBeNull();
     refresh?.click();
@@ -432,7 +432,7 @@ describe('OperationsPageComponent', () => {
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
     expect(text).toContain('worker-1');
-    expect(text).toContain('Showing last successful snapshot');
+    expect(text).toContain('Показан последний успешный снимок');
     expect(text).toContain('backend unavailable');
   });
 
@@ -446,8 +446,8 @@ describe('OperationsPageComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).not.toContain('Retry');
-    expect(text).not.toContain('Hold');
-    expect(text).toContain('Details');
+    expect(text).not.toContain('Повторить');
+    expect(text).not.toContain('Поставить на паузу');
+    expect(text).toContain('Детали');
   });
 });

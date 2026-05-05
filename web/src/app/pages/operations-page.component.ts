@@ -100,17 +100,17 @@ export const classifyHeartbeat = (
 
 export const formatDuration = (seconds: number | undefined): string => {
   if (seconds === undefined) {
-    return 'Unknown';
+    return 'Неизвестно';
   }
   if (seconds < 60) {
-    return `${seconds}s`;
+    return `${seconds} с`;
   }
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) {
-    return `${minutes}m ${seconds % 60}s`;
+    return `${minutes} мин ${seconds % 60} с`;
   }
   const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
+  return `${hours} ч ${minutes % 60} мин`;
 };
 
 @Component({
@@ -131,17 +131,17 @@ export const formatDuration = (seconds: number | undefined): string => {
     <section class="page operations-page" data-testid="operations-page">
       <header class="page__header">
         <div>
-          <h1>Operations</h1>
-          <p>Workers, leases, queue pressure, failures, and waiting-for-human states from the operations snapshot.</p>
+          <h1>Операции</h1>
+          <p>Воркеры, аренды, нагрузка очередей, ошибки и ожидание человека из операционного снимка.</p>
         </div>
         <div class="action-bar action-bar--end">
           <button
             pButton
             type="button"
-            aria-label="Refresh operations"
+            aria-label="Обновить операции"
             data-testid="operations-refresh"
             icon="pi pi-refresh"
-            label="Refresh"
+            label="Обновить"
             severity="secondary"
             [loading]="refreshing()"
             (click)="refreshNow()"
@@ -151,13 +151,13 @@ export const formatDuration = (seconds: number | undefined): string => {
 
       @if (snapshot(); as current) {
         <div class="surface operations-status">
-          <span>Generated {{ formatDate(current.generatedAt) }}</span>
+          <span>Сформировано {{ formatDate(current.generatedAt) }}</span>
           @if (lastRefreshAttempt(); as attempt) {
-            <span>Last checked {{ formatDate(attempt) }}</span>
+            <span>Последняя проверка {{ formatDate(attempt) }}</span>
           }
           @if (refreshError(); as message) {
-            <p-tag value="Stale snapshot" severity="warn" />
-            <span class="error-text">Refresh failed: {{ message }}</span>
+            <p-tag value="Устаревший снимок" severity="warn" />
+            <span class="error-text">Ошибка обновления: {{ message }}</span>
           }
         </div>
       }
@@ -169,82 +169,82 @@ export const formatDuration = (seconds: number | undefined): string => {
       @if (refreshError() && snapshot()) {
         <p-message
           severity="warn"
-          text="Showing last successful snapshot because the latest refresh failed."
+          text="Показан последний успешный снимок, потому что последнее обновление завершилось ошибкой."
         />
       }
 
       @if (loading() && !snapshot()) {
         <div class="loading-row" aria-live="polite">
-          <p-progressSpinner ariaLabel="Loading operations" />
-          <span>Loading operations</span>
+          <p-progressSpinner ariaLabel="Загрузка операций" />
+          <span>Загрузка операций</span>
         </div>
       } @else if (snapshot(); as current) {
         <div class="metric-strip operations-overview">
           <div class="metric">
-            <span class="metric__label">Active Workers</span>
+            <span class="metric__label">Активные воркеры</span>
             <span class="metric__value">{{ overview().activeWorkers }}</span>
           </div>
           <div class="metric">
-            <span class="metric__label">Ready Queue</span>
+            <span class="metric__label">Готовая очередь</span>
             <span class="metric__value">{{ overview().readyDepth }}</span>
           </div>
           <div class="metric">
-            <span class="metric__label">Failed Tasks</span>
+            <span class="metric__label">Задачи с ошибкой</span>
             <span class="metric__value">{{ overview().failedTasks }}</span>
           </div>
           <div class="metric">
-            <span class="metric__label">Waiting For Human</span>
+            <span class="metric__label">Ждет человека</span>
             <span class="metric__value">{{ overview().waitingForHuman }}</span>
           </div>
           <div class="metric">
-            <span class="metric__label">Active Leases</span>
+            <span class="metric__label">Активные аренды</span>
             <span class="metric__value">{{ overview().activeLeases }}</span>
           </div>
           <div class="metric">
-            <span class="metric__label">Repeated Failures</span>
+            <span class="metric__label">Повторные ошибки</span>
             <span class="metric__value">{{ overview().repeatedFailures }}</span>
           </div>
         </div>
 
         <section class="surface operations-section">
           <header class="section-header">
-            <h2>Worker Heartbeats</h2>
+            <h2>Пульс воркеров</h2>
             <p-tag [value]="String(workerRows().length)" severity="secondary" />
           </header>
           <p-table [value]="workerRows()" styleClass="ops-table">
             <ng-template #header>
               <tr>
-                <th>Worker</th>
-                <th>State</th>
-                <th>Repository</th>
-                <th>Current task</th>
-                <th>Stage</th>
-                <th>Heartbeat age</th>
-                <th>Last error</th>
+                <th>Воркер</th>
+                <th>Состояние</th>
+                <th>Репозиторий</th>
+                <th>Текущая задача</th>
+                <th>Этап</th>
+                <th>Возраст пульса</th>
+                <th>Последняя ошибка</th>
               </tr>
             </ng-template>
             <ng-template #body let-row>
               <tr>
                 <td>{{ row.worker.workerId }}</td>
-                <td><p-tag [value]="row.worker.state || 'unknown'" [severity]="workerStateSeverity(row.worker.state)" /></td>
-                <td>{{ row.worker.repositoryName || 'unassigned' }}</td>
+                <td><p-tag [value]="row.worker.state || 'неизвестно'" [severity]="workerStateSeverity(row.worker.state)" /></td>
+                <td>{{ row.worker.repositoryName || 'не назначено' }}</td>
                 <td>
                   @if (row.worker.currentTaskId) {
                     <a [routerLink]="['/', row.worker.currentTaskId]">{{ row.worker.currentTaskId }}</a>
                   } @else {
-                    {{ row.worker.currentIssueKey || row.worker.issueKey || 'none' }}
+                    {{ row.worker.currentIssueKey || row.worker.issueKey || 'нет' }}
                   }
                 </td>
-                <td>{{ row.worker.currentStage || row.worker.stage || 'idle' }}</td>
+                <td>{{ row.worker.currentStage || row.worker.stage || 'ожидание' }}</td>
                 <td>
                   <p-tag [value]="heartbeatLabel(row.health)" [severity]="heartbeatSeverity(row.health)" />
                   <span class="muted">{{ formatDuration(row.heartbeatAgeSeconds) }}</span>
                 </td>
-                <td>{{ truncate(row.worker.lastErrorSummary, 140) || 'none' }}</td>
+                <td>{{ truncate(row.worker.lastErrorSummary, 140) || 'нет' }}</td>
               </tr>
             </ng-template>
             <ng-template #emptymessage>
-              <tr><td colspan="7">No workers reported in this snapshot.</td></tr>
+              <tr><td colspan="7">В этом снимке нет воркеров.</td></tr>
             </ng-template>
           </p-table>
         </section>
@@ -252,19 +252,19 @@ export const formatDuration = (seconds: number | undefined): string => {
         <div class="operations-grid">
           <section class="surface operations-section">
             <header class="section-header">
-              <h2>Active Leases</h2>
+              <h2>Активные аренды</h2>
               <p-tag [value]="String(activeLeases().length)" severity="secondary" />
             </header>
             <p-table [value]="activeLeases()" styleClass="ops-table">
               <ng-template #header>
                 <tr>
-                  <th>Lease</th>
-                  <th>Kind</th>
-                  <th>Task</th>
-                  <th>Repository</th>
-                  <th>Worker</th>
-                  <th>Expires</th>
-                  <th>Heartbeat</th>
+                  <th>Аренда</th>
+                  <th>Тип</th>
+                  <th>Задача</th>
+                  <th>Репозиторий</th>
+                  <th>Воркер</th>
+                  <th>Истекает</th>
+                  <th>Пульс</th>
                 </tr>
               </ng-template>
               <ng-template #body let-lease>
@@ -275,34 +275,34 @@ export const formatDuration = (seconds: number | undefined): string => {
                     @if (lease.taskId) {
                       <a [routerLink]="['/', lease.taskId]">{{ lease.taskId }}</a>
                     } @else {
-                      none
+                      нет
                     }
                   </td>
-                  <td>{{ lease.repositoryName || 'unassigned' }}</td>
+                  <td>{{ lease.repositoryName || 'не назначено' }}</td>
                   <td>{{ lease.workerId }}</td>
                   <td>{{ formatDate(lease.expiresAt) }}</td>
                   <td>{{ formatDate(lease.heartbeatAt) }}</td>
                 </tr>
               </ng-template>
               <ng-template #emptymessage>
-                <tr><td colspan="7">No active leases.</td></tr>
+                <tr><td colspan="7">Нет активных аренд.</td></tr>
               </ng-template>
             </p-table>
           </section>
 
           <section class="surface operations-section">
             <header class="section-header">
-              <h2>Queue Depth</h2>
+              <h2>Глубина очереди</h2>
               <p-tag [value]="String(queueDepth().length)" severity="secondary" />
             </header>
             <p-table [value]="queueDepth()" styleClass="ops-table">
               <ng-template #header>
                 <tr>
-                  <th>Repository</th>
-                  <th>Queue</th>
-                  <th>Status</th>
-                  <th>Priority</th>
-                  <th>Depth</th>
+                  <th>Репозиторий</th>
+                  <th>Очередь</th>
+                  <th>Статус</th>
+                  <th>Приоритет</th>
+                  <th>Глубина</th>
                 </tr>
               </ng-template>
               <ng-template #body let-row>
@@ -310,12 +310,12 @@ export const formatDuration = (seconds: number | undefined): string => {
                   <td>{{ row.repositoryName }}</td>
                   <td>{{ row.queue }}</td>
                   <td><p-tag [value]="statusLabel(row.status)" [severity]="statusSeverity(row.status)" /></td>
-                  <td>{{ row.priority || 'unassigned' }}</td>
+                  <td>{{ row.priority || 'не назначено' }}</td>
                   <td>{{ row.depth }}</td>
                 </tr>
               </ng-template>
               <ng-template #emptymessage>
-                <tr><td colspan="5">No queue depth rows.</td></tr>
+                <tr><td colspan="5">Нет строк глубины очереди.</td></tr>
               </ng-template>
             </p-table>
           </section>
@@ -324,23 +324,23 @@ export const formatDuration = (seconds: number | undefined): string => {
         <div class="operations-grid">
           <section class="surface operations-section">
             <header class="section-header">
-              <h2>Failed Tasks</h2>
+              <h2>Задачи с ошибкой</h2>
               <p-tag [value]="String(failedTasks().length)" severity="danger" />
             </header>
             <p-table [value]="failedTasks()" styleClass="ops-table">
               <ng-template #header>
                 <tr>
-                  <th>Task</th>
-                  <th>Repository</th>
-                  <th>Latest summary</th>
-                  <th>Updated</th>
-                  <th>Actions</th>
+                  <th>Задача</th>
+                  <th>Репозиторий</th>
+                  <th>Последняя сводка</th>
+                  <th>Обновлено</th>
+                  <th>Действия</th>
                 </tr>
               </ng-template>
               <ng-template #body let-task>
                 <tr>
                   <td><a [routerLink]="['/', task.id]">{{ task.title }}</a></td>
-                  <td>{{ task.repositoryName || 'unassigned' }}</td>
+                  <td>{{ task.repositoryName || 'не назначено' }}</td>
                   <td>{{ diagnosticSummary(task) }}</td>
                   <td>{{ formatDate(task.updatedAt) }}</td>
                   <td>
@@ -350,7 +350,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         type="button"
                         [attr.data-testid]="'operation-details-' + task.id"
                         icon="pi pi-info-circle"
-                        label="Details"
+                        label="Детали"
                         severity="secondary"
                         (click)="openDiagnostics(task)"
                       ></button>
@@ -360,7 +360,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                           type="button"
                           [attr.data-testid]="'operation-retry-' + task.id"
                           icon="pi pi-refresh"
-                          label="Retry"
+                          label="Повторить"
                           (click)="openTaskAction(task, 'retry')"
                         ></button>
                       }
@@ -370,7 +370,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                           type="button"
                           [attr.data-testid]="'operation-hold-' + task.id"
                           icon="pi pi-pause"
-                          label="Hold"
+                          label="Поставить на паузу"
                           severity="secondary"
                           (click)="openTaskAction(task, 'hold')"
                         ></button>
@@ -380,30 +380,30 @@ export const formatDuration = (seconds: number | undefined): string => {
                 </tr>
               </ng-template>
               <ng-template #emptymessage>
-                <tr><td colspan="5">No failed tasks.</td></tr>
+                <tr><td colspan="5">Нет задач с ошибкой.</td></tr>
               </ng-template>
             </p-table>
           </section>
 
           <section class="surface operations-section">
             <header class="section-header">
-              <h2>Repeated Failures</h2>
+              <h2>Повторные ошибки</h2>
               <p-tag [value]="String(repeatedFailures().length)" severity="warn" />
             </header>
             <p-table [value]="repeatedFailures()" styleClass="ops-table">
               <ng-template #header>
                 <tr>
-                  <th>Task</th>
-                  <th>Repository</th>
-                  <th>Failure count</th>
-                  <th>Latest summary</th>
-                  <th>Actions</th>
+                  <th>Задача</th>
+                  <th>Репозиторий</th>
+                  <th>Счетчик ошибок</th>
+                  <th>Последняя сводка</th>
+                  <th>Действия</th>
                 </tr>
               </ng-template>
               <ng-template #body let-task>
                 <tr>
                   <td><a [routerLink]="['/', task.id]">{{ task.title }}</a></td>
-                  <td>{{ task.repositoryName || 'unassigned' }}</td>
+                  <td>{{ task.repositoryName || 'не назначено' }}</td>
                   <td>{{ failureCount(task) }}</td>
                   <td>{{ diagnosticSummary(task) }}</td>
                   <td>
@@ -413,7 +413,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         type="button"
                         [attr.data-testid]="'operation-details-' + task.id"
                         icon="pi pi-info-circle"
-                        label="Details"
+                        label="Детали"
                         severity="secondary"
                         (click)="openDiagnostics(task)"
                       ></button>
@@ -423,7 +423,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                           type="button"
                           [attr.data-testid]="'operation-retry-' + task.id"
                           icon="pi pi-refresh"
-                          label="Retry"
+                          label="Повторить"
                           (click)="openTaskAction(task, 'retry')"
                         ></button>
                       }
@@ -433,7 +433,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                           type="button"
                           [attr.data-testid]="'operation-hold-' + task.id"
                           icon="pi pi-pause"
-                          label="Hold"
+                          label="Поставить на паузу"
                           severity="secondary"
                           (click)="openTaskAction(task, 'hold')"
                         ></button>
@@ -443,7 +443,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                 </tr>
               </ng-template>
               <ng-template #emptymessage>
-                <tr><td colspan="5">No repeated failures.</td></tr>
+                <tr><td colspan="5">Нет повторных ошибок.</td></tr>
               </ng-template>
             </p-table>
           </section>
@@ -451,27 +451,27 @@ export const formatDuration = (seconds: number | undefined): string => {
 
         <section class="surface operations-section">
           <header class="section-header">
-            <h2>Waiting For Human</h2>
+            <h2>Ждет человека</h2>
             <p-tag [value]="String(waitingForHuman().length)" severity="warn" />
           </header>
           <p-table [value]="waitingForHuman()" styleClass="ops-table">
             <ng-template #header>
               <tr>
-                <th>Task</th>
-                <th>Repository</th>
-                <th>Question or blocker</th>
-                <th>Waiting time</th>
-                <th>Worker</th>
-                <th>Actions</th>
+                <th>Задача</th>
+                <th>Репозиторий</th>
+                <th>Вопрос или блокер</th>
+                <th>Время ожидания</th>
+                <th>Воркер</th>
+                <th>Действия</th>
               </tr>
             </ng-template>
             <ng-template #body let-task>
               <tr>
                 <td><a [routerLink]="['/', task.id]">{{ task.title }}</a></td>
-                <td>{{ task.repositoryName || 'unassigned' }}</td>
+                <td>{{ task.repositoryName || 'не назначено' }}</td>
                 <td>{{ waitingSummary(task) }}</td>
-                <td>Approx. {{ approximateAge(task.updatedAt) }}</td>
-                <td>{{ task.activeWorker || 'none' }}</td>
+                <td>Примерно {{ approximateAge(task.updatedAt) }}</td>
+                <td>{{ task.activeWorker || 'нет' }}</td>
                 <td>
                   <div class="row-actions">
                     <a
@@ -479,14 +479,14 @@ export const formatDuration = (seconds: number | undefined): string => {
                       [routerLink]="['/', task.id]"
                       [attr.data-testid]="'operation-open-waiting-' + task.id"
                       [icon]="canAnswer() ? 'pi pi-reply' : 'pi pi-eye'"
-                      [label]="canAnswer() ? 'Answer' : 'Open'"
+                      [label]="canAnswer() ? 'Ответить' : 'Открыть'"
                     ></a>
                     <button
                       pButton
                       type="button"
                       [attr.data-testid]="'operation-details-' + task.id"
                       icon="pi pi-info-circle"
-                      label="Details"
+                      label="Детали"
                       severity="secondary"
                       (click)="openDiagnostics(task)"
                     ></button>
@@ -496,7 +496,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                         type="button"
                         [attr.data-testid]="'operation-hold-' + task.id"
                         icon="pi pi-pause"
-                        label="Hold"
+                        label="Поставить на паузу"
                         severity="secondary"
                         (click)="openTaskAction(task, 'hold')"
                       ></button>
@@ -506,7 +506,7 @@ export const formatDuration = (seconds: number | undefined): string => {
               </tr>
             </ng-template>
             <ng-template #emptymessage>
-              <tr><td colspan="6">No tasks are waiting for human input.</td></tr>
+              <tr><td colspan="6">Нет задач, ожидающих ответа человека.</td></tr>
             </ng-template>
           </p-table>
         </section>
@@ -515,14 +515,14 @@ export const formatDuration = (seconds: number | undefined): string => {
           <section class="surface operations-detail" aria-live="polite">
             <header class="detail-header">
               <div class="detail-header__title">
-                <span class="eyebrow">Diagnostic Detail</span>
+                <span class="eyebrow">Детали диагностики</span>
                 <h2><a [routerLink]="['/', task.id]">{{ task.title }}</a></h2>
               </div>
               <button
                 pButton
                 type="button"
                 icon="pi pi-times"
-                label="Close"
+                label="Закрыть"
                 severity="secondary"
                 (click)="closeDiagnostics()"
               ></button>
@@ -531,18 +531,18 @@ export const formatDuration = (seconds: number | undefined): string => {
             @if (selectedDiagnostic(); as diagnostic) {
               <div class="detail-grid">
                 <div class="summary-block">
-                  <h3>Failure Summary</h3>
+                  <h3>Сводка ошибки</h3>
                   <div class="field-grid field-grid--compact">
                     <div>
-                      <span class="field-label">Failed agent runs</span>
+                      <span class="field-label">Ошибочные запуски агента</span>
                       <span>{{ diagnostic.failedAgentRuns }}</span>
                     </div>
                     <div>
-                      <span class="field-label">Repeated validation failures</span>
+                      <span class="field-label">Повторные ошибки валидации</span>
                       <span>{{ diagnostic.repeatedValidationFailures }}</span>
                     </div>
                     <div>
-                      <span class="field-label">Updated</span>
+                      <span class="field-label">Обновлено</span>
                       <span>{{ formatDate(diagnostic.updatedAt || task.updatedAt) }}</span>
                     </div>
                   </div>
@@ -552,7 +552,7 @@ export const formatDuration = (seconds: number | undefined): string => {
                 </div>
 
                 <div class="summary-block">
-                  <h3>Validation</h3>
+                  <h3>Валидация</h3>
                   @if (diagnostic.latestValidation) {
                     <div class="tag-row">
                       <p-tag [value]="diagnostic.latestValidation.status" [severity]="diagnostic.latestValidation.status === 'failed' ? 'danger' : 'success'" />
@@ -562,15 +562,15 @@ export const formatDuration = (seconds: number | undefined): string => {
                     </div>
                     <p class="prewrap">{{ truncate(diagnostic.latestValidation.summary || diagnostic.latestValidation.diagnostic, 900) }}</p>
                   } @else {
-                    <p class="muted">No validation summary in this snapshot.</p>
+                    <p class="muted">В этом снимке нет сводки валидации.</p>
                   }
                 </div>
               </div>
 
               @if (diagnostic.latestQuestion) {
                 <div class="summary-block">
-                  <h3>Open Question</h3>
-                  <p>{{ diagnostic.latestQuestion.summary || diagnostic.latestQuestion.blockingReason || 'Question pending.' }}</p>
+                  <h3>Открытый вопрос</h3>
+                  <p>{{ diagnostic.latestQuestion.summary || diagnostic.latestQuestion.blockingReason || 'Вопрос ожидает ответа.' }}</p>
                   @if (diagnostic.latestQuestion.question) {
                     <p class="prewrap">{{ truncate(diagnostic.latestQuestion.question, 900) }}</p>
                   }
@@ -578,7 +578,7 @@ export const formatDuration = (seconds: number | undefined): string => {
               }
 
               <div class="summary-block">
-                <h3>Recent Lifecycle Events</h3>
+                <h3>Последние события жизненного цикла</h3>
                 @if (diagnostic.recentEvents.length) {
                   <div class="timeline-list">
                     @for (event of diagnostic.recentEvents; track event.id || event.kind + event.createdAt) {
@@ -594,25 +594,25 @@ export const formatDuration = (seconds: number | undefined): string => {
                     }
                   </div>
                 } @else {
-                  <p class="muted">No recent lifecycle events in this snapshot.</p>
+                  <p class="muted">В этом снимке нет последних событий жизненного цикла.</p>
                 }
               </div>
             } @else {
-              <p class="muted">No diagnostic detail was included for this task in the latest snapshot.</p>
+              <p class="muted">В последнем снимке нет деталей диагностики для этой задачи.</p>
             }
           </section>
         }
       } @else {
         <div class="empty-state surface">
           <i class="pi pi-server" aria-hidden="true"></i>
-          <h2>No operations snapshot</h2>
-          <p>Refresh to load worker and task operations data.</p>
+          <h2>Нет операционного снимка</h2>
+          <p>Обновите страницу, чтобы загрузить данные операций воркеров и задач.</p>
         </div>
       }
     </section>
 
     <p-dialog
-      [header]="pendingAction()?.label || 'Confirm operation'"
+      [header]="pendingAction()?.label || 'Подтвердите операцию'"
       [visible]="commandDialogVisible()"
       (visibleChange)="commandDialogVisible.set($event)"
       [modal]="true"
@@ -626,24 +626,24 @@ export const formatDuration = (seconds: number | undefined): string => {
             <p-message severity="error" [text]="message" />
           }
           <label class="field">
-            <span>Reason <strong aria-label="required">*</strong></span>
+            <span>Причина <strong aria-label="обязательно">*</strong></span>
             <textarea
               pTextarea
               data-testid="operation-reason"
               autofocus
               rows="4"
               [formControl]="reasonControl"
-              placeholder="Record the operator reason"
+              placeholder="Укажите причину оператора"
             ></textarea>
           </label>
           <div class="action-bar action-bar--end">
-            <button pButton type="button" data-testid="operation-cancel" label="Cancel" severity="secondary" (click)="closeCommandDialog()"></button>
+            <button pButton type="button" data-testid="operation-cancel" label="Отмена" severity="secondary" (click)="closeCommandDialog()"></button>
             <button
               pButton
               type="button"
               data-testid="operation-confirm"
               icon="pi pi-check"
-              label="Confirm"
+              label="Подтвердить"
               [disabled]="reasonControl.invalid || submitting()"
               (click)="submitTaskAction()"
             ></button>
@@ -769,7 +769,7 @@ export class OperationsPageComponent implements OnInit {
     this.pendingAction.set({
       task,
       command,
-      label: command === 'retry' ? 'Retry task' : 'Hold task',
+      label: command === 'retry' ? 'Повторить задачу' : 'Поставить задачу на паузу',
     });
     this.commandError.set(undefined);
     this.reasonControl.reset('');
@@ -823,7 +823,7 @@ export class OperationsPageComponent implements OnInit {
           task.latestValidationSummary ||
           task.latestAiSummary,
         180,
-      ) || 'No diagnostic summary'
+      ) || 'Нет сводки диагностики'
     );
   }
 
@@ -836,14 +836,14 @@ export class OperationsPageComponent implements OnInit {
           diagnostic?.latestQuestion?.question ||
           task.blockerReason,
         220,
-      ) || 'Waiting for human input'
+      ) || 'Ожидается ответ человека'
     );
   }
 
   protected failureCount(task: TaskSummaryDto): string {
     const diagnostic = this.diagnosticFor(task);
     if (!diagnostic) {
-      return 'Unknown';
+      return 'Неизвестно';
     }
     return `${diagnostic.failedAgentRuns} agent / ${diagnostic.repeatedValidationFailures} validation`;
   }
@@ -853,22 +853,22 @@ export class OperationsPageComponent implements OnInit {
     const startMs = parseTime(start);
     const endMs = parseTime(generatedAt) ?? Date.now();
     if (startMs === undefined) {
-      return 'Unknown';
+      return 'Неизвестно';
     }
     return formatDuration(Math.max(0, Math.floor((endMs - startMs) / 1000)));
   }
 
   protected heartbeatLabel(health: HeartbeatHealth): string {
     if (health === 'healthy') {
-      return 'Healthy';
+      return 'В норме';
     }
     if (health === 'warning') {
-      return 'Stale warning';
+      return 'Устаревает';
     }
     if (health === 'error') {
-      return 'Stale error';
+      return 'Устарел';
     }
-    return 'Unknown';
+    return 'Неизвестно';
   }
 
   protected heartbeatSeverity(

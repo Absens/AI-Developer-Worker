@@ -80,7 +80,7 @@ test.describe.serial('task tracker console production flows', () => {
     const opsPage = operator.page;
     await opsPage.goto('/tasks/operations');
     await expect(opsPage.getByTestId('operations-page')).toBeVisible();
-    await expect(opsPage.getByText('Worker Heartbeats')).toBeVisible();
+    await expect(opsPage.getByText('Пульс воркеров')).toBeVisible();
     await opsPage.getByTestId('operation-retry-failed-task').first().click();
     await expect(opsPage.getByTestId('operation-reason')).toBeFocused();
     await opsPage.getByTestId('operation-reason').fill('Retry after validation fix.');
@@ -188,7 +188,7 @@ test.describe.serial('task tracker console production flows', () => {
     await page.goto('/tasks/operations');
     await request.post('/api/e2e/fail-next-operations');
     await page.getByTestId('operations-refresh').click();
-    await expect(page.getByText('Showing last successful snapshot')).toBeVisible();
+    await expect(page.getByText('Показан последний успешный снимок')).toBeVisible();
     const stale = await page.screenshot({
       path: testInfo.outputPath('operations-stale-refresh.png'),
       fullPage: true,
