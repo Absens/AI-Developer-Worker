@@ -61,7 +61,7 @@ test.describe.serial('task tracker console production flows', () => {
 
     await page.goto('/tasks/proposals');
     await expect(page.getByTestId('proposals-page')).toBeVisible();
-    await expect(page.getByText('Предложения')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Предложения' })).toBeVisible();
     await expect(page.getByText('Статус супервизора')).toBeVisible();
     await page.getByTestId('proposal-approve-proposal-approve-task').click();
     await expect(page.getByTestId('proposal-reason')).toBeFocused();
