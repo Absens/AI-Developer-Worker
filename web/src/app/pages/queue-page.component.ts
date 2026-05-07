@@ -213,7 +213,7 @@ export class QueuePageComponent implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly limit = 100;
-  protected readonly placeholders = [1, 2, 3, 4, 5];
+  protected readonly placeholders = QUEUE_GROUP_STATUSES;
   protected readonly statusOptions = TASK_STATUSES.map((status) => ({
     label: statusLabel(status),
     value: status,

@@ -19,13 +19,7 @@ export const TASK_STATUSES: TaskStatusDto[] = [
   'cancelled',
 ];
 
-export const QUEUE_GROUP_STATUSES: TaskStatusDto[] = [
-  'ready',
-  'awaiting_human',
-  'review',
-  'failed',
-  'blocked',
-];
+export const QUEUE_GROUP_STATUSES: TaskStatusDto[] = [...TASK_STATUSES];
 
 export const TERMINAL_STATUSES: TaskStatusDto[] = ['done', 'cancelled'];
 

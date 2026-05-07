@@ -9,7 +9,7 @@ import { providePrimeNG } from 'primeng/config';
 
 import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
 import { SessionService } from '../services/session.service';
-import { TASK_COMMAND_POLICIES, statusLabel } from '../utils/task-ui';
+import { TASK_COMMAND_POLICIES, TASK_STATUSES, statusLabel } from '../utils/task-ui';
 import { CreateTaskPageComponent } from './create-task-page.component';
 import {
   OperationsPageComponent,
@@ -95,6 +95,27 @@ describe('QueuePageComponent', () => {
     expect(text).toContain('Implement ready queue item');
     expect(text).toContain('Need API decision');
     expect(text).toContain('Выберите задачу');
+  });
+
+  it('renders a queue group for every known task status', async () => {
+    const http = await configure([QueuePageComponent]);
+    loadSession(http, viewerSession);
+
+    const fixture = TestBed.createComponent(QueuePageComponent);
+    fixture.detectChanges();
+
+    http.expectOne((entry) => entry.url === '/api/tasks').flush({
+      tasks: [readyTask],
+      role: 'viewer',
+      generatedAt: '2026-04-29T08:00:00.000Z',
+    });
+    fixture.detectChanges();
+
+    const groups = [...(fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('.surface.queue-group')];
+    expect(groups.length).toBe(TASK_STATUSES.length);
+    expect(groups.map((group) => group.querySelector('h2')?.textContent?.trim())).toEqual(
+      TASK_STATUSES.map(statusLabel),
+    );
   });
 });
 
