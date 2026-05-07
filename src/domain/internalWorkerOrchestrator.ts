@@ -2,7 +2,9 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexProgressEvent,
   CodexRunner,
+  CodexRunObserver,
   CommentWithMetadata,
   FailureMemoryEntry,
   GitLabService,
@@ -646,7 +648,7 @@ export class InternalWorkerOrchestrator {
         analysisDecision,
         memoryContext,
       );
-      const execution = await this.runCodexStage(context, task.id, "implementation", () =>
+      const execution = await this.runCodexStage(context, task.id, "implementation", (observer) =>
         resumeContext
           ? this.runResumeOrInitial(
               context,
@@ -654,10 +656,18 @@ export class InternalWorkerOrchestrator {
               activeThreadId,
               buildResumePrompt(issue, comments, resumeContext.command),
               implementationPrompt,
+              observer,
             )
           : activeThreadId
-            ? this.runResumeOrInitial(context, issue, activeThreadId, implementationPrompt, implementationPrompt)
-            : context.codex.runInitial(implementationPrompt),
+            ? this.runResumeOrInitial(
+                context,
+                issue,
+                activeThreadId,
+                implementationPrompt,
+                implementationPrompt,
+                observer,
+              )
+            : context.codex.runInitial(implementationPrompt, observer),
       );
       activeThreadId = execution.threadId ?? activeThreadId;
       if (execution.clarification) {
@@ -714,14 +724,16 @@ export class InternalWorkerOrchestrator {
         status: "running",
         diagnostic: validation.diagnostic,
       });
-      const execution = await this.runCodexStage(context, task.id, "implementation", () =>
+      const execution = await this.runCodexStage(context, task.id, "implementation", (observer) =>
         activeThreadId
           ? context.codex.runResume(
               activeThreadId,
               buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              observer,
             )
           : context.codex.runFix(
               buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              observer,
             ),
       );
       activeThreadId = execution.threadId ?? activeThreadId;
@@ -826,8 +838,8 @@ export class InternalWorkerOrchestrator {
       promptProfileId: "general",
       expectedFiles: [],
     });
-    const execution = await this.runCodexStage(context, taskId, "analysis", () =>
-      context.codex.runInitial(buildAnalysisPrompt(issue, comments, memoryContext)),
+    const execution = await this.runCodexStage(context, taskId, "analysis", (observer) =>
+      context.codex.runInitial(buildAnalysisPrompt(issue, comments, memoryContext), observer),
     );
     let decision: TaskAnalysisDecision | undefined;
     if (execution.clarification) {
@@ -992,8 +1004,10 @@ export class InternalWorkerOrchestrator {
       { maxSubtasks, defaultSubtaskTag, titlePrefix },
       analysisDecision,
     );
-    const execution = await this.runCodexStage(context, taskId, "decomposition", () =>
-      threadId ? context.codex.runResume(threadId, prompt) : context.codex.runInitial(prompt),
+    const execution = await this.runCodexStage(context, taskId, "decomposition", (observer) =>
+      threadId
+        ? context.codex.runResume(threadId, prompt, observer)
+        : context.codex.runInitial(prompt, observer),
     );
     const plan = parseDecompositionPlan(execution.finalMessage, {
       parentIssueKey: issue.key,
@@ -1194,7 +1208,7 @@ export class InternalWorkerOrchestrator {
     context: InternalExecutionContext,
     taskId: string,
     stage: "analysis" | "implementation" | "decomposition" | "review_fix",
-    run: () => Promise<CodexExecution>,
+    run: (observer: CodexRunObserver) => Promise<CodexExecution>,
   ): Promise<CodexExecution> {
     const startedAt = new Date().toISOString();
     await this.recordWorkflowEvent(context, taskId, {
@@ -1203,7 +1217,20 @@ export class InternalWorkerOrchestrator {
       message: `Codex ${stage} started.`,
     });
     const startedMs = Date.now();
-    const execution = await run();
+    let observerFlush = Promise.resolve();
+    const observer: CodexRunObserver = (event) => {
+      observerFlush = observerFlush
+        .then(() => this.recordCodexProgressEvent(taskId, stage, event))
+        .catch((error) => {
+          this.logger.warn("Unable to record Codex progress event.", {
+            taskId,
+            stage,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    };
+    const execution = await run(observer);
+    await observerFlush;
     const completedAt = new Date().toISOString();
     this.telemetry.recordCodexRun({
       workerId: this.config.workerId,
@@ -1238,17 +1265,43 @@ export class InternalWorkerOrchestrator {
     return execution;
   }
 
+  private async recordCodexProgressEvent(
+    taskId: string,
+    stage: "analysis" | "implementation" | "decomposition" | "review_fix",
+    event: CodexProgressEvent,
+  ): Promise<void> {
+    await this.workflow.recordLifecycleEvent(taskId, {
+      kind: event.kind,
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: this.config.workerId },
+      ...(event.message ? { message: event.message } : {}),
+      payload: {
+        stage,
+        mode: event.mode,
+        type: event.type,
+        ...(event.itemType ? { itemType: event.itemType } : {}),
+        ...(event.itemStatus ? { itemStatus: event.itemStatus } : {}),
+        ...(event.elapsedSeconds !== undefined
+          ? { elapsedSeconds: event.elapsedSeconds }
+          : {}),
+        ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
+        ...(event.timedOut !== undefined ? { timedOut: event.timedOut } : {}),
+      },
+    });
+  }
+
   private async runResumeOrInitial(
     context: InternalExecutionContext,
     issue: TrackerIssue,
     threadId: string | undefined,
     resumePrompt: string,
     fallbackPrompt: string,
+    observer?: CodexRunObserver,
   ): Promise<CodexExecution> {
     if (!threadId) {
-      return context.codex.runInitial(fallbackPrompt);
+      return context.codex.runInitial(fallbackPrompt, observer);
     }
-    const execution = await context.codex.runResume(threadId, resumePrompt);
+    const execution = await context.codex.runResume(threadId, resumePrompt, observer);
     if (execution.process.exitCode === 0 || execution.clarification) {
       return execution;
     }
@@ -1258,7 +1311,7 @@ export class InternalWorkerOrchestrator {
       exitCode: execution.process.exitCode,
       stderr: execution.process.stderr,
     });
-    return context.codex.runInitial(fallbackPrompt);
+    return context.codex.runInitial(fallbackPrompt, observer);
   }
 
   private async buildMemoryContext(

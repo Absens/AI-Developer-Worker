@@ -854,10 +854,36 @@ export interface CodexExecution {
   clarification?: ClarificationQuestion;
 }
 
+export type CodexProgressEventKind =
+  | "codex_agent_message"
+  | "codex_command_started"
+  | "codex_command_progress"
+  | "codex_command_completed"
+  | "codex_turn_completed"
+  | "codex_error";
+
+export interface CodexProgressEvent {
+  kind: CodexProgressEventKind;
+  mode: "new" | "resume";
+  type: string;
+  itemType?: string;
+  itemStatus?: string;
+  elapsedSeconds?: number;
+  exitCode?: number;
+  timedOut?: boolean;
+  message?: string;
+}
+
+export type CodexRunObserver = (event: CodexProgressEvent) => void;
+
 export interface CodexRunner {
-  runInitial(prompt: string): Promise<CodexExecution>;
-  runFix(prompt: string): Promise<CodexExecution>;
-  runResume(threadId: string, prompt: string): Promise<CodexExecution>;
+  runInitial(prompt: string, observer?: CodexRunObserver): Promise<CodexExecution>;
+  runFix(prompt: string, observer?: CodexRunObserver): Promise<CodexExecution>;
+  runResume(
+    threadId: string,
+    prompt: string,
+    observer?: CodexRunObserver,
+  ): Promise<CodexExecution>;
 }
 
 export interface TaskAnalysisResult {

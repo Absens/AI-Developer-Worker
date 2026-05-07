@@ -58,6 +58,8 @@ describe('task UI labels', () => {
     expect(statusLabel('ready')).toBe('Готова');
     expect(statusLabel('awaiting_human')).toBe('Ждет человека');
     expect(statusLabel('fixing_review')).toBe('Исправление ревью');
+    expect(statusLabel('codex_agent_message')).toBe('Сообщение Codex');
+    expect(statusLabel('codex_command_progress')).toBe('Codex выполняется');
     expect(TASK_COMMAND_POLICIES.map((policy) => policy.label)).toEqual([
       'В готовые',
       'Возобновить',
@@ -178,6 +180,52 @@ describe('TaskDetailPanelComponent', () => {
     expect(text).toContain('ready-task');
     expect(text).toContain('Критерии приемки');
     expect(text).toContain('События');
+  });
+
+  it('polls active task details and keeps draft answer input while rendering Codex timeline events', async () => {
+    const http = await configure([TaskDetailPanelComponent]);
+    loadSession(http, developerSession);
+    jasmine.clock().install();
+
+    try {
+      const fixture = TestBed.createComponent(TaskDetailPanelComponent);
+      fixture.componentRef.setInput('taskId', 'awaiting-task');
+      http.expectOne('/api/tasks/awaiting-task').flush(awaitingTaskDetail);
+      fixture.detectChanges();
+
+      const component = fixture.componentInstance as unknown as {
+        answerControl: { setValue: (value: string) => void; value: string };
+      };
+      component.answerControl.setValue('Draft answer in progress.');
+
+      jasmine.clock().tick(15_000);
+      http.expectOne('/api/tasks/awaiting-task').flush({
+        ...awaitingTaskDetail,
+        task: {
+          ...awaitingTaskDetail.task,
+          events: [
+            ...awaitingTaskDetail.task.events,
+            {
+              id: 'codex-progress-1',
+              kind: 'codex_agent_message',
+              source: 'worker_agent',
+              message: 'Running project tests.',
+              createdAt: '2026-04-29T08:01:00.000Z',
+            },
+          ],
+        },
+      });
+      fixture.detectChanges();
+
+      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      expect(text).toContain('Сообщение Codex');
+      expect(text).toContain('Running project tests.');
+      expect(component.answerControl.value).toBe('Draft answer in progress.');
+
+      fixture.destroy();
+    } finally {
+      jasmine.clock().uninstall();
+    }
   });
 
   it('answers and resumes through the answer endpoint with a resume command', async () => {

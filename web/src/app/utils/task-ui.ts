@@ -52,6 +52,12 @@ const STATUS_LABELS: Record<string, string> = {
   done: 'Завершена',
   failed: 'Ошибка',
   cancelled: 'Отменена',
+  codex_agent_message: 'Сообщение Codex',
+  codex_command_started: 'Команда Codex началась',
+  codex_command_progress: 'Codex выполняется',
+  codex_command_completed: 'Команда Codex завершена',
+  codex_turn_completed: 'Ход Codex завершен',
+  codex_error: 'Ошибка Codex',
 };
 
 export const TASK_COMMAND_POLICIES: CommandPolicy[] = [
@@ -123,6 +129,9 @@ export const statusSeverity = (status: string): 'success' | 'info' | 'warn' | 'd
     return 'success';
   }
   if (status === 'failed' || status === 'cancelled') {
+    return 'danger';
+  }
+  if (status === 'codex_error') {
     return 'danger';
   }
   if (status === 'blocked' || status === 'awaiting_human') {

@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, Output, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, EventEmitter, Input, Output, computed, inject, signal } from '@angular/core';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { MessageService } from 'primeng/api';
@@ -47,6 +47,18 @@ interface PendingCommand {
   help: string;
   child?: ChildTaskSummaryDto;
 }
+
+const POLL_INTERVAL_MS = 15_000;
+const ACTIVE_DETAIL_STATUSES = new Set<TaskStatusDto>([
+  'claimed',
+  'analyzing',
+  'awaiting_human',
+  'decomposing',
+  'implementing',
+  'validating',
+  'review',
+  'fixing_review',
+]);
 
 const record = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
@@ -511,6 +523,7 @@ export class TaskDetailPanelComponent {
   private readonly conversationApi = inject(TaskConversationService);
   private readonly session = inject(SessionService);
   private readonly messages = inject(MessageService);
+  private readonly destroyRef = inject(DestroyRef);
 
   @Input() fullPage = false;
   @Output() taskChanged = new EventEmitter<void>();
@@ -533,6 +546,11 @@ export class TaskDetailPanelComponent {
     nonNullable: true,
     validators: [Validators.required, Validators.minLength(2)],
   });
+  private pollTimer: ReturnType<typeof setInterval> | undefined;
+
+  constructor() {
+    this.destroyRef.onDestroy(() => this.stopPolling());
+  }
 
   protected readonly openQuestions = computed(() =>
     (this.detail()?.task.clarificationQuestions ?? []).filter(
@@ -550,6 +568,7 @@ export class TaskDetailPanelComponent {
     this.detail.set(undefined);
     this.error.set(undefined);
     this.answerControl.reset('');
+    this.stopPolling();
     if (next) {
       this.reload();
     }
@@ -560,12 +579,15 @@ export class TaskDetailPanelComponent {
     if (!taskId) {
       return;
     }
-    this.loading.set(true);
+    if (!this.detail()) {
+      this.loading.set(true);
+    }
     this.error.set(undefined);
     this.taskApi.getTask(taskId).subscribe({
       next: (response) => {
         this.detail.set(response);
         this.loading.set(false);
+        this.syncPolling(response.task.status);
       },
       error: (error: unknown) => {
         this.error.set(error instanceof Error ? error.message : String(error));
@@ -757,6 +779,29 @@ export class TaskDetailPanelComponent {
     this.answerControl.reset('');
     this.reload();
     this.taskChanged.emit();
+  }
+
+  private syncPolling(status: TaskStatusDto): void {
+    if (!ACTIVE_DETAIL_STATUSES.has(status)) {
+      this.stopPolling();
+      return;
+    }
+    if (this.pollTimer) {
+      return;
+    }
+    this.pollTimer = setInterval(() => {
+      if (document.visibilityState !== 'hidden') {
+        this.reload();
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
+  private stopPolling(): void {
+    if (!this.pollTimer) {
+      return;
+    }
+    clearInterval(this.pollTimer);
+    this.pollTimer = undefined;
   }
 
   private afterMutationError(error: unknown): void {
