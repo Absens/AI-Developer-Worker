@@ -5,6 +5,7 @@ import {
   InMemoryYandexBridgeStore,
   YANDEX_TRACKER_PROVIDER,
   YandexBridge,
+  YandexExternalTaskSource,
   issueToSnapshot,
   type YandexBridgeExternalSource,
 } from "../src/integrations/yandexBridge/index.js";
@@ -22,6 +23,8 @@ import type {
   ImportCandidatesInput,
   LinkTrackerIssueInput,
   LogicalStatus,
+  TrackerAttachment,
+  TrackerClient,
   TrackerIssue,
 } from "../src/models/types.js";
 
@@ -63,6 +66,9 @@ class FakeYandexSource implements YandexBridgeExternalSource {
   transitions: ExternalTransitionInput[] = [];
   createdIssues: CreateTrackerIssueInput[] = [];
   links: LinkTrackerIssueInput[] = [];
+  attachments = new Map<string, TrackerAttachment[]>();
+  attachmentBytes = new Map<string, Uint8Array>();
+  attachmentDownloadCalls: Array<{ externalKey: string; attachmentId: string }> = [];
 
   constructor(issues: TrackerIssue[]) {
     this.snapshots = issues.map((entry) =>
@@ -102,6 +108,15 @@ class FakeYandexSource implements YandexBridgeExternalSource {
   async linkIssue(input: LinkTrackerIssueInput) {
     this.links.push(input);
   }
+
+  async getIssueAttachments(externalKey: string) {
+    return this.attachments.get(externalKey) ?? [];
+  }
+
+  async downloadIssueAttachment(externalKey: string, attachment: TrackerAttachment) {
+    this.attachmentDownloadCalls.push({ externalKey, attachmentId: attachment.id });
+    return this.attachmentBytes.get(attachment.id) ?? new Uint8Array([0x89, 0x50]);
+  }
 }
 
 const createBridge = (source: FakeYandexSource, tracker = new InMemoryTaskTrackerClient({
@@ -121,6 +136,51 @@ const createBridge = (source: FakeYandexSource, tracker = new InMemoryTaskTracke
 };
 
 describe("Yandex bridge", () => {
+  it("delegates Yandex attachment metadata and downloads through the source", async () => {
+    const attachment: TrackerAttachment = {
+      id: "img-1",
+      name: "screen.png",
+      mimetype: "image/png",
+      size: 8,
+    };
+    const calls: string[] = [];
+    const tracker: TrackerClient = {
+      async checkReadAccess() {},
+      async findCandidateIssues() {
+        return [];
+      },
+      async findOwnedIssues() {
+        return [];
+      },
+      async getIssue() {
+        return issue();
+      },
+      async getComments() {
+        return [];
+      },
+      async addComment() {},
+      async transition() {},
+      determineLogicalStatus(entry) {
+        return entry.logicalStatus;
+      },
+      async getIssueAttachments(issueKey) {
+        calls.push(`list:${issueKey}`);
+        return [attachment];
+      },
+      async downloadIssueAttachment(issueKey, entry) {
+        calls.push(`download:${issueKey}:${entry.id}`);
+        return new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+      },
+    };
+    const source = new YandexExternalTaskSource(tracker);
+
+    await expect(source.getIssueAttachments("DEV-1")).resolves.toEqual([attachment]);
+    await expect(source.downloadIssueAttachment("DEV-1", attachment)).resolves.toEqual(
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+    );
+    expect(calls).toEqual(["list:DEV-1", "download:DEV-1:img-1"]);
+  });
+
   it("imports Yandex issues idempotently into internal tasks", async () => {
     const source = new FakeYandexSource([issue()]);
     const { bridge, tracker } = createBridge(source);

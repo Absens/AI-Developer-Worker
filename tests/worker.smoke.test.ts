@@ -566,6 +566,7 @@ describe("worker smoke", () => {
     const seedPath = join(workspace, "seed");
     const repoPath = join(workspace, "project");
     const codexScriptPath = join(workspace, "codex-yandex-bridge-smoke.js");
+    const codexArgsPath = join(workspace, "codex-yandex-bridge-args.jsonl");
     const statusMapFilePath = join(workspace, "trackerStatusMap.json");
 
     runGit(["init", "--bare", remotePath], workspace);
@@ -589,6 +590,13 @@ describe("worker smoke", () => {
         "const fs = require('node:fs');",
         "const path = require('node:path');",
         "const args = process.argv.slice(2);",
+        `const argsLogPath = ${JSON.stringify(codexArgsPath)};`,
+        "const imagePaths = args.flatMap((arg, index) => arg === '--image' ? [args[index + 1]] : []);",
+        "fs.appendFileSync(argsLogPath, JSON.stringify(args) + '\\n', 'utf8');",
+        "if (imagePaths.length === 0 || imagePaths.some((imagePath) => !imagePath || !fs.existsSync(imagePath))) {",
+        "  process.stderr.write('expected --image path to exist\\n');",
+        "  process.exit(2);",
+        "}",
         "const outputIndex = args.indexOf('--output-last-message');",
         "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
         "const stdin = fs.readFileSync(0, 'utf8');",
@@ -663,6 +671,12 @@ describe("worker smoke", () => {
       expect(
         mockServer.trackerComments.some((comment) => comment.text.startsWith("AI LEASE:")),
       ).toBe(false);
+      const codexInvocationArgs = readFileSync(codexArgsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(codexInvocationArgs.some((args) => args.includes("--image"))).toBe(true);
+      expect(mockServer.attachmentDownloadCount).toBe(1);
     } finally {
       await new Promise<void>((resolve, reject) =>
         mockServer.server.close((error) => (error ? reject(error) : resolve())),

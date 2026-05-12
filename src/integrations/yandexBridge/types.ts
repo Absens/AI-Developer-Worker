@@ -7,6 +7,7 @@ import type {
   ImportedHumanCommand,
   LinkTrackerIssueInput,
   SyncCursor,
+  TrackerAttachment,
   TrackerComment,
   TrackerIssue,
 } from "../../models/types.js";
@@ -17,6 +18,11 @@ export interface YandexBridgeExternalSource extends ExternalTaskSource {
   getComments(externalKey: string): Promise<CommentWithMetadata[]>;
   createIssue?(input: CreateTrackerIssueInput): Promise<TrackerIssue>;
   linkIssue?(input: LinkTrackerIssueInput): Promise<void>;
+  getIssueAttachments?(externalKey: string): Promise<TrackerAttachment[]>;
+  downloadIssueAttachment?(
+    externalKey: string,
+    attachment: TrackerAttachment,
+  ): Promise<Uint8Array>;
 }
 
 export interface ExternalIssueSnapshotRecord {

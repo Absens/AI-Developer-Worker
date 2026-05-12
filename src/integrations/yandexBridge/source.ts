@@ -4,6 +4,7 @@ import type {
   ExternalTransitionInput,
   ImportCandidatesInput,
   LogicalStatus,
+  TrackerAttachment,
   TrackerClient,
   TrackerIssue,
 } from "../../models/types.js";
@@ -81,6 +82,20 @@ export class YandexExternalTaskSource implements YandexBridgeExternalSource {
       return;
     }
     await this.tracker.linkIssue(input);
+  }
+
+  async getIssueAttachments(externalKey: string): Promise<TrackerAttachment[]> {
+    return this.tracker.getIssueAttachments?.(externalKey) ?? [];
+  }
+
+  async downloadIssueAttachment(
+    externalKey: string,
+    attachment: TrackerAttachment,
+  ): Promise<Uint8Array> {
+    if (!this.tracker.downloadIssueAttachment) {
+      throw new Error("Yandex Tracker attachment download is not supported by this source.");
+    }
+    return this.tracker.downloadIssueAttachment(externalKey, attachment);
   }
 }
 

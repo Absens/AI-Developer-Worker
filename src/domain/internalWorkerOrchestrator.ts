@@ -3,6 +3,7 @@ import type {
   ClarificationQuestion,
   CodexExecution,
   CodexProgressEvent,
+  CodexRunOptions,
   CodexRunner,
   CodexRunObserver,
   CommentWithMetadata,
@@ -15,6 +16,8 @@ import type {
   PromptProfile,
   TaskAnalysisDecision,
   TaskAnalysisResult,
+  TrackerAttachment,
+  TrackerImageContextConfig,
   TrackerIssue,
   ValidationResult,
 } from "../models/types.js";
@@ -56,6 +59,10 @@ import {
 } from "./promptBuilder.js";
 import { selectPromptProfile } from "./promptProfiles.js";
 import {
+  prepareTrackerImageContext,
+  type PreparedTrackerImageContext,
+} from "./trackerImageContext.js";
+import {
   collectQualityGateNotes,
   formatQualityGateDiagnostics,
   formatQualityGateSummary,
@@ -64,7 +71,11 @@ import {
   runQualityGates,
 } from "./qualityGates.js";
 import type { RepositoryWorkerContext } from "./repositoryContext.js";
-import type { YandexBridge } from "../integrations/yandexBridge/index.js";
+import {
+  YANDEX_TRACKER_PROVIDER,
+  type YandexBridge,
+  type YandexBridgeExternalSource,
+} from "../integrations/yandexBridge/index.js";
 import type { TaskEventType } from "../observability/events.js";
 import {
   noopObservability,
@@ -83,6 +94,11 @@ const DEFAULT_TASK_MODE = "auto";
 const DEFAULT_DECOMPOSITION_MAX_SUBTASKS = 8;
 const DEFAULT_DECOMPOSITION_SUBTASK_TAG = "ai_dev";
 const DEFAULT_DECOMPOSITION_TITLE_PREFIX = "[AI split]";
+const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
+  enabled: true,
+  maxCount: 5,
+  maxBytes: 10 * 1024 * 1024,
+};
 
 interface InternalExecutionContext {
   profile: RepositoryWorkerContext["profile"];
@@ -90,6 +106,7 @@ interface InternalExecutionContext {
   git: GitService;
   gitlab: GitLabService;
   codex: CodexRunner;
+  attachmentSource?: YandexBridgeExternalSource;
 }
 
 interface InternalResumeContext {
@@ -555,13 +572,29 @@ export class InternalWorkerOrchestrator {
     context: InternalExecutionContext,
     claim: ClaimedTask,
   ): Promise<CycleOutcome> {
-    let task = await this.taskTracker.getTask(claim.task.id);
+    const task = await this.taskTracker.getTask(claim.task.id);
+    const imageContext = await this.prepareImageContext(context, task);
+    try {
+      return await this.processTaskWithContext(context, claim, task, imageContext);
+    } finally {
+      await imageContext?.cleanup();
+    }
+  }
+
+  private async processTaskWithContext(
+    context: InternalExecutionContext,
+    claim: ClaimedTask,
+    initialTask: TaskRecord,
+    imageContext: PreparedTrackerImageContext | undefined,
+  ): Promise<CycleOutcome> {
+    let task = initialTask;
     let issue = taskToIssue(task);
     let comments = commentsForPrompt(task.comments);
     let activeThreadId: string | undefined;
     let implementationSummary: string | undefined;
     let analysisDecision = latestAnalysisDecision(task.decisions);
     const resumeContext = this.resolveResumeContext(task.comments);
+    const codexOptions: CodexRunOptions = { imagePaths: imageContext?.imagePaths ?? [] };
 
     await this.taskTracker.setStatus(task.id, "analyzing", "Internal task analysis started.");
     await this.workflow.recordTaskStep(task.id, { kind: "analyze", status: "running" });
@@ -574,7 +607,7 @@ export class InternalWorkerOrchestrator {
         outputSummary: "Resuming from stored human answer.",
       });
     } else {
-      const analysis = await this.runAnalysis(context, task.id, issue, comments);
+      const analysis = await this.runAnalysis(context, task.id, issue, comments, imageContext);
       activeThreadId = analysis.threadId;
       analysisDecision = analysis.decision;
       if (!analysisDecision) {
@@ -602,7 +635,15 @@ export class InternalWorkerOrchestrator {
         return "waiting";
       }
       if (taskMode === "decompose") {
-        return this.runDecomposition(context, task.id, issue, comments, analysisDecision, activeThreadId);
+        return this.runDecomposition(
+          context,
+          task.id,
+          issue,
+          comments,
+          analysisDecision,
+          activeThreadId,
+          imageContext,
+        );
       }
       if (analysis.status === "clarification_required" && analysis.clarification) {
         await this.pauseForClarification(context, task.id, analysis.clarification, activeThreadId);
@@ -647,6 +688,7 @@ export class InternalWorkerOrchestrator {
         promptProfile,
         analysisDecision,
         memoryContext,
+        imageContext,
       );
       const execution = await this.runCodexStage(context, task.id, "implementation", (observer) =>
         resumeContext
@@ -654,9 +696,10 @@ export class InternalWorkerOrchestrator {
               context,
               issue,
               activeThreadId,
-              buildResumePrompt(issue, comments, resumeContext.command),
+              buildResumePrompt(issue, comments, resumeContext.command, imageContext),
               implementationPrompt,
               observer,
+              codexOptions,
             )
           : activeThreadId
             ? this.runResumeOrInitial(
@@ -666,8 +709,9 @@ export class InternalWorkerOrchestrator {
                 implementationPrompt,
                 implementationPrompt,
                 observer,
+                codexOptions,
               )
-            : context.codex.runInitial(implementationPrompt, observer),
+            : context.codex.runInitial(implementationPrompt, observer, codexOptions),
       );
       activeThreadId = execution.threadId ?? activeThreadId;
       if (execution.clarification) {
@@ -728,12 +772,26 @@ export class InternalWorkerOrchestrator {
         activeThreadId
           ? context.codex.runResume(
               activeThreadId,
-              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              buildFixPrompt(
+                issue,
+                validation.diagnostic,
+                promptProfile,
+                analysisDecision,
+                imageContext,
+              ),
               observer,
+              codexOptions,
             )
           : context.codex.runFix(
-              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              buildFixPrompt(
+                issue,
+                validation.diagnostic,
+                promptProfile,
+                analysisDecision,
+                imageContext,
+              ),
               observer,
+              codexOptions,
             ),
       );
       activeThreadId = execution.threadId ?? activeThreadId;
@@ -780,6 +838,37 @@ export class InternalWorkerOrchestrator {
     return "processed";
   }
 
+  private async prepareImageContext(
+    context: InternalExecutionContext,
+    task: TaskRecord,
+  ): Promise<PreparedTrackerImageContext | undefined> {
+    const yandexRef = task.externalRefs.find(
+      (ref) => ref.provider === YANDEX_TRACKER_PROVIDER,
+    );
+    if (!yandexRef || !context.attachmentSource) {
+      return undefined;
+    }
+
+    const attachmentSource = context.attachmentSource;
+    return prepareTrackerImageContext({
+      issueKey: yandexRef.externalKey,
+      tracker: {
+        getIssueAttachments: () =>
+          attachmentSource.getIssueAttachments?.(yandexRef.externalKey) ?? Promise.resolve([]),
+        downloadIssueAttachment: (_issueKey: string, attachment: TrackerAttachment) => {
+          if (!attachmentSource.downloadIssueAttachment) {
+            throw new Error(
+              "Yandex Tracker attachment download is not supported by this source.",
+            );
+          }
+          return attachmentSource.downloadIssueAttachment(yandexRef.externalKey, attachment);
+        },
+      },
+      config: context.config.trackerImageContext ?? DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG,
+      logger: this.logger,
+    });
+  }
+
   private resolveResumeContext(comments: TaskComment[]): InternalResumeContext | undefined {
     const latestQuestion = comments
       .filter((comment) => comment.kind === "question")
@@ -812,6 +901,7 @@ export class InternalWorkerOrchestrator {
     taskId: string,
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
+    imageContext?: PreparedTrackerImageContext,
   ): Promise<TaskAnalysisResult> {
     await this.recordWorkflowEvent(context, taskId, {
       type: "analysis_started",
@@ -839,7 +929,11 @@ export class InternalWorkerOrchestrator {
       expectedFiles: [],
     });
     const execution = await this.runCodexStage(context, taskId, "analysis", (observer) =>
-      context.codex.runInitial(buildAnalysisPrompt(issue, comments, memoryContext), observer),
+      context.codex.runInitial(
+        buildAnalysisPrompt(issue, comments, memoryContext, imageContext),
+        observer,
+        { imagePaths: imageContext?.imagePaths ?? [] },
+      ),
     );
     let decision: TaskAnalysisDecision | undefined;
     if (execution.clarification) {
@@ -984,7 +1078,9 @@ export class InternalWorkerOrchestrator {
     comments: CommentWithMetadata[],
     analysisDecision: TaskAnalysisDecision,
     threadId?: string,
+    imageContext?: PreparedTrackerImageContext,
   ): Promise<CycleOutcome> {
+    const codexOptions: CodexRunOptions = { imagePaths: imageContext?.imagePaths ?? [] };
     await this.taskTracker.setStatus(taskId, "decomposing", "Internal task decomposition started.");
     await this.workflow.recordTaskStep(taskId, { kind: "plan", status: "running" });
     await this.recordWorkflowEvent(context, taskId, {
@@ -1003,11 +1099,12 @@ export class InternalWorkerOrchestrator {
       comments,
       { maxSubtasks, defaultSubtaskTag, titlePrefix },
       analysisDecision,
+      imageContext,
     );
     const execution = await this.runCodexStage(context, taskId, "decomposition", (observer) =>
       threadId
-        ? context.codex.runResume(threadId, prompt, observer)
-        : context.codex.runInitial(prompt, observer),
+        ? context.codex.runResume(threadId, prompt, observer, codexOptions)
+        : context.codex.runInitial(prompt, observer, codexOptions),
     );
     const plan = parseDecompositionPlan(execution.finalMessage, {
       parentIssueKey: issue.key,
@@ -1297,11 +1394,12 @@ export class InternalWorkerOrchestrator {
     resumePrompt: string,
     fallbackPrompt: string,
     observer?: CodexRunObserver,
+    options?: CodexRunOptions,
   ): Promise<CodexExecution> {
     if (!threadId) {
-      return context.codex.runInitial(fallbackPrompt, observer);
+      return context.codex.runInitial(fallbackPrompt, observer, options);
     }
-    const execution = await context.codex.runResume(threadId, resumePrompt, observer);
+    const execution = await context.codex.runResume(threadId, resumePrompt, observer, options);
     if (execution.process.exitCode === 0 || execution.clarification) {
       return execution;
     }
@@ -1311,7 +1409,7 @@ export class InternalWorkerOrchestrator {
       exitCode: execution.process.exitCode,
       stderr: execution.process.stderr,
     });
-    return context.codex.runInitial(fallbackPrompt, observer);
+    return context.codex.runInitial(fallbackPrompt, observer, options);
   }
 
   private async buildMemoryContext(

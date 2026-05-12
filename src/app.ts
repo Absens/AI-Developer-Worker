@@ -117,16 +117,31 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   }
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
   const yandexBridgeStore = createYandexBridgeStore(fleetConfig.taskTracker);
+  const yandexBridgeSources =
+    internalConfig?.yandexSyncEnabled && internalTaskTracker
+      ? new Map(
+          fleetConfig.repositories.map((profile) => {
+            const config = buildRepositoryRuntimeConfig(fleetConfig, profile);
+            return [
+              profile.name,
+              new YandexExternalTaskSource(
+                new YandexTrackerClient(config, logger),
+                config.trackerTag,
+              ),
+            ] as const;
+          }),
+        )
+      : new Map<string, YandexExternalTaskSource>();
   const yandexBridges =
     internalConfig?.yandexSyncEnabled && internalTaskTracker
       ? fleetConfig.repositories.map((profile) => {
-          const config = buildRepositoryRuntimeConfig(fleetConfig, profile);
+          const source = yandexBridgeSources.get(profile.name);
+          if (!source) {
+            throw new Error(`Missing Yandex source for repository profile ${profile.name}.`);
+          }
           return new YandexBridge({
             taskTracker: internalTaskTracker,
-            source: new YandexExternalTaskSource(
-              new YandexTrackerClient(config, logger),
-              config.trackerTag,
-            ),
+            source,
             store: yandexBridgeStore,
             repository: {
               repositoryName: profile.name,
@@ -149,16 +164,18 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
         );
 
   if (env.WORKER_CONFIG_FILE?.trim()) {
-    const contexts = fleetConfig.repositories.map((profile) =>
-      buildRepositoryContext(
+    const contexts = fleetConfig.repositories.map((profile) => {
+      const context = buildRepositoryContext(
         fleetConfig,
         profile,
         logger,
         lockBackend,
         observability,
         internalTaskTracker,
-      ),
-    );
+      );
+      const attachmentSource = yandexBridgeSources.get(profile.name);
+      return attachmentSource ? { ...context, attachmentSource } : context;
+    });
     const orchestrator = internalMode
       ? new InternalWorkerOrchestrator(
           fleetConfig,
@@ -207,6 +224,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const gitlab = new GitLabApiClient(config, logger);
   const codex = new CliCodexRunner(config, logger);
   const checkCodexAuth = () => assertCodexAuthenticated(config, logger);
+  const primaryAttachmentSource = yandexBridgeSources.get(primaryRepository.name);
   const orchestrator = internalMode
     ? new InternalWorkerOrchestrator(
         fleetConfig,
@@ -217,6 +235,9 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
             git,
             gitlab,
             codex,
+            ...(primaryAttachmentSource
+              ? { attachmentSource: primaryAttachmentSource }
+              : {}),
           },
         ],
         internalTaskTracker!,
