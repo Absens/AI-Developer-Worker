@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadConfig, loadFleetConfig, parseStatusMap } from "../src/config.js";
+import {
+  buildRepositoryRuntimeConfig,
+  loadConfig,
+  loadFleetConfig,
+  parseStatusMap,
+} from "../src/config.js";
 
 const STATUS_MAP = JSON.stringify({
   open: { statuses: ["Open"] },
@@ -599,6 +604,31 @@ describe("config", () => {
     });
   });
 
+  it("parses tracker image context settings from env", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TRACKER_IMAGE_CONTEXT_ENABLED: "true",
+      TRACKER_IMAGE_CONTEXT_MAX_COUNT: "3",
+      TRACKER_IMAGE_CONTEXT_MAX_BYTES: "1048576",
+      TRACKER_IMAGE_CONTEXT_TEMP_DIR: "/tmp/tracker-images",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.trackerImageContext).toEqual({
+      enabled: true,
+      maxCount: 3,
+      maxBytes: 1048576,
+      tempDir: "/tmp/tracker-images",
+    });
+  });
+
   it("bridges .env mode into a single repository fleet config", () => {
     const statusMapFile = createStatusMapFile();
     const env = {
@@ -632,6 +662,12 @@ describe("config", () => {
     expect(fleetConfig.coordination.lockBackend).toBe("tracker");
     expect(fleetConfig.priorityQueue.priorityWeights.high).toBe(400);
     expect(fleetConfig.priorityQueue.confidencePriorityWeight).toBe(2);
+
+    const runtimeConfig = buildRepositoryRuntimeConfig(
+      fleetConfig,
+      fleetConfig.repositories[0]!,
+    );
+    expect(runtimeConfig.trackerImageContext).toEqual(appConfig.trackerImageContext);
   });
 
   it("accepts LOCK_BACKEND=none for single-worker runs without Tracker lease comments", () => {

@@ -215,6 +215,38 @@ export interface TrackerStatusConfig {
   transition?: string;
 }
 
+export interface TrackerAttachmentAuthor {
+  id?: string;
+  display?: string;
+}
+
+export interface TrackerAttachmentMetadata {
+  size?: string;
+}
+
+export interface TrackerAttachment {
+  id: string;
+  name: string;
+  content?: string;
+  thumbnail?: string;
+  createdBy?: TrackerAttachmentAuthor;
+  createdAt?: string;
+  mimetype?: string;
+  size?: number;
+  metadata?: TrackerAttachmentMetadata;
+}
+
+export interface TrackerImageContextConfig {
+  enabled: boolean;
+  maxCount: number;
+  maxBytes: number;
+  tempDir?: string;
+}
+
+export interface CodexRunOptions {
+  imagePaths?: string[];
+}
+
 export interface TaskAnalysisDecision {
   confidence: number;
   taskType: TaskType;
@@ -374,6 +406,7 @@ export interface AppConfig {
   trackerTag: string;
   trackerStatusMap: Record<LogicalStatus, TrackerStatusConfig>;
   trackerApiBaseUrl: string;
+  trackerImageContext?: TrackerImageContextConfig;
   trackerParentLinkType?: string;
   trackerBlockedByLinkType?: string;
   gitlabUrl: string;
@@ -537,6 +570,7 @@ export interface GlobalWorkerConfig {
   trackerBlockedByLinkType?: string;
   maxFixAttempts: number;
   maxReviewFixAttempts: number;
+  trackerImageContext?: TrackerImageContextConfig;
   gitRepositoryToken: string;
   gitRepositoryUsername: string;
   gitCommitNoVerify: boolean;
@@ -580,6 +614,7 @@ export interface TrackerIssue {
   tags?: string[];
   blockedBy?: string[];
   blocks?: string[];
+  attachments?: TrackerAttachment[];
 }
 
 export interface TrackerComment {
@@ -812,6 +847,11 @@ export interface TrackerClient {
   createIssue?(input: CreateTrackerIssueInput): Promise<TrackerIssue>;
   linkIssue?(input: LinkTrackerIssueInput): Promise<void>;
   getIssueLinks?(issueKey: string): Promise<TrackerIssueLink[]>;
+  getIssueAttachments?(issueKey: string): Promise<TrackerAttachment[]>;
+  downloadIssueAttachment?(
+    issueKey: string,
+    attachment: TrackerAttachment,
+  ): Promise<Uint8Array>;
 }
 
 export interface GitService {
@@ -877,12 +917,21 @@ export interface CodexProgressEvent {
 export type CodexRunObserver = (event: CodexProgressEvent) => void;
 
 export interface CodexRunner {
-  runInitial(prompt: string, observer?: CodexRunObserver): Promise<CodexExecution>;
-  runFix(prompt: string, observer?: CodexRunObserver): Promise<CodexExecution>;
+  runInitial(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution>;
+  runFix(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution>;
   runResume(
     threadId: string,
     prompt: string,
     observer?: CodexRunObserver,
+    options?: CodexRunOptions,
   ): Promise<CodexExecution>;
 }
 

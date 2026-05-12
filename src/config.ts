@@ -22,6 +22,7 @@ import type {
   RepositoryRuntimeConfig,
   TaskIntakeMode,
   TaskTrackerConfig,
+  TrackerImageContextConfig,
   TrackerOrgHeader,
   TrackerStatusConfig,
   WorkerTaskMode,
@@ -103,6 +104,11 @@ const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   bootstrapOnStart: false,
   refreshOnPreflight: false,
   bootstrapCodexSandbox: "inherit",
+};
+const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
+  enabled: true,
+  maxCount: 5,
+  maxBytes: 10 * 1024 * 1024,
 };
 
 const requireEnv = (env: NodeJS.ProcessEnv, key: string): string => {
@@ -848,6 +854,50 @@ const optionalPositiveInt = (
   return value;
 };
 
+const parseTrackerImageContextConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+): TrackerImageContextConfig => {
+  const tempDir = env.TRACKER_IMAGE_CONTEXT_TEMP_DIR?.trim()
+    ? env.TRACKER_IMAGE_CONTEXT_TEMP_DIR.trim()
+    : optionalString(rawValue?.tempDir, "trackerImageContext.tempDir");
+
+  return {
+    enabled: env.TRACKER_IMAGE_CONTEXT_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TRACKER_IMAGE_CONTEXT_ENABLED,
+          "TRACKER_IMAGE_CONTEXT_ENABLED",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.enabled,
+        )
+      : optionalBoolean(
+          rawValue?.enabled,
+          "trackerImageContext.enabled",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.enabled,
+        ),
+    maxCount: env.TRACKER_IMAGE_CONTEXT_MAX_COUNT?.trim()
+      ? parsePositiveInt(
+          env.TRACKER_IMAGE_CONTEXT_MAX_COUNT,
+          "TRACKER_IMAGE_CONTEXT_MAX_COUNT",
+        )
+      : optionalPositiveInt(
+          rawValue?.maxCount,
+          "trackerImageContext.maxCount",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.maxCount,
+        ),
+    maxBytes: env.TRACKER_IMAGE_CONTEXT_MAX_BYTES?.trim()
+      ? parsePositiveInt(
+          env.TRACKER_IMAGE_CONTEXT_MAX_BYTES,
+          "TRACKER_IMAGE_CONTEXT_MAX_BYTES",
+        )
+      : optionalPositiveInt(
+          rawValue?.maxBytes,
+          "trackerImageContext.maxBytes",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.maxBytes,
+        ),
+    ...(tempDir ? { tempDir } : {}),
+  };
+};
+
 const optionalNumber = (
   value: unknown,
   key: string,
@@ -1223,6 +1273,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   const memory = parseMemoryConfig(env);
   const observability = parseObservabilityConfig(env);
   const autonomy = parseAutonomyConfig(env);
+  const trackerImageContext = parseTrackerImageContextConfig(env);
 
   return {
     taskTracker,
@@ -1241,6 +1292,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     trackerApiBaseUrl:
       env.TRACKER_API_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://api.tracker.yandex.net/v3",
+    trackerImageContext,
     trackerParentLinkType:
       env.TRACKER_PARENT_LINK_TYPE?.trim() || DEFAULT_TRACKER_PARENT_LINK_TYPE,
     trackerBlockedByLinkType:
@@ -1594,6 +1646,7 @@ const buildSingleRepositoryFleetConfig = (
       : {}),
     maxFixAttempts: config.maxFixAttempts,
     maxReviewFixAttempts: config.maxReviewFixAttempts,
+    trackerImageContext: config.trackerImageContext,
     gitRepositoryToken: config.gitRepositoryToken,
     gitRepositoryUsername: config.gitRepositoryUsername,
     gitCommitNoVerify: config.gitCommitNoVerify,
@@ -1799,6 +1852,10 @@ const loadFleetConfigFromFile = (
   const observability = optionalRecord(root.observability, "observability");
   const alerts = optionalRecord(root.alerts, "alerts");
   const autonomyRoot = optionalRecord(root.autonomy, "autonomy");
+  const trackerImageContext = optionalRecord(
+    root.trackerImageContext,
+    "trackerImageContext",
+  );
   if (!Array.isArray(root.repositories) || root.repositories.length === 0) {
     throw new ConfigurationError("repositories must be a non-empty array.");
   }
@@ -1954,6 +2011,7 @@ const loadFleetConfigFromFile = (
           "worker.maxReviewFixAttempts",
           maxFixAttempts,
         ),
+    trackerImageContext: parseTrackerImageContextConfig(env, trackerImageContext),
     gitRepositoryToken: env.GIT_REPOSITORY_TOKEN?.trim() || gitlabToken,
     gitRepositoryUsername: env.GIT_REPOSITORY_USERNAME?.trim() || "oauth2",
     gitCommitNoVerify: parseBooleanFlag(
@@ -2101,6 +2159,7 @@ export const buildRepositoryRuntimeConfig = (
   trackerTag: repository.tags[0] ?? "ai_dev",
   trackerStatusMap: globalConfig.tracker.statusMap,
   trackerApiBaseUrl: globalConfig.tracker.apiBaseUrl,
+  trackerImageContext: globalConfig.trackerImageContext,
   ...(globalConfig.trackerParentLinkType
     ? { trackerParentLinkType: globalConfig.trackerParentLinkType }
     : {}),
