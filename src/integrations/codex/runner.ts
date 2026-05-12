@@ -5,6 +5,7 @@ import type {
   CodexProgressEvent,
   CodexRunner,
   CodexRunObserver,
+  CodexRunOptions,
 } from "../../models/types.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -333,6 +334,12 @@ const emitObserverEvent = (
   }
 };
 
+const appendImageArgs = (args: string[], imagePaths: readonly string[]): void => {
+  for (const imagePath of imagePaths) {
+    args.push("--image", imagePath);
+  }
+};
+
 const summarizeEvent = (
   mode: "new" | "resume",
   event: CodexEvent,
@@ -467,19 +474,29 @@ export class CliCodexRunner implements CodexRunner {
     private readonly logger: Logger,
   ) {}
 
-  runInitial(prompt: string, observer?: CodexRunObserver): Promise<CodexExecution> {
+  runInitial(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
+  ): Promise<CodexExecution> {
     return this.run({
       prompt,
       mode: "new",
       observer,
+      imagePaths: options.imagePaths ?? [],
     });
   }
 
-  runFix(prompt: string, observer?: CodexRunObserver): Promise<CodexExecution> {
+  runFix(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
+  ): Promise<CodexExecution> {
     return this.run({
       prompt,
       mode: "new",
       observer,
+      imagePaths: options.imagePaths ?? [],
     });
   }
 
@@ -487,12 +504,14 @@ export class CliCodexRunner implements CodexRunner {
     threadId: string,
     prompt: string,
     observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
   ): Promise<CodexExecution> {
     return this.run({
       prompt,
       mode: "resume",
       threadId,
       observer,
+      imagePaths: options.imagePaths ?? [],
     });
   }
 
@@ -524,6 +543,7 @@ export class CliCodexRunner implements CodexRunner {
     mode: "new" | "resume";
     threadId?: string;
     observer?: CodexRunObserver;
+    imagePaths: string[];
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
     const lastMessagePath = join(tempDir, "last-message.txt");
@@ -552,7 +572,11 @@ export class CliCodexRunner implements CodexRunner {
     try {
       const args = this.buildBaseArgs(lastMessagePath);
       if (input.mode === "resume" && input.threadId) {
-        args.push("resume", input.threadId);
+        args.push("resume");
+        appendImageArgs(args, input.imagePaths);
+        args.push(input.threadId);
+      } else {
+        appendImageArgs(args, input.imagePaths);
       }
       this.logger.info("Running Codex command.", {
         command: this.config.codexCliCommand,

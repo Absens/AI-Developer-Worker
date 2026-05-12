@@ -15,6 +15,8 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexRunObserver,
+  CodexRunOptions,
   CodexRunner,
   CommentWithMetadata,
   GitLabService,
@@ -274,9 +276,9 @@ class FakeGitLabService implements GitLabService {
 }
 
 class FakeCodexRunner implements CodexRunner {
-  readonly initialCalls: string[] = [];
-  readonly fixCalls: string[] = [];
-  readonly resumeCalls: Array<{ threadId: string; prompt: string }> = [];
+  readonly initialCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
+  readonly fixCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
+  readonly resumeCalls: Array<{ threadId: string; prompt: string; imagePaths: string[] }> = [];
 
   constructor(
     private readonly initialQueue: Array<() => CodexExecution | Promise<CodexExecution>>,
@@ -286,8 +288,12 @@ class FakeCodexRunner implements CodexRunner {
     private readonly fixQueue: Array<() => CodexExecution | Promise<CodexExecution>> = [],
   ) {}
 
-  runInitial(prompt: string): Promise<CodexExecution> {
-    this.initialCalls.push(prompt);
+  runInitial(
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution> {
+    this.initialCalls.push({ prompt, imagePaths: options?.imagePaths ?? [] });
     const next = this.initialQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -295,8 +301,12 @@ class FakeCodexRunner implements CodexRunner {
     return Promise.resolve(next());
   }
 
-  runFix(prompt: string): Promise<CodexExecution> {
-    this.fixCalls.push(prompt);
+  runFix(
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution> {
+    this.fixCalls.push({ prompt, imagePaths: options?.imagePaths ?? [] });
     const next = this.fixQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -304,8 +314,13 @@ class FakeCodexRunner implements CodexRunner {
     return Promise.resolve(next());
   }
 
-  runResume(threadId: string, prompt: string): Promise<CodexExecution> {
-    this.resumeCalls.push({ threadId, prompt });
+  runResume(
+    threadId: string,
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution> {
+    this.resumeCalls.push({ threadId, prompt, imagePaths: options?.imagePaths ?? [] });
     const next = this.resumeQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -1497,8 +1512,8 @@ Reply with /resume A or /resume B.
 
     expect(firstOutcome).toBe("processed");
     expect(secondOutcome).toBe("idle");
-    expect(codex.initialCalls[0]).toContain("Fix the null crash before merge.");
-    expect(codex.initialCalls[0]).not.toContain("Worker follow-up should be ignored.");
+    expect(codex.initialCalls[0]?.prompt).toContain("Fix the null crash before merge.");
+    expect(codex.initialCalls[0]?.prompt).not.toContain("Worker follow-up should be ignored.");
     expect(git.commits).toEqual(["fix: handle null review feedback DEV-REVIEW-FIX"]);
     expect(git.pushes).toEqual([branch]);
     expect(gitlab.replies).toHaveLength(1);

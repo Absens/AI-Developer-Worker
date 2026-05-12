@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -91,6 +91,89 @@ afterEach(() => {
 });
 
 describe("CliCodexRunner", () => {
+  it("passes image paths to initial codex exec runs", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    const firstImagePath = join(tempDir, "first.png");
+    const secondImagePath = join(tempDir, "second.png");
+    writeFileSync(firstImagePath, "first", "utf8");
+    writeFileSync(secondImagePath, "second", "utf8");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-images' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runInitial("Implement this change.", undefined, {
+      imagePaths: [firstImagePath, secondImagePath],
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args).toEqual(
+      expect.arrayContaining(["--image", firstImagePath, "--image", secondImagePath]),
+    );
+    expect(args.indexOf("--image")).toBeGreaterThan(args.indexOf("exec"));
+    expect(args).not.toContain("resume");
+  });
+
+  it("passes image paths to resume codex exec runs", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    const imagePath = join(tempDir, "screen.png");
+    writeFileSync(imagePath, "image", "utf8");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-123' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runResume("thread-123", "Implement this change.", undefined, {
+      imagePaths: [imagePath],
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const resumeIndex = args.indexOf("resume");
+    expect(resumeIndex).toBeGreaterThan(-1);
+    expect(args.slice(resumeIndex)).toEqual(
+      expect.arrayContaining(["--image", imagePath, "thread-123"]),
+    );
+    expect(args.indexOf("--image")).toBeGreaterThan(resumeIndex);
+  });
+
   it("parses thread id and structured AI clarification from exec output", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");
