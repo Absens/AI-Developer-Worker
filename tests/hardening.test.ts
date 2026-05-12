@@ -11,6 +11,7 @@ import {
 } from "../src/domain/taskTracker/index.js";
 import {
   assertInternalTrackerOperational,
+  calculateMigrationChecksum,
   listInternalTrackerMigrations,
   PostgresTaskTrackerClient,
   type PostgresQueryable,
@@ -55,6 +56,13 @@ const asQueryResult = <R extends QueryResultRow>(
 ): QueryResult<R> => result as unknown as QueryResult<R>;
 
 describe("Phase 7H hardening", () => {
+  it("uses line-ending stable migration checksums", () => {
+    const lfSql = "CREATE TABLE example (id text PRIMARY KEY);\n";
+    const crlfSql = lfSql.replace(/\n/g, "\r\n");
+
+    expect(calculateMigrationChecksum(crlfSql)).toBe(calculateMigrationChecksum(lfSql));
+  });
+
   it("preflight fails when migration metadata is missing", async () => {
     const db: PostgresQueryable = {
       async query<R extends QueryResultRow = QueryResultRow>(
