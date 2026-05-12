@@ -39,6 +39,7 @@ const readJsonBody = async (request: IncomingMessage): Promise<any> => {
 const startMockServer = async () => {
   const trackerComments: Array<{ text: string }> = [];
   const transitions: string[] = [];
+  let attachmentDownloadCount = 0;
   const mergeRequests: Array<{
     sourceBranch: string;
     web_url: string;
@@ -140,6 +141,32 @@ const startMockServer = async () => {
       return;
     }
 
+    if (method === "GET" && url.pathname === "/tracker/v3/issues/DEV-100/attachments") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify([
+          {
+            id: "img-1",
+            name: "screen.png",
+            mimetype: "image/png",
+            size: 8,
+            metadata: { size: "1x1" },
+          },
+        ]),
+      );
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      url.pathname === "/tracker/v3/issues/DEV-100/attachments/img-1/screen.png"
+    ) {
+      attachmentDownloadCount += 1;
+      response.setHeader("Content-Type", "image/png");
+      response.end(Buffer.from("89504e470d0a1a0a", "hex"));
+      return;
+    }
+
     if (method === "POST" && url.pathname === "/tracker/v3/issues/DEV-100/comments") {
       const body = await readJsonBody(request);
       trackerComments.push({ text: body.text });
@@ -235,6 +262,9 @@ const startMockServer = async () => {
     transitions,
     mergeRequests,
     searchBodies,
+    get attachmentDownloadCount() {
+      return attachmentDownloadCount;
+    },
   };
 };
 
@@ -259,6 +289,7 @@ describe("worker smoke", () => {
     const repoPath = join(workspace, "project");
     const hooksPath = join(workspace, "hooks");
     const codexScriptPath = join(workspace, "codex-smoke.js");
+    const codexArgsPath = join(workspace, "codex-args.jsonl");
     const statusMapFilePath = join(workspace, "trackerStatusMap.json");
 
     runGit(["init", "--bare", remotePath], workspace);
@@ -290,6 +321,13 @@ describe("worker smoke", () => {
         "const fs = require('node:fs');",
         "const path = require('node:path');",
         "const args = process.argv.slice(2);",
+        `const argsLogPath = ${JSON.stringify(codexArgsPath)};`,
+        "const imagePaths = args.flatMap((arg, index) => arg === '--image' ? [args[index + 1]] : []);",
+        "fs.appendFileSync(argsLogPath, JSON.stringify(args) + '\\n', 'utf8');",
+        "if (imagePaths.length === 0 || imagePaths.some((imagePath) => !imagePath || !fs.existsSync(imagePath))) {",
+        "  process.stderr.write('expected --image path to exist\\n');",
+        "  process.exit(2);",
+        "}",
         "const outputIndex = args.indexOf('--output-last-message');",
         "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
         "const stdin = fs.readFileSync(0, 'utf8');",
@@ -355,6 +393,12 @@ describe("worker smoke", () => {
       expect(
         mockServer.trackerComments.some((comment) => comment.text.startsWith("AI MR:")),
       ).toBe(true);
+      const codexInvocationArgs = readFileSync(codexArgsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(codexInvocationArgs.some((args) => args.includes("--image"))).toBe(true);
+      expect(mockServer.attachmentDownloadCount).toBe(1);
     } finally {
       await new Promise<void>((resolve, reject) =>
         mockServer.server.close((error) => (error ? reject(error) : resolve())),
