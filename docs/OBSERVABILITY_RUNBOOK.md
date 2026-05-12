@@ -76,6 +76,65 @@ When `DASHBOARD_BEARER_TOKEN` is set, both `/dashboard` and `/api/*` require:
 curl -H "Authorization: Bearer <token>" http://localhost:9464/api/workers
 ```
 
+Internal task UI/API:
+
+```env
+TASK_TRACKER_UI_ENABLED=false
+TASK_TRACKER_UI_PATH=/tasks
+TASK_TRACKER_UI_API_PATH=/api
+TASK_TRACKER_UI_ASSET_PATH=/tasks/assets
+TASK_TRACKER_UI_STATIC_DIR=web/dist/task-tracker-console/browser
+TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
+TASK_TRACKER_TRUSTED_USER_HEADER=x-task-tracker-user
+TASK_TRACKER_TRUSTED_ROLE_HEADER=x-task-tracker-role
+TASK_TRACKER_AGENT_TOKEN=
+TASK_TRACKER_SYSTEM_TOKEN=
+```
+
+When enabled with `TASK_TRACKER_PROVIDER=internal`, `/tasks` serves the Angular
+console when `TASK_TRACKER_UI_STATIC_DIR` points at a built bundle. The server
+validates that directory at startup and serves Angular deep links without
+swallowing `/api`, `/metrics`, `/healthz`, or `/readyz`. There is no embedded
+task UI fallback after Phase 8D; if the UI is enabled without a static bundle,
+`/tasks` returns a clear `503` and JSON API routes keep working.
+
+Static cache behavior:
+
+- `index.html` and Angular route fallbacks use `cache-control: no-store`;
+- hashed Angular JS/CSS/media files use long immutable cache headers;
+- non-hashed files under `/tasks/assets` use conservative short caching;
+- missing assets return `404` rather than `index.html`.
+
+Local Angular development:
+
+```bash
+npm install --prefix web
+npm run web:dev
+```
+
+The Angular dev server runs at `http://127.0.0.1:4200/tasks` and proxies `/api`
+to the Node.js observability server on `http://127.0.0.1:9464`.
+
+Production bundle:
+
+```bash
+npm run web:typecheck
+npm run web:test
+npm run web:build
+npm run web:e2e
+```
+
+Docker builds this bundle into the image and sets
+`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
+You can still mount a prebuilt bundle and override `TASK_TRACKER_UI_STATIC_DIR`
+for self-hosted deployments.
+
+Writes require backend authorization. In `trusted_proxy` mode, put the server
+behind a proxy that injects the trusted user and role headers. In `bearer`
+mode, use service clients or a reverse proxy that injects `Authorization`; the
+Angular app does not provide a token entry field and does not store bearer
+tokens in browser storage. `localhost` mode is development-only.
+
 Event store:
 
 ```env
@@ -155,8 +214,24 @@ Recommended first panels:
 - `ai_developer_validation_gate_failures_total`
 - `ai_developer_queue_depth`
 - `ai_developer_alerts_total`
+- `ai_developer_task_tracker_queue_depth`
+- `ai_developer_task_tracker_claim_latency_seconds_bucket`
+- `ai_developer_task_tracker_lease_conflicts_total`
+- `ai_developer_task_tracker_sync_lag_seconds`
+- `ai_developer_task_tracker_cleanup_deleted_total`
+- `ai_developer_task_tracker_proposals`
 
 Prometheus labels intentionally exclude issue keys, branch names, commands, local paths, and diagnostics.
+
+## Task Timeline Mapping
+
+The internal task timeline is the audit-grade history for one task. The
+observability event store remains optimized for fleet dashboards. When both
+stores describe the same lifecycle transition, the shared mapper in
+[src/observability/lifecycleMapping.ts](/C:/Users/gabba/projects/developer/src/observability/lifecycleMapping.ts)
+preserves task id, worker id, repository, lease ids, status transition, and
+failure classification. Do not introduce new dashboard-only lifecycle names
+without updating that mapper and its tests.
 
 ## Docker and Probes
 
@@ -190,7 +265,13 @@ readinessProbe:
 
 - Keep `OBSERVABILITY_HOST=127.0.0.1` unless the worker runs on a private network.
 - Set `DASHBOARD_BEARER_TOKEN` before exposing dashboard/API outside localhost.
-- The dashboard is read-only; no task mutation endpoints are implemented.
+- The older observability dashboard is read-only and remains focused on worker
+  health, recent events, and Prometheus-oriented summaries.
+- The Angular task tracker console is the primary human workflow UI for
+  creating, answering, approving, retrying, and supervising internal tracker
+  tasks.
+- The backend human API remains the authorization boundary; Angular role-aware
+  controls are only usability hints.
 - Event messages and details pass through secret redaction and diagnostic truncation.
 - Dashboard APIs may show issue keys and MR URLs; metrics labels do not.
 

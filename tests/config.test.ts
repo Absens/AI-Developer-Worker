@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadConfig, loadFleetConfig, parseStatusMap } from "../src/config.js";
+import {
+  buildRepositoryRuntimeConfig,
+  loadConfig,
+  loadFleetConfig,
+  parseStatusMap,
+} from "../src/config.js";
 
 const STATUS_MAP = JSON.stringify({
   open: { statuses: ["Open"] },
@@ -127,6 +132,300 @@ describe("config", () => {
       dashboard: { enabled: false, path: "/dashboard", refreshSeconds: 10, apiPath: "/api" },
       alerts: { enabled: false, minSeverity: "warning" },
     });
+    expect(config.autonomy).toMatchObject({
+      aiProposalsEnabled: true,
+      autoExecuteLowRiskEnabled: false,
+      defaultAllowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
+    });
+  });
+
+  it("defaults task tracker provider to Yandex", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.taskTracker).toEqual({ provider: "yandex" });
+  });
+
+  it("parses internal task tracker PostgreSQL settings without Yandex config", () => {
+    const env = {
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost:5432/tasks",
+      TASK_INTAKE_MODE: "standalone",
+      YANDEX_SYNC_ENABLED: "false",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    };
+    const config = loadConfig(env);
+    const fleetConfig = loadFleetConfig(env);
+
+    expect(config.taskTracker).toEqual({
+      provider: "internal",
+      internal: {
+        storage: "postgres",
+        databaseUrl: "postgres://tracker:secret@localhost:5432/tasks",
+        intakeMode: "standalone",
+        yandexSyncEnabled: false,
+        operational: {
+          retention: {
+            rawLogDays: 30,
+            artifactDays: 30,
+            failedArtifactDays: 90,
+            historyDays: 365,
+          },
+          cleanup: { enabled: true, intervalSeconds: 3600 },
+          metricsEnabled: true,
+          redactionEnabled: true,
+        },
+      },
+    });
+    expect(config.trackerToken).toBe("");
+    expect(config.trackerStatusMap.open.statuses).toEqual(["open"]);
+    expect(fleetConfig.coordination.lockBackend).toBe("none");
+  });
+
+  it("parses internal task tracker Yandex integration mode", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_DATABASE_URL: "postgresql://tracker:secret@localhost/tasks",
+      TASK_INTAKE_MODE: "yandex_integration",
+      YANDEX_SYNC_ENABLED: "true",
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.taskTracker).toMatchObject({
+      provider: "internal",
+      internal: {
+        storage: "postgres",
+        intakeMode: "yandex_integration",
+        yandexSyncEnabled: true,
+      },
+    });
+  });
+
+  it("parses AI proposal autonomy policy options", () => {
+    const config = loadConfig({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "ai_proposed",
+      NODE_ENV: "test",
+      AI_PROPOSALS_ENABLED: "false",
+      AUTO_EXECUTE_LOW_RISK_ENABLED: "true",
+      AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON: "[\"documentation\",\"tests_only\"]",
+      AI_PROPOSAL_DAILY_LIMIT: "3",
+      AI_PROPOSAL_WINDOW_LIMIT: "2",
+      AI_PROPOSAL_WINDOW_SECONDS: "600",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.autonomy).toEqual({
+      aiProposalsEnabled: false,
+      autoExecuteLowRiskEnabled: true,
+      defaultAllowedTaskTypes: ["documentation", "tests_only"],
+      defaultDailyProposalLimit: 3,
+      defaultWindowProposalLimit: 2,
+      defaultWindowSeconds: 600,
+      repositories: {},
+    });
+  });
+
+  it("rejects invalid task tracker provider", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "jira",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/TASK_TRACKER_PROVIDER/);
+  });
+
+  it("rejects invalid task intake mode", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        TASK_INTAKE_MODE: "external_only",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/TASK_INTAKE_MODE/);
+  });
+
+  it("rejects Yandex sync without Yandex integration intake mode", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        TASK_INTAKE_MODE: "standalone",
+        YANDEX_SYNC_ENABLED: "true",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/YANDEX_SYNC_ENABLED=true/);
+  });
+
+  it("rejects internal mode without database URL unless memory storage is explicit", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/TASK_TRACKER_DATABASE_URL/);
+
+    const config = loadConfig({
+      NODE_ENV: "test",
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.taskTracker).toMatchObject({
+      provider: "internal",
+      internal: {
+        storage: "memory",
+        intakeMode: "standalone",
+        yandexSyncEnabled: false,
+        operational: {
+          cleanup: { enabled: true, intervalSeconds: 3600 },
+          redactionEnabled: true,
+        },
+      },
+    });
+  });
+
+  it("parses and validates internal tracker operational hardening options", () => {
+    const config = loadConfig({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+      TASK_TRACKER_RETENTION_RAW_LOG_DAYS: "14",
+      TASK_TRACKER_RETENTION_ARTIFACT_DAYS: "21",
+      TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS: "120",
+      TASK_TRACKER_RETENTION_HISTORY_DAYS: "400",
+      TASK_TRACKER_CLEANUP_ENABLED: "false",
+      TASK_TRACKER_CLEANUP_INTERVAL_SECONDS: "7200",
+      TASK_TRACKER_METRICS_ENABLED: "false",
+      TASK_TRACKER_REDACTION_ENABLED: "true",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.taskTracker).toMatchObject({
+      provider: "internal",
+      internal: {
+        operational: {
+          retention: {
+            rawLogDays: 14,
+            artifactDays: 21,
+            failedArtifactDays: 120,
+            historyDays: 400,
+          },
+          cleanup: { enabled: false, intervalSeconds: 7200 },
+          metricsEnabled: false,
+          redactionEnabled: true,
+        },
+      },
+    });
+  });
+
+  it("rejects invalid internal tracker retention settings", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        TASK_TRACKER_RETENTION_HISTORY_DAYS: "30",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/RETENTION_HISTORY_DAYS/);
+
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        TASK_TRACKER_RETENTION_ARTIFACT_DAYS: "90",
+        TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS: "30",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/FAILED_ARTIFACT_DAYS/);
+  });
+
+  it("rejects memory task tracker storage outside test or local smoke config", () => {
+    expect(() =>
+      loadConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_STORAGE: "memory",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/TASK_TRACKER_STORAGE=memory/);
+  });
+
+  it("rejects tracker comment locks in internal provider mode", () => {
+    expect(() =>
+      loadFleetConfig({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_DATABASE_URL: "postgres://tracker:secret@localhost/tasks",
+        LOCK_BACKEND: "tracker",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/LOCK_BACKEND=tracker/);
   });
 
   it("accepts explicit observability options", () => {
@@ -189,6 +488,87 @@ describe("config", () => {
     });
   });
 
+  it("accepts explicit task tracker UI options", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TASK_TRACKER_UI_ENABLED: "true",
+      TASK_TRACKER_UI_BIND_HOST: "0.0.0.0",
+      TASK_TRACKER_UI_PORT: "9666",
+      TASK_TRACKER_UI_PATH: "/tracker",
+      TASK_TRACKER_UI_API_PATH: "/tracker-api",
+      TASK_TRACKER_UI_ASSET_PATH: "/tracker/assets",
+      TASK_TRACKER_UI_STATIC_DIR: "/tmp/task-tracker-console",
+      TASK_TRACKER_HUMAN_AUTH_MODE: "trusted_proxy",
+      TASK_TRACKER_TRUSTED_USER_HEADER: "x-user",
+      TASK_TRACKER_TRUSTED_ROLE_HEADER: "x-role",
+      TASK_TRACKER_AGENT_TOKEN: "agent-token",
+      TASK_TRACKER_SYSTEM_TOKEN: "system-token",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.observability).toMatchObject({
+      host: "0.0.0.0",
+      port: 9666,
+      taskTrackerUi: {
+        enabled: true,
+        path: "/tracker",
+        apiPath: "/tracker-api",
+        assetPath: "/tracker/assets",
+        staticDir: "/tmp/task-tracker-console",
+        authMode: "trusted_proxy",
+        trustedUserHeader: "x-user",
+        trustedRoleHeader: "x-role",
+        agentToken: "agent-token",
+        systemToken: "system-token",
+      },
+    });
+  });
+
+  it("rejects ambiguous task tracker UI routes", () => {
+    const statusMapFile = createStatusMapFile();
+    const baseEnv = {
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TASK_TRACKER_UI_ENABLED: "true",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    };
+
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        TASK_TRACKER_UI_PATH: "/metrics",
+      }),
+    ).toThrow(/TASK_TRACKER_UI_PATH.*METRICS_PATH|METRICS_PATH.*TASK_TRACKER_UI_PATH/);
+
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        TASK_TRACKER_UI_ASSET_PATH: "/assets",
+      }),
+    ).toThrow(/TASK_TRACKER_UI_ASSET_PATH/);
+
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        DASHBOARD_ENABLED: "true",
+      }),
+    ).toThrow(
+      /TASK_TRACKER_UI_API_PATH.*DASHBOARD_API_PATH|DASHBOARD_API_PATH.*TASK_TRACKER_UI_API_PATH/,
+    );
+  });
+
   it("accepts explicit memory options", () => {
     const statusMapFile = createStatusMapFile();
     const config = loadConfig({
@@ -221,6 +601,31 @@ describe("config", () => {
       bootstrapOnStart: true,
       refreshOnPreflight: true,
       bootstrapCodexSandbox: "read-only",
+    });
+  });
+
+  it("parses tracker image context settings from env", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      TRACKER_IMAGE_CONTEXT_ENABLED: "true",
+      TRACKER_IMAGE_CONTEXT_MAX_COUNT: "3",
+      TRACKER_IMAGE_CONTEXT_MAX_BYTES: "1048576",
+      TRACKER_IMAGE_CONTEXT_TEMP_DIR: "/tmp/tracker-images",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.trackerImageContext).toEqual({
+      enabled: true,
+      maxCount: 3,
+      maxBytes: 1048576,
+      tempDir: "/tmp/tracker-images",
     });
   });
 
@@ -257,6 +662,12 @@ describe("config", () => {
     expect(fleetConfig.coordination.lockBackend).toBe("tracker");
     expect(fleetConfig.priorityQueue.priorityWeights.high).toBe(400);
     expect(fleetConfig.priorityQueue.confidencePriorityWeight).toBe(2);
+
+    const runtimeConfig = buildRepositoryRuntimeConfig(
+      fleetConfig,
+      fleetConfig.repositories[0]!,
+    );
+    expect(runtimeConfig.trackerImageContext).toEqual(appConfig.trackerImageContext);
   });
 
   it("accepts LOCK_BACKEND=none for single-worker runs without Tracker lease comments", () => {

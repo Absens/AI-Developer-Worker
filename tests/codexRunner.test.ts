@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -91,6 +91,89 @@ afterEach(() => {
 });
 
 describe("CliCodexRunner", () => {
+  it("passes image paths to initial codex exec runs", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    const firstImagePath = join(tempDir, "first.png");
+    const secondImagePath = join(tempDir, "second.png");
+    writeFileSync(firstImagePath, "first", "utf8");
+    writeFileSync(secondImagePath, "second", "utf8");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-images' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runInitial("Implement this change.", undefined, {
+      imagePaths: [firstImagePath, secondImagePath],
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args).toEqual(
+      expect.arrayContaining(["--image", firstImagePath, "--image", secondImagePath]),
+    );
+    expect(args.indexOf("--image")).toBeGreaterThan(args.indexOf("exec"));
+    expect(args).not.toContain("resume");
+  });
+
+  it("passes image paths to resume codex exec runs", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    const imagePath = join(tempDir, "screen.png");
+    writeFileSync(imagePath, "image", "utf8");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-123' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runResume("thread-123", "Implement this change.", undefined, {
+      imagePaths: [imagePath],
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const resumeIndex = args.indexOf("resume");
+    expect(resumeIndex).toBeGreaterThan(-1);
+    expect(args.slice(resumeIndex)).toEqual(
+      expect.arrayContaining(["--image", imagePath, "thread-123"]),
+    );
+    expect(args.indexOf("--image")).toBeGreaterThan(resumeIndex);
+  });
+
   it("parses thread id and structured AI clarification from exec output", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");
@@ -389,6 +472,113 @@ describe("CliCodexRunner", () => {
     expect((entry?.context as { itemRole?: string } | undefined)?.itemRole).toBe("assistant");
     expect((entry?.context as { preview?: string } | undefined)?.preview).toContain(
       "Inspecting repository and preparing edits.",
+    );
+  });
+
+  it("emits allowlisted progress events to the observer without raw command output", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'item.started', item: { id: 'cmd-1', type: 'command_execution', command: 'TOKEN=super-secret npm test', status: 'in_progress' } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: 'TOKEN=super-secret I am checking tests.' } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'cmd-1', type: 'command_execution', status: 'completed', exit_code: 0, aggregated_output: 'TOKEN=super-secret raw output' } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 5 } }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const events: unknown[] = [];
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new TestLogger(),
+    );
+
+    await runner.runInitial("Implement this change.", (event) => events.push(event));
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "codex_command_started",
+          mode: "new",
+          type: "item.started",
+          itemType: "command_execution",
+          itemStatus: "in_progress",
+        }),
+        expect.objectContaining({
+          kind: "codex_agent_message",
+          mode: "new",
+          type: "item.completed",
+          itemType: "agent_message",
+          message: "TOKEN=[redacted] I am checking tests.",
+        }),
+        expect.objectContaining({
+          kind: "codex_command_completed",
+          mode: "new",
+          type: "item.completed",
+          itemType: "command_execution",
+          itemStatus: "completed",
+          exitCode: 0,
+        }),
+        expect.objectContaining({
+          kind: "codex_turn_completed",
+          mode: "new",
+          type: "turn.completed",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain("super-secret");
+    expect(JSON.stringify(events)).not.toContain("aggregated_output");
+    expect(JSON.stringify(events)).not.toContain("raw output");
+    expect(JSON.stringify(events)).not.toContain("TOKEN=[redacted] npm test");
+  });
+
+  it("emits periodic progress heartbeat events while Codex is still running", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "setTimeout(() => {",
+        "  if (outputPath) {",
+        "    fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "  }",
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+        "}, 80);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const events: Array<{ kind?: string; elapsedSeconds?: number }> = [];
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexProgressLogIntervalMs: 10,
+      },
+      new TestLogger(),
+    );
+
+    await runner.runInitial("Implement this change.", (event) => events.push(event));
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "codex_command_progress",
+          elapsedSeconds: expect.any(Number),
+        }),
+      ]),
     );
   });
 

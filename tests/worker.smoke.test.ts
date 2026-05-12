@@ -39,6 +39,7 @@ const readJsonBody = async (request: IncomingMessage): Promise<any> => {
 const startMockServer = async () => {
   const trackerComments: Array<{ text: string }> = [];
   const transitions: string[] = [];
+  let attachmentDownloadCount = 0;
   const mergeRequests: Array<{
     sourceBranch: string;
     web_url: string;
@@ -53,6 +54,10 @@ const startMockServer = async () => {
     description: "Create a smoke artifact",
     createdAt: "2026-03-10T00:00:00.000Z",
     updatedAt: "2026-03-10T00:00:00.000Z",
+    queue: {
+      key: "FRONTEND",
+      display: "Frontend",
+    },
     status: {
       key: "open",
       display: "Open",
@@ -67,6 +72,12 @@ const startMockServer = async () => {
       searchBodies.push(await readJsonBody(request));
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify([issue]));
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/tracker/v3/issues/DEV-100") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify(issue));
       return;
     }
 
@@ -127,6 +138,32 @@ const startMockServer = async () => {
           })),
         ),
       );
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/tracker/v3/issues/DEV-100/attachments") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify([
+          {
+            id: "img-1",
+            name: "screen.png",
+            mimetype: "image/png",
+            size: 8,
+            metadata: { size: "1x1" },
+          },
+        ]),
+      );
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      url.pathname === "/tracker/v3/issues/DEV-100/attachments/img-1/screen.png"
+    ) {
+      attachmentDownloadCount += 1;
+      response.setHeader("Content-Type", "image/png");
+      response.end(Buffer.from("89504e470d0a1a0a", "hex"));
       return;
     }
 
@@ -225,6 +262,9 @@ const startMockServer = async () => {
     transitions,
     mergeRequests,
     searchBodies,
+    get attachmentDownloadCount() {
+      return attachmentDownloadCount;
+    },
   };
 };
 
@@ -249,6 +289,7 @@ describe("worker smoke", () => {
     const repoPath = join(workspace, "project");
     const hooksPath = join(workspace, "hooks");
     const codexScriptPath = join(workspace, "codex-smoke.js");
+    const codexArgsPath = join(workspace, "codex-args.jsonl");
     const statusMapFilePath = join(workspace, "trackerStatusMap.json");
 
     runGit(["init", "--bare", remotePath], workspace);
@@ -280,6 +321,13 @@ describe("worker smoke", () => {
         "const fs = require('node:fs');",
         "const path = require('node:path');",
         "const args = process.argv.slice(2);",
+        `const argsLogPath = ${JSON.stringify(codexArgsPath)};`,
+        "const imagePaths = args.flatMap((arg, index) => arg === '--image' ? [args[index + 1]] : []);",
+        "fs.appendFileSync(argsLogPath, JSON.stringify(args) + '\\n', 'utf8');",
+        "if (imagePaths.length === 0 || imagePaths.some((imagePath) => !imagePath || !fs.existsSync(imagePath))) {",
+        "  process.stderr.write('expected --image path to exist\\n');",
+        "  process.exit(2);",
+        "}",
         "const outputIndex = args.indexOf('--output-last-message');",
         "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
         "const stdin = fs.readFileSync(0, 'utf8');",
@@ -345,6 +393,290 @@ describe("worker smoke", () => {
       expect(
         mockServer.trackerComments.some((comment) => comment.text.startsWith("AI MR:")),
       ).toBe(true);
+      const codexInvocationArgs = readFileSync(codexArgsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(codexInvocationArgs.some((args) => args.includes("--image"))).toBe(true);
+      expect(mockServer.attachmentDownloadCount).toBe(1);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        mockServer.server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("processes an internal tracker task end-to-end without Yandex comments", async () => {
+    const workspace = createTempWorkspace();
+    cleanupPaths.push(workspace);
+
+    const remotePath = join(workspace, "remote.git");
+    const seedPath = join(workspace, "seed");
+    const repoPath = join(workspace, "project");
+    const codexScriptPath = join(workspace, "codex-internal-smoke.js");
+
+    runGit(["init", "--bare", remotePath], workspace);
+    runGit(["init", "--initial-branch=main", seedPath], workspace);
+    runGit(["config", "user.email", "smoke@example.com"], seedPath);
+    runGit(["config", "user.name", "Smoke Worker"], seedPath);
+    writeFileSync(join(seedPath, "README.md"), "# seed\n", "utf8");
+    runGit(["add", "README.md"], seedPath);
+    runGit(["commit", "-m", "seed"], seedPath);
+    runGit(["remote", "add", "origin", remotePath], seedPath);
+    runGit(["push", "-u", "origin", "main"], seedPath);
+    runGit(["symbolic-ref", "HEAD", "refs/heads/main"], remotePath);
+
+    runGit(["clone", "--branch", "main", remotePath, repoPath], workspace);
+    runGit(["config", "user.email", "worker@example.com"], repoPath);
+    runGit(["config", "user.name", "AI Worker"], repoPath);
+
+    writeFileSync(
+      codexScriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "const stdin = fs.readFileSync(0, 'utf8');",
+        "const isAnalysis = stdin.includes('Mode: analysis-only');",
+        "const target = path.join(process.cwd(), 'internal-output.txt');",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, isAnalysis ? 'READY_FOR_IMPLEMENTATION\\n' : 'internal implementation complete\\n', 'utf8');",
+        "}",
+        "if (!isAnalysis) {",
+        "  fs.writeFileSync(target, 'generated by internal codex smoke\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-internal-smoke' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: 'Applying internal smoke change.' } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const mockServer = await startMockServer();
+    try {
+      const env = {
+        NODE_ENV: "test",
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_STORAGE: "memory",
+        TASK_INTAKE_MODE: "standalone",
+        YANDEX_SYNC_ENABLED: "false",
+        GITLAB_URL: `http://127.0.0.1:${mockServer.port}/gitlab`,
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "1",
+        REPO_PATH: repoPath,
+        BASE_BRANCH: "main",
+        POLL_INTERVAL_MINUTES: "30",
+        CODEX_CLI_COMMAND: "node",
+        CODEX_CLI_ARGS_JSON: JSON.stringify([codexScriptPath]),
+        TEST_COMMAND: `node -e "process.exit(0)"`,
+        LINT_COMMAND: `node -e "process.exit(0)"`,
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+        WORKER_RUN_ONCE: "true",
+      };
+
+      const { orchestrator, taskTracker } = buildApplication(env);
+      if (!taskTracker) {
+        throw new Error("Expected internal task tracker.");
+      }
+      await taskTracker.createTask({
+        id: "internal-100",
+        title: "Internal smoke task",
+        description: "Create an internal smoke artifact",
+        createdBy: { owner: "human", id: "user-1" },
+        repositoryName: "default",
+        repoPathKey: "default",
+        baseBranch: "main",
+        queue: "FRONTEND",
+        tags: ["ai_dev"],
+        status: "ready",
+        taskType: "unknown",
+        acceptanceCriteria: ["MR is published."],
+      });
+
+      const outcome = await orchestrator.runOnce();
+      const task = await taskTracker.getTask("internal-100");
+
+      expect(outcome).toBe("processed");
+      expect(readFileSync(join(repoPath, "internal-output.txt"), "utf8")).toContain(
+        "generated by internal codex smoke",
+      );
+      expect(runGit(["branch", "--show-current"], repoPath)).toBe(
+        "feature/ai-task-internal-100",
+      );
+      expect(runGit(["rev-list", "--count", "main..HEAD"], repoPath)).toBe("1");
+      expect(task.status).toBe("review");
+      expect(task.decisions.some((decision) => decision.kind === "analysis")).toBe(true);
+      expect(task.qualityGateRuns.at(-1)).toMatchObject({ status: "passed" });
+      expect(task.mergeRequests.at(-1)).toMatchObject({
+        branch: "feature/ai-task-internal-100",
+        mergeRequest: { url: "http://127.0.0.1/gitlab/project/-/merge_requests/1" },
+      });
+      expect(task.plans[0]?.steps.map((step) => [step.kind, step.status])).toEqual(
+        expect.arrayContaining([
+          ["analyze", "done"],
+          ["implement", "done"],
+          ["validate", "done"],
+          ["publish", "done"],
+        ]),
+      );
+      expect(task.events.map((event) => event.kind)).toEqual(
+        expect.arrayContaining([
+          "task_picked",
+          "codex_agent_message",
+          "codex_turn_completed",
+          "publish_started",
+          "merge_request_recorded",
+        ]),
+      );
+      expect(
+        task.events.find(
+          (event) =>
+            event.kind === "codex_agent_message" &&
+            event.payload?.stage === "implementation",
+        ),
+      ).toMatchObject({
+        message: "Applying internal smoke change.",
+        payload: expect.objectContaining({
+          stage: "implementation",
+          mode: "resume",
+          type: "item.completed",
+          itemType: "agent_message",
+        }),
+      });
+      expect(mockServer.searchBodies).toEqual([]);
+      expect(mockServer.trackerComments).toEqual([]);
+      expect(
+        task.comments.some((comment) => comment.body?.startsWith("AI MR:")),
+      ).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        mockServer.server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("processes a Yandex-sourced internal task and exports compact Yandex digests", async () => {
+    const workspace = createTempWorkspace();
+    cleanupPaths.push(workspace);
+
+    const remotePath = join(workspace, "remote.git");
+    const seedPath = join(workspace, "seed");
+    const repoPath = join(workspace, "project");
+    const codexScriptPath = join(workspace, "codex-yandex-bridge-smoke.js");
+    const codexArgsPath = join(workspace, "codex-yandex-bridge-args.jsonl");
+    const statusMapFilePath = join(workspace, "trackerStatusMap.json");
+
+    runGit(["init", "--bare", remotePath], workspace);
+    runGit(["init", "--initial-branch=main", seedPath], workspace);
+    runGit(["config", "user.email", "smoke@example.com"], seedPath);
+    runGit(["config", "user.name", "Smoke Worker"], seedPath);
+    writeFileSync(join(seedPath, "README.md"), "# seed\n", "utf8");
+    runGit(["add", "README.md"], seedPath);
+    runGit(["commit", "-m", "seed"], seedPath);
+    runGit(["remote", "add", "origin", remotePath], seedPath);
+    runGit(["push", "-u", "origin", "main"], seedPath);
+    runGit(["symbolic-ref", "HEAD", "refs/heads/main"], remotePath);
+
+    runGit(["clone", "--branch", "main", remotePath, repoPath], workspace);
+    runGit(["config", "user.email", "worker@example.com"], repoPath);
+    runGit(["config", "user.name", "AI Worker"], repoPath);
+
+    writeFileSync(
+      codexScriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        `const argsLogPath = ${JSON.stringify(codexArgsPath)};`,
+        "const imagePaths = args.flatMap((arg, index) => arg === '--image' ? [args[index + 1]] : []);",
+        "fs.appendFileSync(argsLogPath, JSON.stringify(args) + '\\n', 'utf8');",
+        "if (imagePaths.length === 0 || imagePaths.some((imagePath) => !imagePath || !fs.existsSync(imagePath))) {",
+        "  process.stderr.write('expected --image path to exist\\n');",
+        "  process.exit(2);",
+        "}",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "const stdin = fs.readFileSync(0, 'utf8');",
+        "const isAnalysis = stdin.includes('Mode: analysis-only');",
+        "const target = path.join(process.cwd(), 'bridge-output.txt');",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, isAnalysis ? 'READY_FOR_IMPLEMENTATION\\n' : 'bridge implementation complete\\n', 'utf8');",
+        "}",
+        "if (!isAnalysis) {",
+        "  fs.writeFileSync(target, 'generated by yandex bridge smoke\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-yandex-bridge-smoke' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(statusMapFilePath, STATUS_MAP, "utf8");
+
+    const mockServer = await startMockServer();
+    try {
+      const env = {
+        NODE_ENV: "test",
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_STORAGE: "memory",
+        TASK_INTAKE_MODE: "yandex_integration",
+        YANDEX_SYNC_ENABLED: "true",
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_DEFAULT_QUEUE: "FRONTEND",
+        TRACKER_TAG: "ai_dev",
+        TRACKER_API_BASE_URL: `http://127.0.0.1:${mockServer.port}/tracker/v3`,
+        TRACKER_STATUS_MAP_FILE: statusMapFilePath,
+        GITLAB_URL: `http://127.0.0.1:${mockServer.port}/gitlab`,
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "1",
+        REPO_PATH: repoPath,
+        BASE_BRANCH: "main",
+        POLL_INTERVAL_MINUTES: "30",
+        CODEX_CLI_COMMAND: "node",
+        CODEX_CLI_ARGS_JSON: JSON.stringify([codexScriptPath]),
+        TEST_COMMAND: `node -e "process.exit(0)"`,
+        LINT_COMMAND: `node -e "process.exit(0)"`,
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+        WORKER_RUN_ONCE: "true",
+      };
+
+      const { orchestrator, taskTracker } = buildApplication(env);
+      if (!taskTracker) {
+        throw new Error("Expected internal task tracker.");
+      }
+
+      const outcome = await orchestrator.runOnce();
+      const task = await taskTracker.findTaskByExternalRef("yandex_tracker", "DEV-100");
+
+      expect(outcome).toBe("processed");
+      expect(task).toBeDefined();
+      expect(task?.status).toBe("review");
+      expect(readFileSync(join(repoPath, "bridge-output.txt"), "utf8")).toContain(
+        "generated by yandex bridge smoke",
+      );
+      expect(runGit(["branch", "--show-current"], repoPath)).toBe(
+        "feature/ai-task-yt_DEV-100",
+      );
+      expect(mockServer.searchBodies).toEqual([
+        { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
+      ]);
+      expect(mockServer.transitions).toEqual(["review"]);
+      expect(
+        mockServer.trackerComments.some((comment) => comment.text.startsWith("AI DIGEST:")),
+      ).toBe(true);
+      expect(
+        mockServer.trackerComments.some((comment) => comment.text.startsWith("AI LEASE:")),
+      ).toBe(false);
+      const codexInvocationArgs = readFileSync(codexArgsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(codexInvocationArgs.some((args) => args.includes("--image"))).toBe(true);
+      expect(mockServer.attachmentDownloadCount).toBe(1);
     } finally {
       await new Promise<void>((resolve, reject) =>
         mockServer.server.close((error) => (error ? reject(error) : resolve())),

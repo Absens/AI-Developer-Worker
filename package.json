@@ -14,17 +14,25 @@
     "memory:validate": "node --import tsx src/memoryValidate.ts",
     "preflight": "node --env-file=.env --import tsx src/preflight.ts",
     "start": "node dist/index.js",
+    "tracker:migrate": "node --env-file=.env --import tsx scripts/internal-tracker-migrate.ts",
     "test": "vitest run",
     "test:smoke": "vitest run tests/worker.smoke.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "web:dev": "npm --prefix web run start",
+    "web:build": "npm --prefix web run build",
+    "web:e2e": "npm --prefix web run e2e",
+    "web:test": "npm --prefix web run test",
+    "web:typecheck": "npm --prefix web run typecheck"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.20.5",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "pg": "^8.20.0",
     "yaml": "^2.8.3"
   }
 }

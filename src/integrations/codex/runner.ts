@@ -2,12 +2,16 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexProgressEvent,
   CodexRunner,
+  CodexRunObserver,
+  CodexRunOptions,
 } from "../../models/types.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { redactSecrets } from "../../observability/redaction.js";
 import { Logger } from "../../utils/logger.js";
 import { runCommand } from "../../utils/shell.js";
 import { getCodexShellEnv } from "./auth.js";
@@ -110,6 +114,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const MAX_LOG_LINE_LENGTH = 1_000;
 const MAX_DIAGNOSTIC_LENGTH = 4_000;
+const MAX_PROGRESS_MESSAGE_LENGTH = 500;
 
 const truncateForLog = (value: string, maxLength = 240): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
@@ -130,6 +135,9 @@ const truncateForDiagnostic = (
   const omittedCharacters = value.length - maxLength;
   return `${value.slice(0, maxLength)}\n[truncated ${omittedCharacters} characters]`;
 };
+
+const sanitizeProgressMessage = (value: string, maxLength = MAX_PROGRESS_MESSAGE_LENGTH): string =>
+  truncateForLog(redactSecrets(value).replace(/\s+/g, " ").trim(), maxLength);
 
 const collectPreviewSnippets = (
   value: unknown,
@@ -194,6 +202,144 @@ const extractEventErrorMessage = (event: CodexEvent): string | undefined => {
   return message ? truncateForDiagnostic(message.trim()) : undefined;
 };
 
+const extractItemExitCode = (item: Record<string, unknown> | undefined): number | undefined => {
+  const value = item?.exit_code ?? item?.exitCode;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+};
+
+const extractAgentMessage = (item: Record<string, unknown> | undefined): string | undefined => {
+  if (!item) {
+    return undefined;
+  }
+
+  const directText = typeof item.text === "string" ? item.text : undefined;
+  if (directText?.trim()) {
+    return sanitizeProgressMessage(directText);
+  }
+
+  const content = item.content;
+  if (Array.isArray(content)) {
+    const snippets = content
+      .map((entry) => {
+        if (typeof entry === "string") {
+          return entry;
+        }
+        if (isRecord(entry) && typeof entry.text === "string") {
+          return entry.text;
+        }
+        return "";
+      })
+      .map((entry) => entry.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    if (snippets.length > 0) {
+      return sanitizeProgressMessage(snippets.join(" | "));
+    }
+  }
+
+  return undefined;
+};
+
+const isCommandItem = (itemType: string | undefined): boolean =>
+  itemType === "command_execution" || itemType === "function_call";
+
+const isAgentMessageItem = (
+  itemType: string | undefined,
+  item: Record<string, unknown> | undefined,
+): boolean =>
+  itemType === "agent_message" ||
+  (itemType === "message" && (!item?.role || item.role === "assistant"));
+
+const progressEventFromCodexEvent = (
+  mode: "new" | "resume",
+  event: CodexEvent,
+): CodexProgressEvent | undefined => {
+  const item = isRecord(event.item) ? event.item : undefined;
+  const itemType = typeof item?.type === "string" ? item.type : undefined;
+  const itemStatus = typeof item?.status === "string" ? item.status : undefined;
+  const base = {
+    mode,
+    type: event.type ?? "unknown",
+    ...(itemType ? { itemType } : {}),
+    ...(itemStatus ? { itemStatus } : {}),
+  };
+
+  if (event.type === "item.started" && isCommandItem(itemType)) {
+    return {
+      kind: "codex_command_started",
+      ...base,
+      message: "Codex command execution started.",
+    };
+  }
+
+  if (event.type === "item.completed" && isCommandItem(itemType)) {
+    const exitCode = extractItemExitCode(item);
+    return {
+      kind: "codex_command_completed",
+      ...base,
+      ...(exitCode !== undefined ? { exitCode } : {}),
+      message: "Codex command execution completed.",
+    };
+  }
+
+  if (
+    (event.type === "item.started" || event.type === "item.completed") &&
+    isAgentMessageItem(itemType, item)
+  ) {
+    const message = extractAgentMessage(item);
+    return {
+      kind: "codex_agent_message",
+      ...base,
+      ...(message ? { message } : { message: "Codex agent message updated." }),
+    };
+  }
+
+  if (event.type === "turn.completed") {
+    return {
+      kind: "codex_turn_completed",
+      ...base,
+      message: "Codex turn completed.",
+    };
+  }
+
+  if (event.type === "turn.failed" || event.type === "error") {
+    const errorMessage = extractEventErrorMessage(event);
+    return {
+      kind: "codex_error",
+      ...base,
+      ...(errorMessage
+        ? { message: sanitizeProgressMessage(errorMessage) }
+        : { message: "Codex reported an error." }),
+    };
+  }
+
+  return undefined;
+};
+
+const emitObserverEvent = (
+  observer: CodexRunObserver | undefined,
+  event: CodexProgressEvent,
+  logger: Logger,
+): void => {
+  if (!observer) {
+    return;
+  }
+
+  try {
+    observer(event);
+  } catch (error) {
+    logger.warn("Codex progress observer failed.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const appendImageArgs = (args: string[], imagePaths: readonly string[]): void => {
+  for (const imagePath of imagePaths) {
+    args.push("--image", imagePath);
+  }
+};
+
 const summarizeEvent = (
   mode: "new" | "resume",
   event: CodexEvent,
@@ -228,6 +374,7 @@ const logParsedStdoutEvent = (
   logger: Logger,
   mode: "new" | "resume",
   includeRawEvents: boolean,
+  observer?: CodexRunObserver,
 ): void => {
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     state.threadId = event.thread_id;
@@ -249,6 +396,11 @@ const logParsedStdoutEvent = (
       event,
     });
   }
+
+  const progressEvent = progressEventFromCodexEvent(mode, event);
+  if (progressEvent) {
+    emitObserverEvent(observer, progressEvent, logger);
+  }
 };
 
 const processStdoutLine = (
@@ -257,10 +409,11 @@ const processStdoutLine = (
   logger: Logger,
   mode: "new" | "resume",
   includeRawEvents: boolean,
+  observer?: CodexRunObserver,
 ): void => {
   try {
     const event = JSON.parse(line) as CodexEvent;
-    logParsedStdoutEvent(event, state, logger, mode, includeRawEvents);
+    logParsedStdoutEvent(event, state, logger, mode, includeRawEvents, observer);
   } catch {
     const message = truncateForDiagnostic(`Failed to parse Codex JSONL event: ${line}`);
     state.errors.push(message);
@@ -298,10 +451,11 @@ const flushRemainders = (
   logger: Logger,
   mode: "new" | "resume",
   includeRawEvents: boolean,
+  observer?: CodexRunObserver,
 ): void => {
   const stdoutLine = state.stdoutRemainder.trim();
   if (stdoutLine) {
-    processStdoutLine(stdoutLine, state, logger, mode, includeRawEvents);
+    processStdoutLine(stdoutLine, state, logger, mode, includeRawEvents, observer);
   }
   const stderrLine = state.stderrRemainder.trim();
   if (stderrLine) {
@@ -320,25 +474,44 @@ export class CliCodexRunner implements CodexRunner {
     private readonly logger: Logger,
   ) {}
 
-  runInitial(prompt: string): Promise<CodexExecution> {
+  runInitial(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
+  ): Promise<CodexExecution> {
     return this.run({
       prompt,
       mode: "new",
+      observer,
+      imagePaths: options.imagePaths ?? [],
     });
   }
 
-  runFix(prompt: string): Promise<CodexExecution> {
+  runFix(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
+  ): Promise<CodexExecution> {
     return this.run({
       prompt,
       mode: "new",
+      observer,
+      imagePaths: options.imagePaths ?? [],
     });
   }
 
-  runResume(threadId: string, prompt: string): Promise<CodexExecution> {
+  runResume(
+    threadId: string,
+    prompt: string,
+    observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
+  ): Promise<CodexExecution> {
     return this.run({
       prompt,
       mode: "resume",
       threadId,
+      observer,
+      imagePaths: options.imagePaths ?? [],
     });
   }
 
@@ -369,23 +542,41 @@ export class CliCodexRunner implements CodexRunner {
     prompt: string;
     mode: "new" | "resume";
     threadId?: string;
+    observer?: CodexRunObserver;
+    imagePaths: string[];
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
     const lastMessagePath = join(tempDir, "last-message.txt");
     const startedAt = Date.now();
     const jsonlState = createCodexJsonlState();
     const heartbeat = setInterval(() => {
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
       this.logger.info("Codex command still running.", {
         mode: input.mode,
-        elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000),
+        elapsedSeconds,
         tempDir,
       });
+      emitObserverEvent(
+        input.observer,
+        {
+          kind: "codex_command_progress",
+          mode: input.mode,
+          type: "progress",
+          elapsedSeconds,
+          message: `Codex command still running after ${elapsedSeconds} seconds.`,
+        },
+        this.logger,
+      );
     }, this.config.codexProgressLogIntervalMs);
     heartbeat.unref?.();
     try {
       const args = this.buildBaseArgs(lastMessagePath);
       if (input.mode === "resume" && input.threadId) {
-        args.push("resume", input.threadId);
+        args.push("resume");
+        appendImageArgs(args, input.imagePaths);
+        args.push(input.threadId);
+      } else {
+        appendImageArgs(args, input.imagePaths);
       }
       this.logger.info("Running Codex command.", {
         command: this.config.codexCliCommand,
@@ -408,6 +599,7 @@ export class CliCodexRunner implements CodexRunner {
               this.logger,
               input.mode,
               this.config.codexLogFullEvents,
+              input.observer,
             );
           });
         },
@@ -425,6 +617,7 @@ export class CliCodexRunner implements CodexRunner {
         this.logger,
         input.mode,
         this.config.codexLogFullEvents,
+        input.observer,
       );
       this.logger.info("Codex command completed.", {
         mode: input.mode,

@@ -77,6 +77,10 @@ docker compose up --build
 - `npm run test:smoke` - запустить end-to-end smoke test с mock Tracker/GitLab и реальным git flow.
 - `npm run build` - собрать production bundle в `dist/`.
 - `npm run dev` - запустить воркер через `tsx` с `.env`.
+- `npm run web:typecheck` - проверить Angular console TypeScript.
+- `npm run web:test` - запустить Angular unit tests.
+- `npm run web:build` - собрать Angular console в `web/dist/task-tracker-console/browser`.
+- `npm run web:e2e` - собрать Angular console и запустить Playwright critical-flow smoke tests.
 - `npm run preflight` - проверить конфигурацию, Codex auth, git, Tracker, GitLab и target commands без обработки очереди.
 - `npm run memory:validate` - проверить файловое хранилище repository memory.
 - `npm run bootstrap:codex-home` - скопировать существующую Codex auth directory в целевой путь или mounted volume.
@@ -113,6 +117,7 @@ docker compose up --build
 - `CODEX_EXEC_ARGS_JSON=[]`
 - `CODEX_SANDBOX=danger-full-access`
 - `CODEX_MODEL` и `CODEX_PROFILE`, если нужен явный выбор Codex-конфигурации.
+- `TRACKER_IMAGE_CONTEXT_ENABLED=true` для передачи screenshot-вложений Tracker в Codex.
 - `WORKER_RUN_ONCE=true|false`
 - `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` для fleet mode.
 
@@ -127,6 +132,8 @@ docker compose up --build
 ```json
 ["--add-dir", "/workspace/shared"]
 ```
+
+When a Yandex Tracker issue includes image attachments, the worker downloads supported images to a temporary directory and passes them to `codex exec` with `--image`. The prompt also lists which attachments were included or skipped.
 
 Полная таблица переменных окружения находится в [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md).
 
@@ -167,12 +174,22 @@ Repository memory по умолчанию выключена. При `MEMORY_ENA
 
 Observability по умолчанию выключена. При `OBSERVABILITY_ENABLED=true` воркер поднимает HTTP-сервер для `/healthz`, `/readyz`, `/metrics`, опциональных dashboard/API и оповещений. Dashboard включайте только на доверенном интерфейсе и защищайте `DASHBOARD_BEARER_TOKEN`.
 
+Для `TASK_TRACKER_PROVIDER=internal` production mode используйте PostgreSQL, примените `npm run tracker:migrate`, затем `npm run preflight`. Human workflow UI включается через `TASK_TRACKER_UI_ENABLED=true`; Angular UI будет на `/tasks` при configured `TASK_TRACKER_UI_STATIC_DIR`, JSON API начинается с `/api`, а write actions требуют trusted proxy role headers или `TASK_TRACKER_SYSTEM_TOKEN`.
+
+Docker builds the Angular console into the image by default and sets
+`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
+The old embedded task UI is removed; if the UI is enabled without static assets,
+`/tasks` returns a clear error instead of fallback HTML. Bearer auth remains a
+backend/service-client or reverse-proxy concern; the browser app does not store
+bearer tokens.
+
 ## Документация
 
 - [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md) - все переменные окружения и источники значений.
 - [docs/FLEET_OPERATIONAL_RUNBOOK.md](docs/FLEET_OPERATIONAL_RUNBOOK.md) - fleet config, leases и операционная координация.
 - [docs/MEMORY_LIFECYCLE.md](docs/MEMORY_LIFECYCLE.md) - lifecycle repository memory.
 - [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) - dashboard, metrics, probes и alerts.
+- [docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md) - PostgreSQL migrations, retention, backup/restore и rollback для internal tracker.
 - [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) - локальный Docker-запуск и prerequisites.
 - [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md) - команды для Windows PowerShell.
 - [docs/CODEX_AUTH_TROUBLESHOOTING.md](docs/CODEX_AUTH_TROUBLESHOOTING.md) - диагностика Codex auth, включая `refresh_token_reused`.

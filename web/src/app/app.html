@@ -1,0 +1,62 @@
+<p-toast />
+<p-confirmDialog />
+
+<div class="console-shell" data-testid="console-shell">
+  <p-toolbar styleClass="console-toolbar">
+    <div class="console-toolbar__start">
+      <div>
+        <div class="console-title">Консоль задач</div>
+        <div class="console-subtitle">Операции с участием человека</div>
+      </div>
+    </div>
+    <div class="console-toolbar__end">
+      @if (sessionService.session(); as session) {
+        <span class="console-user">{{ session.user.displayName || session.user.id }}</span>
+        <p-tag [value]="authModeLabel()" [severity]="authModeSeverity()" />
+        <p-tag [value]="session.role" severity="info" />
+      } @else {
+        <span class="console-user">Сессия загружается</span>
+      }
+    </div>
+  </p-toolbar>
+
+  <div class="console-layout">
+    <nav class="console-nav" aria-label="Навигация по задачам">
+      @for (item of visibleNavItems(); track item.route) {
+        <a
+          class="console-nav__link"
+          [attr.data-testid]="item.testId"
+          [routerLink]="item.route"
+          routerLinkActive="console-nav__link--active"
+          [routerLinkActiveOptions]="{ exact: item.route === '/' }"
+        >
+          <i [class]="item.icon" aria-hidden="true"></i>
+          <span>{{ item.label }}</span>
+        </a>
+      }
+    </nav>
+
+    <main class="console-main">
+      @if (sessionService.error(); as error) {
+        <p-message data-testid="session-error" severity="error" [text]="error" />
+        <button
+          pButton
+          type="button"
+          data-testid="session-retry"
+          icon="pi pi-refresh"
+          label="Повторить сессию"
+          severity="secondary"
+          (click)="retrySession()"
+        ></button>
+      }
+
+      @if (sessionService.loading()) {
+        <div class="console-loading" aria-live="polite">
+          <p-progressSpinner ariaLabel="Загрузка сессии" />
+        </div>
+      }
+
+      <router-outlet />
+    </main>
+  </div>
+</div>

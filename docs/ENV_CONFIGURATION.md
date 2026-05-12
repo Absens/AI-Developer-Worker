@@ -41,6 +41,10 @@ Copy-Item .env.example .env
 | `TRACKER_TAG` | Нет | `ai_dev` | Выберите тег задач, который помечает задачи как подходящие для воркера. Создайте тег в Tracker, если его еще нет. |
 | `TRACKER_API_BASE_URL` | Нет | `https://api.tracker.yandex.net/v3` | Оставьте значение по умолчанию, если не используете нестандартный endpoint Tracker или тестовый stub. |
 | `TRACKER_STATUS_MAP_FILE` | Да | Не задано | Путь к JSON-файлу, который сопоставляет логические состояния воркера с реальными статусами Tracker. Значения `statuses` в этом файле должны точно совпадать с названиями статусов задач, видимыми в Tracker. |
+| `TRACKER_IMAGE_CONTEXT_ENABLED` | Нет | `true` | Downloads supported image attachments from Yandex Tracker and passes them to Codex as image inputs. |
+| `TRACKER_IMAGE_CONTEXT_MAX_COUNT` | Нет | `5` | Maximum number of image attachments per Codex run. |
+| `TRACKER_IMAGE_CONTEXT_MAX_BYTES` | Нет | `10485760` | Maximum accepted size per image attachment. Larger images are skipped and named in the prompt summary. |
+| `TRACKER_IMAGE_CONTEXT_TEMP_DIR` | Нет | OS temp directory | Directory for temporary downloaded images. Do not set this inside the target repository checkout. |
 | `GITLAB_URL` | Да | Не задано | Укажите базовый URL вашего GitLab instance, например `https://gitlab.example.com`. Не добавляйте `/api/v4`; клиент добавляет эту часть сам. |
 | `GITLAB_TOKEN` | Да | Не задано | Создайте GitLab access token, который может читать и создавать merge requests, читать MR discussions, читать текущего пользователя и публиковать ответы в discussions целевого проекта. Для одного репозитория лучше использовать GitLab project access token, а не personal token. На практике дайте ему scope `api` и доступ на запись в репозиторий этого проекта. |
 | `GITLAB_PROJECT_ID` | Да | Не задано | Используйте числовой или URL-encoded project ID, который принимает GitLab REST API. Его можно скопировать со страницы проекта или получить через GitLab API, если известен project path. |
@@ -79,6 +83,19 @@ Copy-Item .env.example .env
 | `TRACKER_BLOCKED_BY_LINK_TYPE` | Нет | `is blocked by` | Связь Tracker, используемая для dependency links и dependency filtering. |
 | `DEPENDENCY_ENFORCEMENT` | Нет | `true` | Если включено, задачи с unresolved dependencies `blockedBy` пропускаются до получения lease. |
 | `DEPENDENCY_UNKNOWN_STATUS_POLICY` | Нет | `block` | Политика для dependencies, чей статус нельзя определить: `block`, `warn` или `ignore`. |
+| `TASK_TRACKER_PROVIDER` | Нет | `yandex` | Runtime provider: `yandex` сохраняет прямой Tracker fallback, `internal` включает внутренний task tracker. |
+| `TASK_TRACKER_STORAGE` | Нет | `postgres` | Storage adapter для internal provider. `memory` разрешен только в `NODE_ENV=test` или `TASK_TRACKER_LOCAL_SMOKE=true`. |
+| `TASK_TRACKER_DATABASE_URL` | Да для internal/postgres | Не задано | PostgreSQL URL внутреннего task tracker. Перед запуском примените `npm run tracker:migrate`. |
+| `TASK_INTAKE_MODE` | Нет | `standalone` | Intake mode internal tracker: `standalone`, `yandex_integration`, `hybrid`, `system_only` или `ai_proposed`. |
+| `YANDEX_SYNC_ENABLED` | Нет | `false` | Включает Yandex bridge как source/mirror для internal tracker. Требует Yandex credentials и intake `yandex_integration` или `hybrid`. |
+| `TASK_TRACKER_RETENTION_RAW_LOG_DAYS` | Нет | `30` | Retention для raw Codex log artifacts. |
+| `TASK_TRACKER_RETENTION_ARTIFACT_DAYS` | Нет | `30` | Retention для обычных validation artifacts. |
+| `TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS` | Нет | `90` | Retention для validation artifacts failed tasks. Не может быть меньше обычного artifact retention. |
+| `TASK_TRACKER_RETENTION_HISTORY_DAYS` | Нет | `365` | Минимальный retention compact task history. Значение меньше 365 отклоняется. |
+| `TASK_TRACKER_CLEANUP_ENABLED` | Нет | `true` | Включает periodic cleanup job для expired artifacts, raw logs, released leases и stale proposals. |
+| `TASK_TRACKER_CLEANUP_INTERVAL_SECONDS` | Нет | `3600` | Интервал cleanup job. |
+| `TASK_TRACKER_METRICS_ENABLED` | Нет | `true` | Включает internal tracker metrics: queue depth, claim latency, sync, proposals и cleanup. |
+| `TASK_TRACKER_REDACTION_ENABLED` | Нет | `true` | Включает redaction перед записью task events/comments/diagnostics и digest export. |
 | `MEMORY_ENABLED` | Нет | `false` | Включает repository memory Phase 5. Оставьте выключенным, пока `npm run memory:validate` не проходит для `MEMORY_DIR`. |
 | `MEMORY_DIR` | Нет | `/workspace/ai-developer-memory` | Локальное хранилище memory вне целевого репозитория. Воркер пишет per-repository файлы в `repositories/<sanitized RepositoryProfile.name>/`. |
 | `MEMORY_MAX_CONTEXT_CHARS` | Нет | `6000` | Жесткий лимит символов для секции memory context, добавляемой в analysis и implementation prompts. |
@@ -106,6 +123,18 @@ Copy-Item .env.example .env
 | `DASHBOARD_REFRESH_SECONDS` | Нет | `10` | Browser polling interval для обновления dashboard API. |
 | `DASHBOARD_API_PATH` | Нет | `/api` | Read-only dashboard API path prefix. |
 | `DASHBOARD_BEARER_TOKEN` | Нет | Не задано | Необязательный bearer token, защищающий `/dashboard` и `/api/*`. |
+| `TASK_TRACKER_UI_ENABLED` | Нет | `false` | Включает Angular human UI/API для internal tracker workflows. Может поднять HTTP-сервер даже при `OBSERVABILITY_ENABLED=false`. |
+| `TASK_TRACKER_UI_BIND_HOST` | Нет | `127.0.0.1` | Alias для bind host HTTP-сервера при включении task tracker UI. |
+| `TASK_TRACKER_UI_PORT` | Нет | `9464` | Alias для порта HTTP-сервера при включении task tracker UI. |
+| `TASK_TRACKER_UI_PATH` | Нет | `/tasks` | HTML path для human task UI. |
+| `TASK_TRACKER_UI_API_PATH` | Нет | `/api` | JSON API prefix для human task API. |
+| `TASK_TRACKER_UI_ASSET_PATH` | Нет | `/tasks/assets` | Path для Angular assets. Должен находиться внутри `TASK_TRACKER_UI_PATH`. |
+| `TASK_TRACKER_UI_STATIC_DIR` | Нет | Не задано | Директория built Angular bundle, обычно `web/dist/task-tracker-console/browser`. Если задана, startup проверяет наличие `index.html`. |
+| `TASK_TRACKER_HUMAN_AUTH_MODE` | Нет | `trusted_proxy` | Auth mode для UI/API: `trusted_proxy`, `bearer` или local-only `localhost`. |
+| `TASK_TRACKER_TRUSTED_USER_HEADER` | Нет | `x-task-tracker-user` | Header с authenticated user от trusted reverse proxy. |
+| `TASK_TRACKER_TRUSTED_ROLE_HEADER` | Нет | `x-task-tracker-role` | Header с ролью `viewer`, `developer`, `operator` или `admin`. |
+| `TASK_TRACKER_AGENT_TOKEN` | Нет | Не задано | Bearer token для agent/service operational access к human API. |
+| `TASK_TRACKER_SYSTEM_TOKEN` | Нет | Не задано | Bearer token для system-created task API и idempotent bulk/create paths. |
 | `ALERTS_ENABLED` | Нет | `false` | Включает event-based alert evaluation и notification sinks. |
 | `ALERT_CHANNELS` | Нет | Не задано | Channels через запятую: `webhook`, `slack`, `telegram`. |
 | `ALERT_WEBHOOK_URL` | Нет | Не задано | Generic JSON webhook URL для `ALERT_CHANNELS=webhook`. |
@@ -162,7 +191,7 @@ $env:WORKER_PREFLIGHT_ONLY = "true"
 npm run dev
 ```
 
-Report всегда использует такой порядок: загрузка конфигурации, Codex auth, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Отсутствие `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH` не проваливает preflight; эти write checks получают статус `WARN`, и production issue или merge request не изменяются.
+Report всегда использует такой порядок: загрузка конфигурации, Codex auth, условная проверка Codex image input при `TRACKER_IMAGE_CONTEXT_ENABLED=true`, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Отсутствие `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH` не проваливает preflight; эти write checks получают статус `WARN`, и production issue или merge request не изменяются.
 
 Для strict sandbox run задайте обе sandbox-переменные:
 
@@ -251,6 +280,67 @@ DASHBOARD_BEARER_TOKEN=change-me
 ```
 
 Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).
+
+## Phase 8D: Angular internal task UI
+
+При `TASK_TRACKER_PROVIDER=internal` можно включить human UI/API. Angular
+console является primary human UI; старый embedded HTML task UI удален.
+
+```env
+TASK_TRACKER_UI_ENABLED=true
+TASK_TRACKER_UI_BIND_HOST=127.0.0.1
+TASK_TRACKER_UI_PORT=9464
+TASK_TRACKER_UI_STATIC_DIR=web/dist/task-tracker-console/browser
+TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
+TASK_TRACKER_SYSTEM_TOKEN=change-me
+```
+
+UI доступен на `/tasks`, JSON API - на `/api`, Angular assets - на
+`/tasks/assets`. Deep links вроде `/tasks/ready-task` обслуживаются через
+Angular `index.html`; `/api`, `/metrics`, `/healthz` и `/readyz` остаются
+backend routes. Если `TASK_TRACKER_UI_ENABLED=true`, но
+`TASK_TRACKER_UI_STATIC_DIR` не задан, `/tasks` возвращает явный `503` вместо
+fallback UI, а JSON API routes продолжают работать.
+
+Angular dev server proxies `/api` к Node.js server:
+
+```bash
+npm install --prefix web
+npm run web:dev
+```
+
+Production bundle build and checks:
+
+```bash
+npm run web:typecheck
+npm run web:test
+npm run web:build
+npm run web:e2e
+```
+
+Docker builds the Angular bundle into the image and sets
+`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
+Self-hosted deployments may still mount a prebuilt bundle at that path or
+override the variable.
+
+Mutations require backend authorization. Browser deployments should use
+trusted proxy headers or localhost development mode. Bearer mode is intended
+for service clients or a reverse proxy that injects `Authorization`; the
+Angular app does not store bearer tokens in browser storage.
+
+## Phase 7H: internal tracker hardening
+
+Production internal mode requires PostgreSQL, applied migrations, and passing
+preflight:
+
+```bash
+npm run tracker:migrate
+npm run preflight
+```
+
+`TASK_TRACKER_STORAGE=memory` остается только для unit tests и local smoke.
+Cleanup, retention, redaction, metrics, backup/restore и rollback описаны в
+[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
 
 ## Режим fleet
 

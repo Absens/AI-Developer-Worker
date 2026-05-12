@@ -2,6 +2,7 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexRunOptions,
   CodexRunner,
   CommentWithMetadata,
   CoordinationConfig,
@@ -20,6 +21,7 @@ import type {
   TaskAnalysisResult,
   TaskLease,
   TrackerClient,
+  TrackerImageContextConfig,
   TrackerIssue,
   ValidationResult,
 } from "../models/types.js";
@@ -82,6 +84,10 @@ import {
 } from "./promptContext.js";
 import { FileMemoryStore, type MemoryStore } from "./memoryStore.js";
 import {
+  prepareTrackerImageContext,
+  type PreparedTrackerImageContext,
+} from "./trackerImageContext.js";
+import {
   noopObservability,
   type ObservabilityTelemetry,
   type TaskTelemetryContext,
@@ -102,6 +108,11 @@ const DEFAULT_TASK_MODE = "auto";
 const DEFAULT_DECOMPOSITION_MAX_SUBTASKS = 8;
 const DEFAULT_DECOMPOSITION_SUBTASK_TAG = "ai_dev";
 const DEFAULT_DECOMPOSITION_TITLE_PREFIX = "[AI split]";
+const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
+  enabled: true,
+  maxCount: 5,
+  maxBytes: 10 * 1024 * 1024,
+};
 const DEFAULT_TRACKER_PARENT_LINK_TYPE = "relates";
 const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
 const TARGET_PROCESSABLE_STATES: LogicalStatus[] = [
@@ -599,14 +610,34 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
   ): Promise<CycleOutcome> {
+    const imageContext = await prepareTrackerImageContext({
+      issueKey: issue.key,
+      tracker: this.tracker,
+      config: this.config.trackerImageContext ?? DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG,
+      logger: this.logger,
+    });
+
+    try {
+      return await this.processIssueWithContext(issue, comments, imageContext);
+    } finally {
+      await imageContext.cleanup();
+    }
+  }
+
+  private async processIssueWithContext(
+    issue: TrackerIssue,
+    comments: CommentWithMetadata[],
+    imageContext: PreparedTrackerImageContext,
+  ): Promise<CycleOutcome> {
     let resumeContext: ResumeContext | undefined;
     let activeThreadId: string | undefined;
     let implementationSummary: string | undefined;
     let analysisDecision = findLatestAnalysisDecision(comments, issue.key);
+    const codexOptions: CodexRunOptions = { imagePaths: imageContext.imagePaths };
 
     if (issue.logicalStatus === "review") {
       this.markStage(issue, "review_fix");
-      return this.handleReviewFeedback(issue, comments);
+      return this.handleReviewFeedback(issue, comments, imageContext);
     }
 
     if (issue.logicalStatus === "open") {
@@ -644,7 +675,7 @@ export class WorkerOrchestrator {
       issue.logicalStatus = "in_progress";
       comments = await this.tracker.getComments(issue.key);
     } else {
-      const analysis = await this.runAnalysis(issue, comments);
+      const analysis = await this.runAnalysis(issue, comments, imageContext);
       activeThreadId = analysis.threadId;
       analysisDecision = analysis.decision;
       if (!analysisDecision) {
@@ -696,7 +727,13 @@ export class WorkerOrchestrator {
       }
 
       if (taskMode === "decompose") {
-        return this.runDecomposition(issue, comments, analysisDecision, activeThreadId);
+        return this.runDecomposition(
+          issue,
+          comments,
+          analysisDecision,
+          activeThreadId,
+          imageContext,
+        );
       }
 
       if (analysis.status === "clarification_required" && analysis.clarification) {
@@ -735,14 +772,16 @@ export class WorkerOrchestrator {
         promptProfile,
         analysisDecision,
         memoryContext,
+        imageContext,
       );
       const execution = await this.runCodexStage(issue, "implementation", () =>
         resumeContext
           ? this.runResumeOrInitial(
               issue,
               activeThreadId,
-              buildResumePrompt(issue, comments, resumeContext.command),
+              buildResumePrompt(issue, comments, resumeContext.command, imageContext),
               implementationPrompt,
+              codexOptions,
             )
           : activeThreadId
             ? this.runResumeOrInitial(
@@ -750,8 +789,9 @@ export class WorkerOrchestrator {
                 activeThreadId,
                 implementationPrompt,
                 implementationPrompt,
+                codexOptions,
               )
-            : this.codex.runInitial(implementationPrompt),
+            : this.codex.runInitial(implementationPrompt, undefined, codexOptions),
       );
 
       activeThreadId = execution.threadId ?? activeThreadId;
@@ -811,10 +851,26 @@ export class WorkerOrchestrator {
         activeThreadId
           ? this.codex.runResume(
               activeThreadId,
-              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              buildFixPrompt(
+                issue,
+                validation.diagnostic,
+                promptProfile,
+                analysisDecision,
+                imageContext,
+              ),
+              undefined,
+              codexOptions,
             )
           : this.codex.runFix(
-              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              buildFixPrompt(
+                issue,
+                validation.diagnostic,
+                promptProfile,
+                analysisDecision,
+                imageContext,
+              ),
+              undefined,
+              codexOptions,
             ),
       );
       activeThreadId = execution.threadId ?? activeThreadId;
@@ -854,7 +910,9 @@ export class WorkerOrchestrator {
   private async handleReviewFeedback(
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
+    imageContext: PreparedTrackerImageContext,
   ): Promise<CycleOutcome> {
+    const codexOptions: CodexRunOptions = { imagePaths: imageContext.imagePaths };
     const { branch, mergeRequest } = await this.resolveReviewMergeRequest(issue, comments);
     const pendingDiscussions = await this.findPendingReviewDiscussions(
       issue,
@@ -897,10 +955,11 @@ export class WorkerOrchestrator {
       },
       promptProfile,
       analysisDecision,
+      imageContext,
     );
 
     let execution = await this.runCodexStage(issue, "review_fix", () =>
-      this.codex.runInitial(prompt),
+      this.codex.runInitial(prompt, undefined, codexOptions),
     );
     let reviewThreadId = execution.threadId;
     let reviewFixSummary = execution.finalMessage?.trim();
@@ -939,10 +998,26 @@ export class WorkerOrchestrator {
         reviewThreadId
           ? this.codex.runResume(
               reviewThreadId,
-              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              buildFixPrompt(
+                issue,
+                validation.diagnostic,
+                promptProfile,
+                analysisDecision,
+                imageContext,
+              ),
+              undefined,
+              codexOptions,
             )
           : this.codex.runFix(
-              buildFixPrompt(issue, validation.diagnostic, promptProfile, analysisDecision),
+              buildFixPrompt(
+                issue,
+                validation.diagnostic,
+                promptProfile,
+                analysisDecision,
+                imageContext,
+              ),
+              undefined,
+              codexOptions,
             ),
       );
       reviewThreadId = execution.threadId ?? reviewThreadId;
@@ -1210,6 +1285,7 @@ export class WorkerOrchestrator {
   private async runAnalysis(
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
+    imageContext: PreparedTrackerImageContext,
   ): Promise<TaskAnalysisResult> {
     this.markStage(issue, "analysis");
     const storedDecision = findLatestAnalysisDecision(comments, issue.key);
@@ -1237,7 +1313,12 @@ export class WorkerOrchestrator {
     const execution = await this.runCodexStage(
       issue,
       "analysis",
-      () => this.codex.runInitial(buildAnalysisPrompt(issue, comments, memoryContext)),
+      () =>
+        this.codex.runInitial(
+          buildAnalysisPrompt(issue, comments, memoryContext, imageContext),
+          undefined,
+          { imagePaths: imageContext.imagePaths },
+        ),
     );
     let decision: TaskAnalysisDecision | undefined;
     if (execution.clarification) {
@@ -1553,12 +1634,13 @@ export class WorkerOrchestrator {
     threadId: string | undefined,
     resumePrompt: string,
     fallbackPrompt: string,
+    options: CodexRunOptions,
   ): Promise<CodexExecution> {
     if (!threadId) {
-      return this.codex.runInitial(fallbackPrompt);
+      return this.codex.runInitial(fallbackPrompt, undefined, options);
     }
 
-    const execution = await this.codex.runResume(threadId, resumePrompt);
+    const execution = await this.codex.runResume(threadId, resumePrompt, undefined, options);
     if (execution.process.exitCode === 0 || execution.clarification) {
       return execution;
     }
@@ -1569,7 +1651,7 @@ export class WorkerOrchestrator {
       exitCode: execution.process.exitCode,
       stderr: execution.process.stderr,
     });
-    return this.codex.runInitial(fallbackPrompt);
+    return this.codex.runInitial(fallbackPrompt, undefined, options);
   }
 
   private async pauseForClarification(
@@ -1645,7 +1727,9 @@ export class WorkerOrchestrator {
     comments: CommentWithMetadata[],
     analysisDecision: TaskAnalysisDecision,
     threadId?: string,
+    imageContext?: PreparedTrackerImageContext,
   ): Promise<CycleOutcome> {
+    const codexOptions: CodexRunOptions = { imagePaths: imageContext?.imagePaths ?? [] };
     this.markStage(issue, "decomposition");
     this.telemetry.recordEvent({
       workerId: this.config.workerId,
@@ -1681,11 +1765,12 @@ export class WorkerOrchestrator {
         titlePrefix,
       },
       analysisDecision,
+      imageContext,
     );
     const execution = await this.runCodexStage(issue, "decomposition", () =>
       threadId
-        ? this.codex.runResume(threadId, prompt)
-        : this.codex.runInitial(prompt),
+        ? this.codex.runResume(threadId, prompt, undefined, codexOptions)
+        : this.codex.runInitial(prompt, undefined, codexOptions),
     );
     const plan = parseDecompositionPlan(execution.finalMessage, {
       parentIssueKey: issue.key,

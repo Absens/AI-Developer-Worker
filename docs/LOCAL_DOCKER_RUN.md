@@ -16,6 +16,8 @@ It will start successfully only if all of the following are already true:
 6. If the target repo has `husky` or other git hooks, decide whether to keep the default `GIT_COMMIT_NO_VERIFY=true`.
 
 If `CODEX_HOME` is missing or not authenticated, the worker now fails fast on startup before touching Tracker.
+The Docker image builds the Angular task tracker console during `docker build`
+and includes it at `/workspace/web/dist/task-tracker-console/browser`.
 
 ## What happens on startup
 
@@ -82,6 +84,33 @@ At minimum, verify that:
 - `GIT_COMMIT_NO_VERIFY=false` only if you intentionally want repo hooks to run inside the worker
 
 For `TRACKER_STATUS_MAP_FILE`, point to a JSON file. Inside that file, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
+
+For production internal tracker mode, set:
+
+```env
+TASK_TRACKER_PROVIDER=internal
+TASK_TRACKER_STORAGE=postgres
+TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+TASK_TRACKER_UI_ENABLED=true
+TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser
+TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
+```
+
+Then apply migrations before starting the continuous worker:
+
+```bash
+docker compose run --rm worker npm run tracker:migrate
+docker compose run --rm worker npm run preflight
+```
+
+Retention, backup/restore and rollback details are in
+[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
+
+The Angular console is served at `/tasks` and its JSON API at `/api`. The old
+embedded task UI is not present; if you enable the UI without a static bundle,
+`/tasks` returns `503`. For browser access in production, put the worker behind
+a trusted proxy that injects user and role headers. Bearer mode is for service
+clients or proxy-injected `Authorization`, not for browser token storage.
 
 ### 3. Prepare the project mount
 

@@ -33,6 +33,10 @@ interface ReviewFixPromptContext {
   diffFromBase: string;
 }
 
+export interface PromptImageContext {
+  promptSummary: string;
+}
+
 const MAX_DIFF_CONTEXT_LENGTH = 16_000;
 
 const formatHumanComments = (comments: CommentWithMetadata[]): string => {
@@ -221,10 +225,23 @@ const formatRepositoryContext = (
   return formatted ? `\n${formatted}` : "";
 };
 
+const formatImageContext = (
+  imageContext: PromptImageContext | undefined,
+): string =>
+  imageContext?.promptSummary
+    ? [
+        "",
+        "Attached image context:",
+        imageContext.promptSummary,
+        "Use these attached images as task context when interpreting UI, visual, error, or acceptance details.",
+      ].join("\n")
+    : "";
+
 export const buildAnalysisPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
   memoryContext?: PromptContextBundle,
+  imageContext?: PromptImageContext,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -235,7 +252,7 @@ Additional context:
 ${formatHumanComments(comments)}
 
 Previous clarification history:
-${formatClarificationHistory(comments)}${formatRepositoryContext(memoryContext)}
+${formatClarificationHistory(comments)}${formatRepositoryContext(memoryContext)}${formatImageContext(imageContext)}
 
 Mode: analysis-only
 
@@ -269,6 +286,7 @@ export const buildImplementationPrompt = (
   profile?: PromptProfile,
   analysisDecision?: TaskAnalysisDecision,
   memoryContext?: PromptContextBundle,
+  imageContext?: PromptImageContext,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -285,7 +303,7 @@ Structured analysis:
 ${formatAnalysisDecision(analysisDecision)}
 
 ${formatProfileGuidance(profile)}
-${formatRepositoryContext(memoryContext)}
+${formatRepositoryContext(memoryContext)}${formatImageContext(imageContext)}
 
 Requirements:
 1. Analyze the repository.
@@ -302,6 +320,7 @@ export const buildFixPrompt = (
   diagnostic: string,
   profile?: PromptProfile,
   analysisDecision?: TaskAnalysisDecision,
+  imageContext?: PromptImageContext,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -311,6 +330,7 @@ Structured analysis:
 ${formatAnalysisDecision(analysisDecision)}
 
 ${formatProfileGuidance(profile)}
+${formatImageContext(imageContext)}
 
 Validation errors:
 ${diagnostic}
@@ -326,6 +346,7 @@ export const buildResumePrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],
   command: HumanTaskCommand,
+  imageContext?: PromptImageContext,
 ): string => {
   const latestQuestion = findLatestQuestionComment(comments);
 
@@ -340,6 +361,7 @@ ${formatClarificationHistory(comments)}
 
 Explicit human command:
 ${formatResumeCommand(command)}
+${formatImageContext(imageContext)}
 
 Requirements:
 1. Continue from the existing session context instead of restarting analysis from scratch.
@@ -360,6 +382,7 @@ export const buildReviewFixPrompt = (
   reviewContext: ReviewFixPromptContext,
   profile?: PromptProfile,
   analysisDecision?: TaskAnalysisDecision,
+  imageContext?: PromptImageContext,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -373,6 +396,7 @@ Structured analysis:
 ${formatAnalysisDecision(analysisDecision)}
 
 ${formatProfileGuidance(profile)}
+${formatImageContext(imageContext)}
 
 Merge request:
 - URL: ${reviewContext.mergeRequest.url}
@@ -411,6 +435,7 @@ export const buildDecompositionPrompt = (
     titlePrefix: string;
   },
   analysisDecision?: TaskAnalysisDecision,
+  imageContext?: PromptImageContext,
 ): string => `Task: ${issue.key}
 Title: ${issue.title}
 
@@ -422,6 +447,7 @@ ${formatHumanComments(comments)}
 
 Structured analysis:
 ${formatAnalysisDecision(analysisDecision)}
+${formatImageContext(imageContext)}
 
 Mode: decomposition-only
 

@@ -1,5 +1,11 @@
 node_modules
+**/node_modules
 dist
+**/dist
 coverage
 .git
 .env
+web/.angular
+web/test-results
+web/playwright-report
+web/dev-server.log

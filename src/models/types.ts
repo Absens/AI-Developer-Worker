@@ -28,9 +28,90 @@ export type TaskType =
   | "documentation"
   | "unknown";
 
+export type AutonomyLevel =
+  | "proposal_only"
+  | "auto_triage"
+  | "auto_execute_low_risk";
+
+export interface RepositoryAutonomyPolicyConfig {
+  proposalsEnabled?: boolean;
+  autoExecuteLowRiskEnabled?: boolean;
+  allowedTaskTypes?: TaskType[];
+  dailyProposalLimit?: number;
+  windowProposalLimit?: number;
+  windowSeconds?: number;
+}
+
+export interface AutonomyPolicyConfig {
+  aiProposalsEnabled: boolean;
+  autoExecuteLowRiskEnabled: boolean;
+  defaultAllowedTaskTypes: TaskType[];
+  defaultDailyProposalLimit: number;
+  defaultWindowProposalLimit: number;
+  defaultWindowSeconds: number;
+  repositories: Record<string, RepositoryAutonomyPolicyConfig>;
+}
+
 export type DependencyUnknownStatusPolicy = "block" | "warn" | "ignore";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type MemoryBootstrapCodexSandbox = "inherit" | CodexSandbox;
+export type TaskTrackerProvider = "yandex" | "internal";
+export type TaskIntakeMode =
+  | "standalone"
+  | "yandex_integration"
+  | "hybrid"
+  | "system_only"
+  | "ai_proposed";
+export type TaskTrackerStorageAdapter = "postgres" | "memory";
+
+export interface TaskTrackerRetentionConfig {
+  rawLogDays: number;
+  artifactDays: number;
+  failedArtifactDays: number;
+  historyDays: number;
+}
+
+export interface TaskTrackerCleanupConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+}
+
+export interface TaskTrackerOperationalConfig {
+  retention: TaskTrackerRetentionConfig;
+  cleanup: TaskTrackerCleanupConfig;
+  metricsEnabled: boolean;
+  redactionEnabled: boolean;
+}
+
+export interface BaseInternalTaskTrackerConfig {
+  intakeMode: TaskIntakeMode;
+  yandexSyncEnabled: boolean;
+  operational: TaskTrackerOperationalConfig;
+}
+
+export interface PostgresInternalTaskTrackerConfig
+  extends BaseInternalTaskTrackerConfig {
+  storage: "postgres";
+  databaseUrl: string;
+}
+
+export interface MemoryInternalTaskTrackerConfig extends BaseInternalTaskTrackerConfig {
+  storage: "memory";
+  databaseUrl?: string;
+}
+
+export type InternalTaskTrackerConfig =
+  | PostgresInternalTaskTrackerConfig
+  | MemoryInternalTaskTrackerConfig;
+
+export type TaskTrackerConfig =
+  | {
+      provider: "yandex";
+    }
+  | {
+      provider: "internal";
+      internal: InternalTaskTrackerConfig;
+    };
 
 export interface MemoryConfig {
   enabled: boolean;
@@ -68,6 +149,22 @@ export interface ObservabilityDashboardConfig {
   refreshSeconds: number;
   apiPath: string;
   bearerToken?: string;
+}
+
+export type TaskTrackerHumanAuthMode = "trusted_proxy" | "bearer" | "localhost";
+export type TaskTrackerHumanRole = "viewer" | "developer" | "operator" | "admin";
+
+export interface TaskTrackerUiConfig {
+  enabled: boolean;
+  path: string;
+  apiPath: string;
+  assetPath: string;
+  staticDir?: string;
+  authMode: TaskTrackerHumanAuthMode;
+  trustedUserHeader: string;
+  trustedRoleHeader: string;
+  agentToken?: string;
+  systemToken?: string;
 }
 
 export type AlertChannelConfig =
@@ -109,12 +206,45 @@ export interface ObservabilityConfig {
   health: ObservabilityHealthConfig;
   events: ObservabilityEventStoreConfig;
   dashboard: ObservabilityDashboardConfig;
+  taskTrackerUi: TaskTrackerUiConfig;
   alerts: ObservabilityAlertsConfig;
 }
 
 export interface TrackerStatusConfig {
   statuses: string[];
   transition?: string;
+}
+
+export interface TrackerAttachmentAuthor {
+  id?: string;
+  display?: string;
+}
+
+export interface TrackerAttachmentMetadata {
+  size?: string;
+}
+
+export interface TrackerAttachment {
+  id: string;
+  name: string;
+  content?: string;
+  thumbnail?: string;
+  createdBy?: TrackerAttachmentAuthor;
+  createdAt?: string;
+  mimetype?: string;
+  size?: number;
+  metadata?: TrackerAttachmentMetadata;
+}
+
+export interface TrackerImageContextConfig {
+  enabled: boolean;
+  maxCount: number;
+  maxBytes: number;
+  tempDir?: string;
+}
+
+export interface CodexRunOptions {
+  imagePaths?: string[];
 }
 
 export interface TaskAnalysisDecision {
@@ -268,6 +398,7 @@ export interface TrackerIssueLink {
 export type TrackerOrgHeader = "X-Org-ID" | "X-Cloud-Org-ID";
 
 export interface AppConfig {
+  taskTracker?: TaskTrackerConfig;
   trackerToken: string;
   trackerOrgHeader: TrackerOrgHeader;
   trackerOrgId: string;
@@ -275,6 +406,7 @@ export interface AppConfig {
   trackerTag: string;
   trackerStatusMap: Record<LogicalStatus, TrackerStatusConfig>;
   trackerApiBaseUrl: string;
+  trackerImageContext?: TrackerImageContextConfig;
   trackerParentLinkType?: string;
   trackerBlockedByLinkType?: string;
   gitlabUrl: string;
@@ -335,6 +467,7 @@ export interface AppConfig {
   promptProfiles?: PromptProfileOverrideMap;
   memory?: MemoryConfig;
   observability?: ObservabilityConfig;
+  autonomy?: AutonomyPolicyConfig;
 }
 
 export type LockBackendKind = "none" | "tracker" | "redis" | "postgres";
@@ -409,9 +542,11 @@ export interface RepositoryProfile {
   gitRepositoryUrl?: string;
   promptProfiles?: PromptProfileOverrideMap;
   decomposition?: RepositoryDecompositionConfig;
+  autonomy?: RepositoryAutonomyPolicyConfig;
 }
 
 export interface GlobalWorkerConfig {
+  taskTracker?: TaskTrackerConfig;
   workerId: string;
   pollIntervalMinutes: number;
   pollIntervalMs: number;
@@ -435,6 +570,7 @@ export interface GlobalWorkerConfig {
   trackerBlockedByLinkType?: string;
   maxFixAttempts: number;
   maxReviewFixAttempts: number;
+  trackerImageContext?: TrackerImageContextConfig;
   gitRepositoryToken: string;
   gitRepositoryUsername: string;
   gitCommitNoVerify: boolean;
@@ -448,6 +584,7 @@ export interface GlobalWorkerConfig {
   repositories: RepositoryProfile[];
   memory?: MemoryConfig;
   observability?: ObservabilityConfig;
+  autonomy?: AutonomyPolicyConfig;
 }
 
 export interface RepositoryRuntimeConfig extends AppConfig {
@@ -477,6 +614,7 @@ export interface TrackerIssue {
   tags?: string[];
   blockedBy?: string[];
   blocks?: string[];
+  attachments?: TrackerAttachment[];
 }
 
 export interface TrackerComment {
@@ -494,7 +632,8 @@ export type ServiceCommentKind =
   | "AI REVIEW"
   | "AI LEASE"
   | "AI ANALYSIS"
-  | "AI DECOMPOSITION";
+  | "AI DECOMPOSITION"
+  | "AI DIGEST";
 export type ClarificationMode = "clarification";
 export type WaitingReason = "clarification" | "failure_recovery" | "manual_hold";
 export type LeaseKind = "task" | "repository";
@@ -555,6 +694,9 @@ export interface ParsedServiceComment {
   parentIssueKey?: string;
   createdIssueKeys?: string[];
   dryRun?: boolean;
+  taskId?: string;
+  digestKind?: string;
+  externalKey?: string;
 }
 
 export interface TaskLease {
@@ -691,7 +833,11 @@ export interface ReviewMetadata {
 
 export interface TrackerClient {
   checkReadAccess(): Promise<void>;
-  findCandidateIssues(input?: { queue?: string; tag?: string }): Promise<TrackerIssue[]>;
+  findCandidateIssues(input?: {
+    queue?: string;
+    tag?: string;
+    issueKey?: string;
+  }): Promise<TrackerIssue[]>;
   findOwnedIssues(statuses: LogicalStatus[]): Promise<TrackerIssue[]>;
   getIssue(issueKey: string): Promise<TrackerIssue>;
   getComments(issueKey: string): Promise<CommentWithMetadata[]>;
@@ -701,6 +847,11 @@ export interface TrackerClient {
   createIssue?(input: CreateTrackerIssueInput): Promise<TrackerIssue>;
   linkIssue?(input: LinkTrackerIssueInput): Promise<void>;
   getIssueLinks?(issueKey: string): Promise<TrackerIssueLink[]>;
+  getIssueAttachments?(issueKey: string): Promise<TrackerAttachment[]>;
+  downloadIssueAttachment?(
+    issueKey: string,
+    attachment: TrackerAttachment,
+  ): Promise<Uint8Array>;
 }
 
 export interface GitService {
@@ -743,10 +894,45 @@ export interface CodexExecution {
   clarification?: ClarificationQuestion;
 }
 
+export type CodexProgressEventKind =
+  | "codex_agent_message"
+  | "codex_command_started"
+  | "codex_command_progress"
+  | "codex_command_completed"
+  | "codex_turn_completed"
+  | "codex_error";
+
+export interface CodexProgressEvent {
+  kind: CodexProgressEventKind;
+  mode: "new" | "resume";
+  type: string;
+  itemType?: string;
+  itemStatus?: string;
+  elapsedSeconds?: number;
+  exitCode?: number;
+  timedOut?: boolean;
+  message?: string;
+}
+
+export type CodexRunObserver = (event: CodexProgressEvent) => void;
+
 export interface CodexRunner {
-  runInitial(prompt: string): Promise<CodexExecution>;
-  runFix(prompt: string): Promise<CodexExecution>;
-  runResume(threadId: string, prompt: string): Promise<CodexExecution>;
+  runInitial(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution>;
+  runFix(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution>;
+  runResume(
+    threadId: string,
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution>;
 }
 
 export interface TaskAnalysisResult {
@@ -755,3 +941,77 @@ export interface TaskAnalysisResult {
   clarification?: ClarificationQuestion;
   decision?: TaskAnalysisDecision;
 }
+
+export type {
+  AgentTaskContext,
+  AgentRun,
+  AgentRunInput,
+  AgentRunStage,
+  ArtifactRef,
+  ArtifactRefInput,
+  ApproveProposalInput,
+  ClaimedTask,
+  ClarificationQuestionInput,
+  ClarificationQuestionRecord,
+  ClaimRepositoryProfile,
+  ClaimTaskInput,
+  CommentInput,
+  CreateTaskInput,
+  DecompositionDecisionRecord,
+  ExportDigestInput,
+  ExternalFieldOwnership,
+  ExternalIssueSnapshot,
+  ExternalTaskSource,
+  ExternalTaskFieldUpdateInput,
+  ExternalTransitionInput,
+  HumanAnswerInput,
+  HumanAnswerRecord,
+  ImportCandidatesInput,
+  ImportedHumanCommand,
+  LeaseHeartbeatInput,
+  LinkTaskDependencyInput,
+  MemoryContextRecordInput,
+  MemoryContextRef,
+  MergeRequestRecord,
+  MergeRequestRecordInput,
+  EvidenceRef,
+  ProposalCleanupInput,
+  ProposalCleanupResult,
+  ProposalPolicyDecision,
+  ProposalPolicyEvaluation,
+  ProposalSupervisorStatus,
+  ProposeTaskInput,
+  QualityGateRun,
+  RejectProposalInput,
+  ReleaseLeaseInput,
+  ReviewMetadataRecord,
+  ReviewMetadataRecordInput,
+  TaskActor,
+  TaskComment,
+  TaskDecision,
+  TaskDecisionInput,
+  TaskDependency,
+  TaskDependencyInput,
+  TaskDependencyRecord,
+  TaskEvent,
+  TaskEventInput,
+  TaskExternalRef,
+  TaskExternalRefInput,
+  TaskFieldGroup,
+  TaskFieldOwner,
+  TaskFieldOwnership,
+  TaskMessageKind,
+  TaskPlan,
+  TaskLeaseRecord,
+  TaskProposalRecord,
+  TaskRecord,
+  TaskRevision,
+  TaskRevisionInput,
+  TaskSource,
+  TaskStatus,
+  TaskStep,
+  TaskStepRecordInput,
+  TaskTrackerClient,
+  SyncCursor,
+  ValidationRecordInput,
+} from "../domain/taskTracker/types.js";

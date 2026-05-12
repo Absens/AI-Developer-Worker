@@ -368,6 +368,90 @@ describe("YandexTrackerClient", () => {
     expect(attempts).toBe(2);
   });
 
+  it("reads issue attachment metadata", async () => {
+    const trackerApiBaseUrl = await startServer((request, response) => {
+      const method = request.method ?? "GET";
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+      if (method === "GET" && url.pathname === "/v3/issues/DEV-1/attachments") {
+        response.setHeader("Content-Type", "application/json");
+        response.end(
+          JSON.stringify([
+            {
+              id: "img-1",
+              name: "screen.png",
+              content:
+                "https://api.tracker.yandex.net/v3/issues/DEV-1/attachments/img-1/screen.png",
+              thumbnail: "https://api.tracker.yandex.net/v3/issues/DEV-1/thumbnails/img-1",
+              mimetype: "image/png",
+              size: 2048,
+              metadata: { size: "1280x720" },
+            },
+            {
+              id: "doc-1",
+              name: "notes.pdf",
+              mimetype: "application/pdf",
+            },
+          ]),
+        );
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(`${method} ${url.pathname}`);
+    });
+
+    const client = new YandexTrackerClient(createConfig(trackerApiBaseUrl), new Logger());
+    const attachments = await client.getIssueAttachments!("DEV-1");
+
+    expect(attachments).toEqual([
+      expect.objectContaining({
+        id: "img-1",
+        name: "screen.png",
+        content:
+          "https://api.tracker.yandex.net/v3/issues/DEV-1/attachments/img-1/screen.png",
+        thumbnail: "https://api.tracker.yandex.net/v3/issues/DEV-1/thumbnails/img-1",
+        mimetype: "image/png",
+        size: 2048,
+        metadata: { size: "1280x720" },
+      }),
+      expect.objectContaining({
+        id: "doc-1",
+        name: "notes.pdf",
+        mimetype: "application/pdf",
+      }),
+    ]);
+  });
+
+  it("downloads issue attachment bytes", async () => {
+    const requests: string[] = [];
+    const trackerApiBaseUrl = await startServer((request, response) => {
+      const method = request.method ?? "GET";
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      requests.push(`${method} ${url.pathname}`);
+
+      if (method === "GET" && url.pathname === "/v3/issues/DEV-1/attachments/img-1/screen.png") {
+        response.setHeader("Content-Type", "image/png");
+        response.end(Buffer.from("89504e470d0a1a0a", "hex"));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(`${method} ${url.pathname}`);
+    });
+
+    const client = new YandexTrackerClient(createConfig(trackerApiBaseUrl), new Logger());
+    const bytes = await client.downloadIssueAttachment!("DEV-1", {
+      id: "img-1",
+      name: "screen.png",
+      mimetype: "image/png",
+      size: 8,
+    });
+
+    expect(Buffer.from(bytes).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(requests).toContain("GET /v3/issues/DEV-1/attachments/img-1/screen.png");
+  });
+
   it("creates issues and maps issue links", async () => {
     const requests: Array<{ method: string; path: string; body?: any }> = [];
     const trackerApiBaseUrl = await startServer(async (request, response) => {

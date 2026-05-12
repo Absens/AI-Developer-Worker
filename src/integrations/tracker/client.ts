@@ -4,6 +4,7 @@ import type {
   CreateTrackerIssueInput,
   LinkTrackerIssueInput,
   LogicalStatus,
+  TrackerAttachment,
   TrackerClient,
   TrackerComment,
   TrackerIssue,
@@ -103,11 +104,31 @@ interface TrackerIssueLinkResponseItem {
   };
 }
 
+interface TrackerAttachmentResponseItem {
+  id?: string | number;
+  name?: string;
+  content?: string;
+  thumbnail?: string;
+  createdBy?: {
+    id?: string;
+    display?: string;
+  };
+  createdAt?: string;
+  mimetype?: string;
+  size?: number;
+  metadata?: {
+    size?: string;
+  };
+}
+
 const normalize = (value?: string): string =>
   value?.trim().toLowerCase() ?? "";
 
 const escapeTrackerQueryValue = (value: string): string =>
   value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+const encodePathSegment = (value: string): string =>
+  encodeURIComponent(value).replace(/%2F/gi, "%252F");
 
 const extractNamedValue = (
   value: string | { key?: string; display?: string } | undefined,
@@ -203,6 +224,41 @@ const buildIssueLink = (
   };
 };
 
+const buildAttachment = (
+  attachment: TrackerAttachmentResponseItem,
+): TrackerAttachment | undefined => {
+  const id = String(attachment.id ?? "").trim();
+  const name = attachment.name?.trim();
+  if (!id || !name) {
+    return undefined;
+  }
+
+  return {
+    id,
+    name,
+    ...(attachment.content?.trim() ? { content: attachment.content.trim() } : {}),
+    ...(attachment.thumbnail?.trim() ? { thumbnail: attachment.thumbnail.trim() } : {}),
+    ...(attachment.createdBy
+      ? {
+          createdBy: {
+            ...(attachment.createdBy.id?.trim()
+              ? { id: attachment.createdBy.id.trim() }
+              : {}),
+            ...(attachment.createdBy.display?.trim()
+              ? { display: attachment.createdBy.display.trim() }
+              : {}),
+          },
+        }
+      : {}),
+    ...(attachment.createdAt?.trim() ? { createdAt: attachment.createdAt.trim() } : {}),
+    ...(attachment.mimetype?.trim() ? { mimetype: attachment.mimetype.trim() } : {}),
+    ...(typeof attachment.size === "number" ? { size: attachment.size } : {}),
+    ...(attachment.metadata?.size?.trim()
+      ? { metadata: { size: attachment.metadata.size.trim() } }
+      : {}),
+  };
+};
+
 const buildTransition = (
   transition: TrackerTransitionResponseItem,
 ): TrackerTransition | undefined => {
@@ -268,7 +324,29 @@ export class YandexTrackerClient implements TrackerClient {
     extractCollection(response);
   }
 
-  async findCandidateIssues(input: { queue?: string; tag?: string } = {}): Promise<TrackerIssue[]> {
+  async findCandidateIssues(
+    input: { queue?: string; tag?: string; issueKey?: string } = {},
+  ): Promise<TrackerIssue[]> {
+    if (input.issueKey) {
+      const issue = await this.getIssue(input.issueKey);
+      const queue = input.queue ?? this.config.trackerDefaultQueue;
+      const tag = input.tag ?? this.config.trackerTag;
+      if (issue.queue !== queue || !issue.tags?.includes(tag)) {
+        this.logger.info("Fetched tracker target issue outside configured queue/tag.", {
+          issueKey: input.issueKey,
+          queue,
+          tag,
+        });
+        return [];
+      }
+      this.logger.info("Fetched tracker target issue.", {
+        issueKey: input.issueKey,
+        queue,
+        tag,
+      });
+      return [issue];
+    }
+
     const issues = await this.searchIssuesByTag(input);
     return issues
       .map((issue) => buildIssue(issue, this.determineLogicalStatus(buildIssue(issue))))
@@ -360,6 +438,27 @@ export class YandexTrackerClient implements TrackerClient {
     return links
       .map(buildIssueLink)
       .filter((link): link is TrackerIssueLink => link !== undefined);
+  }
+
+  async getIssueAttachments(issueKey: string): Promise<TrackerAttachment[]> {
+    const response = await this.request<
+      TrackerAttachmentResponseItem[] | TrackerCollectionResponse<TrackerAttachmentResponseItem>
+    >(`/issues/${issueKey}/attachments`);
+
+    return extractCollection(response)
+      .map(buildAttachment)
+      .filter((attachment): attachment is TrackerAttachment => attachment !== undefined);
+  }
+
+  async downloadIssueAttachment(
+    issueKey: string,
+    attachment: TrackerAttachment,
+  ): Promise<Uint8Array> {
+    return this.requestBinary(
+      `/issues/${encodePathSegment(issueKey)}/attachments/${encodePathSegment(
+        attachment.id,
+      )}/${encodePathSegment(attachment.name)}`,
+    );
   }
 
   private async searchIssuesByTag(
@@ -515,6 +614,52 @@ export class YandexTrackerClient implements TrackerClient {
         retries: 3,
         delayMs: 500,
         label: `tracker:${path}`,
+        logger: this.logger,
+      },
+    );
+  }
+
+  private async requestBinary(path: string): Promise<Uint8Array> {
+    return withRetry(
+      async () => {
+        const url = new URL(`${this.config.trackerApiBaseUrl}${path}`);
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            Authorization: `OAuth ${this.config.trackerToken}`,
+            [this.config.trackerOrgHeader]: this.config.trackerOrgId,
+          },
+        }).catch((error) => {
+          throw new TemporaryIntegrationError(`Tracker binary request failed: ${path}`, error);
+        });
+
+        if (response.status === 429) {
+          throw new TemporaryIntegrationError(
+            `Tracker rate limit error for ${path}`,
+            undefined,
+            parseRetryAfterMs(response.headers.get("Retry-After")),
+          );
+        }
+
+        if (response.status >= 500) {
+          throw new TemporaryIntegrationError(
+            `Tracker temporary error ${response.status} for ${path}`,
+          );
+        }
+
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(
+            `Tracker binary request failed for ${path}: ${response.status} ${body}`,
+          );
+        }
+
+        return new Uint8Array(await response.arrayBuffer());
+      },
+      {
+        retries: 3,
+        delayMs: 500,
+        label: `tracker-binary:${path}`,
         logger: this.logger,
       },
     );

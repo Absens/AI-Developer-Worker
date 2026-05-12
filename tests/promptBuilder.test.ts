@@ -58,6 +58,13 @@ const memoryContext: PromptContextBundle = {
   contextBudgetChars: 1000,
 };
 
+const imageContext = {
+  promptSummary: [
+    "Tracker image attachments passed to Codex:",
+    "- Image 1: screen.png, mimetype=image/png, size=2048 bytes, dimensions=1280x720",
+  ].join("\n"),
+};
+
 describe("prompt builder", () => {
   it("asks analysis for structured AI_ANALYSIS output", () => {
     const prompt = buildAnalysisPrompt(issue, []);
@@ -96,5 +103,28 @@ describe("prompt builder", () => {
     );
 
     expect(prompt).not.toContain("Repository context:");
+  });
+
+  it("includes Tracker image context in analysis prompts", () => {
+    const prompt = buildAnalysisPrompt(issue, [], undefined, imageContext);
+
+    expect(prompt).toContain("Tracker image attachments passed to Codex:");
+    expect(prompt).toContain("screen.png");
+    expect(prompt).toContain("Use these attached images as task context");
+  });
+
+  it("includes Tracker image context in implementation prompts", () => {
+    const prompt = buildImplementationPrompt(
+      issue,
+      [],
+      getPromptProfile("frontend_ui_fix"),
+      decision,
+      undefined,
+      imageContext,
+    );
+
+    expect(prompt).toContain("Tracker image attachments passed to Codex:");
+    expect(prompt).toContain("screen.png");
+    expect(prompt).toContain("Use these attached images as task context");
   });
 });

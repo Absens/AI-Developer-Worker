@@ -3,8 +3,10 @@ import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
+import { DEFAULT_AUTONOMY_POLICY_CONFIG } from "./domain/taskTracker/autonomyPolicy.js";
 import type {
   AppConfig,
+  AutonomyPolicyConfig,
   CodexSandbox,
   CoordinationConfig,
   DependencyUnknownStatusPolicy,
@@ -14,9 +16,13 @@ import type {
   MemoryConfig,
   PriorityQueueConfig,
   PromptProfileOverrideMap,
+  RepositoryAutonomyPolicyConfig,
   RepositoryDecompositionConfig,
   RepositoryProfile,
   RepositoryRuntimeConfig,
+  TaskIntakeMode,
+  TaskTrackerConfig,
+  TrackerImageContextConfig,
   TrackerOrgHeader,
   TrackerStatusConfig,
   WorkerTaskMode,
@@ -33,6 +39,15 @@ const LOGICAL_STATUSES: LogicalStatus[] = [
   "failed",
   "done",
 ];
+
+const DEFAULT_INTERNAL_TRACKER_STATUS_MAP: Record<LogicalStatus, TrackerStatusConfig> = {
+  open: { statuses: ["open"] },
+  in_progress: { statuses: ["in_progress"] },
+  waiting_for_answer: { statuses: ["waiting_for_answer"] },
+  review: { statuses: ["review"] },
+  failed: { statuses: ["failed"] },
+  done: { statuses: ["done"] },
+};
 
 const DEFAULT_PRIORITY_QUEUE_CONFIG: PriorityQueueConfig = {
   manualOverrideTags: ["ai_priority"],
@@ -65,6 +80,20 @@ const DEFAULT_TRACKER_PARENT_LINK_TYPE = "relates";
 const DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE = "is blocked by";
 const DEFAULT_DEPENDENCY_ENFORCEMENT = true;
 const DEFAULT_DEPENDENCY_UNKNOWN_STATUS_POLICY: DependencyUnknownStatusPolicy = "block";
+const DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG = {
+  retention: {
+    rawLogDays: 30,
+    artifactDays: 30,
+    failedArtifactDays: 90,
+    historyDays: 365,
+  },
+  cleanup: {
+    enabled: true,
+    intervalSeconds: 3600,
+  },
+  metricsEnabled: true,
+  redactionEnabled: true,
+} as const;
 const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   enabled: false,
   dir: "/workspace/ai-developer-memory",
@@ -75,6 +104,11 @@ const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   bootstrapOnStart: false,
   refreshOnPreflight: false,
   bootstrapCodexSandbox: "inherit",
+};
+const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
+  enabled: true,
+  maxCount: 5,
+  maxBytes: 10 * 1024 * 1024,
 };
 
 const requireEnv = (env: NodeJS.ProcessEnv, key: string): string => {
@@ -138,6 +172,191 @@ const parseBooleanFlag = (
   }
 
   throw new ConfigurationError(`${key} must be one of: true, false, 1, 0, yes, no.`);
+};
+
+const parseTaskTrackerProvider = (
+  input: string | undefined,
+): TaskTrackerConfig["provider"] => {
+  const normalized = input?.trim() || "yandex";
+  if (normalized === "yandex" || normalized === "internal") {
+    return normalized;
+  }
+
+  throw new ConfigurationError("TASK_TRACKER_PROVIDER must be one of: yandex, internal.");
+};
+
+const parseTaskIntakeMode = (
+  input: string | undefined,
+  key = "TASK_INTAKE_MODE",
+): TaskIntakeMode => {
+  const normalized = input?.trim() || "standalone";
+  if (
+    normalized === "standalone" ||
+    normalized === "yandex_integration" ||
+    normalized === "hybrid" ||
+    normalized === "system_only" ||
+    normalized === "ai_proposed"
+  ) {
+    return normalized;
+  }
+
+  throw new ConfigurationError(
+    `${key} must be one of: standalone, yandex_integration, hybrid, system_only, ai_proposed.`,
+  );
+};
+
+const parseTaskTrackerStorage = (
+  input: string | undefined,
+  key = "TASK_TRACKER_STORAGE",
+): "postgres" | "memory" => {
+  const normalized = input?.trim() || "postgres";
+  if (normalized === "postgres" || normalized === "memory") {
+    return normalized;
+  }
+
+  throw new ConfigurationError(`${key} must be one of: postgres, memory.`);
+};
+
+const parseTaskTrackerOperationalConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+) => {
+  const retention = optionalRecord(rawValue?.retention, "taskTracker.retention");
+  const cleanup = optionalRecord(rawValue?.cleanup, "taskTracker.cleanup");
+  const rawLogDays = env.TASK_TRACKER_RETENTION_RAW_LOG_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_RAW_LOG_DAYS,
+        "TASK_TRACKER_RETENTION_RAW_LOG_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.rawLogDays,
+        "taskTracker.retention.rawLogDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.rawLogDays,
+      );
+  const artifactDays = env.TASK_TRACKER_RETENTION_ARTIFACT_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_ARTIFACT_DAYS,
+        "TASK_TRACKER_RETENTION_ARTIFACT_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.artifactDays,
+        "taskTracker.retention.artifactDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.artifactDays,
+      );
+  const failedArtifactDays = env.TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS,
+        "TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.failedArtifactDays,
+        "taskTracker.retention.failedArtifactDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.failedArtifactDays,
+      );
+  const historyDays = env.TASK_TRACKER_RETENTION_HISTORY_DAYS?.trim()
+    ? parsePositiveInt(
+        env.TASK_TRACKER_RETENTION_HISTORY_DAYS,
+        "TASK_TRACKER_RETENTION_HISTORY_DAYS",
+      )
+    : optionalPositiveInt(
+        retention?.historyDays,
+        "taskTracker.retention.historyDays",
+        DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.retention.historyDays,
+      );
+
+  if (historyDays < 365) {
+    throw new ConfigurationError(
+      "TASK_TRACKER_RETENTION_HISTORY_DAYS must be at least 365 days.",
+    );
+  }
+  if (failedArtifactDays < artifactDays) {
+    throw new ConfigurationError(
+      "TASK_TRACKER_RETENTION_FAILED_ARTIFACT_DAYS must be greater than or equal to TASK_TRACKER_RETENTION_ARTIFACT_DAYS.",
+    );
+  }
+
+  return {
+    retention: {
+      rawLogDays,
+      artifactDays,
+      failedArtifactDays,
+      historyDays,
+    },
+    cleanup: {
+      enabled: env.TASK_TRACKER_CLEANUP_ENABLED?.trim()
+        ? parseBooleanFlag(
+            env.TASK_TRACKER_CLEANUP_ENABLED,
+            "TASK_TRACKER_CLEANUP_ENABLED",
+            DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.cleanup.enabled,
+          )
+        : optionalBoolean(
+            cleanup?.enabled,
+            "taskTracker.cleanup.enabled",
+            DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.cleanup.enabled,
+          ),
+      intervalSeconds: env.TASK_TRACKER_CLEANUP_INTERVAL_SECONDS?.trim()
+        ? parsePositiveInt(
+            env.TASK_TRACKER_CLEANUP_INTERVAL_SECONDS,
+            "TASK_TRACKER_CLEANUP_INTERVAL_SECONDS",
+          )
+        : optionalPositiveInt(
+            cleanup?.intervalSeconds,
+            "taskTracker.cleanup.intervalSeconds",
+            DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.cleanup.intervalSeconds,
+          ),
+    },
+    metricsEnabled: env.TASK_TRACKER_METRICS_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TASK_TRACKER_METRICS_ENABLED,
+          "TASK_TRACKER_METRICS_ENABLED",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.metricsEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.metricsEnabled,
+          "taskTracker.metricsEnabled",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.metricsEnabled,
+        ),
+    redactionEnabled: env.TASK_TRACKER_REDACTION_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TASK_TRACKER_REDACTION_ENABLED,
+          "TASK_TRACKER_REDACTION_ENABLED",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.redactionEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.redactionEnabled,
+          "taskTracker.redactionEnabled",
+          DEFAULT_TASK_TRACKER_OPERATIONAL_CONFIG.redactionEnabled,
+        ),
+  };
+};
+
+const validatePostgresUrl = (input: string, key: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(input);
+  } catch (error) {
+    throw new ConfigurationError(
+      `${key} must be a valid PostgreSQL URL. ${(error as Error).message}`,
+    );
+  }
+
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new ConfigurationError(`${key} must use the postgres:// or postgresql:// protocol.`);
+  }
+
+  return input;
+};
+
+const isTestOrLocalSmokeConfig = (env: NodeJS.ProcessEnv): boolean => {
+  if (env.NODE_ENV?.trim().toLowerCase() === "test") {
+    return true;
+  }
+
+  return parseBooleanFlag(
+    env.TASK_TRACKER_LOCAL_SMOKE,
+    "TASK_TRACKER_LOCAL_SMOKE",
+    false,
+  );
 };
 
 const parseCodexSandbox = (
@@ -206,6 +425,207 @@ const parseTaskMode = (input: string | undefined, key = "TASK_MODE"): WorkerTask
   throw new ConfigurationError(
     `${key} must be one of: auto, implement, decompose, analyze_only, human.`,
   );
+};
+
+const TASK_TYPE_VALUES = [
+  "frontend_ui_fix",
+  "backend_endpoint",
+  "tests_only",
+  "refactor",
+  "dependency_update",
+  "documentation",
+  "unknown",
+] as const;
+
+const parseTaskTypeArray = (
+  value: unknown,
+  key: string,
+  defaultValue: AutonomyPolicyConfig["defaultAllowedTaskTypes"],
+): AutonomyPolicyConfig["defaultAllowedTaskTypes"] => {
+  if (value === undefined || value === null) {
+    return [...defaultValue];
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new ConfigurationError(`${key} must be an array of task type strings.`);
+  }
+  const values = value.map((entry) => entry.trim()).filter(Boolean);
+  for (const taskType of values) {
+    if (!TASK_TYPE_VALUES.includes(taskType as any)) {
+      throw new ConfigurationError(
+        `${key} contains unsupported task type "${taskType}".`,
+      );
+    }
+  }
+  return values as AutonomyPolicyConfig["defaultAllowedTaskTypes"];
+};
+
+const parseTaskTypeArrayEnv = (
+  input: string | undefined,
+  key: string,
+  defaultValue: AutonomyPolicyConfig["defaultAllowedTaskTypes"],
+): AutonomyPolicyConfig["defaultAllowedTaskTypes"] => {
+  if (!input?.trim()) {
+    return [...defaultValue];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch (error) {
+    throw new ConfigurationError(`${key} must be valid JSON. ${(error as Error).message}`);
+  }
+  return parseTaskTypeArray(parsed, key, defaultValue);
+};
+
+const parseOptionalRepositoryAutonomyPolicy = (
+  value: unknown,
+  path: string,
+): RepositoryAutonomyPolicyConfig | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const raw = asRecord(value, path);
+  return {
+    ...(raw.proposalsEnabled !== undefined
+      ? {
+          proposalsEnabled: optionalBoolean(
+            raw.proposalsEnabled,
+            `${path}.proposalsEnabled`,
+            true,
+          ),
+        }
+      : {}),
+    ...(raw.autoExecuteLowRiskEnabled !== undefined
+      ? {
+          autoExecuteLowRiskEnabled: optionalBoolean(
+            raw.autoExecuteLowRiskEnabled,
+            `${path}.autoExecuteLowRiskEnabled`,
+            false,
+          ),
+        }
+      : {}),
+    ...(raw.allowedTaskTypes !== undefined
+      ? {
+          allowedTaskTypes: parseTaskTypeArray(
+            raw.allowedTaskTypes,
+            `${path}.allowedTaskTypes`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultAllowedTaskTypes,
+          ),
+        }
+      : {}),
+    ...(raw.dailyProposalLimit !== undefined
+      ? {
+          dailyProposalLimit: optionalPositiveInt(
+            raw.dailyProposalLimit,
+            `${path}.dailyProposalLimit`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultDailyProposalLimit,
+          ),
+        }
+      : {}),
+    ...(raw.windowProposalLimit !== undefined
+      ? {
+          windowProposalLimit: optionalPositiveInt(
+            raw.windowProposalLimit,
+            `${path}.windowProposalLimit`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowProposalLimit,
+          ),
+        }
+      : {}),
+    ...(raw.windowSeconds !== undefined
+      ? {
+          windowSeconds: optionalPositiveInt(
+            raw.windowSeconds,
+            `${path}.windowSeconds`,
+            DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowSeconds,
+          ),
+        }
+      : {}),
+  };
+};
+
+const parseAutonomyConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+  repositories: RepositoryProfile[] = [],
+): AutonomyPolicyConfig => {
+  const rawRepositories = optionalRecord(rawValue?.repositories, "autonomy.repositories");
+  const repositoryPolicies: Record<string, RepositoryAutonomyPolicyConfig> = {};
+  if (rawRepositories) {
+    for (const [repositoryName, value] of Object.entries(rawRepositories)) {
+      const policy = parseOptionalRepositoryAutonomyPolicy(
+        value,
+        `autonomy.repositories.${repositoryName}`,
+      );
+      if (policy) {
+        repositoryPolicies[repositoryName] = policy;
+      }
+    }
+  }
+  for (const repository of repositories) {
+    if (repository.autonomy) {
+      repositoryPolicies[repository.name] = {
+        ...(repositoryPolicies[repository.name] ?? {}),
+        ...repository.autonomy,
+      };
+    }
+  }
+
+  return {
+    aiProposalsEnabled: env.AI_PROPOSALS_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.AI_PROPOSALS_ENABLED,
+          "AI_PROPOSALS_ENABLED",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.aiProposalsEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.aiProposalsEnabled,
+          "autonomy.aiProposalsEnabled",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.aiProposalsEnabled,
+        ),
+    autoExecuteLowRiskEnabled: env.AUTO_EXECUTE_LOW_RISK_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.AUTO_EXECUTE_LOW_RISK_ENABLED,
+          "AUTO_EXECUTE_LOW_RISK_ENABLED",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.autoExecuteLowRiskEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.autoExecuteLowRiskEnabled,
+          "autonomy.autoExecuteLowRiskEnabled",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.autoExecuteLowRiskEnabled,
+        ),
+    defaultAllowedTaskTypes: env.AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON?.trim()
+      ? parseTaskTypeArrayEnv(
+          env.AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON,
+          "AI_PROPOSAL_ALLOWED_TASK_TYPES_JSON",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultAllowedTaskTypes,
+        )
+      : parseTaskTypeArray(
+          rawValue?.defaultAllowedTaskTypes,
+          "autonomy.defaultAllowedTaskTypes",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultAllowedTaskTypes,
+        ),
+    defaultDailyProposalLimit: env.AI_PROPOSAL_DAILY_LIMIT?.trim()
+      ? parsePositiveInt(env.AI_PROPOSAL_DAILY_LIMIT, "AI_PROPOSAL_DAILY_LIMIT")
+      : optionalPositiveInt(
+          rawValue?.defaultDailyProposalLimit,
+          "autonomy.defaultDailyProposalLimit",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultDailyProposalLimit,
+        ),
+    defaultWindowProposalLimit: env.AI_PROPOSAL_WINDOW_LIMIT?.trim()
+      ? parsePositiveInt(env.AI_PROPOSAL_WINDOW_LIMIT, "AI_PROPOSAL_WINDOW_LIMIT")
+      : optionalPositiveInt(
+          rawValue?.defaultWindowProposalLimit,
+          "autonomy.defaultWindowProposalLimit",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowProposalLimit,
+        ),
+    defaultWindowSeconds: env.AI_PROPOSAL_WINDOW_SECONDS?.trim()
+      ? parsePositiveInt(env.AI_PROPOSAL_WINDOW_SECONDS, "AI_PROPOSAL_WINDOW_SECONDS")
+      : optionalPositiveInt(
+          rawValue?.defaultWindowSeconds,
+          "autonomy.defaultWindowSeconds",
+          DEFAULT_AUTONOMY_POLICY_CONFIG.defaultWindowSeconds,
+        ),
+    repositories: repositoryPolicies,
+  };
 };
 
 const parseDependencyUnknownStatusPolicy = (
@@ -325,6 +745,99 @@ const optionalBoolean = (
   return value;
 };
 
+const parseTaskTrackerConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+): TaskTrackerConfig => {
+  const provider = parseTaskTrackerProvider(
+    env.TASK_TRACKER_PROVIDER ?? optionalString(rawValue?.provider, "taskTracker.provider"),
+  );
+  const rawIntakeMode =
+    env.TASK_INTAKE_MODE ?? optionalString(rawValue?.intakeMode, "taskTracker.intakeMode");
+  const rawStorage =
+    env.TASK_TRACKER_STORAGE ?? optionalString(rawValue?.storage, "taskTracker.storage");
+  const operational = parseTaskTrackerOperationalConfig(env, rawValue);
+
+  if (provider === "yandex") {
+    if (rawIntakeMode !== undefined) {
+      parseTaskIntakeMode(rawIntakeMode);
+    }
+    if (rawStorage !== undefined) {
+      parseTaskTrackerStorage(rawStorage);
+    }
+    return { provider };
+  }
+
+  const intakeMode = parseTaskIntakeMode(rawIntakeMode);
+  const yandexSyncEnabled = env.YANDEX_SYNC_ENABLED?.trim()
+    ? parseBooleanFlag(env.YANDEX_SYNC_ENABLED, "YANDEX_SYNC_ENABLED", false)
+    : optionalBoolean(rawValue?.yandexSyncEnabled, "taskTracker.yandexSyncEnabled", false);
+
+  if (
+    yandexSyncEnabled &&
+    intakeMode !== "yandex_integration" &&
+    intakeMode !== "hybrid"
+  ) {
+    throw new ConfigurationError(
+      "YANDEX_SYNC_ENABLED=true requires TASK_INTAKE_MODE=yandex_integration or hybrid.",
+    );
+  }
+
+  if (
+    !yandexSyncEnabled &&
+    (intakeMode === "yandex_integration" || intakeMode === "hybrid")
+  ) {
+    throw new ConfigurationError(
+      "YANDEX_SYNC_ENABLED=false is only valid with TASK_INTAKE_MODE=standalone, system_only, or ai_proposed.",
+    );
+  }
+
+  const storage = parseTaskTrackerStorage(rawStorage);
+  const databaseUrl =
+    env.TASK_TRACKER_DATABASE_URL?.trim() ||
+    optionalString(rawValue?.databaseUrl, "taskTracker.databaseUrl");
+
+  if (storage === "memory") {
+    if (!isTestOrLocalSmokeConfig(env)) {
+      throw new ConfigurationError(
+        "TASK_TRACKER_STORAGE=memory is allowed only with NODE_ENV=test or TASK_TRACKER_LOCAL_SMOKE=true.",
+      );
+    }
+
+    return {
+      provider,
+      internal: {
+        storage,
+        ...(databaseUrl ? { databaseUrl } : {}),
+        intakeMode,
+        yandexSyncEnabled,
+        operational,
+      },
+    };
+  }
+
+  if (!databaseUrl) {
+    throw new ConfigurationError(
+      "TASK_TRACKER_PROVIDER=internal requires TASK_TRACKER_DATABASE_URL unless TASK_TRACKER_STORAGE=memory is explicitly enabled for test/local smoke.",
+    );
+  }
+
+  return {
+    provider,
+    internal: {
+      storage,
+      databaseUrl: validatePostgresUrl(databaseUrl, "TASK_TRACKER_DATABASE_URL"),
+      intakeMode,
+      yandexSyncEnabled,
+      operational,
+    },
+  };
+};
+
+const taskTrackerUsesYandex = (taskTracker: TaskTrackerConfig): boolean =>
+  taskTracker.provider === "yandex" ||
+  (taskTracker.provider === "internal" && taskTracker.internal.yandexSyncEnabled);
+
 const optionalPositiveInt = (
   value: unknown,
   key: string,
@@ -339,6 +852,50 @@ const optionalPositiveInt = (
   }
 
   return value;
+};
+
+const parseTrackerImageContextConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+): TrackerImageContextConfig => {
+  const tempDir = env.TRACKER_IMAGE_CONTEXT_TEMP_DIR?.trim()
+    ? env.TRACKER_IMAGE_CONTEXT_TEMP_DIR.trim()
+    : optionalString(rawValue?.tempDir, "trackerImageContext.tempDir");
+
+  return {
+    enabled: env.TRACKER_IMAGE_CONTEXT_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TRACKER_IMAGE_CONTEXT_ENABLED,
+          "TRACKER_IMAGE_CONTEXT_ENABLED",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.enabled,
+        )
+      : optionalBoolean(
+          rawValue?.enabled,
+          "trackerImageContext.enabled",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.enabled,
+        ),
+    maxCount: env.TRACKER_IMAGE_CONTEXT_MAX_COUNT?.trim()
+      ? parsePositiveInt(
+          env.TRACKER_IMAGE_CONTEXT_MAX_COUNT,
+          "TRACKER_IMAGE_CONTEXT_MAX_COUNT",
+        )
+      : optionalPositiveInt(
+          rawValue?.maxCount,
+          "trackerImageContext.maxCount",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.maxCount,
+        ),
+    maxBytes: env.TRACKER_IMAGE_CONTEXT_MAX_BYTES?.trim()
+      ? parsePositiveInt(
+          env.TRACKER_IMAGE_CONTEXT_MAX_BYTES,
+          "TRACKER_IMAGE_CONTEXT_MAX_BYTES",
+        )
+      : optionalPositiveInt(
+          rawValue?.maxBytes,
+          "trackerImageContext.maxBytes",
+          DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.maxBytes,
+        ),
+    ...(tempDir ? { tempDir } : {}),
+  };
 };
 
 const optionalNumber = (
@@ -696,7 +1253,11 @@ const loadStatusMapFromFile = (
 };
 
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
-  const trackerStatusMap = loadStatusMapFromFile(env);
+  const taskTracker = parseTaskTrackerConfig(env);
+  const usesYandex = taskTrackerUsesYandex(taskTracker);
+  const trackerStatusMap = usesYandex
+    ? loadStatusMapFromFile(env)
+    : DEFAULT_INTERNAL_TRACKER_STATUS_MAP;
   const pollIntervalMinutes = parsePositiveInt(
     env.POLL_INTERVAL_MINUTES?.trim() || "30",
     "POLL_INTERVAL_MINUTES",
@@ -711,17 +1272,27 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   );
   const memory = parseMemoryConfig(env);
   const observability = parseObservabilityConfig(env);
+  const autonomy = parseAutonomyConfig(env);
+  const trackerImageContext = parseTrackerImageContextConfig(env);
 
   return {
-    trackerToken: requireEnv(env, "TRACKER_TOKEN"),
-    trackerOrgHeader: parseTrackerOrgHeader(env.TRACKER_ORG_HEADER),
-    trackerOrgId: requireEnv(env, "TRACKER_ORG_ID"),
+    taskTracker,
+    trackerToken: usesYandex
+      ? requireEnv(env, "TRACKER_TOKEN")
+      : env.TRACKER_TOKEN?.trim() || "",
+    trackerOrgHeader: usesYandex
+      ? parseTrackerOrgHeader(env.TRACKER_ORG_HEADER)
+      : parseTrackerOrgHeader(undefined),
+    trackerOrgId: usesYandex
+      ? requireEnv(env, "TRACKER_ORG_ID")
+      : env.TRACKER_ORG_ID?.trim() || "",
     trackerDefaultQueue: env.TRACKER_DEFAULT_QUEUE?.trim() || "FRONTEND",
     trackerTag: env.TRACKER_TAG?.trim() || "ai_dev",
     trackerStatusMap,
     trackerApiBaseUrl:
       env.TRACKER_API_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://api.tracker.yandex.net/v3",
+    trackerImageContext,
     trackerParentLinkType:
       env.TRACKER_PARENT_LINK_TYPE?.trim() || DEFAULT_TRACKER_PARENT_LINK_TYPE,
     trackerBlockedByLinkType:
@@ -854,17 +1425,20 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     ),
     memory,
     observability,
+    autonomy,
   };
 };
 
 const parseCoordinationConfig = (
   env: NodeJS.ProcessEnv,
   rawValue?: Record<string, unknown>,
+  taskTracker?: TaskTrackerConfig,
 ): CoordinationConfig => {
+  const defaultLockBackend = taskTracker?.provider === "internal" ? "none" : "tracker";
   const lockBackend =
     env.LOCK_BACKEND?.trim() ||
     optionalString(rawValue?.lockBackend, "coordination.lockBackend") ||
-    "tracker";
+    defaultLockBackend;
   if (
     lockBackend !== "none" &&
     lockBackend !== "tracker" &&
@@ -878,6 +1452,11 @@ const parseCoordinationConfig = (
   }
   if (lockBackend === "postgres") {
     throw new ConfigurationError("LOCK_BACKEND=postgres is not implemented yet.");
+  }
+  if (taskTracker?.provider === "internal" && lockBackend === "tracker") {
+    throw new ConfigurationError(
+      "LOCK_BACKEND=tracker is only supported with TASK_TRACKER_PROVIDER=yandex in Phase 7C.",
+    );
   }
 
   const ttlSeconds = env.LOCK_TTL_SECONDS?.trim()
@@ -1009,92 +1588,100 @@ const buildSingleRepositoryFleetConfig = (
           ? { maxSubtasks: config.decompositionMaxSubtasks }
           : {}),
       },
+      ...(config.autonomy?.repositories.default
+        ? { autonomy: config.autonomy.repositories.default }
+        : {}),
     },
   ];
   validateRepositoryProfiles(repositories);
 
   return {
-  workerId: config.workerId,
-  pollIntervalMinutes: config.pollIntervalMinutes,
-  pollIntervalMs: config.pollIntervalMs,
-  runOnce: config.runOnce,
-  preflightOnly: config.preflightOnly,
-  preflightRunTargetCommands: config.preflightRunTargetCommands,
-  ...(config.trackerPreflightIssueKey
-    ? { trackerPreflightIssueKey: config.trackerPreflightIssueKey }
-    : {}),
-  ...(config.gitlabPreflightSourceBranch
-    ? { gitlabPreflightSourceBranch: config.gitlabPreflightSourceBranch }
-    : {}),
-  ...(config.targetIssueKey ? { targetIssueKey: config.targetIssueKey } : {}),
-  ...(config.taskMode ? { taskMode: config.taskMode } : {}),
-  ...(config.confidenceImplementThreshold !== undefined
-    ? { confidenceImplementThreshold: config.confidenceImplementThreshold }
-    : {}),
-  ...(config.confidenceHumanThreshold !== undefined
-    ? { confidenceHumanThreshold: config.confidenceHumanThreshold }
-    : {}),
-  ...(config.decompositionMaxSubtasks !== undefined
-    ? { decompositionMaxSubtasks: config.decompositionMaxSubtasks }
-    : {}),
-  ...(config.decompositionCreateIssues !== undefined
-    ? { decompositionCreateIssues: config.decompositionCreateIssues }
-    : {}),
-  ...(config.decompositionDryRun !== undefined
-    ? { decompositionDryRun: config.decompositionDryRun }
-    : {}),
-  ...(config.decompositionDefaultSubtaskTag
-    ? { decompositionDefaultSubtaskTag: config.decompositionDefaultSubtaskTag }
-    : {}),
-  ...(config.decompositionSubtaskTitlePrefix
-    ? { decompositionSubtaskTitlePrefix: config.decompositionSubtaskTitlePrefix }
-    : {}),
-  ...(config.dependencyEnforcement !== undefined
-    ? { dependencyEnforcement: config.dependencyEnforcement }
-    : {}),
-  ...(config.dependencyUnknownStatusPolicy
-    ? { dependencyUnknownStatusPolicy: config.dependencyUnknownStatusPolicy }
-    : {}),
-  ...(config.trackerParentLinkType ? { trackerParentLinkType: config.trackerParentLinkType } : {}),
-  ...(config.trackerBlockedByLinkType
-    ? { trackerBlockedByLinkType: config.trackerBlockedByLinkType }
-    : {}),
-  maxFixAttempts: config.maxFixAttempts,
-  maxReviewFixAttempts: config.maxReviewFixAttempts,
-  gitRepositoryToken: config.gitRepositoryToken,
-  gitRepositoryUsername: config.gitRepositoryUsername,
-  gitCommitNoVerify: config.gitCommitNoVerify,
-  ...(config.gitAuthorName ? { gitAuthorName: config.gitAuthorName } : {}),
-  ...(config.gitAuthorEmail ? { gitAuthorEmail: config.gitAuthorEmail } : {}),
-  tracker: {
-    token: config.trackerToken,
-    orgHeader: config.trackerOrgHeader,
-    orgId: config.trackerOrgId,
-    statusMap: config.trackerStatusMap,
-    apiBaseUrl: config.trackerApiBaseUrl,
-  },
-  gitlab: {
-    url: config.gitlabUrl,
-    token: config.gitlabToken,
-  },
-  codex: {
-    home: config.codexHome,
-    cliCommand: config.codexCliCommand,
-    cliArgs: config.codexCliArgs,
-    ...(config.codexModel ? { model: config.codexModel } : {}),
-    ...(config.codexProfile ? { profile: config.codexProfile } : {}),
-    sandbox: config.codexSandbox,
-    execArgs: config.codexExecArgs,
-    timeoutMs: config.codexTimeoutMs,
-    progressLogIntervalMs: config.codexProgressLogIntervalMs,
-    logFullEvents: config.codexLogFullEvents,
-    questionMarker: config.codexQuestionMarker,
-  },
-  coordination: parseCoordinationConfig(env),
-  priorityQueue: parsePriorityQueueConfig(env),
-  repositories,
-  memory: config.memory,
-  observability: config.observability,
+    taskTracker: config.taskTracker,
+    workerId: config.workerId,
+    pollIntervalMinutes: config.pollIntervalMinutes,
+    pollIntervalMs: config.pollIntervalMs,
+    runOnce: config.runOnce,
+    preflightOnly: config.preflightOnly,
+    preflightRunTargetCommands: config.preflightRunTargetCommands,
+    ...(config.trackerPreflightIssueKey
+      ? { trackerPreflightIssueKey: config.trackerPreflightIssueKey }
+      : {}),
+    ...(config.gitlabPreflightSourceBranch
+      ? { gitlabPreflightSourceBranch: config.gitlabPreflightSourceBranch }
+      : {}),
+    ...(config.targetIssueKey ? { targetIssueKey: config.targetIssueKey } : {}),
+    ...(config.taskMode ? { taskMode: config.taskMode } : {}),
+    ...(config.confidenceImplementThreshold !== undefined
+      ? { confidenceImplementThreshold: config.confidenceImplementThreshold }
+      : {}),
+    ...(config.confidenceHumanThreshold !== undefined
+      ? { confidenceHumanThreshold: config.confidenceHumanThreshold }
+      : {}),
+    ...(config.decompositionMaxSubtasks !== undefined
+      ? { decompositionMaxSubtasks: config.decompositionMaxSubtasks }
+      : {}),
+    ...(config.decompositionCreateIssues !== undefined
+      ? { decompositionCreateIssues: config.decompositionCreateIssues }
+      : {}),
+    ...(config.decompositionDryRun !== undefined
+      ? { decompositionDryRun: config.decompositionDryRun }
+      : {}),
+    ...(config.decompositionDefaultSubtaskTag
+      ? { decompositionDefaultSubtaskTag: config.decompositionDefaultSubtaskTag }
+      : {}),
+    ...(config.decompositionSubtaskTitlePrefix
+      ? { decompositionSubtaskTitlePrefix: config.decompositionSubtaskTitlePrefix }
+      : {}),
+    ...(config.dependencyEnforcement !== undefined
+      ? { dependencyEnforcement: config.dependencyEnforcement }
+      : {}),
+    ...(config.dependencyUnknownStatusPolicy
+      ? { dependencyUnknownStatusPolicy: config.dependencyUnknownStatusPolicy }
+      : {}),
+    ...(config.trackerParentLinkType
+      ? { trackerParentLinkType: config.trackerParentLinkType }
+      : {}),
+    ...(config.trackerBlockedByLinkType
+      ? { trackerBlockedByLinkType: config.trackerBlockedByLinkType }
+      : {}),
+    maxFixAttempts: config.maxFixAttempts,
+    maxReviewFixAttempts: config.maxReviewFixAttempts,
+    trackerImageContext: config.trackerImageContext,
+    gitRepositoryToken: config.gitRepositoryToken,
+    gitRepositoryUsername: config.gitRepositoryUsername,
+    gitCommitNoVerify: config.gitCommitNoVerify,
+    ...(config.gitAuthorName ? { gitAuthorName: config.gitAuthorName } : {}),
+    ...(config.gitAuthorEmail ? { gitAuthorEmail: config.gitAuthorEmail } : {}),
+    tracker: {
+      token: config.trackerToken,
+      orgHeader: config.trackerOrgHeader,
+      orgId: config.trackerOrgId,
+      statusMap: config.trackerStatusMap,
+      apiBaseUrl: config.trackerApiBaseUrl,
+    },
+    gitlab: {
+      url: config.gitlabUrl,
+      token: config.gitlabToken,
+    },
+    codex: {
+      home: config.codexHome,
+      cliCommand: config.codexCliCommand,
+      cliArgs: config.codexCliArgs,
+      ...(config.codexModel ? { model: config.codexModel } : {}),
+      ...(config.codexProfile ? { profile: config.codexProfile } : {}),
+      sandbox: config.codexSandbox,
+      execArgs: config.codexExecArgs,
+      timeoutMs: config.codexTimeoutMs,
+      progressLogIntervalMs: config.codexProgressLogIntervalMs,
+      logFullEvents: config.codexLogFullEvents,
+      questionMarker: config.codexQuestionMarker,
+    },
+    coordination: parseCoordinationConfig(env, undefined, config.taskTracker),
+    priorityQueue: parsePriorityQueueConfig(env),
+    repositories,
+    memory: config.memory,
+    observability: config.observability,
+    ...(config.autonomy ? { autonomy: config.autonomy } : {}),
   };
 };
 
@@ -1202,6 +1789,14 @@ const parseRepositoryProfile = (
           ),
         }
       : {}),
+    ...(parseOptionalRepositoryAutonomyPolicy(raw.autonomy, `${path}.autonomy`)
+      ? {
+          autonomy: parseOptionalRepositoryAutonomyPolicy(
+            raw.autonomy,
+            `${path}.autonomy`,
+          ),
+        }
+      : {}),
   };
 };
 
@@ -1247,20 +1842,33 @@ const loadFleetConfigFromFile = (
   const tracker = optionalRecord(root.tracker, "tracker") ?? {};
   const gitlab = optionalRecord(root.gitlab, "gitlab") ?? {};
   const codex = optionalRecord(root.codex, "codex") ?? {};
+  const taskTracker = parseTaskTrackerConfig(
+    env,
+    optionalRecord(root.taskTracker, "taskTracker"),
+  );
   const coordination = optionalRecord(root.coordination, "coordination");
   const priorityQueue = optionalRecord(root.priorityQueue, "priorityQueue");
   const memory = optionalRecord(root.memory, "memory");
   const observability = optionalRecord(root.observability, "observability");
   const alerts = optionalRecord(root.alerts, "alerts");
+  const autonomyRoot = optionalRecord(root.autonomy, "autonomy");
+  const trackerImageContext = optionalRecord(
+    root.trackerImageContext,
+    "trackerImageContext",
+  );
   if (!Array.isArray(root.repositories) || root.repositories.length === 0) {
     throw new ConfigurationError("repositories must be a non-empty array.");
   }
   const repositories = root.repositories.map(parseRepositoryProfile);
   validateRepositoryProfiles(repositories);
+  const autonomy = parseAutonomyConfig(env, autonomyRoot, repositories);
 
+  const usesYandex = taskTrackerUsesYandex(taskTracker);
   const statusMapFile =
-    optionalString(tracker.statusMapFile, "tracker.statusMapFile") ??
-    requireEnv(env, "TRACKER_STATUS_MAP_FILE");
+    usesYandex
+      ? optionalString(tracker.statusMapFile, "tracker.statusMapFile") ??
+        requireEnv(env, "TRACKER_STATUS_MAP_FILE")
+      : undefined;
   const pollIntervalMinutes = env.POLL_INTERVAL_MINUTES?.trim()
     ? parsePositiveInt(env.POLL_INTERVAL_MINUTES, "POLL_INTERVAL_MINUTES")
     : optionalPositiveInt(worker.pollIntervalMinutes, "worker.pollIntervalMinutes", 30);
@@ -1278,6 +1886,7 @@ const loadFleetConfigFromFile = (
   );
 
   return {
+    taskTracker,
     workerId,
     pollIntervalMinutes,
     pollIntervalMs: pollIntervalMinutes * 60 * 1000,
@@ -1402,6 +2011,7 @@ const loadFleetConfigFromFile = (
           "worker.maxReviewFixAttempts",
           maxFixAttempts,
         ),
+    trackerImageContext: parseTrackerImageContextConfig(env, trackerImageContext),
     gitRepositoryToken: env.GIT_REPOSITORY_TOKEN?.trim() || gitlabToken,
     gitRepositoryUsername: env.GIT_REPOSITORY_USERNAME?.trim() || "oauth2",
     gitCommitNoVerify: parseBooleanFlag(
@@ -1414,26 +2024,42 @@ const loadFleetConfigFromFile = (
       ? { gitAuthorEmail: env.GIT_AUTHOR_EMAIL.trim() }
       : {}),
     tracker: {
-      token: resolveEnvReference(
-        env,
-        tracker,
-        "token",
-        "tokenEnv",
-        "TRACKER_TOKEN",
-        "tracker",
-      ),
-      orgHeader: parseTrackerOrgHeader(
-        optionalString(tracker.orgHeader, "tracker.orgHeader") ?? env.TRACKER_ORG_HEADER,
-      ),
-      orgId: resolveEnvReference(
-        env,
-        tracker,
-        "orgId",
-        "orgIdEnv",
-        "TRACKER_ORG_ID",
-        "tracker",
-      ),
-      statusMap: readStatusMapFile(statusMapFile, "tracker.statusMapFile"),
+      token:
+        usesYandex
+          ? resolveEnvReference(
+              env,
+              tracker,
+              "token",
+              "tokenEnv",
+              "TRACKER_TOKEN",
+              "tracker",
+            )
+          : env.TRACKER_TOKEN?.trim() ||
+            optionalString(tracker.token, "tracker.token") ||
+            "",
+      orgHeader:
+        usesYandex
+          ? parseTrackerOrgHeader(
+              optionalString(tracker.orgHeader, "tracker.orgHeader") ??
+                env.TRACKER_ORG_HEADER,
+            )
+          : parseTrackerOrgHeader(undefined),
+      orgId:
+        usesYandex
+          ? resolveEnvReference(
+              env,
+              tracker,
+              "orgId",
+              "orgIdEnv",
+              "TRACKER_ORG_ID",
+              "tracker",
+            )
+          : env.TRACKER_ORG_ID?.trim() ||
+            optionalString(tracker.orgId, "tracker.orgId") ||
+            "",
+      statusMap: statusMapFile
+        ? readStatusMapFile(statusMapFile, "tracker.statusMapFile")
+        : DEFAULT_INTERNAL_TRACKER_STATUS_MAP,
       apiBaseUrl:
         optionalString(tracker.apiBaseUrl, "tracker.apiBaseUrl")?.replace(/\/+$/, "") ||
         env.TRACKER_API_BASE_URL?.trim().replace(/\/+$/, "") ||
@@ -1497,7 +2123,7 @@ const loadFleetConfigFromFile = (
       ),
       questionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
     },
-    coordination: parseCoordinationConfig(env, coordination),
+    coordination: parseCoordinationConfig(env, coordination, taskTracker),
     priorityQueue: parsePriorityQueueConfig(env, priorityQueue),
     repositories,
     memory: parseMemoryConfig(env, memory),
@@ -1505,6 +2131,7 @@ const loadFleetConfigFromFile = (
       ...(observability ?? {}),
       ...(alerts ? { alerts } : {}),
     }),
+    autonomy,
   };
 };
 
@@ -1523,6 +2150,7 @@ export const buildRepositoryRuntimeConfig = (
   globalConfig: GlobalWorkerConfig,
   repository: RepositoryProfile,
 ): RepositoryRuntimeConfig => ({
+  ...(globalConfig.taskTracker ? { taskTracker: globalConfig.taskTracker } : {}),
   repositoryName: repository.name,
   trackerToken: globalConfig.tracker.token,
   trackerOrgHeader: globalConfig.tracker.orgHeader,
@@ -1531,6 +2159,7 @@ export const buildRepositoryRuntimeConfig = (
   trackerTag: repository.tags[0] ?? "ai_dev",
   trackerStatusMap: globalConfig.tracker.statusMap,
   trackerApiBaseUrl: globalConfig.tracker.apiBaseUrl,
+  trackerImageContext: globalConfig.trackerImageContext,
   ...(globalConfig.trackerParentLinkType
     ? { trackerParentLinkType: globalConfig.trackerParentLinkType }
     : {}),
@@ -1625,4 +2254,5 @@ export const buildRepositoryRuntimeConfig = (
   ...(globalConfig.targetIssueKey ? { targetIssueKey: globalConfig.targetIssueKey } : {}),
   memory: globalConfig.memory,
   observability: globalConfig.observability,
+  ...(globalConfig.autonomy ? { autonomy: globalConfig.autonomy } : {}),
 });

@@ -1,6 +1,7 @@
 import type {
   ObservabilityConfig,
   RepositoryProfile,
+  TaskTrackerClient,
 } from "../models/types.js";
 import type { Logger } from "../utils/logger.js";
 import { defaultObservabilityConfig } from "./config.js";
@@ -129,6 +130,7 @@ class RuntimeObservabilityService implements ObservabilityService {
     readonly config: ObservabilityConfig,
     private readonly logger: Logger,
     private readonly repositories: RepositoryProfile[],
+    taskTracker?: TaskTrackerClient,
   ) {
     this.metrics = new InMemoryMetricsRegistry();
     this.events = new InMemoryEventStore(config, this.metrics, logger);
@@ -145,6 +147,7 @@ class RuntimeObservabilityService implements ObservabilityService {
         reason: this.readinessReason,
       }),
       repositories: () => this.repositories.map((repository) => repository.name),
+      taskTracker,
     });
     this.metrics.setGauge("ai_developer_build_info", {
       version: process.env.npm_package_version ?? "unknown",
@@ -452,10 +455,11 @@ export const createObservabilityService = (
   config: ObservabilityConfig | undefined,
   logger: Logger,
   repositories: RepositoryProfile[],
+  taskTracker?: TaskTrackerClient,
 ): ObservabilityService => {
   const resolved = config ?? defaultObservabilityConfig();
-  if (!resolved.enabled) {
+  if (!resolved.enabled && !resolved.taskTrackerUi.enabled) {
     return noopObservability;
   }
-  return new RuntimeObservabilityService(resolved, logger, repositories);
+  return new RuntimeObservabilityService(resolved, logger, repositories, taskTracker);
 };

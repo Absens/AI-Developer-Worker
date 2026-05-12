@@ -15,6 +15,8 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexRunObserver,
+  CodexRunOptions,
   CodexRunner,
   CommentWithMetadata,
   GitLabService,
@@ -22,6 +24,7 @@ import type {
   LogicalStatus,
   MergeRequestDiscussion,
   MergeRequestInfo,
+  TrackerAttachment,
   TrackerClient,
   TrackerIssue,
 } from "../src/models/types.js";
@@ -95,6 +98,9 @@ class FakeTrackerClient implements TrackerClient {
   candidateIssueLookups = 0;
   ownedIssueLookups = 0;
   getIssueCalls: string[] = [];
+  readonly attachmentDownloadCalls: Array<{ issueKey: string; attachmentId: string }> = [];
+  attachmentsByIssue: Record<string, TrackerAttachment[]> = {};
+  attachmentBytesById: Record<string, Uint8Array> = {};
 
   constructor(
     readonly issues: TrackerIssue[],
@@ -128,6 +134,18 @@ class FakeTrackerClient implements TrackerClient {
 
   async getComments(issueKey: string): Promise<CommentWithMetadata[]> {
     return this.commentsByIssue[issueKey] ?? [];
+  }
+
+  async getIssueAttachments(issueKey: string): Promise<TrackerAttachment[]> {
+    return this.attachmentsByIssue[issueKey] ?? [];
+  }
+
+  async downloadIssueAttachment(
+    issueKey: string,
+    attachment: TrackerAttachment,
+  ): Promise<Uint8Array> {
+    this.attachmentDownloadCalls.push({ issueKey, attachmentId: attachment.id });
+    return this.attachmentBytesById[attachment.id] ?? new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
   }
 
   async addComment(issueKey: string, text: string): Promise<void> {
@@ -274,9 +292,9 @@ class FakeGitLabService implements GitLabService {
 }
 
 class FakeCodexRunner implements CodexRunner {
-  readonly initialCalls: string[] = [];
-  readonly fixCalls: string[] = [];
-  readonly resumeCalls: Array<{ threadId: string; prompt: string }> = [];
+  readonly initialCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
+  readonly fixCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
+  readonly resumeCalls: Array<{ threadId: string; prompt: string; imagePaths: string[] }> = [];
 
   constructor(
     private readonly initialQueue: Array<() => CodexExecution | Promise<CodexExecution>>,
@@ -286,8 +304,12 @@ class FakeCodexRunner implements CodexRunner {
     private readonly fixQueue: Array<() => CodexExecution | Promise<CodexExecution>> = [],
   ) {}
 
-  runInitial(prompt: string): Promise<CodexExecution> {
-    this.initialCalls.push(prompt);
+  runInitial(
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution> {
+    this.initialCalls.push({ prompt, imagePaths: options?.imagePaths ?? [] });
     const next = this.initialQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -295,8 +317,12 @@ class FakeCodexRunner implements CodexRunner {
     return Promise.resolve(next());
   }
 
-  runFix(prompt: string): Promise<CodexExecution> {
-    this.fixCalls.push(prompt);
+  runFix(
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution> {
+    this.fixCalls.push({ prompt, imagePaths: options?.imagePaths ?? [] });
     const next = this.fixQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -304,8 +330,13 @@ class FakeCodexRunner implements CodexRunner {
     return Promise.resolve(next());
   }
 
-  runResume(threadId: string, prompt: string): Promise<CodexExecution> {
-    this.resumeCalls.push({ threadId, prompt });
+  runResume(
+    threadId: string,
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexRunOptions,
+  ): Promise<CodexExecution> {
+    this.resumeCalls.push({ threadId, prompt, imagePaths: options?.imagePaths ?? [] });
     const next = this.resumeQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -382,6 +413,82 @@ describe("WorkerOrchestrator", () => {
     expect(git.commits).toEqual(["feat: implement DEV-2"]);
     expect(git.pushes).toEqual(["feature/ai-task-DEV-2"]);
     expect(gitlab.createCalls).toEqual(["feature/ai-task-DEV-2"]);
+  });
+
+  it("passes Tracker image attachments to direct Codex analysis", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-IMG",
+          title: "Fix screenshot issue",
+          description: "Use the screenshot.",
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-IMG": [] },
+    );
+    tracker.attachmentsByIssue["DEV-IMG"] = [
+      {
+        id: "img-1",
+        name: "screen.png",
+        mimetype: "image/png",
+        size: 8,
+        metadata: { size: "1x1" },
+      },
+    ];
+    tracker.attachmentBytesById["img-1"] = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-analysis-image",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "implemented", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-analysis-image",
+          };
+        },
+      ],
+    );
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerImageContext: {
+          enabled: true,
+          maxCount: 5,
+          maxBytes: 1024,
+          tempDir: createTempDir(),
+        },
+      }),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.attachmentDownloadCalls).toEqual([
+      { issueKey: "DEV-IMG", attachmentId: "img-1" },
+    ]);
+    expect(codex.initialCalls[0]?.imagePaths).toHaveLength(1);
+    expect(codex.initialCalls[0]?.prompt).toContain("screen.png");
+    expect(codex.initialCalls[0]?.prompt).toContain(
+      "Tracker image attachments passed to Codex:",
+    );
+    expect(codex.resumeCalls[0]?.imagePaths).toEqual(codex.initialCalls[0]?.imagePaths);
   });
 
   it("moves a task to waiting_for_answer when analysis asks for clarification", async () => {
@@ -1497,8 +1604,8 @@ Reply with /resume A or /resume B.
 
     expect(firstOutcome).toBe("processed");
     expect(secondOutcome).toBe("idle");
-    expect(codex.initialCalls[0]).toContain("Fix the null crash before merge.");
-    expect(codex.initialCalls[0]).not.toContain("Worker follow-up should be ignored.");
+    expect(codex.initialCalls[0]?.prompt).toContain("Fix the null crash before merge.");
+    expect(codex.initialCalls[0]?.prompt).not.toContain("Worker follow-up should be ignored.");
     expect(git.commits).toEqual(["fix: handle null review feedback DEV-REVIEW-FIX"]);
     expect(git.pushes).toEqual([branch]);
     expect(gitlab.replies).toHaveLength(1);

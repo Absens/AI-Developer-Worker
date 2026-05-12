@@ -18,6 +18,7 @@ The current integration relies on these Codex CLI behaviors:
 3. `codex exec --output-last-message <file>` writes the final assistant message to a file.
 4. `codex exec resume <threadId>` continues a previous non-interactive session id emitted by `thread.started.thread_id`.
 5. `--sandbox`, `--model`, and `--profile` remain valid `codex exec` flags.
+6. `codex exec --help` and `codex exec resume --help` include `--image` so Tracker screenshot context can be passed to the model.
 
 If any of those contracts change, the worker may still build but fail at runtime.
 
@@ -63,6 +64,7 @@ Check the current help output:
 ```bash
 codex --help
 codex exec --help
+codex exec resume --help
 codex login status --help
 ```
 
@@ -75,6 +77,7 @@ Confirm that these flags and subcommands still exist:
 - `--sandbox`
 - `--model`
 - `--profile`
+- `--image`
 - `login status`
 
 If any of them changed, update the worker before rebuilding production images.
