@@ -117,6 +117,7 @@ docker compose up --build
 - `CODEX_EXEC_ARGS_JSON=[]`
 - `CODEX_SANDBOX=danger-full-access`
 - `CODEX_MODEL` и `CODEX_PROFILE`, если нужен явный выбор Codex-конфигурации.
+- `TRACKER_IMAGE_CONTEXT_ENABLED=true` для передачи screenshot-вложений Tracker в Codex.
 - `WORKER_RUN_ONCE=true|false`
 - `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` для fleet mode.
 
@@ -131,6 +132,8 @@ docker compose up --build
 ```json
 ["--add-dir", "/workspace/shared"]
 ```
+
+When a Yandex Tracker issue includes image attachments, the worker downloads supported images to a temporary directory and passes them to `codex exec` with `--image`. The prompt also lists which attachments were included or skipped.
 
 Полная таблица переменных окружения находится в [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md).
 

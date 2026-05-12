@@ -41,6 +41,10 @@ Copy-Item .env.example .env
 | `TRACKER_TAG` | Нет | `ai_dev` | Выберите тег задач, который помечает задачи как подходящие для воркера. Создайте тег в Tracker, если его еще нет. |
 | `TRACKER_API_BASE_URL` | Нет | `https://api.tracker.yandex.net/v3` | Оставьте значение по умолчанию, если не используете нестандартный endpoint Tracker или тестовый stub. |
 | `TRACKER_STATUS_MAP_FILE` | Да | Не задано | Путь к JSON-файлу, который сопоставляет логические состояния воркера с реальными статусами Tracker. Значения `statuses` в этом файле должны точно совпадать с названиями статусов задач, видимыми в Tracker. |
+| `TRACKER_IMAGE_CONTEXT_ENABLED` | Нет | `true` | Downloads supported image attachments from Yandex Tracker and passes them to Codex as image inputs. |
+| `TRACKER_IMAGE_CONTEXT_MAX_COUNT` | Нет | `5` | Maximum number of image attachments per Codex run. |
+| `TRACKER_IMAGE_CONTEXT_MAX_BYTES` | Нет | `10485760` | Maximum accepted size per image attachment. Larger images are skipped and named in the prompt summary. |
+| `TRACKER_IMAGE_CONTEXT_TEMP_DIR` | Нет | OS temp directory | Directory for temporary downloaded images. Do not set this inside the target repository checkout. |
 | `GITLAB_URL` | Да | Не задано | Укажите базовый URL вашего GitLab instance, например `https://gitlab.example.com`. Не добавляйте `/api/v4`; клиент добавляет эту часть сам. |
 | `GITLAB_TOKEN` | Да | Не задано | Создайте GitLab access token, который может читать и создавать merge requests, читать MR discussions, читать текущего пользователя и публиковать ответы в discussions целевого проекта. Для одного репозитория лучше использовать GitLab project access token, а не personal token. На практике дайте ему scope `api` и доступ на запись в репозиторий этого проекта. |
 | `GITLAB_PROJECT_ID` | Да | Не задано | Используйте числовой или URL-encoded project ID, который принимает GitLab REST API. Его можно скопировать со страницы проекта или получить через GitLab API, если известен project path. |
@@ -187,7 +191,7 @@ $env:WORKER_PREFLIGHT_ONLY = "true"
 npm run dev
 ```
 
-Report всегда использует такой порядок: загрузка конфигурации, Codex auth, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Отсутствие `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH` не проваливает preflight; эти write checks получают статус `WARN`, и production issue или merge request не изменяются.
+Report всегда использует такой порядок: загрузка конфигурации, Codex auth, условная проверка Codex image input при `TRACKER_IMAGE_CONTEXT_ENABLED=true`, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Отсутствие `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH` не проваливает preflight; эти write checks получают статус `WARN`, и production issue или merge request не изменяются.
 
 Для strict sandbox run задайте обе sandbox-переменные:
 

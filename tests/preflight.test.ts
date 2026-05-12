@@ -302,6 +302,77 @@ describe("PreflightService", () => {
     expect(checks.at(-1)?.details).toContain("TEST_COMMAND failed");
   });
 
+  it("fails preflight when image context is enabled and Codex CLI lacks --image", async () => {
+    const commands: string[] = [];
+    const service = new PreflightService(
+      createConfig({
+        trackerImageContext: {
+          enabled: true,
+          maxCount: 5,
+          maxBytes: 10_485_760,
+        },
+      }),
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) => {
+        commands.push(command);
+        return command.includes("codex exec --help")
+          ? { stdout: "Usage: codex exec", stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      },
+    );
+
+    const checks = await service.run();
+
+    expect(commands).toContain("codex exec --help");
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Codex image input",
+          status: "fail",
+        }),
+      ]),
+    );
+  });
+
+  it("passes preflight when image context is enabled and Codex CLI supports --image", async () => {
+    const service = new PreflightService(
+      createConfig({
+        codexCliCommand: "codex launcher",
+        codexCliArgs: ["--profile", "visual worker"],
+        trackerImageContext: {
+          enabled: true,
+          maxCount: 5,
+          maxBytes: 10_485_760,
+        },
+      }),
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) =>
+        command.includes("exec --help")
+          ? { stdout: "Usage: codex exec\n  --image <path>", stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 },
+    );
+
+    const checks = await service.run();
+
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Codex image input",
+          status: "pass",
+          details: "Codex CLI supports image inputs through codex exec --image.",
+        }),
+      ]),
+    );
+  });
+
   it("checks internal tracker storage without calling Yandex tracker", async () => {
     const tracker = new FakeTrackerClient();
     const service = new PreflightService(

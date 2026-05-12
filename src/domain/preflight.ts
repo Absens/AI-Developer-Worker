@@ -35,6 +35,18 @@ const buildCommandFailure = (
 const formatError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const quoteShellArg = (value: string): string => {
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+};
+
+const buildCodexExecHelpCommand = (config: AppConfig): string =>
+  [config.codexCliCommand, ...config.codexCliArgs, "exec", "--help"]
+    .map(quoteShellArg)
+    .join(" ");
+
 const defaultInternalTrackerChecker: InternalTrackerChecker = async (databaseUrl) => {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
@@ -122,6 +134,11 @@ export class PreflightService {
     await this.record(checks, "Codex auth", this.assertCodexAuthenticated, () =>
       `Codex authentication is available for CODEX_HOME=${this.config.codexHome}.`,
     );
+    if (this.config.trackerImageContext?.enabled) {
+      await this.record(checks, "Codex image input", () => this.checkCodexImageInput(), (details) =>
+        details,
+      );
+    }
     await this.record(checks, "Git repository", () => this.git.assertRepositoryReady(), () =>
       `Repository is ready at ${this.config.repoPath}.`,
     );
@@ -324,6 +341,23 @@ export class PreflightService {
     }
 
     return "TEST_COMMAND and LINT_COMMAND completed successfully.";
+  }
+
+  private async checkCodexImageInput(): Promise<string> {
+    const command = buildCodexExecHelpCommand(this.config);
+    const result = await this.commandRunner(command, {
+      cwd: this.config.repoPath,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(buildCommandFailure("CODEX_IMAGE_INPUT_HELP", command, result));
+    }
+    if (!result.stdout.includes("--image")) {
+      throw new Error(
+        "TRACKER_IMAGE_CONTEXT_ENABLED=true requires a Codex CLI version whose `codex exec --help` includes --image.",
+      );
+    }
+
+    return "Codex CLI supports image inputs through codex exec --image.";
   }
 }
 
