@@ -96,8 +96,13 @@ export const REQUIRED_INTERNAL_TRACKER_INDEXES = [
 const isPoolLike = (value: PostgresQueryable): value is PostgresPoolLike =>
   typeof (value as { connect?: unknown }).connect === "function";
 
-const checksum = (input: string): string =>
-  createHash("sha256").update(input).digest("hex");
+const normalizeMigrationSqlForChecksum = (input: string): string =>
+  input.replace(/\r\n?/g, "\n");
+
+export const calculateMigrationChecksum = (input: string): string =>
+  createHash("sha256")
+    .update(normalizeMigrationSqlForChecksum(input))
+    .digest("hex");
 
 export const listInternalTrackerMigrations = (): InternalTrackerMigration[] => {
   const compiledAdjacent = join(migrationDir, "migrations");
@@ -122,7 +127,7 @@ export const listInternalTrackerMigrations = (): InternalTrackerMigration[] => {
         version: match[1] as string,
         name: match[2] as string,
         filename,
-        checksum: checksum(sql),
+        checksum: calculateMigrationChecksum(sql),
         sql,
       };
     });

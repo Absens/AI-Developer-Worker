@@ -9,6 +9,7 @@ export {
 } from "./runtimeGuardTrackerClient.js";
 export {
   assertInternalTrackerOperational,
+  calculateMigrationChecksum,
   getInternalTrackerMigrationStatus,
   listInternalTrackerMigrations,
   runInternalTrackerMigrations,
