@@ -81,6 +81,6 @@ describe("InMemoryEventStore", () => {
     expect(readFileSync(file, "utf8")).toContain('"type":"task_failed"');
 
     const reloaded = new InMemoryEventStore(config, metrics);
-    expect(await reloaded.listFailures({ limit: 10 })).toHaveLength(1);
+    expect(await reloaded.listRecent({ limit: 10 })).toHaveLength(1);
   });
 });

@@ -25,7 +25,7 @@ _Актуально на 2026-04-28._
 - priority queue учитывает priority, deadline, components, tags и confidence из structured comments;
 - decomposition создаёт sub-issues и dependency links;
 - clarification loop зависит от комментариев и явного `/resume`;
-- observability отдельно пишет events, dashboard и alerts.
+- observability отдельно пишет events, metrics и alerts.
 
 Это работает как MVP, но модель перегружает комментарии Tracker техническими событиями. Для AI и fleet это неудобно: состояние не атомарно, сложнее искать и восстанавливать execution context, трудно показать человеку понятную картину без шума, а будущий Phase 8 с persisted multi-step plans будет ещё сильнее упираться в отсутствие собственной task runtime модели.
 
@@ -623,7 +623,7 @@ Default policy: internal child tasks are not mirrored to Yandex automatically. C
 
 ### Operations view
 
-Это может расширить текущий dashboard:
+Это может расширить Angular operations view:
 
 - workers and heartbeats;
 - active leases;
@@ -929,7 +929,7 @@ Default for the first release: `auto_execute_low_risk` is disabled globally. It 
 - DB preflight.
 - Backup/restore runbook.
 - Retention settings.
-- Dashboard auth alignment.
+- Task tracker UI/API auth alignment.
 - Metrics for sync lag, claim latency, lease conflicts and task lifecycle duration.
 
 ## Acceptance criteria

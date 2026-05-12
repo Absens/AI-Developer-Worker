@@ -55,42 +55,9 @@ export type TaskEventInput = Omit<TaskEvent, "id" | "timestamp"> & {
   timestamp?: string;
 };
 
-export interface TaskSummary {
-  id: string;
-  timestamp: string;
-  repositoryName?: string;
-  issueKey?: string;
-  mergeRequestUrl?: string;
-  mergeRequestIid?: number;
-  branch?: string;
-  stage: TaskEventType;
-  status: TaskEventStatus;
-  message: string;
-  durationSeconds?: number;
-}
-
-export interface RepositorySummary {
-  repositoryName: string;
-  queues: Array<{ queue: string; depth: number }>;
-  activeTaskCount: number;
-  tasksCompleted24h: number;
-  failures24h: number;
-  successRatePercent: number;
-  averageTaskDurationSeconds?: number;
-  p95TaskDurationSeconds?: number;
-}
-
 export interface EventStore {
   append(event: TaskEventInput): Promise<TaskEvent | null>;
   listRecent(input: { limit: number; repositoryName?: string }): Promise<TaskEvent[]>;
-  listFailures(input: { limit: number; repositoryName?: string }): Promise<TaskEvent[]>;
-  listTaskSummaries(input: { limit: number; repositoryName?: string }): Promise<TaskSummary[]>;
-  summarizeRepositories(input: {
-    repositories: string[];
-    queues: Array<{ repositoryName: string; queue: string; depth: number }>;
-    activeTasks: Array<{ repositoryName?: string }>;
-    now?: Date;
-  }): Promise<RepositorySummary[]>;
 }
 
 const clampLimit = (limit: number): number => Math.min(Math.max(limit, 1), 200);
@@ -100,11 +67,6 @@ let eventCounter = 0;
 const nextEventId = (): string => {
   eventCounter += 1;
   return `${Date.now().toString(36)}-${eventCounter.toString(36)}`;
-};
-
-const secondsFromDetails = (details: Record<string, unknown> | undefined): number | undefined => {
-  const value = details?.durationSeconds;
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 };
 
 export class InMemoryEventStore implements EventStore {
@@ -156,106 +118,6 @@ export class InMemoryEventStore implements EventStore {
 
   async listRecent(input: { limit: number; repositoryName?: string }): Promise<TaskEvent[]> {
     return this.filterRecent(input.limit, input.repositoryName);
-  }
-
-  async listFailures(input: { limit: number; repositoryName?: string }): Promise<TaskEvent[]> {
-    return this.filterRecent(input.limit, input.repositoryName).filter(
-      (event) => event.status === "error" || event.type === "task_failed",
-    );
-  }
-
-  async listTaskSummaries(input: {
-    limit: number;
-    repositoryName?: string;
-  }): Promise<TaskSummary[]> {
-    return this.filterRecent(input.limit, input.repositoryName)
-      .filter((event) =>
-        [
-          "task_picked",
-          "task_completed",
-          "task_failed",
-          "task_waiting",
-          "mr_ready",
-          "validation_completed",
-          "clarification_requested",
-          "manual_hold",
-        ].includes(event.type),
-      )
-      .map((event) => ({
-        id: event.id,
-        timestamp: event.timestamp,
-        ...(event.repositoryName ? { repositoryName: event.repositoryName } : {}),
-        ...(event.issueKey ? { issueKey: event.issueKey } : {}),
-        ...(event.mergeRequestUrl ? { mergeRequestUrl: event.mergeRequestUrl } : {}),
-        ...(event.mergeRequestIid !== undefined ? { mergeRequestIid: event.mergeRequestIid } : {}),
-        ...(event.branch ? { branch: event.branch } : {}),
-        stage: event.type,
-        status: event.status,
-        message: event.message,
-        ...(secondsFromDetails(event.details) !== undefined
-          ? { durationSeconds: secondsFromDetails(event.details) }
-          : {}),
-      }));
-  }
-
-  async summarizeRepositories(input: {
-    repositories: string[];
-    queues: Array<{ repositoryName: string; queue: string; depth: number }>;
-    activeTasks: Array<{ repositoryName?: string }>;
-    now?: Date;
-  }): Promise<RepositorySummary[]> {
-    const now = input.now ?? new Date();
-    const since = now.getTime() - 24 * 60 * 60 * 1000;
-    const repositoryNames = new Set([
-      ...input.repositories,
-      ...this.events.flatMap((event) => (event.repositoryName ? [event.repositoryName] : [])),
-    ]);
-
-    return [...repositoryNames].sort().map((repositoryName) => {
-      const events = this.events.filter((event) => event.repositoryName === repositoryName);
-      const recentTerminal = events.filter(
-        (event) =>
-          (event.type === "task_completed" ||
-            event.type === "task_failed" ||
-            event.type === "mr_ready") &&
-          Date.parse(event.timestamp) >= since,
-      );
-      const failures24h = events.filter(
-        (event) => event.type === "task_failed" && Date.parse(event.timestamp) >= since,
-      ).length;
-      const successes = recentTerminal.filter((event) => event.type !== "task_failed").length;
-      const durations = recentTerminal
-        .map((event) => secondsFromDetails(event.details))
-        .filter((value): value is number => value !== undefined)
-        .sort((left, right) => left - right);
-      const p95Index = durations.length > 0 ? Math.ceil(durations.length * 0.95) - 1 : -1;
-
-      return {
-        repositoryName,
-        queues: input.queues
-          .filter((queue) => queue.repositoryName === repositoryName)
-          .map((queue) => ({ queue: queue.queue, depth: queue.depth })),
-        activeTaskCount: input.activeTasks.filter(
-          (task) => task.repositoryName === repositoryName,
-        ).length,
-        tasksCompleted24h: successes,
-        failures24h,
-        successRatePercent:
-          recentTerminal.length === 0
-            ? 100
-            : Math.round((successes / recentTerminal.length) * 10000) / 100,
-        ...(durations.length > 0
-          ? {
-              averageTaskDurationSeconds:
-                Math.round(
-                  (durations.reduce((sum, value) => sum + value, 0) / durations.length) *
-                    100,
-                ) / 100,
-              p95TaskDurationSeconds: durations[p95Index] ?? durations[durations.length - 1],
-            }
-          : {}),
-      };
-    });
   }
 
   private filterRecent(limit: number, repositoryName?: string): TaskEvent[] {
@@ -319,15 +181,6 @@ export class NoopEventStore implements EventStore {
     return null;
   }
   async listRecent(): Promise<TaskEvent[]> {
-    return [];
-  }
-  async listFailures(): Promise<TaskEvent[]> {
-    return [];
-  }
-  async listTaskSummaries(): Promise<TaskSummary[]> {
-    return [];
-  }
-  async summarizeRepositories(): Promise<RepositorySummary[]> {
     return [];
   }
 }

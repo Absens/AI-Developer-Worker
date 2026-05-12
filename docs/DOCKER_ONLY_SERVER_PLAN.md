@@ -22,7 +22,7 @@
 - `CODEX_API_KEY` уже может пропускать `codex login status` preflight.
 - Альтернативно можно выполнить `codex login --device-auth` в dedicated Docker volume `codex-home`.
 - Внутренний tracker и UI уже рассчитаны на PostgreSQL и `/tasks`.
-- Observability server уже отдает `/healthz`, `/readyz`, `/metrics`, `/dashboard`, `/api/*`.
+- Observability server уже отдает `/healthz`, `/readyz`, `/metrics`, а Angular console использует `/tasks` и `/api/*`.
 
 Что мешает полностью контейнерному серверному запуску:
 
@@ -45,7 +45,7 @@ reverse-proxy container (Caddy/Traefik/Nginx, TLS, auth)
   |
   v
 worker container
-  |-- /tasks, /api, /dashboard, /metrics, /healthz, /readyz
+  |-- /tasks, /api, /metrics, /healthz, /readyz
   |-- codex exec
   |-- git clone/fetch/push
   |
@@ -209,8 +209,6 @@ TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
 OBSERVABILITY_ENABLED=true
 OBSERVABILITY_HOST=0.0.0.0
 OBSERVABILITY_PORT=9464
-DASHBOARD_ENABLED=true
-DASHBOARD_BEARER_TOKEN=...
 
 TASK_TRACKER_SYSTEM_TOKEN=...
 TASK_TRACKER_AGENT_TOKEN=...
@@ -219,7 +217,7 @@ TASK_TRACKER_AGENT_TOKEN=...
 Reverse proxy responsibilities:
 
 - Terminate TLS for `https://admin.example.com`.
-- Forward `/tasks`, `/api`, `/dashboard`, `/metrics`, `/healthz`, `/readyz` to the worker.
+- Forward `/tasks`, `/api`, `/metrics`, `/healthz`, `/readyz` to the worker.
 - Protect browser access with SSO, Basic Auth, mTLS or another trusted auth layer.
 - Inject trusted identity headers expected by the backend, for example:
   - `x-task-tracker-user`
@@ -356,7 +354,7 @@ Files to touch:
 Tasks:
 
 1. Add reverse proxy examples for TLS and trusted headers.
-2. Add preflight checks that reject public UI exposure without `TASK_TRACKER_SYSTEM_TOKEN`, `TASK_TRACKER_AGENT_TOKEN` and dashboard auth.
+2. Add preflight checks that reject public UI exposure without `TASK_TRACKER_SYSTEM_TOKEN` and `TASK_TRACKER_AGENT_TOKEN`.
 3. Document role mapping for admin/operator/viewer.
 4. Keep metrics internal by default.
 

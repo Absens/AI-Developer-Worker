@@ -4,11 +4,8 @@ import type { AddressInfo } from "node:net";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 
 import type { ObservabilityConfig, TaskTrackerClient } from "../models/types.js";
-import type { AlertService } from "./alerts.js";
-import type { EventStore } from "./events.js";
 import type { MetricsRegistry } from "./metrics.js";
 import type { WorkerStateRegistry } from "./state.js";
-import { renderDashboardHtml } from "./dashboardAssets.js";
 import { redactSecrets } from "./redaction.js";
 import { TaskTrackerHumanApi } from "./taskTrackerHumanApi.js";
 
@@ -20,9 +17,7 @@ export interface ReadinessState {
 interface ObservabilityServerInput {
   config: ObservabilityConfig;
   metrics: MetricsRegistry;
-  events: EventStore;
   state: WorkerStateRegistry;
-  alerts: AlertService;
   readiness: () => ReadinessState;
   repositories: () => string[];
   taskTracker?: TaskTrackerClient;
@@ -128,26 +123,6 @@ const cacheControlForStaticPath = (
 const isInsideDirectory = (root: string, candidate: string): boolean => {
   const path = relative(root, candidate);
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
-};
-
-const parseLimit = (url: URL, defaultValue: number): number => {
-  const raw = url.searchParams.get("limit");
-  if (!raw) {
-    return defaultValue;
-  }
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isInteger(value) || value <= 0) {
-    return defaultValue;
-  }
-  return Math.min(value, 200);
-};
-
-const hasDashboardAuth = (request: IncomingMessage, config: ObservabilityConfig): boolean => {
-  const token = config.dashboard.bearerToken;
-  if (!token) {
-    return true;
-  }
-  return request.headers.authorization === `Bearer ${token}`;
 };
 
 export class ObservabilityHttpServer {
@@ -274,42 +249,6 @@ export class ObservabilityHttpServer {
       return;
     }
 
-    const dashboardPath = config.dashboard.path;
-    const apiPath = config.dashboard.apiPath;
-    if (config.dashboard.enabled && (path === dashboardPath || path === `${dashboardPath}/`)) {
-      if (request.method !== "GET") {
-        text(response, 405, "method not allowed");
-        return;
-      }
-      if (!hasDashboardAuth(request, config)) {
-        text(response, 401, "unauthorized");
-        return;
-      }
-      text(
-        response,
-        200,
-        renderDashboardHtml({
-          apiPath: config.dashboard.apiPath,
-          refreshSeconds: config.dashboard.refreshSeconds,
-        }),
-        "text/html; charset=utf-8",
-      );
-      return;
-    }
-
-    if (config.dashboard.enabled && (path === apiPath || path.startsWith(`${apiPath}/`))) {
-      if (request.method !== "GET") {
-        text(response, 405, "method not allowed");
-        return;
-      }
-      if (!hasDashboardAuth(request, config)) {
-        text(response, 401, "unauthorized");
-        return;
-      }
-      await this.handleApi(path.slice(apiPath.length) || "/", url, response);
-      return;
-    }
-
     text(response, 404, "not found");
   }
 
@@ -404,106 +343,4 @@ export class ObservabilityHttpServer {
     );
   }
 
-  private async handleApi(
-    path: string,
-    url: URL,
-    response: ServerResponse,
-  ): Promise<void> {
-    const repositoryName = url.searchParams.get("repository") ?? undefined;
-    if (path === "/workers") {
-      json(response, 200, {
-        workers: this.input.state.listWorkers(),
-        generatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    if (path === "/tasks/recent") {
-      json(response, 200, {
-        tasks: await this.input.events.listTaskSummaries({
-          limit: parseLimit(url, 50),
-          repositoryName,
-        }),
-        generatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    if (path === "/failures/recent") {
-      json(response, 200, {
-        failures: await this.input.events.listFailures({
-          limit: parseLimit(url, 50),
-          repositoryName,
-        }),
-        generatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    if (path === "/repositories") {
-      const repositories = await this.repositorySummaries();
-      json(response, 200, {
-        repositories,
-        generatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    if (path === "/metrics/summary") {
-      const repositories = await this.repositorySummaries();
-      const totals = repositories.reduce(
-        (accumulator, repository) => {
-          accumulator.activeTasks += repository.activeTaskCount;
-          accumulator.failedTasks24h += repository.failures24h;
-          accumulator.completedTasks24h += repository.tasksCompleted24h;
-          accumulator.terminalTasks24h += repository.tasksCompleted24h + repository.failures24h;
-          if (repository.averageTaskDurationSeconds !== undefined) {
-            accumulator.durationSum += repository.averageTaskDurationSeconds;
-            accumulator.durationCount += 1;
-          }
-          return accumulator;
-        },
-        {
-          activeTasks: 0,
-          failedTasks24h: 0,
-          completedTasks24h: 0,
-          terminalTasks24h: 0,
-          durationSum: 0,
-          durationCount: 0,
-        },
-      );
-      json(response, 200, {
-        repositories,
-        totals: {
-          activeTasks: totals.activeTasks,
-          successRatePercent:
-            totals.terminalTasks24h === 0
-              ? 100
-              : Math.round((totals.completedTasks24h / totals.terminalTasks24h) * 10000) /
-                100,
-          failedTasks24h: totals.failedTasks24h,
-          ...(totals.durationCount > 0
-            ? {
-                averageTaskDurationSeconds:
-                  Math.round((totals.durationSum / totals.durationCount) * 100) / 100,
-              }
-            : {}),
-        },
-        alerts: this.input.alerts.listRecent(5),
-        generatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    text(response, 404, "not found");
-  }
-
-  private async repositorySummaries() {
-    const workers = this.input.state.listWorkers();
-    return this.input.events.summarizeRepositories({
-      repositories: this.input.repositories(),
-      queues: this.input.state.listQueues(),
-      activeTasks: workers.filter((worker) => worker.state === "processing"),
-    });
-  }
 }

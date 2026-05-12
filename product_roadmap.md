@@ -4,7 +4,7 @@ _Актуально на 2026-04-27._
 
 ## Видение продукта
 
-**Текущий продукт:** self-hosted Node.js/TypeScript worker/fleet для корпоративного DevOps-цикла. Worker берёт задачи из Yandex Tracker, выбирает repository profile, запускает Codex CLI, валидирует изменения quality gates, создаёт или переиспользует GitLab Merge Request, обрабатывает review feedback, учитывает memory/context и отдаёт observability через metrics/dashboard/alerts.
+**Текущий продукт:** self-hosted Node.js/TypeScript worker/fleet для корпоративного DevOps-цикла. Worker берёт задачи из Yandex Tracker, выбирает repository profile, запускает Codex CLI, валидирует изменения quality gates, создаёт или переиспользует GitLab Merge Request, обрабатывает review feedback, учитывает memory/context и отдаёт observability через metrics/alerts.
 
 **Целевое состояние:** расширяемая платформа AI-разработки: несколько trackers/code review platforms/AI engines, управляемый multi-step engineering pipeline, RAG по кодовой базе, multimodal inputs и production-grade operational control.
 
@@ -35,7 +35,7 @@ _Актуально на 2026-04-27._
 - Epic decomposition: `TASK_MODE=decompose`, dry-run/create modes, sub-issues, dependency links.
 - Dependency enforcement: `blockedBy` / `blocks`, link-based blockers and unknown-status policy.
 - Project memory: file-backed knowledge base, failure memory, review learning, prompt rules and dynamic prompt context.
-- Observability: Prometheus-compatible `/metrics`, `/healthz`, `/readyz`, dashboard API, HTML dashboard, event store, alerts.
+- Observability: Prometheus-compatible `/metrics`, `/healthz`, `/readyz`, event store, alerts.
 - Docker image on Node 22 with pinned `@openai/codex@0.124.0`, Compose bootstrap writable `CODEX_HOME`.
 - Unit and smoke tests across config, Codex auth/runner, Tracker, GitLab, Git, orchestration, quality gates, memory and observability.
 
@@ -45,7 +45,7 @@ _Актуально на 2026-04-27._
 - Несколько независимых логических коммитов в рамках одной задачи.
 - Redis/PostgreSQL lock backend implementations; сейчас production-ready contract есть, active backend - Tracker comments.
 - Daily digest alerts для managers.
-- Dashboard authentication beyond optional bearer token / trusted internal network mode.
+- Daily digest alerts для managers.
 - Native visual-regression artifact upload/attachment; сейчас есть command-based gate.
 - Diff coverage вместо общего coverage threshold.
 - Multi-provider architecture: Jira/GitHub/Bitbucket/Azure DevOps/alternative AI engines.
@@ -322,7 +322,7 @@ Prompt context собирается из:
 
 Context ограничен budget и отключается через `MEMORY_ENABLED=false`.
 
-## Фаза 6 - Dashboard и наблюдаемость
+## Фаза 6 - Наблюдаемость
 
 **Статус:** MVP completed.
 
@@ -344,17 +344,11 @@ ai_developer_alerts_total
 
 Также есть `/healthz` и `/readyz`.
 
-### 6.2 Web dashboard MVP - done
+### 6.2 Legacy web dashboard - removed
 
-Dashboard доступен по `DASHBOARD_PATH`, по умолчанию `/dashboard`.
-
-Минимальные представления:
-
-- workers: state, current task, heartbeat, last error;
-- repositories and queue depth;
-- recent tasks/events;
-- failure diagnostics;
-- summary metrics and recent alerts.
+Legacy read-only dashboard и `DASHBOARD_*` конфигурация удалены. Human workflow
+и operations views обслуживает Angular task tracker console на `/tasks`, а
+машинная наблюдаемость остаётся в `/metrics`, `/healthz`, `/readyz` и alerts.
 
 ### 6.3 Alerts - MVP done
 
@@ -516,7 +510,7 @@ gantt
 
     section Phase 6 Observability
     Prometheus metrics and health endpoints   :done, p6a, 2026-04-27, 2026-04-27
-    Dashboard MVP                             :done, p6b, 2026-04-27, 2026-04-27
+    Legacy dashboard removed                  :done, p6b, 2026-04-27, 2026-04-27
     Alerts                                    :done, p6c, 2026-04-27, 2026-04-27
 
     section Next
@@ -538,11 +532,11 @@ gantt
 | Supported repos | Multi-repo fleet profiles | Multi-provider routing |
 | Task routing | Confidence, prompt profiles, decomposition, dependencies | Persisted multi-step plans |
 | Context | File-backed memory and prompt rules | RAG over codebase |
-| Observability | Metrics, dashboard, events, alerts | Auth, daily digest, richer dashboards |
+| Observability | Metrics, events, alerts | Daily digest and richer Angular operations views |
 
 ## Рекомендуемый фокус на ближайшие 90 дней
 
-1. Закрыть production follow-ups Phase 1-6: MR labels/assignees, dashboard auth, daily digest, Redis/PostgreSQL locks.
+1. Закрыть production follow-ups Phase 1-6: MR labels/assignees, daily digest, Redis/PostgreSQL locks.
 2. Начать Phase 7 с provider contracts до новых integrations: `TaskTracker`, `CodeReviewPlatform`, `AICodeEngine`.
 3. Добавить GitHub PR/GitHub Issues как первый non-GitLab/non-Tracker path, если нужен market expansion.
 4. Подготовить Phase 8 foundation: persisted plan model and step state machine.

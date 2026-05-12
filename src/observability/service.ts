@@ -139,9 +139,7 @@ class RuntimeObservabilityService implements ObservabilityService {
     this.server = new ObservabilityHttpServer({
       config,
       metrics: this.metrics,
-      events: this.events,
       state: this.state,
-      alerts: this.alerts,
       readiness: () => ({
         ready: this.ready,
         reason: this.readinessReason,

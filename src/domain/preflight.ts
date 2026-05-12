@@ -204,24 +204,6 @@ export class PreflightService {
       });
     }
 
-    if (observability.dashboard.enabled && exposed && !observability.dashboard.bearerToken) {
-      checks.push({
-        name: "Dashboard auth",
-        status: "fail",
-        details:
-          "DASHBOARD_BEARER_TOKEN is required when the observability dashboard is exposed outside localhost.",
-      });
-      return;
-    }
-    if (observability.dashboard.enabled) {
-      checks.push({
-        name: "Dashboard auth",
-        status: "pass",
-        details: exposed
-          ? "Dashboard bearer auth is configured for a non-localhost bind host."
-          : "Dashboard is bound to localhost or protected by its configured auth.",
-      });
-    }
   }
 
   private checkNotificationSinks(checks: PreflightCheckResult[]): void {

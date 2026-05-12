@@ -105,10 +105,10 @@ Copy-Item .env.example .env
 | `MEMORY_BOOTSTRAP_ON_START` | Нет | `false` | Зарезервировано для post-MVP bootstrap flow. MVP проверяет storage и потребляет manually maintained memory. |
 | `MEMORY_REFRESH_ON_PREFLIGHT` | Нет | `false` | Зарезервировано для post-MVP refresh flow. Legacy-опечатка `MEMORY_REFRESH_ON_PRELIGHT` тоже принимается. |
 | `MEMORY_BOOTSTRAP_CODEX_SANDBOX` | Нет | `inherit` | Зарезервировано для bootstrap. Допустимые значения: `inherit`, `read-only`, `workspace-write` и `danger-full-access`. |
-| `OBSERVABILITY_ENABLED` | Нет | `false` | Запускает HTTP-сервер observability Phase 6 для health, readiness, metrics, dashboard API и alerts. |
+| `OBSERVABILITY_ENABLED` | Нет | `false` | Запускает HTTP-сервер observability Phase 6 для health, readiness, metrics и alerts. |
 | `OBSERVABILITY_HOST` | Нет | `127.0.0.1` | Interface для observability server. Используйте `0.0.0.0` только в trusted internal networks или за private proxy. |
 | `OBSERVABILITY_PORT` | Нет | `9464` | Порт для всех observability endpoints. `METRICS_PORT` принимается как backward-compatible alias. |
-| `OBSERVABILITY_BASE_URL` | Нет | `http://<host>:<port>` | Base URL, используемый HTTP router и alert dashboard links. |
+| `OBSERVABILITY_BASE_URL` | Нет | `http://<host>:<port>` | Base URL, используемый HTTP router. |
 | `OBSERVABILITY_STRICT_STARTUP` | Нет | `true` | Если `true`, ошибка привязки порта приводит к startup failure. Если `false`, воркер логирует warning и продолжает обработку. |
 | `OBSERVABILITY_REDACT_MAX_CHARS` | Нет | `4000` | Максимальная длина diagnostic после secret redaction в events, API payloads и alerts. |
 | `METRICS_ENABLED` | Нет | `true` | Включает Prometheus text output на observability server. |
@@ -118,11 +118,6 @@ Copy-Item .env.example .env
 | `OBSERVABILITY_EVENT_STORE` | Нет | `memory` | Backend event store: `memory` или `file`. |
 | `OBSERVABILITY_EVENT_STORE_FILE` | Нет | Не задано | JSONL-файл, используемый при `OBSERVABILITY_EVENT_STORE=file`. |
 | `OBSERVABILITY_EVENT_RETENTION` | Нет | `1000` | Ограниченное количество последних событий, сохраняемых в памяти. |
-| `DASHBOARD_ENABLED` | Нет | `false` | Включает read-only dashboard и endpoints `/api/*`. |
-| `DASHBOARD_PATH` | Нет | `/dashboard` | HTML path dashboard. |
-| `DASHBOARD_REFRESH_SECONDS` | Нет | `10` | Browser polling interval для обновления dashboard API. |
-| `DASHBOARD_API_PATH` | Нет | `/api` | Read-only dashboard API path prefix. |
-| `DASHBOARD_BEARER_TOKEN` | Нет | Не задано | Необязательный bearer token, защищающий `/dashboard` и `/api/*`. |
 | `TASK_TRACKER_UI_ENABLED` | Нет | `false` | Включает Angular human UI/API для internal tracker workflows. Может поднять HTTP-сервер даже при `OBSERVABILITY_ENABLED=false`. |
 | `TASK_TRACKER_UI_BIND_HOST` | Нет | `127.0.0.1` | Alias для bind host HTTP-сервера при включении task tracker UI. |
 | `TASK_TRACKER_UI_PORT` | Нет | `9464` | Alias для порта HTTP-сервера при включении task tracker UI. |
@@ -261,22 +256,14 @@ Repository memory по умолчанию выключена. Когда `MEMORY
 
 ## Phase 6: MVP observability
 
-Observability по умолчанию выключена. Когда `OBSERVABILITY_ENABLED=true`, воркер запускает один HTTP-сервер для `/healthz`, `/readyz`, `/metrics`, optional dashboard/API и optional alerts. Сервер стартует до startup checks, а readiness становится `ok` только после успешных проверок repository и Codex auth.
+Observability по умолчанию выключена. Когда `OBSERVABILITY_ENABLED=true`, воркер запускает один HTTP-сервер для `/healthz`, `/readyz`, `/metrics` и optional alerts. Сервер стартует до startup checks, а readiness становится `ok` только после успешных проверок repository и Codex auth.
 
 Рекомендуемый rollout:
 
 ```env
 OBSERVABILITY_ENABLED=true
 METRICS_ENABLED=true
-DASHBOARD_ENABLED=false
 ALERTS_ENABLED=false
-```
-
-Затем включите dashboard на trusted interface:
-
-```env
-DASHBOARD_ENABLED=true
-DASHBOARD_BEARER_TOKEN=change-me
 ```
 
 Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).

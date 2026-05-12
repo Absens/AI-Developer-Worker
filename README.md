@@ -24,7 +24,7 @@ Node.js/TypeScript воркер, который опрашивает Yandex Trac
 - [src/](src/) - runtime-код воркера.
 - [src/domain/](src/domain/) - оркестрация, маршрутизация задач, сборка prompt-ов и проверки качества.
 - [src/integrations/](src/integrations/) - адаптеры Tracker, GitLab, Git и Codex.
-- [src/observability/](src/observability/) - health/readiness, метрики, dashboard API и оповещения.
+- [src/observability/](src/observability/) - health/readiness, метрики и оповещения.
 - [src/utils/](src/utils/) - запуск shell-команд, retry, логирование и общие helper-ы.
 - [tests/](tests/) - unit и smoke tests на Vitest.
 - [scripts/](scripts/) - операционные helper-ы, включая bootstrap Codex auth.
@@ -172,7 +172,7 @@ Fleet mode включается через `WORKER_CONFIG_FILE` и позвол�
 
 Repository memory по умолчанию выключена. При `MEMORY_ENABLED=true` prompts получают компактный repository context из approved rules, manual knowledge и похожих failure entries. Перед production-включением запустите `npm run memory:validate`.
 
-Observability по умолчанию выключена. При `OBSERVABILITY_ENABLED=true` воркер поднимает HTTP-сервер для `/healthz`, `/readyz`, `/metrics`, опциональных dashboard/API и оповещений. Dashboard включайте только на доверенном интерфейсе и защищайте `DASHBOARD_BEARER_TOKEN`.
+Observability по умолчанию выключена. При `OBSERVABILITY_ENABLED=true` воркер поднимает HTTP-сервер для `/healthz`, `/readyz`, `/metrics` и опциональных оповещений.
 
 Для `TASK_TRACKER_PROVIDER=internal` production mode используйте PostgreSQL, примените `npm run tracker:migrate`, затем `npm run preflight`. Human workflow UI включается через `TASK_TRACKER_UI_ENABLED=true`; Angular UI будет на `/tasks` при configured `TASK_TRACKER_UI_STATIC_DIR`, JSON API начинается с `/api`, а write actions требуют trusted proxy role headers или `TASK_TRACKER_SYSTEM_TOKEN`.
 
@@ -188,7 +188,7 @@ bearer tokens.
 - [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md) - все переменные окружения и источники значений.
 - [docs/FLEET_OPERATIONAL_RUNBOOK.md](docs/FLEET_OPERATIONAL_RUNBOOK.md) - fleet config, leases и операционная координация.
 - [docs/MEMORY_LIFECYCLE.md](docs/MEMORY_LIFECYCLE.md) - lifecycle repository memory.
-- [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) - dashboard, metrics, probes и alerts.
+- [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) - metrics, probes и alerts.
 - [docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md) - PostgreSQL migrations, retention, backup/restore и rollback для internal tracker.
 - [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) - локальный Docker-запуск и prerequisites.
 - [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md) - команды для Windows PowerShell.

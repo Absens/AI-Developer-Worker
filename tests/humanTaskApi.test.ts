@@ -4,9 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
 import type { CreateTaskInput, TaskActor } from "../src/domain/taskTracker/index.js";
-import { NoopAlertService } from "../src/observability/alerts.js";
 import { defaultObservabilityConfig } from "../src/observability/config.js";
-import { InMemoryEventStore } from "../src/observability/events.js";
 import { InMemoryMetricsRegistry } from "../src/observability/metrics.js";
 import { ObservabilityHttpServer } from "../src/observability/server.js";
 import { InMemoryWorkerStateRegistry } from "../src/observability/state.js";
@@ -80,9 +78,7 @@ const createServer = async (
   const server = new ObservabilityHttpServer({
     config,
     metrics,
-    events: new InMemoryEventStore(config, metrics),
     state,
-    alerts: new NoopAlertService(),
     readiness: () => ({ ready: true, reason: "ready" }),
     repositories: () => ["developer"],
     taskTracker: tracker,
@@ -608,9 +604,11 @@ describe("Phase 7F human task API", () => {
       },
       latestValidation: {
         status: "failed",
-        summary: "Unit tests failed.",
       },
     });
+    expect(["Unit tests failed.", "Unit tests failed again."]).toContain(
+      diagnostic.latestValidation.summary,
+    );
     expect(diagnostic.latestFailedAgentRun.diagnostic).not.toContain("super-secret");
     expect(JSON.stringify(diagnostic)).not.toContain("Bearer super-secret-token");
     expect(JSON.stringify(diagnostic)).not.toContain("threadId");

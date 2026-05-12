@@ -143,14 +143,6 @@ export interface ObservabilityEventStoreConfig {
   retention: number;
 }
 
-export interface ObservabilityDashboardConfig {
-  enabled: boolean;
-  path: string;
-  refreshSeconds: number;
-  apiPath: string;
-  bearerToken?: string;
-}
-
 export type TaskTrackerHumanAuthMode = "trusted_proxy" | "bearer" | "localhost";
 export type TaskTrackerHumanRole = "viewer" | "developer" | "operator" | "admin";
 
@@ -205,7 +197,6 @@ export interface ObservabilityConfig {
   metrics: ObservabilityMetricsConfig;
   health: ObservabilityHealthConfig;
   events: ObservabilityEventStoreConfig;
-  dashboard: ObservabilityDashboardConfig;
   taskTrackerUi: TaskTrackerUiConfig;
   alerts: ObservabilityAlertsConfig;
 }

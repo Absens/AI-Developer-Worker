@@ -430,10 +430,6 @@ const validateRouteConflicts = (config: ObservabilityConfig): void => {
   if (config.metrics.enabled) {
     routes.push({ label: "METRICS_PATH", path: config.metrics.path });
   }
-  if (config.dashboard.enabled) {
-    routes.push({ label: "DASHBOARD_PATH", path: config.dashboard.path });
-    routes.push({ label: "DASHBOARD_API_PATH", path: config.dashboard.apiPath });
-  }
   if (config.taskTrackerUi.enabled) {
     routes.push({ label: "TASK_TRACKER_UI_PATH", path: config.taskTrackerUi.path });
     routes.push({
@@ -483,7 +479,6 @@ export const parseObservabilityConfig = (
 ): ObservabilityConfig => {
   const metrics = optionalRecord(rawValue?.metrics, "observability.metrics");
   const health = optionalRecord(rawValue?.health, "observability.health");
-  const dashboard = optionalRecord(rawValue?.dashboard, "observability.dashboard");
   const taskTrackerUi = optionalRecord(
     rawValue?.taskTrackerUi,
     "observability.taskTrackerUi",
@@ -593,41 +588,6 @@ export const parseObservabilityConfig = (
             "observability.events.retention",
             DEFAULT_EVENT_RETENTION,
           ),
-    },
-    dashboard: {
-      enabled: env.DASHBOARD_ENABLED?.trim()
-        ? parseBoolean(env.DASHBOARD_ENABLED, "DASHBOARD_ENABLED", false)
-        : optionalBoolean(dashboard?.enabled, "observability.dashboard.enabled", false),
-      path: normalizePath(
-        env.DASHBOARD_PATH?.trim() ||
-          optionalString(dashboard?.path, "observability.dashboard.path") ||
-          "/dashboard",
-        "DASHBOARD_PATH",
-      ),
-      refreshSeconds: env.DASHBOARD_REFRESH_SECONDS?.trim()
-        ? parsePositiveInt(
-            env.DASHBOARD_REFRESH_SECONDS,
-            "DASHBOARD_REFRESH_SECONDS",
-          )
-        : optionalPositiveInt(
-            dashboard?.refreshSeconds,
-            "observability.dashboard.refreshSeconds",
-            10,
-          ),
-      apiPath: normalizePath(
-        env.DASHBOARD_API_PATH?.trim() ||
-          optionalString(dashboard?.apiPath, "observability.dashboard.apiPath") ||
-          "/api",
-        "DASHBOARD_API_PATH",
-      ),
-      ...(env.DASHBOARD_BEARER_TOKEN?.trim() ||
-      optionalString(dashboard?.bearerToken, "observability.dashboard.bearerToken")
-        ? {
-            bearerToken:
-              env.DASHBOARD_BEARER_TOKEN?.trim() ||
-              optionalString(dashboard?.bearerToken, "observability.dashboard.bearerToken"),
-          }
-        : {}),
     },
     taskTrackerUi: parseTaskTrackerUiConfig(env, taskTrackerUi),
     alerts: parseAlertsConfig(

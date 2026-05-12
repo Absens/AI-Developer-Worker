@@ -62,19 +62,13 @@ const formatAlertText = (alert: Alert): string =>
 class WebhookSink implements NotificationSink {
   readonly name: string;
 
-  constructor(
-    private readonly channel: AlertChannelConfig,
-    private readonly baseUrl?: string,
-  ) {
+  constructor(private readonly channel: AlertChannelConfig) {
     this.name = channel.type;
   }
 
   async send(alert: Alert): Promise<void> {
     if (this.channel.type === "webhook") {
-      await this.postJson(this.channel.url, {
-        ...alert,
-        dashboardUrl: this.baseUrl,
-      });
+      await this.postJson(this.channel.url, alert);
       return;
     }
 
@@ -129,9 +123,7 @@ export class BasicAlertService implements AlertService {
   ) {
     this.sinks =
       sinks ??
-      config.alerts.channels.map(
-        (channel) => new WebhookSink(channel, config.dashboard.enabled ? config.baseUrl : undefined),
-      );
+      config.alerts.channels.map((channel) => new WebhookSink(channel));
   }
 
   async recordEvent(event: TaskEvent): Promise<void> {

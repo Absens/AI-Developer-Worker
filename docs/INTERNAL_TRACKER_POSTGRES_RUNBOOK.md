@@ -60,10 +60,8 @@ leases, and stale proposals. Compact task history remains in `tasks`,
 
 ## Auth Alignment
 
-If the task UI/API or dashboard is bound outside localhost, preflight requires
-auth:
+If the task UI/API is bound outside localhost, preflight requires auth:
 
-- `DASHBOARD_BEARER_TOKEN` for dashboard/API.
 - `TASK_TRACKER_SYSTEM_TOKEN` and `TASK_TRACKER_AGENT_TOKEN` for the internal
   tracker UI/API.
 - Do not use `TASK_TRACKER_HUMAN_AUTH_MODE=localhost` with

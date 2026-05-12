@@ -1,6 +1,6 @@
 # Observability Runbook
 
-Phase 6 adds a process-local observability server for one worker process. It exposes health probes, Prometheus metrics, read-only dashboard APIs, an in-memory or JSONL-backed recent event store, and optional webhook-style alerts.
+Phase 6 adds a process-local observability server for one worker process. It exposes health probes, Prometheus metrics, an in-memory or JSONL-backed recent event store, and optional webhook-style alerts.
 
 Observability is disabled by default. Enable it only on a trusted interface or behind a private reverse proxy.
 
@@ -13,7 +13,6 @@ OBSERVABILITY_ENABLED=true
 OBSERVABILITY_HOST=0.0.0.0
 OBSERVABILITY_PORT=9464
 METRICS_ENABLED=true
-DASHBOARD_ENABLED=false
 ALERTS_ENABLED=false
 ```
 
@@ -34,12 +33,6 @@ In `WORKER_PREFLIGHT_ONLY=true`, the server is not started. In `WORKER_RUN_ONCE=
 | `/healthz` | Cheap liveness check. Does not call Tracker, GitLab, Git, or Codex. |
 | `/readyz` | Readiness check. Returns `503` until startup repository and Codex checks pass, and flips not-ready during shutdown. |
 | `/metrics` | Prometheus text exposition when `METRICS_ENABLED=true`. |
-| `/dashboard` | Read-only HTML dashboard when `DASHBOARD_ENABLED=true`. |
-| `/api/workers` | Worker state snapshots. |
-| `/api/repositories` | Repository queue and recent outcome summaries. |
-| `/api/tasks/recent?limit=50` | Bounded recent task lifecycle events. |
-| `/api/failures/recent?limit=50` | Bounded recent failures. |
-| `/api/metrics/summary` | Dashboard totals and summary fields. |
 
 Unsupported methods return `405`; unknown paths return `404`.
 
@@ -58,22 +51,6 @@ METRICS_ENABLED=true
 METRICS_PATH=/metrics
 HEALTH_PATH=/healthz
 READY_PATH=/readyz
-```
-
-Dashboard:
-
-```env
-DASHBOARD_ENABLED=false
-DASHBOARD_PATH=/dashboard
-DASHBOARD_REFRESH_SECONDS=10
-DASHBOARD_API_PATH=/api
-DASHBOARD_BEARER_TOKEN=
-```
-
-When `DASHBOARD_BEARER_TOKEN` is set, both `/dashboard` and `/api/*` require:
-
-```bash
-curl -H "Authorization: Bearer <token>" http://localhost:9464/api/workers
 ```
 
 Internal task UI/API:
@@ -178,11 +155,6 @@ observability:
   health:
     path: /healthz
     readinessPath: /readyz
-  dashboard:
-    enabled: true
-    path: /dashboard
-    refreshSeconds: 10
-    apiPath: /api
 alerts:
   enabled: true
   minSeverity: warning
@@ -226,11 +198,11 @@ Prometheus labels intentionally exclude issue keys, branch names, commands, loca
 ## Task Timeline Mapping
 
 The internal task timeline is the audit-grade history for one task. The
-observability event store remains optimized for fleet dashboards. When both
+observability event store remains optimized for fleet telemetry. When both
 stores describe the same lifecycle transition, the shared mapper in
 [src/observability/lifecycleMapping.ts](/C:/Users/gabba/projects/developer/src/observability/lifecycleMapping.ts)
 preserves task id, worker id, repository, lease ids, status transition, and
-failure classification. Do not introduce new dashboard-only lifecycle names
+failure classification. Do not introduce new lifecycle names
 without updating that mapper and its tests.
 
 ## Docker and Probes
@@ -245,7 +217,6 @@ environment:
   OBSERVABILITY_HOST: "0.0.0.0"
   OBSERVABILITY_PORT: "9464"
   METRICS_ENABLED: "true"
-  DASHBOARD_ENABLED: "true"
 ```
 
 Kubernetes-style probes:
@@ -264,16 +235,13 @@ readinessProbe:
 ## Security Notes
 
 - Keep `OBSERVABILITY_HOST=127.0.0.1` unless the worker runs on a private network.
-- Set `DASHBOARD_BEARER_TOKEN` before exposing dashboard/API outside localhost.
-- The older observability dashboard is read-only and remains focused on worker
-  health, recent events, and Prometheus-oriented summaries.
 - The Angular task tracker console is the primary human workflow UI for
   creating, answering, approving, retrying, and supervising internal tracker
   tasks.
 - The backend human API remains the authorization boundary; Angular role-aware
   controls are only usability hints.
 - Event messages and details pass through secret redaction and diagnostic truncation.
-- Dashboard APIs may show issue keys and MR URLs; metrics labels do not.
+- Human API responses may show issue keys and MR URLs; metrics labels do not.
 
 ## Rollback
 
@@ -281,8 +249,5 @@ Rollback is config-only:
 
 ```env
 ALERTS_ENABLED=false
-DASHBOARD_ENABLED=false
 OBSERVABILITY_ENABLED=false
 ```
-
-If only the dashboard is disabled, health and metrics remain available.
