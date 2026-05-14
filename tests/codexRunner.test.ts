@@ -174,6 +174,77 @@ describe("CliCodexRunner", () => {
     expect(args.indexOf("--image")).toBeGreaterThan(resumeIndex);
   });
 
+  it("keeps exec-level options before resume and sends resumed prompt through stdin", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    const stdinPath = join(tempDir, "stdin.txt");
+    const imagePath = join(tempDir, "screen.png");
+    writeFileSync(imagePath, "image", "utf8");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "let stdin = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+        "process.stdin.on('end', () => {",
+        `  fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        `  fs.writeFileSync(${JSON.stringify(stdinPath)}, stdin, 'utf8');`,
+        "  const outputIndex = args.indexOf('--output-last-message');",
+        "  const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "  if (outputPath) {",
+        "    fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "  }",
+        "  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-contract' }) + '\\n');",
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexSandbox: "danger-full-access",
+        codexModel: "gpt-5.2",
+        codexProfile: "visual-worker",
+        codexExecArgs: ["--search"],
+      },
+      new Logger(),
+    );
+
+    await runner.runResume("thread-contract", "Resume this exact prompt.", undefined, {
+      imagePaths: [imagePath],
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const lastMessageFile = args.at(args.indexOf("--output-last-message") + 1);
+    expect(args).toEqual([
+      "exec",
+      "--json",
+      "--output-last-message",
+      lastMessageFile,
+      "-C",
+      tempDir,
+      "--skip-git-repo-check",
+      "--sandbox",
+      "danger-full-access",
+      "--model",
+      "gpt-5.2",
+      "--profile",
+      "visual-worker",
+      "--search",
+      "resume",
+      "--image",
+      imagePath,
+      "thread-contract",
+    ]);
+    expect(readFileSync(stdinPath, "utf8")).toBe("Resume this exact prompt.");
+    expect(args).not.toContain("Resume this exact prompt.");
+  });
+
   it("parses thread id and structured AI clarification from exec output", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

@@ -9,6 +9,11 @@ Use it whenever you:
 - notice that Codex auth, `codex exec`, or `resume` behavior changed,
 - want to validate that a newer Codex release did not silently break the worker.
 
+Current target for this repository, checked on 2026-05-14:
+
+- stable production target: `@openai/codex@0.130.0`
+- alpha line: `0.131.0-alpha.*`; do not select it for production Docker images
+
 ## What this worker depends on
 
 The current integration relies on these Codex CLI behaviors:
@@ -50,16 +55,24 @@ Inside the built image or local environment:
 codex --version
 ```
 
-The Docker image pins `@openai/codex@0.124.0` by default through `CODEX_CLI_VERSION`.
-Override that build arg only after this runbook passes:
+The Docker image pins `@openai/codex@0.130.0` by default through `CODEX_CLI_VERSION`.
+Build the target image explicitly after this runbook passes:
 
 ```bash
-docker build --build-arg CODEX_CLI_VERSION=<version> -t ai-developer-worker .
+docker build --build-arg CODEX_CLI_VERSION=0.130.0 -t ai-developer-worker:codex-0.130.0 .
 ```
+
+Do not replace the pin with `@latest`. `codex update` exists for local CLI installations, but pinned Docker runtime images should not self-update during build or startup.
 
 ### 2. Review upstream CLI surface before changing this repo
 
-Check the current help output:
+Run the automated static contract verifier:
+
+```bash
+npm run verify:codex-cli
+```
+
+For manual inspection, also check the current help output:
 
 ```bash
 codex --help
@@ -157,6 +170,8 @@ These env vars define the integration surface:
 
 `CODEX_CLI_ARGS_JSON` is for launcher/global Codex args that must appear before
 `exec`, for example `["--search","--ask-for-approval","never"]`.
+In Codex CLI `0.130.0`, examples should prefer `never` or `on-request`; avoid
+`--ask-for-approval on-failure`, which is deprecated in the help output.
 `CODEX_EXEC_ARGS_JSON` is for flags accepted by `codex exec --help`, for example
 `["--add-dir","/workspace/shared"]`.
 
@@ -171,6 +186,7 @@ If Codex changes how launcher args or exec args should be passed, update:
 Run these commands in this repo:
 
 ```bash
+npm run verify:codex-cli
 npm run typecheck
 npm test
 npm run build
@@ -180,6 +196,33 @@ If the CLI/output/auth contract changed, also run the focused tests first:
 
 ```bash
 npx vitest run tests/codexAuth.test.ts tests/codexRunner.test.ts tests/orchestrator.test.ts tests/worker.smoke.test.ts
+```
+
+Container verification for the pinned image:
+
+```bash
+docker build --build-arg CODEX_CLI_VERSION=0.130.0 -t ai-developer-worker:codex-0.130.0 .
+docker run --rm --entrypoint codex ai-developer-worker:codex-0.130.0 --version
+docker run --rm --entrypoint codex ai-developer-worker:codex-0.130.0 exec --help
+docker run --rm --entrypoint npm ai-developer-worker:codex-0.130.0 run verify:codex-cli
+```
+
+Run the live/auth probe only in a disposable environment with valid network and Codex auth:
+
+```bash
+docker run --rm \
+  -e CODEX_CONTRACT_LIVE=1 \
+  -e CODEX_HOME=/tmp/codex-home \
+  -v codex-home:/tmp/codex-home \
+  --entrypoint npm \
+  ai-developer-worker:codex-0.130.0 \
+  run verify:codex-cli
+```
+
+Rollback build command for the previous known-good line:
+
+```bash
+docker build --build-arg CODEX_CLI_VERSION=0.124.0 -t ai-developer-worker:codex-0.124.0 .
 ```
 
 ## Common breakpoints to look for

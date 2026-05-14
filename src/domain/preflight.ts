@@ -42,10 +42,16 @@ const quoteShellArg = (value: string): string => {
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 };
 
-const buildCodexExecHelpCommand = (config: AppConfig): string =>
-  [config.codexCliCommand, ...config.codexCliArgs, "exec", "--help"]
+const buildCodexHelpCommand = (config: AppConfig, args: string[]): string =>
+  [config.codexCliCommand, ...config.codexCliArgs, ...args]
     .map(quoteShellArg)
     .join(" ");
+
+const buildCodexExecHelpCommand = (config: AppConfig): string =>
+  buildCodexHelpCommand(config, ["exec", "--help"]);
+
+const buildCodexExecResumeHelpCommand = (config: AppConfig): string =>
+  buildCodexHelpCommand(config, ["exec", "resume", "--help"]);
 
 const defaultInternalTrackerChecker: InternalTrackerChecker = async (databaseUrl) => {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -326,20 +332,35 @@ export class PreflightService {
   }
 
   private async checkCodexImageInput(): Promise<string> {
-    const command = buildCodexExecHelpCommand(this.config);
-    const result = await this.commandRunner(command, {
+    const execCommand = buildCodexExecHelpCommand(this.config);
+    const execResult = await this.commandRunner(execCommand, {
       cwd: this.config.repoPath,
     });
-    if (result.exitCode !== 0) {
-      throw new Error(buildCommandFailure("CODEX_IMAGE_INPUT_HELP", command, result));
+    if (execResult.exitCode !== 0) {
+      throw new Error(buildCommandFailure("CODEX_IMAGE_INPUT_HELP", execCommand, execResult));
     }
-    if (!result.stdout.includes("--image")) {
+    if (!execResult.stdout.includes("--image")) {
       throw new Error(
         "TRACKER_IMAGE_CONTEXT_ENABLED=true requires a Codex CLI version whose `codex exec --help` includes --image.",
       );
     }
 
-    return "Codex CLI supports image inputs through codex exec --image.";
+    const resumeCommand = buildCodexExecResumeHelpCommand(this.config);
+    const resumeResult = await this.commandRunner(resumeCommand, {
+      cwd: this.config.repoPath,
+    });
+    if (resumeResult.exitCode !== 0) {
+      throw new Error(
+        buildCommandFailure("CODEX_IMAGE_RESUME_INPUT_HELP", resumeCommand, resumeResult),
+      );
+    }
+    if (!resumeResult.stdout.includes("--image")) {
+      throw new Error(
+        "TRACKER_IMAGE_CONTEXT_ENABLED=true requires a Codex CLI version whose `codex exec resume --help` includes --image.",
+      );
+    }
+
+    return "Codex CLI supports image inputs through codex exec --image and codex exec resume --image.";
   }
 }
 

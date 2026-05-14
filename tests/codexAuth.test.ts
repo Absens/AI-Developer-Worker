@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,9 +80,12 @@ describe("codex auth", () => {
   it("passes preflight when codex login status succeeds", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-status.cjs");
+    const argsPath = join(tempDir, "args.json");
     writeFileSync(
       scriptPath,
       [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)), 'utf8');`,
         "if (process.argv[2] === 'login' && process.argv[3] === 'status' && process.env.CODEX_HOME === '/dedicated-codex-home') {",
         "  console.log('Logged in using ChatGPT');",
         "  process.exit(0);",
@@ -103,6 +106,7 @@ describe("codex auth", () => {
         new Logger(),
       ),
     ).resolves.toBeUndefined();
+    expect(JSON.parse(readFileSync(argsPath, "utf8"))).toEqual(["login", "status"]);
   });
 
   it("fails preflight when codex login status reports missing auth", async () => {
@@ -128,12 +132,28 @@ describe("codex auth", () => {
     ).rejects.toThrow(/Codex CLI is not authenticated/);
   });
 
-  it("passes preflight when CODEX_API_KEY is present", async () => {
+  it("skips codex login status when CODEX_API_KEY is present", async () => {
     const original = process.env.CODEX_API_KEY;
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-status.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "console.error('codex login status should not run when CODEX_API_KEY is present');",
+        "process.exit(1);",
+      ].join("\n"),
+      "utf8",
+    );
     process.env.CODEX_API_KEY = "sk-test";
     try {
       await expect(
-        assertCodexAuthenticated(createBaseConfig(), new Logger()),
+        assertCodexAuthenticated(
+          createBaseConfig({
+            codexCliCommand: "node",
+            codexCliArgs: [scriptPath],
+          }),
+          new Logger(),
+        ),
       ).resolves.toBeUndefined();
     } finally {
       if (original === undefined) {
@@ -169,7 +189,7 @@ describe("codex auth", () => {
           }),
           new Logger(),
         ),
-      ).rejects.toThrow(/codex login --with-api-key/);
+      ).rejects.toThrow(/printenv OPENAI_API_KEY \| codex login --with-api-key/);
     } finally {
       if (originalOpenAiApiKey === undefined) {
         delete process.env.OPENAI_API_KEY;

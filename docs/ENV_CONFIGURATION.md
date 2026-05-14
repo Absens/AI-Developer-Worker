@@ -62,7 +62,7 @@ Copy-Item .env.example .env
 | `LOCK_POSTGRES_URL` | Нет | Не задано | Зарезервировано для будущего PostgreSQL lock backend. |
 | `CODEX_HOME` | Нет | `~/.codex` на текущей машине | Используйте writable Codex auth directory. В Docker обычно это должен быть путь смонтированного volume, например `/codex-home`. |
 | `CODEX_CLI_COMMAND` | Нет | `codex` | Укажите executable, который запускает Codex CLI. Оставьте `codex`, если не нужен wrapper launcher. |
-| `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`. |
+| `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`; для Codex CLI `0.130.0` предпочитайте `never` или `on-request`, а не deprecated `on-failure`. |
 | `CODEX_MODEL` | Нет | Не задано | Необязательное явное имя модели Codex, если нужны воспроизводимые запуски. |
 | `CODEX_PROFILE` | Нет | Не задано | Необязательное имя profile из локальной конфигурации Codex. |
 | `CODEX_SANDBOX` | Нет | `danger-full-access` | Выберите одно из значений: `read-only`, `workspace-write` или `danger-full-access`. |
@@ -386,7 +386,7 @@ Fleet mode использует комментарии Tracker `AI LEASE:` дл�
 | --- | --- | --- |
 | `HOST_CODEX_HOME` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host Codex auth directory, смонтированная read-only в `/host-codex`, чтобы Compose мог автоматически bootstrap `/codex-home` при первом старте. |
 | `TARGET_REPO_PATH` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host path, смонтированный в `/workspace/project` при запуске через Docker Compose. |
-| `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | Если задан, воркер пропускает `codex login status` и предполагает прямую Codex auth по API key. |
+| `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | Если задан, воркер пропускает `codex login status` и предполагает прямую Codex auth по API key. Это быстрый startup shortcut: он проверяет наличие переменной, но не доказывает валидность ключа. |
 | `OPENAI_API_KEY` | Operational setup | Сам по себе не пропускает worker auth preflight. Чтобы использовать его с Codex auth storage, перед запуском воркера выполните `printenv OPENAI_API_KEY \| codex login --with-api-key`. |
 | `SOURCE_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Source directory, которую копирует bootstrap script. По умолчанию текущий пользовательский `~/.codex`. |
 | `TARGET_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Destination directory, в которую пишет bootstrap script. По умолчанию `.codex-home` в текущем репозитории. |
@@ -508,7 +508,8 @@ GIT_COMMIT_NO_VERIFY=false
 
 1. Заполните `.env`.
 2. Запустите `codex login status` на host, задайте `CODEX_API_KEY` или сохраните `OPENAI_API_KEY` через `printenv OPENAI_API_KEY | codex login --with-api-key`.
-3. Запустите воркер один раз с `WORKER_RUN_ONCE=true`.
-4. Исправьте missing variable, о которых сообщит startup.
+3. При API-key auth в Docker запустите `CODEX_CONTRACT_LIVE=1 npm run verify:codex-cli` в том же окружении, где будет работать воркер; обычный startup preflight только видит `CODEX_API_KEY`, но не проверяет ключ live-запросом.
+4. Запустите воркер один раз с `WORKER_RUN_ONCE=true`.
+5. Исправьте missing variable, о которых сообщит startup.
 
 Config loader fails fast при отсутствии обязательных переменных, поэтому startup errors являются самым быстрым способом найти неполный `.env`.

@@ -338,7 +338,8 @@ describe("PreflightService", () => {
     );
   });
 
-  it("passes preflight when image context is enabled and Codex CLI supports --image", async () => {
+  it("passes preflight when image context is enabled and Codex CLI supports images for new and resumed sessions", async () => {
+    const commands: string[] = [];
     const service = new PreflightService(
       createConfig({
         codexCliCommand: "codex launcher",
@@ -354,10 +355,55 @@ describe("PreflightService", () => {
       new FakeGitLabService(),
       async () => undefined,
       new Logger(),
-      async (command) =>
-        command.includes("exec --help")
+      async (command) => {
+        commands.push(command);
+        return command.includes("exec resume --help")
+          ? { stdout: "Usage: codex exec resume\n  --image <path>", stderr: "", exitCode: 0 }
+          : command.includes("exec --help")
           ? { stdout: "Usage: codex exec\n  --image <path>", stderr: "", exitCode: 0 }
-          : { stdout: "", stderr: "", exitCode: 0 },
+          : { stdout: "", stderr: "", exitCode: 0 };
+      },
+    );
+
+    const checks = await service.run();
+
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("exec --help"),
+        expect.stringContaining("exec resume --help"),
+      ]),
+    );
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Codex image input",
+          status: "pass",
+          details: "Codex CLI supports image inputs through codex exec --image and codex exec resume --image.",
+        }),
+      ]),
+    );
+  });
+
+  it("fails preflight when resume image support is missing", async () => {
+    const service = new PreflightService(
+      createConfig({
+        trackerImageContext: {
+          enabled: true,
+          maxCount: 5,
+          maxBytes: 10_485_760,
+        },
+      }),
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) =>
+        command.includes("exec resume --help")
+          ? { stdout: "Usage: codex exec resume", stderr: "", exitCode: 0 }
+          : command.includes("exec --help")
+            ? { stdout: "Usage: codex exec\n  --image <path>", stderr: "", exitCode: 0 }
+            : { stdout: "", stderr: "", exitCode: 0 },
     );
 
     const checks = await service.run();
@@ -366,11 +412,37 @@ describe("PreflightService", () => {
       expect.arrayContaining([
         expect.objectContaining({
           name: "Codex image input",
-          status: "pass",
-          details: "Codex CLI supports image inputs through codex exec --image.",
+          status: "fail",
+          details: expect.stringContaining("codex exec resume --help"),
         }),
       ]),
     );
+  });
+
+  it("does not check resume image support when image context is disabled", async () => {
+    const commands: string[] = [];
+    const service = new PreflightService(
+      createConfig({
+        trackerImageContext: {
+          enabled: false,
+          maxCount: 5,
+          maxBytes: 10_485_760,
+        },
+      }),
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) => {
+        commands.push(command);
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    );
+
+    await service.run();
+
+    expect(commands.some((command) => command.includes("exec resume --help"))).toBe(false);
   });
 
   it("checks internal tracker storage without calling Yandex tracker", async () => {
