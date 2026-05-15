@@ -24,7 +24,7 @@ The current integration relies on these Codex CLI behaviors:
 4. `codex exec resume <threadId>` continues a previous non-interactive session id emitted by `thread.started.thread_id`.
 5. `--sandbox`, `--model`, and `--profile` remain valid `codex exec` flags.
 6. `codex exec --help` and `codex exec resume --help` include `--image` so Tracker screenshot context can be passed to the model.
-7. `codex exec review --help` exposes `--base`, `--json`, `--output-last-message`, `--skip-git-repo-check`, and `--ephemeral` for the optional self-review gate.
+7. `codex exec review --help` exposes `--base`, `--uncommitted`, `--json`, `--output-last-message`, `--skip-git-repo-check`, and `--ephemeral` for the optional self-review gate.
 
 If any of those contracts change, the worker may still build but fail at runtime.
 
@@ -95,6 +95,7 @@ Confirm that these flags and subcommands still exist:
 - `--image`
 - `codex exec review --help`
 - `--base`
+- `--uncommitted`
 - `--json`
 - `--output-last-message`
 - `--skip-git-repo-check`

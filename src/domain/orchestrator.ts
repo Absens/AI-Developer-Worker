@@ -106,6 +106,15 @@ interface ResumeContext {
   command: HumanTaskCommand;
 }
 
+type SelfReviewGateOutcome =
+  | {
+      outcome: "ready";
+      validation: ValidationResult;
+      implementationSummary?: string;
+      activeThreadId?: string;
+    }
+  | { outcome: "waiting" };
+
 const ACTIVE_STATES: LogicalStatus[] = ["in_progress", "waiting_for_answer"];
 const OWNED_TASK_STATES: LogicalStatus[] = [...ACTIVE_STATES, "review"];
 const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
@@ -917,6 +926,9 @@ export class WorkerOrchestrator {
       imageContext,
       codexOptions,
     });
+    if (selfReview.outcome === "waiting") {
+      return "waiting";
+    }
     validation = selfReview.validation;
     implementationSummary = selfReview.implementationSummary;
     activeThreadId = selfReview.activeThreadId ?? activeThreadId;
@@ -1967,13 +1979,10 @@ export class WorkerOrchestrator {
     analysisDecision?: TaskAnalysisDecision;
     imageContext: PreparedTrackerImageContext;
     codexOptions: CodexRunOptions;
-  }): Promise<{
-    validation: ValidationResult;
-    implementationSummary?: string;
-    activeThreadId?: string;
-  }> {
+  }): Promise<SelfReviewGateOutcome> {
     if (!this.config.codexSelfReviewEnabled) {
       return {
+        outcome: "ready",
         validation: input.validation,
         implementationSummary: input.implementationSummary,
         activeThreadId: input.activeThreadId,
@@ -2029,7 +2038,7 @@ export class WorkerOrchestrator {
       });
 
       if (review.passed) {
-        return { validation, implementationSummary, activeThreadId };
+        return { outcome: "ready", validation, implementationSummary, activeThreadId };
       }
 
       const diagnostic = formatSelfReviewDiagnostic(review);
@@ -2086,7 +2095,11 @@ export class WorkerOrchestrator {
           fixExecution.clarification,
           activeThreadId,
         );
-        throw new PermanentTaskError("Codex self-review fix requested human clarification.");
+        this.terminalOutcomes.set(input.issue.key, {
+          outcome: "waiting",
+          message: "Codex self-review fix is waiting for clarification.",
+        });
+        return { outcome: "waiting" };
       }
 
       this.markStage(input.issue, "validation");

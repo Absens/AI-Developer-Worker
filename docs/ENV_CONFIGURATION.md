@@ -209,7 +209,7 @@ typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visu
 
 `LINT_COMMAND` и `TEST_COMMAND` сохраняют значения по умолчанию. Остальные gates пропускаются, если соответствующая command environment variable не задана. Любой configured gate с ненулевым exit блокирует publish и передает gate command, stdout и stderr обратно в Codex fix prompt.
 
-When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH>` after quality gates pass and before publishing the merge request. Blocking self-review findings are fed into the same Codex fix prompt path, quality gates run again, and self-review reruns. If findings remain after `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS`, the task fails without creating or updating the merge request.
+When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH> --uncommitted` after quality gates pass and before publishing the merge request. Blocking self-review findings are fed into the same Codex fix prompt path, quality gates run again, and self-review reruns. If findings remain after `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS`, the task fails without creating or updating the merge request.
 
 Coverage parsing поддерживает такой Istanbul/Vitest-style summary:
 

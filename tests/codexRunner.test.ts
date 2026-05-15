@@ -139,12 +139,14 @@ describe("CliCodexRunner", () => {
       lastMessageFile,
       "--base",
       "main",
+      "--uncommitted",
       "--title",
       "[AI] DEV-1 implementation",
       "--model",
       "gpt-5.5",
       "--skip-git-repo-check",
       "--ephemeral",
+      "-",
     ]);
     expect(readFileSync(stdinPath, "utf8")).toBe("Review this diff.");
     expect(execution.finalMessage).toContain("AI_SELF_REVIEW:");

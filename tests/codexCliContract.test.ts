@@ -15,7 +15,11 @@ const createTempDir = (): string => {
 
 const createFakeCodexCommand = (
   tempDir: string,
-  options: { missingResumeJson?: boolean; missingReviewOutputLastMessage?: boolean } = {},
+  options: {
+    missingResumeJson?: boolean;
+    missingReviewOutputLastMessage?: boolean;
+    missingReviewUncommitted?: boolean;
+  } = {},
 ): string => {
   const scriptPath = join(tempDir, "fake-codex.cjs");
   writeFileSync(
@@ -29,8 +33,10 @@ const createFakeCodexCommand = (
         ? "  'exec resume --help': 'Usage: codex exec resume\\n--image\\n--output-last-message\\n',"
         : "  'exec resume --help': 'Usage: codex exec resume\\n--image\\n--json\\n--output-last-message\\n',",
       options.missingReviewOutputLastMessage
-        ? "  'exec review --help': 'Usage: codex exec review\\n--base\\n--json\\n--skip-git-repo-check\\n--ephemeral\\n',"
-        : "  'exec review --help': 'Usage: codex exec review\\n--base\\n--json\\n--output-last-message\\n--skip-git-repo-check\\n--ephemeral\\n',",
+        ? "  'exec review --help': 'Usage: codex exec review\\n--base\\n--uncommitted\\n--json\\n--skip-git-repo-check\\n--ephemeral\\n',"
+        : options.missingReviewUncommitted
+          ? "  'exec review --help': 'Usage: codex exec review\\n--base\\n--json\\n--output-last-message\\n--skip-git-repo-check\\n--ephemeral\\n',"
+          : "  'exec review --help': 'Usage: codex exec review\\n--base\\n--uncommitted\\n--json\\n--output-last-message\\n--skip-git-repo-check\\n--ephemeral\\n',",
       "  'login status --help': 'Usage: codex login status\\n',",
       "};",
       "if (!Object.prototype.hasOwnProperty.call(outputs, args)) {",
@@ -100,5 +106,14 @@ describe("Codex CLI contract verifier", () => {
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toContain("codex exec review --help");
     expect(`${result.stdout}\n${result.stderr}`).toContain("--output-last-message");
+  });
+
+  it("fails when review help output cannot include uncommitted changes", () => {
+    const tempDir = createTempDir();
+    const result = runVerifier(createFakeCodexCommand(tempDir, { missingReviewUncommitted: true }));
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("codex exec review --help");
+    expect(`${result.stdout}\n${result.stderr}`).toContain("--uncommitted");
   });
 });

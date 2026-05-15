@@ -45,6 +45,7 @@ const staticChecks = [
     markers: [
       "Usage: codex exec review",
       "--base",
+      "--uncommitted",
       "--json",
       "--output-last-message",
       "--skip-git-repo-check",

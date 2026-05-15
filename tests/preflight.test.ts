@@ -464,7 +464,7 @@ describe("PreflightService", () => {
         if (command.includes("exec review --help")) {
           return {
             stdout:
-              "Usage: codex exec review\n  --base <BRANCH>\n  --json\n  --output-last-message <FILE>\n  --skip-git-repo-check\n  --ephemeral",
+              "Usage: codex exec review\n  --base <BRANCH>\n  --uncommitted\n  --json\n  --output-last-message <FILE>\n  --skip-git-repo-check\n  --ephemeral",
             stderr: "",
             exitCode: 0,
           };
@@ -512,6 +512,41 @@ describe("PreflightService", () => {
           name: "Codex self-review",
           status: "fail",
           details: expect.stringContaining("--output-last-message"),
+        }),
+      ]),
+    );
+  });
+
+  it("fails preflight when Codex self-review cannot include uncommitted changes", async () => {
+    const service = new PreflightService(
+      {
+        ...createConfig(),
+        codexSelfReviewEnabled: true,
+      },
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) =>
+        command.includes("exec review --help")
+          ? {
+              stdout:
+                "Usage: codex exec review\n  --base <BRANCH>\n  --json\n  --output-last-message <FILE>\n  --skip-git-repo-check\n  --ephemeral",
+              stderr: "",
+              exitCode: 0,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 },
+    );
+
+    const checks = await service.run();
+
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Codex self-review",
+          status: "fail",
+          details: expect.stringContaining("--uncommitted"),
         }),
       ]),
     );

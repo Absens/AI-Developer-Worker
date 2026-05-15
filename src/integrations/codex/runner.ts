@@ -570,6 +570,7 @@ export class CliCodexRunner implements CodexRunner {
       lastMessagePath,
       "--base",
       review.baseBranch,
+      "--uncommitted",
     ];
 
     const title = review.title?.trim();
@@ -580,7 +581,7 @@ export class CliCodexRunner implements CodexRunner {
       args.push("--model", this.config.codexModel);
     }
 
-    args.push("--skip-git-repo-check", "--ephemeral");
+    args.push("--skip-git-repo-check", "--ephemeral", "-");
     return args;
   }
 

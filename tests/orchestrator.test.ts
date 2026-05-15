@@ -671,6 +671,91 @@ describe("WorkerOrchestrator", () => {
     });
   });
 
+  it("waits for clarification when a self-review fix needs human input", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-SELF-REVIEW-QUESTION",
+          title: "Fix checkout crash",
+          description: "Null cart crashes checkout.",
+          queue: "BACKEND",
+          tags: ["ai_dev"],
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-SELF-REVIEW-QUESTION": [] },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-analysis",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-impl",
+          };
+        },
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "Need human input before applying self-review fix.",
+          threadId: "thread-impl",
+          question: clarification.question,
+          clarification,
+        }),
+      ],
+      [],
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_SELF_REVIEW: {"status":"fail","summary":"One blocking issue.","findings":[{"severity":"blocking","title":"Missing null guard","details":"The checkout total still dereferences null.","recommendation":"Confirm the expected fallback total before changing behavior."}]}',
+        }),
+      ],
+    );
+
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        codexSelfReviewEnabled: true,
+        codexSelfReviewMaxFixAttempts: 1,
+        testCommand: "node -e \"process.exit(0)\"",
+        lintCommand: "node -e \"process.exit(0)\"",
+      }),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("waiting");
+    expect(tracker.transitions).toContainEqual({
+      issueKey: "DEV-SELF-REVIEW-QUESTION",
+      target: "waiting_for_answer",
+    });
+    expect(tracker.transitions).not.toContainEqual({
+      issueKey: "DEV-SELF-REVIEW-QUESTION",
+      target: "failed",
+    });
+    expect(gitlab.createCalls).toEqual([]);
+    const questionComment = tracker.addedComments.find((entry) =>
+      entry.text.includes(clarification.question),
+    );
+    expect(questionComment?.text).toContain("thread-impl");
+  });
+
   it("passes Tracker image attachments to direct Codex analysis", async () => {
     const tracker = new FakeTrackerClient(
       [

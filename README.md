@@ -169,7 +169,7 @@ typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visu
 
 `TEST_COMMAND` и `LINT_COMMAND` имеют значения по умолчанию. Остальные проверки включаются только если задана соответствующая переменная с командой. Любой ненулевой exit code блокирует публикацию и передается обратно в Codex fix prompt вместе с stdout/stderr.
 
-When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH>` after tests/lint/build pass and before publishing the merge request. Blocking review findings are fed back into the existing Codex fix loop, then local quality gates and self-review run again. Human GitLab review remains the source of truth after the MR is published.
+When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH> --uncommitted` after tests/lint/build pass and before publishing the merge request. Blocking review findings are fed back into the existing Codex fix loop, then local quality gates and self-review run again. Human GitLab review remains the source of truth after the MR is published.
 
 ## Fleet, memory и observability
 
