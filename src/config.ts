@@ -110,6 +110,7 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
   maxCount: 5,
   maxBytes: 10 * 1024 * 1024,
 };
+const DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS = 1;
 
 const requireEnv = (env: NodeJS.ProcessEnv, key: string): string => {
   const value = env[key]?.trim();
@@ -1337,6 +1338,16 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       false,
     ),
     codexQuestionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
+    codexSelfReviewEnabled: parseBooleanFlag(
+      env.CODEX_SELF_REVIEW_ENABLED,
+      "CODEX_SELF_REVIEW_ENABLED",
+      false,
+    ),
+    codexSelfReviewMaxFixAttempts: parsePositiveInt(
+      env.CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS?.trim() ||
+        String(DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS),
+      "CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS",
+    ),
     maxFixAttempts,
     maxReviewFixAttempts: parsePositiveInt(
       env.MAX_REVIEW_FIX_ATTEMPTS?.trim() || String(maxFixAttempts),
@@ -1675,6 +1686,8 @@ const buildSingleRepositoryFleetConfig = (
       progressLogIntervalMs: config.codexProgressLogIntervalMs,
       logFullEvents: config.codexLogFullEvents,
       questionMarker: config.codexQuestionMarker,
+      selfReviewEnabled: config.codexSelfReviewEnabled,
+      selfReviewMaxFixAttempts: config.codexSelfReviewMaxFixAttempts,
     },
     coordination: parseCoordinationConfig(env, undefined, config.taskTracker),
     priorityQueue: parsePriorityQueueConfig(env),
@@ -2122,6 +2135,23 @@ const loadFleetConfigFromFile = (
         false,
       ),
       questionMarker: env.CODEX_QUESTION_MARKER?.trim() || "AI_QUESTION:",
+      selfReviewEnabled: env.CODEX_SELF_REVIEW_ENABLED?.trim()
+        ? parseBooleanFlag(
+            env.CODEX_SELF_REVIEW_ENABLED,
+            "CODEX_SELF_REVIEW_ENABLED",
+            false,
+          )
+        : optionalBoolean(codex.selfReviewEnabled, "codex.selfReviewEnabled", false),
+      selfReviewMaxFixAttempts: env.CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS?.trim()
+        ? parsePositiveInt(
+            env.CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS,
+            "CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS",
+          )
+        : optionalPositiveInt(
+            codex.selfReviewMaxFixAttempts,
+            "codex.selfReviewMaxFixAttempts",
+            DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS,
+          ),
     },
     coordination: parseCoordinationConfig(env, coordination, taskTracker),
     priorityQueue: parsePriorityQueueConfig(env, priorityQueue),
@@ -2191,6 +2221,8 @@ export const buildRepositoryRuntimeConfig = (
   codexProgressLogIntervalMs: globalConfig.codex.progressLogIntervalMs,
   codexLogFullEvents: globalConfig.codex.logFullEvents,
   codexQuestionMarker: globalConfig.codex.questionMarker,
+  codexSelfReviewEnabled: globalConfig.codex.selfReviewEnabled,
+  codexSelfReviewMaxFixAttempts: globalConfig.codex.selfReviewMaxFixAttempts,
   maxFixAttempts: globalConfig.maxFixAttempts,
   maxReviewFixAttempts: globalConfig.maxReviewFixAttempts,
   workerId: globalConfig.workerId,

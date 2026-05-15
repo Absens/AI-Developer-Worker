@@ -425,6 +425,8 @@ export interface AppConfig {
   codexProgressLogIntervalMs: number;
   codexLogFullEvents: boolean;
   codexQuestionMarker: string;
+  codexSelfReviewEnabled: boolean;
+  codexSelfReviewMaxFixAttempts: number;
   maxFixAttempts: number;
   maxReviewFixAttempts: number;
   workerId: string;
@@ -509,6 +511,8 @@ export interface CodexGlobalConfig {
   progressLogIntervalMs: number;
   logFullEvents: boolean;
   questionMarker: string;
+  selfReviewEnabled: boolean;
+  selfReviewMaxFixAttempts: number;
 }
 
 export interface RepositoryProfile {

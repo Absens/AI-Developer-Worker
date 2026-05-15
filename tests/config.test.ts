@@ -874,6 +874,63 @@ describe("config", () => {
     expect(config.codexLogFullEvents).toBe(true);
   });
 
+  it("parses Codex self-review settings from environment", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_ORG_HEADER: "x-org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      CODEX_SELF_REVIEW_ENABLED: "true",
+      CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS: "3",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.codexSelfReviewEnabled).toBe(true);
+    expect(config.codexSelfReviewMaxFixAttempts).toBe(3);
+  });
+
+  it("defaults Codex self-review off with one fix attempt", () => {
+    const statusMapFile = createStatusMapFile();
+    const config = loadConfig({
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_ORG_HEADER: "x-org-id",
+      TRACKER_STATUS_MAP_FILE: statusMapFile,
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.codexSelfReviewEnabled).toBe(false);
+    expect(config.codexSelfReviewMaxFixAttempts).toBe(1);
+  });
+
+  it("rejects invalid Codex self-review max fix attempts", () => {
+    const statusMapFile = createStatusMapFile();
+
+    expect(() =>
+      loadConfig({
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_ORG_HEADER: "x-org-id",
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS: "0",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS/);
+  });
+
   it("accepts explicit repository auth overrides", () => {
     const statusMapFile = createStatusMapFile();
     const config = loadConfig({
