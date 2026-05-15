@@ -40,6 +40,18 @@ const staticChecks = [
     ],
   },
   {
+    display: "codex exec review --help",
+    args: ["exec", "review", "--help"],
+    markers: [
+      "Usage: codex exec review",
+      "--base",
+      "--json",
+      "--output-last-message",
+      "--skip-git-repo-check",
+      "--ephemeral",
+    ],
+  },
+  {
     display: "codex login status --help",
     args: ["login", "status", "--help"],
     markers: ["Usage: codex login status"],

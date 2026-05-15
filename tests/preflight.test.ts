@@ -53,6 +53,8 @@ const createConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
+  codexSelfReviewEnabled: false,
+  codexSelfReviewMaxFixAttempts: 1,
   maxFixAttempts: 2,
   maxReviewFixAttempts: 2,
   workerId: "worker-1",
@@ -443,6 +445,76 @@ describe("PreflightService", () => {
     await service.run();
 
     expect(commands.some((command) => command.includes("exec resume --help"))).toBe(false);
+  });
+
+  it("checks codex exec review help when Codex self-review is enabled", async () => {
+    const commands: string[] = [];
+    const service = new PreflightService(
+      {
+        ...createConfig(),
+        codexSelfReviewEnabled: true,
+      },
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) => {
+        commands.push(command);
+        if (command.includes("exec review --help")) {
+          return {
+            stdout:
+              "Usage: codex exec review\n  --base <BRANCH>\n  --json\n  --output-last-message <FILE>\n  --skip-git-repo-check\n  --ephemeral",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    );
+
+    const checks = await service.run();
+
+    expect(commands).toEqual(expect.arrayContaining([expect.stringContaining("exec review --help")]));
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        {
+          name: "Codex self-review",
+          status: "pass",
+          details: "Codex CLI supports self-review through codex exec review.",
+        },
+      ]),
+    );
+  });
+
+  it("fails preflight when Codex self-review support is missing", async () => {
+    const service = new PreflightService(
+      {
+        ...createConfig(),
+        codexSelfReviewEnabled: true,
+      },
+      new FakeTrackerClient(),
+      new FakeGitService(),
+      new FakeGitLabService(),
+      async () => undefined,
+      new Logger(),
+      async (command) =>
+        command.includes("exec review --help")
+          ? { stdout: "Usage: codex exec review\n  --base <BRANCH>", stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 },
+    );
+
+    const checks = await service.run();
+
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Codex self-review",
+          status: "fail",
+          details: expect.stringContaining("--output-last-message"),
+        }),
+      ]),
+    );
   });
 
   it("checks internal tracker storage without calling Yandex tracker", async () => {

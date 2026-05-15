@@ -53,6 +53,9 @@ const buildCodexExecHelpCommand = (config: AppConfig): string =>
 const buildCodexExecResumeHelpCommand = (config: AppConfig): string =>
   buildCodexHelpCommand(config, ["exec", "resume", "--help"]);
 
+const buildCodexExecReviewHelpCommand = (config: AppConfig): string =>
+  buildCodexHelpCommand(config, ["exec", "review", "--help"]);
+
 const defaultInternalTrackerChecker: InternalTrackerChecker = async (databaseUrl) => {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
@@ -142,6 +145,11 @@ export class PreflightService {
     );
     if (this.config.trackerImageContext?.enabled) {
       await this.record(checks, "Codex image input", () => this.checkCodexImageInput(), (details) =>
+        details,
+      );
+    }
+    if (this.config.codexSelfReviewEnabled) {
+      await this.record(checks, "Codex self-review", () => this.checkCodexSelfReview(), (details) =>
         details,
       );
     }
@@ -361,6 +369,33 @@ export class PreflightService {
     }
 
     return "Codex CLI supports image inputs through codex exec --image and codex exec resume --image.";
+  }
+
+  private async checkCodexSelfReview(): Promise<string> {
+    const command = buildCodexExecReviewHelpCommand(this.config);
+    const result = await this.commandRunner(command, {
+      cwd: this.config.repoPath,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(buildCommandFailure("CODEX_SELF_REVIEW_HELP", command, result));
+    }
+
+    const output = `${result.stdout}\n${result.stderr}`;
+    const missing = [
+      "Usage: codex exec review",
+      "--base",
+      "--json",
+      "--output-last-message",
+      "--skip-git-repo-check",
+      "--ephemeral",
+    ].filter((marker) => !output.includes(marker));
+    if (missing.length > 0) {
+      throw new Error(
+        `CODEX_SELF_REVIEW_ENABLED=true requires a Codex CLI whose \`codex exec review --help\` includes: ${missing.join(", ")}.`,
+      );
+    }
+
+    return "Codex CLI supports self-review through codex exec review.";
   }
 }
 
