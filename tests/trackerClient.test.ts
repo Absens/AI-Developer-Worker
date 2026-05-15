@@ -48,6 +48,8 @@ const createConfig = (trackerApiBaseUrl: string, overrides: Partial<AppConfig> =
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
+  codexSelfReviewEnabled: false,
+  codexSelfReviewMaxFixAttempts: 1,
   maxFixAttempts: 2,
   maxReviewFixAttempts: 2,
   workerId: "worker-1",

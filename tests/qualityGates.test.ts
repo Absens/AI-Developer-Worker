@@ -57,6 +57,8 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
+  codexSelfReviewEnabled: false,
+  codexSelfReviewMaxFixAttempts: 1,
   maxFixAttempts: 2,
   maxReviewFixAttempts: 2,
   workerId: "worker-1",

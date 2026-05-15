@@ -344,7 +344,7 @@ const appendImageArgs = (args: string[], imagePaths: readonly string[]): void =>
 };
 
 const summarizeEvent = (
-  mode: "new" | "resume",
+  mode: CodexRunnerMode,
   event: CodexEvent,
 ): Record<string, unknown> => {
   const item = isRecord(event.item) ? event.item : undefined;

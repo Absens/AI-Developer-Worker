@@ -88,6 +88,8 @@ const config = (repositories: RepositoryProfile[]): GlobalWorkerConfig => ({
     progressLogIntervalMs: 30 * 1000,
     logFullEvents: false,
     questionMarker: "AI_QUESTION:",
+    selfReviewEnabled: false,
+    selfReviewMaxFixAttempts: 1,
   },
   coordination: {
     lockBackend: "tracker",
