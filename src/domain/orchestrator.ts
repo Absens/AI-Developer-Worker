@@ -88,6 +88,11 @@ import {
   type PreparedTrackerImageContext,
 } from "./trackerImageContext.js";
 import {
+  buildSelfReviewPrompt,
+  formatSelfReviewDiagnostic,
+  parseSelfReviewResult,
+} from "./selfReview.js";
+import {
   noopObservability,
   type ObservabilityTelemetry,
   type TaskTelemetryContext,
@@ -902,6 +907,20 @@ export class WorkerOrchestrator {
       throw new PermanentTaskError(validation.diagnostic);
     }
 
+    const selfReview = await this.runSelfReviewGate({
+      issue,
+      validation,
+      implementationSummary,
+      activeThreadId,
+      promptProfile,
+      analysisDecision,
+      imageContext,
+      codexOptions,
+    });
+    validation = selfReview.validation;
+    implementationSummary = selfReview.implementationSummary;
+    activeThreadId = selfReview.activeThreadId ?? activeThreadId;
+
     this.markStage(issue, "publish");
     await this.publish(issue, branch, existingMr, validation, implementationSummary);
     return "processed";
@@ -1475,7 +1494,7 @@ export class WorkerOrchestrator {
 
   private async runCodexStage(
     issue: TrackerIssue,
-    stage: "analysis" | "implementation" | "decomposition" | "review_fix",
+    stage: "analysis" | "implementation" | "decomposition" | "review_fix" | "self_review",
     run: () => Promise<CodexExecution>,
   ): Promise<CodexExecution> {
     this.telemetry.recordEvent({
@@ -1937,6 +1956,152 @@ export class WorkerOrchestrator {
       details: { createdIssueKeys, warnings },
     });
     return "processed";
+  }
+
+  private async runSelfReviewGate(input: {
+    issue: TrackerIssue;
+    validation: ValidationResult;
+    implementationSummary?: string;
+    activeThreadId?: string;
+    promptProfile: PromptProfile;
+    analysisDecision?: TaskAnalysisDecision;
+    imageContext: PreparedTrackerImageContext;
+    codexOptions: CodexRunOptions;
+  }): Promise<{
+    validation: ValidationResult;
+    implementationSummary?: string;
+    activeThreadId?: string;
+  }> {
+    if (!this.config.codexSelfReviewEnabled) {
+      return {
+        validation: input.validation,
+        implementationSummary: input.implementationSummary,
+        activeThreadId: input.activeThreadId,
+      };
+    }
+
+    let validation = input.validation;
+    let implementationSummary = input.implementationSummary;
+    let activeThreadId = input.activeThreadId;
+    let attempt = 0;
+
+    while (true) {
+      this.markStage(input.issue, "self_review");
+      const reviewExecution = await this.runCodexStage(input.issue, "self_review", () =>
+        this.codex.runReview(
+          buildSelfReviewPrompt({
+            issue: input.issue,
+            baseBranch: this.config.baseBranch,
+            validation,
+            implementationSummary,
+          }),
+          undefined,
+          {
+            baseBranch: this.config.baseBranch,
+            title: `[AI] ${input.issue.key} implementation`,
+          },
+        ),
+      );
+
+      const review = parseSelfReviewResult(reviewExecution.finalMessage);
+      if (!review) {
+        throw new PermanentTaskError(
+          [
+            "Codex self-review did not return a valid AI_SELF_REVIEW result.",
+            reviewExecution.finalMessage?.trim()
+              ? `Final message:\n${reviewExecution.finalMessage.trim()}`
+              : "Final message was empty.",
+          ].join("\n\n"),
+        );
+      }
+
+      this.telemetry.recordEvent({
+        workerId: this.config.workerId,
+        repositoryName: this.repositoryName(),
+        issueKey: input.issue.key,
+        type: "self_review_completed",
+        status: review.passed ? "info" : "warning",
+        message: review.summary,
+        details: {
+          passed: review.passed,
+          findings: review.findings,
+        },
+      });
+
+      if (review.passed) {
+        return { validation, implementationSummary, activeThreadId };
+      }
+
+      const diagnostic = formatSelfReviewDiagnostic(review);
+      if (attempt >= this.config.codexSelfReviewMaxFixAttempts) {
+        await this.recordFailureMemory({
+          issue: input.issue,
+          failureKind: "self_review_exhausted",
+          diagnostic,
+          promptProfile: input.promptProfile,
+          analysisDecision: input.analysisDecision,
+        });
+        throw new PermanentTaskError(diagnostic);
+      }
+
+      attempt += 1;
+      this.logger.warn("Codex self-review failed, asking Codex to apply a fix.", {
+        issueKey: input.issue.key,
+        attempt,
+        maxAttempts: this.config.codexSelfReviewMaxFixAttempts,
+      });
+
+      const fixExecution = await this.runCodexStage(input.issue, "implementation", () =>
+        activeThreadId
+          ? this.codex.runResume(
+              activeThreadId,
+              buildFixPrompt(
+                input.issue,
+                diagnostic,
+                input.promptProfile,
+                input.analysisDecision,
+                input.imageContext,
+              ),
+              undefined,
+              input.codexOptions,
+            )
+          : this.codex.runFix(
+              buildFixPrompt(
+                input.issue,
+                diagnostic,
+                input.promptProfile,
+                input.analysisDecision,
+                input.imageContext,
+              ),
+              undefined,
+              input.codexOptions,
+            ),
+      );
+
+      activeThreadId = fixExecution.threadId ?? activeThreadId;
+      implementationSummary = fixExecution.finalMessage?.trim() ?? implementationSummary;
+      if (fixExecution.clarification) {
+        await this.pauseForClarification(
+          input.issue,
+          fixExecution.clarification,
+          activeThreadId,
+        );
+        throw new PermanentTaskError("Codex self-review fix requested human clarification.");
+      }
+
+      this.markStage(input.issue, "validation");
+      validation = await this.validateRepositoryState(input.issue);
+      if (!isValidationSuccessful(validation)) {
+        await this.recordFailureMemory({
+          issue: input.issue,
+          failureKind: "self_review_fix_validation_failed",
+          diagnostic: validation.diagnostic,
+          promptProfile: input.promptProfile,
+          analysisDecision: input.analysisDecision,
+        });
+        throw new PermanentTaskError(validation.diagnostic);
+      }
+    }
   }
 
   private async validateRepositoryState(issue: TrackerIssue): Promise<ValidationResult> {

@@ -27,6 +27,8 @@ export type TaskEventType =
   | "implementation_completed"
   | "validation_started"
   | "validation_completed"
+  | "self_review_started"
+  | "self_review_completed"
   | "review_fix_started"
   | "review_fix_completed"
   | "publish_started"

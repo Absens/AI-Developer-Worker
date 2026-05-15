@@ -15,6 +15,7 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexReviewRunOptions,
   CodexRunObserver,
   CodexRunOptions,
   CodexRunner,
@@ -81,6 +82,8 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
+  codexSelfReviewEnabled: false,
+  codexSelfReviewMaxFixAttempts: 1,
   maxFixAttempts: 2,
   maxReviewFixAttempts: 2,
   workerId: "worker-1",
@@ -295,6 +298,7 @@ class FakeCodexRunner implements CodexRunner {
   readonly initialCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
   readonly fixCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
   readonly resumeCalls: Array<{ threadId: string; prompt: string; imagePaths: string[] }> = [];
+  readonly reviewCalls: Array<{ prompt: string; baseBranch: string; title?: string }> = [];
 
   constructor(
     private readonly initialQueue: Array<() => CodexExecution | Promise<CodexExecution>>,
@@ -302,6 +306,9 @@ class FakeCodexRunner implements CodexRunner {
       (threadId: string, prompt: string) => CodexExecution | Promise<CodexExecution>
     > = [],
     private readonly fixQueue: Array<() => CodexExecution | Promise<CodexExecution>> = [],
+    private readonly reviewQueue: Array<
+      (prompt: string, baseBranch: string) => CodexExecution | Promise<CodexExecution>
+    > = [],
   ) {}
 
   runInitial(
@@ -342,6 +349,27 @@ class FakeCodexRunner implements CodexRunner {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
     }
     return Promise.resolve(next(threadId, prompt));
+  }
+
+  runReview(
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options?: CodexReviewRunOptions,
+  ): Promise<CodexExecution> {
+    this.reviewCalls.push({
+      prompt,
+      baseBranch: options?.baseBranch ?? "main",
+      ...(options?.title ? { title: options.title } : {}),
+    });
+    const next = this.reviewQueue.shift();
+    if (!next) {
+      return Promise.resolve({
+        process: { stdout: "", stderr: "", exitCode: 0 },
+        finalMessage:
+          'AI_SELF_REVIEW: {"status":"pass","summary":"No blocking issues.","findings":[]}',
+      });
+    }
+    return Promise.resolve(next(prompt, options?.baseBranch ?? "main"));
   }
 }
 
@@ -413,6 +441,234 @@ describe("WorkerOrchestrator", () => {
     expect(git.commits).toEqual(["feat: implement DEV-2"]);
     expect(git.pushes).toEqual(["feature/ai-task-DEV-2"]);
     expect(gitlab.createCalls).toEqual(["feature/ai-task-DEV-2"]);
+  });
+
+  it("runs Codex self-review before publishing when enabled", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-SELF-REVIEW",
+          title: "Fix checkout crash",
+          description: "Null cart crashes checkout.",
+          queue: "BACKEND",
+          tags: ["ai_dev"],
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-SELF-REVIEW": [] },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-analysis",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-impl",
+          };
+        },
+      ],
+      [],
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_SELF_REVIEW: {"status":"pass","summary":"No blocking issues.","findings":[]}',
+        }),
+      ],
+    );
+
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        codexSelfReviewEnabled: true,
+        codexSelfReviewMaxFixAttempts: 1,
+        testCommand: "node -e \"process.exit(0)\"",
+        lintCommand: "node -e \"process.exit(0)\"",
+      }),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    await orchestrator.runOnce();
+
+    expect(codex.reviewCalls).toHaveLength(1);
+    expect(codex.reviewCalls[0]?.baseBranch).toBe("main");
+    expect(codex.reviewCalls[0]?.prompt).toContain("AI_SELF_REVIEW:");
+    expect(gitlab.createCalls).toEqual(["feature/ai-task-DEV-SELF-REVIEW"]);
+    expect(tracker.transitions).toContainEqual({ issueKey: "DEV-SELF-REVIEW", target: "review" });
+  });
+
+  it("asks Codex to fix blocking self-review findings before publishing", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-SELF-REVIEW-FIX",
+          title: "Fix checkout crash",
+          description: "Null cart crashes checkout.",
+          queue: "BACKEND",
+          tags: ["ai_dev"],
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-SELF-REVIEW-FIX": [] },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-analysis",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-impl",
+          };
+        },
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Self-review fix applied",
+            threadId: "thread-impl",
+          };
+        },
+      ],
+      [],
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_SELF_REVIEW: {"status":"fail","summary":"One blocking issue.","findings":[{"severity":"blocking","title":"Missing null guard","details":"The checkout total still dereferences null.","file":"src/example.ts","line":12,"recommendation":"Guard the total before formatting."}]}',
+        }),
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_SELF_REVIEW: {"status":"pass","summary":"No blocking issues.","findings":[]}',
+        }),
+      ],
+    );
+
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        codexSelfReviewEnabled: true,
+        codexSelfReviewMaxFixAttempts: 1,
+        testCommand: "node -e \"process.exit(0)\"",
+        lintCommand: "node -e \"process.exit(0)\"",
+      }),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    await orchestrator.runOnce();
+
+    expect(codex.reviewCalls).toHaveLength(2);
+    expect(codex.resumeCalls.some((call) => call.prompt.includes("Codex self-review failed."))).toBe(true);
+    expect(gitlab.createCalls).toEqual(["feature/ai-task-DEV-SELF-REVIEW-FIX"]);
+  });
+
+  it("fails before publishing when self-review findings remain after fixes", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-SELF-REVIEW-BLOCK",
+          title: "Fix checkout crash",
+          description: "Null cart crashes checkout.",
+          queue: "BACKEND",
+          tags: ["ai_dev"],
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-SELF-REVIEW-BLOCK": [] },
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const failingReview = () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage:
+        'AI_SELF_REVIEW: {"status":"fail","summary":"One blocking issue.","findings":[{"severity":"blocking","title":"Still unsafe","details":"The diff still leaves a data-loss path."}]}',
+    });
+    const codex = new FakeCodexRunner(
+      [
+        () => ({
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage: "READY_FOR_IMPLEMENTATION",
+          threadId: "thread-analysis",
+        }),
+      ],
+      [
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Implementation complete",
+            threadId: "thread-impl",
+          };
+        },
+        () => {
+          git.uncommittedChanges = true;
+          git.diffFromBase = true;
+          return {
+            process: { stdout: "", stderr: "", exitCode: 0 },
+            finalMessage: "Attempted fix",
+            threadId: "thread-impl",
+          };
+        },
+      ],
+      [],
+      [failingReview, failingReview],
+    );
+
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        codexSelfReviewEnabled: true,
+        codexSelfReviewMaxFixAttempts: 1,
+        testCommand: "node -e \"process.exit(0)\"",
+        lintCommand: "node -e \"process.exit(0)\"",
+      }),
+      tracker,
+      git,
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    await orchestrator.runOnce();
+
+    expect(codex.reviewCalls).toHaveLength(2);
+    expect(gitlab.createCalls).toEqual([]);
+    expect(tracker.transitions).toContainEqual({
+      issueKey: "DEV-SELF-REVIEW-BLOCK",
+      target: "failed",
+    });
   });
 
   it("passes Tracker image attachments to direct Codex analysis", async () => {
