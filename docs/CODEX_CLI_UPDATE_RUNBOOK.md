@@ -24,6 +24,7 @@ The current integration relies on these Codex CLI behaviors:
 4. `codex exec resume <threadId>` continues a previous non-interactive session id emitted by `thread.started.thread_id`.
 5. `--sandbox`, `--model`, and `--profile` remain valid `codex exec` flags.
 6. `codex exec --help` and `codex exec resume --help` include `--image` so Tracker screenshot context can be passed to the model.
+7. `codex exec review --help` exposes `--base`, `--json`, `--output-last-message`, `--skip-git-repo-check`, and `--ephemeral` for the optional self-review gate.
 
 If any of those contracts change, the worker may still build but fail at runtime.
 
@@ -78,6 +79,7 @@ For manual inspection, also check the current help output:
 codex --help
 codex exec --help
 codex exec resume --help
+codex exec review --help
 codex login status --help
 ```
 
@@ -91,6 +93,12 @@ Confirm that these flags and subcommands still exist:
 - `--model`
 - `--profile`
 - `--image`
+- `codex exec review --help`
+- `--base`
+- `--json`
+- `--output-last-message`
+- `--skip-git-repo-check`
+- `--ephemeral`
 - `login status`
 
 If any of them changed, update the worker before rebuilding production images.
@@ -237,6 +245,7 @@ Most Codex CLI update regressions will show up in one of these places:
 6. profile/model flags moved or changed names.
 7. the CLI starts requiring a first-run interactive setup that the container cannot satisfy.
 8. global flags such as `--search` or `--ask-for-approval` are put after `exec` and fail argument parsing.
+9. `codex exec review` loses JSONL or `--output-last-message` support, which breaks the optional self-review gate.
 
 ## Practical rule
 

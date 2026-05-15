@@ -67,6 +67,8 @@ Copy-Item .env.example .env
 | `CODEX_PROFILE` | Нет | Не задано | Необязательное имя profile из локальной конфигурации Codex. |
 | `CODEX_SANDBOX` | Нет | `danger-full-access` | Выберите одно из значений: `read-only`, `workspace-write` или `danger-full-access`. |
 | `CODEX_EXEC_ARGS_JSON` | Нет | `[]` | JSON-массив дополнительных аргументов, которые принимает `codex exec --help`, например `--add-dir /workspace/shared`. Не помещайте сюда launcher/global flags. |
+| `CODEX_SELF_REVIEW_ENABLED` | Нет | `false` | When `true`, run `codex exec review` after quality gates and before publishing a merge request. Blocking findings are sent through the Codex fix loop. |
+| `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS` | Нет | `1` | Positive integer. Maximum number of Codex fix attempts for blocking self-review findings before the task fails without publishing. |
 | `CODEX_TIMEOUT_SECONDS` | Нет | `1800` | Жесткий timeout для одного процесса `codex exec`. Если timeout достигнут, воркер завершает этот процесс Codex и считает запуск неуспешным. |
 | `CODEX_LOG_FULL_EVENTS` | Нет | `false` | Если `true`, воркер логирует каждое сырое JSONL-событие, которое выводит `codex exec --json`. Включайте это для отладки на уровне контейнера, если сводок по умолчанию недостаточно. |
 | `CODEX_QUESTION_MARKER` | Нет | `AI_QUESTION:` | Оставьте значение по умолчанию, если намеренно не меняли протокол комментариев воркера. |
@@ -186,7 +188,7 @@ $env:WORKER_PREFLIGHT_ONLY = "true"
 npm run dev
 ```
 
-Report всегда использует такой порядок: загрузка конфигурации, Codex auth, условная проверка Codex image input при `TRACKER_IMAGE_CONTEXT_ENABLED=true`, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Отсутствие `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH` не проваливает preflight; эти write checks получают статус `WARN`, и production issue или merge request не изменяются.
+Report всегда использует такой порядок: загрузка конфигурации, Codex auth, условная проверка Codex image input при `TRACKER_IMAGE_CONTEXT_ENABLED=true`, условная проверка Codex self-review при `CODEX_SELF_REVIEW_ENABLED=true`, git repository, Tracker read, Tracker write, GitLab read, GitLab write, target commands. Отсутствие `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH` не проваливает preflight; эти write checks получают статус `WARN`, и production issue или merge request не изменяются.
 
 Для strict sandbox run задайте обе sandbox-переменные:
 
@@ -206,6 +208,8 @@ typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visu
 ```
 
 `LINT_COMMAND` и `TEST_COMMAND` сохраняют значения по умолчанию. Остальные gates пропускаются, если соответствующая command environment variable не задана. Любой configured gate с ненулевым exit блокирует publish и передает gate command, stdout и stderr обратно в Codex fix prompt.
+
+When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH>` after quality gates pass and before publishing the merge request. Blocking self-review findings are fed into the same Codex fix prompt path, quality gates run again, and self-review reruns. If findings remain after `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS`, the task fails without creating or updating the merge request.
 
 Coverage parsing поддерживает такой Istanbul/Vitest-style summary:
 
