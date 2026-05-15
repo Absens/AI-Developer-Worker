@@ -3,6 +3,7 @@ import type {
   ClarificationQuestion,
   CodexExecution,
   CodexProgressEvent,
+  CodexReviewRunOptions,
   CodexRunner,
   CodexRunObserver,
   CodexRunOptions,
@@ -102,6 +103,8 @@ interface CodexJsonlState {
   stdoutRemainder: string;
   stderrRemainder: string;
 }
+
+type CodexRunnerMode = "new" | "resume" | "review";
 
 const createCodexJsonlState = (): CodexJsonlState => ({
   errors: [],
@@ -251,7 +254,7 @@ const isAgentMessageItem = (
   (itemType === "message" && (!item?.role || item.role === "assistant"));
 
 const progressEventFromCodexEvent = (
-  mode: "new" | "resume",
+  mode: CodexRunnerMode,
   event: CodexEvent,
 ): CodexProgressEvent | undefined => {
   const item = isRecord(event.item) ? event.item : undefined;
@@ -372,7 +375,7 @@ const logParsedStdoutEvent = (
   event: CodexEvent,
   state: CodexJsonlState,
   logger: Logger,
-  mode: "new" | "resume",
+  mode: CodexRunnerMode,
   includeRawEvents: boolean,
   observer?: CodexRunObserver,
 ): void => {
@@ -407,7 +410,7 @@ const processStdoutLine = (
   line: string,
   state: CodexJsonlState,
   logger: Logger,
-  mode: "new" | "resume",
+  mode: CodexRunnerMode,
   includeRawEvents: boolean,
   observer?: CodexRunObserver,
 ): void => {
@@ -449,7 +452,7 @@ const consumeChunkLines = (
 const flushRemainders = (
   state: CodexJsonlState,
   logger: Logger,
-  mode: "new" | "resume",
+  mode: CodexRunnerMode,
   includeRawEvents: boolean,
   observer?: CodexRunObserver,
 ): void => {
@@ -515,6 +518,23 @@ export class CliCodexRunner implements CodexRunner {
     });
   }
 
+  runReview(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexReviewRunOptions,
+  ): Promise<CodexExecution> {
+    return this.run({
+      prompt,
+      mode: "review",
+      observer,
+      imagePaths: [],
+      review: {
+        baseBranch: options?.baseBranch ?? this.config.baseBranch,
+        title: options?.title,
+      },
+    });
+  }
+
   private buildBaseArgs(lastMessagePath: string): string[] {
     const args = [
       "exec",
@@ -538,12 +558,39 @@ export class CliCodexRunner implements CodexRunner {
     return args;
   }
 
+  private buildReviewArgs(
+    lastMessagePath: string,
+    review: { baseBranch: string; title?: string },
+  ): string[] {
+    const args = [
+      "exec",
+      "review",
+      "--json",
+      "--output-last-message",
+      lastMessagePath,
+      "--base",
+      review.baseBranch,
+    ];
+
+    const title = review.title?.trim();
+    if (title) {
+      args.push("--title", title);
+    }
+    if (this.config.codexModel) {
+      args.push("--model", this.config.codexModel);
+    }
+
+    args.push("--skip-git-repo-check", "--ephemeral");
+    return args;
+  }
+
   private async run(input: {
     prompt: string;
-    mode: "new" | "resume";
+    mode: CodexRunnerMode;
     threadId?: string;
     observer?: CodexRunObserver;
     imagePaths: string[];
+    review?: { baseBranch: string; title?: string };
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
     const lastMessagePath = join(tempDir, "last-message.txt");
@@ -570,12 +617,15 @@ export class CliCodexRunner implements CodexRunner {
     }, this.config.codexProgressLogIntervalMs);
     heartbeat.unref?.();
     try {
-      const args = this.buildBaseArgs(lastMessagePath);
+      const args =
+        input.mode === "review" && input.review
+          ? this.buildReviewArgs(lastMessagePath, input.review)
+          : this.buildBaseArgs(lastMessagePath);
       if (input.mode === "resume" && input.threadId) {
         args.push("resume");
         appendImageArgs(args, input.imagePaths);
         args.push(input.threadId);
-      } else {
+      } else if (input.mode !== "review") {
         appendImageArgs(args, input.imagePaths);
       }
       this.logger.info("Running Codex command.", {

@@ -71,6 +71,8 @@ const createConfig = (
   codexProgressLogIntervalMs: 30 * 1000,
   codexLogFullEvents: false,
   codexQuestionMarker: "AI_QUESTION:",
+  codexSelfReviewEnabled: false,
+  codexSelfReviewMaxFixAttempts: 1,
   maxFixAttempts: 2,
   maxReviewFixAttempts: 2,
   workerId: "worker-1",
@@ -91,6 +93,64 @@ afterEach(() => {
 });
 
 describe("CliCodexRunner", () => {
+  it("runs codex exec review against the configured base branch", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-review-runner.cjs");
+    const argsPath = join(tempDir, "review-args.json");
+    const stdinPath = join(tempDir, "review-stdin.txt");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        `fs.writeFileSync(${JSON.stringify(stdinPath)}, fs.readFileSync(0, 'utf8'), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'AI_SELF_REVIEW: {\"status\":\"pass\",\"summary\":\"No blocking issues.\",\"findings\":[]}\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-review' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexModel: "gpt-5.5",
+      },
+      new Logger(),
+    );
+
+    const execution = await runner.runReview("Review this diff.", undefined, {
+      baseBranch: "main",
+      title: "[AI] DEV-1 implementation",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const lastMessageFile = args.at(args.indexOf("--output-last-message") + 1);
+    expect(args).toEqual([
+      "exec",
+      "review",
+      "--json",
+      "--output-last-message",
+      lastMessageFile,
+      "--base",
+      "main",
+      "--title",
+      "[AI] DEV-1 implementation",
+      "--model",
+      "gpt-5.5",
+      "--skip-git-repo-check",
+      "--ephemeral",
+    ]);
+    expect(readFileSync(stdinPath, "utf8")).toBe("Review this diff.");
+    expect(execution.finalMessage).toContain("AI_SELF_REVIEW:");
+    expect(execution.threadId).toBe("thread-review");
+  });
+
   it("passes image paths to initial codex exec runs", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

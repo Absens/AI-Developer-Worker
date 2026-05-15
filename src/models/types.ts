@@ -238,6 +238,11 @@ export interface CodexRunOptions {
   imagePaths?: string[];
 }
 
+export interface CodexReviewRunOptions {
+  baseBranch: string;
+  title?: string;
+}
+
 export interface TaskAnalysisDecision {
   confidence: number;
   taskType: TaskType;
@@ -899,7 +904,7 @@ export type CodexProgressEventKind =
 
 export interface CodexProgressEvent {
   kind: CodexProgressEventKind;
-  mode: "new" | "resume";
+  mode: "new" | "resume" | "review";
   type: string;
   itemType?: string;
   itemStatus?: string;
@@ -927,6 +932,11 @@ export interface CodexRunner {
     prompt: string,
     observer?: CodexRunObserver,
     options?: CodexRunOptions,
+  ): Promise<CodexExecution>;
+  runReview(
+    prompt: string,
+    observer?: CodexRunObserver,
+    options?: CodexReviewRunOptions,
   ): Promise<CodexExecution>;
 }
 
