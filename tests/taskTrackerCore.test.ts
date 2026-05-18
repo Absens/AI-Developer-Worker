@@ -8,6 +8,7 @@ import {
   InvalidTaskStatusTransitionError,
   TASK_STATUS_TO_LOGICAL_STATUS,
   canOwnerUpdateFieldGroup,
+  canTransitionTaskStatus,
   mapTaskStatusToLogicalStatus,
 } from "../src/domain/taskTracker/index.js";
 import type {
@@ -268,11 +269,20 @@ describe("internal task tracker core", () => {
       awaiting_human: "waiting_for_answer",
       implementing: "in_progress",
       review: "review",
+      human_testing: "review",
       done: "done",
       failed: "failed",
       cancelled: "failed",
     });
     expect(mapTaskStatusToLogicalStatus("blocked")).toBe("waiting_for_answer");
+    expect(mapTaskStatusToLogicalStatus("human_testing")).toBe("review");
+  });
+
+  it("allows merged review tasks to wait for human testing before completion", () => {
+    expect(canTransitionTaskStatus("review", "human_testing")).toBe(true);
+    expect(canTransitionTaskStatus("human_testing", "done")).toBe(true);
+    expect(canTransitionTaskStatus("human_testing", "awaiting_human")).toBe(true);
+    expect(canTransitionTaskStatus("human_testing", "review")).toBe(false);
   });
 
   it("preserves schema-versioned decision payloads", async () => {

@@ -517,14 +517,14 @@ export class InternalWorkerOrchestrator {
     if (mergeRequest.state === "merged" || mergeRequest.mergedAt) {
       await this.taskTracker.setStatus(
         task.id,
-        "done",
-        `Merge Request merged: ${mergeRequest.url}`,
+        "human_testing",
+        `Merge Request merged; awaiting human testing: ${mergeRequest.url}`,
       );
       await this.workflow.recordLifecycleEvent(task.id, {
-        kind: "task_completed",
+        kind: "human_testing_started",
         source: "gitlab_sync",
         actor: { owner: "worker_agent", id: this.config.workerId },
-        message: "Merge request is merged; task marked done.",
+        message: "Merge request is merged; task is waiting for human testing.",
         payload: {
           mergeRequestIid: mergeRequest.iid,
           mergeRequestUrl: mergeRequest.url,

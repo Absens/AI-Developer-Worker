@@ -12,6 +12,7 @@ export const TASK_STATUSES: TaskStatusDto[] = [
   'implementing',
   'validating',
   'review',
+  'human_testing',
   'fixing_review',
   'blocked',
   'done',
@@ -47,6 +48,7 @@ const STATUS_LABELS: Record<string, string> = {
   implementing: 'В работе',
   validating: 'Проверка',
   review: 'Ревью',
+  human_testing: 'Тестируется человеком',
   fixing_review: 'Исправление ревью',
   blocked: 'Заблокирована',
   done: 'Завершена',
@@ -93,7 +95,16 @@ export const TASK_COMMAND_POLICIES: CommandPolicy[] = [
     label: 'Поставить на паузу',
     icon: 'pi pi-pause',
     capability: 'canHold',
-    statuses: ['ready', 'claimed', 'analyzing', 'awaiting_human', 'implementing', 'validating', 'review'],
+    statuses: [
+      'ready',
+      'claimed',
+      'analyzing',
+      'awaiting_human',
+      'implementing',
+      'validating',
+      'review',
+      'human_testing',
+    ],
     reason: 'required',
     help: 'Ставит активную или ожидающую задачу на паузу.',
   },
@@ -137,7 +148,7 @@ export const statusSeverity = (status: string): 'success' | 'info' | 'warn' | 'd
   if (status === 'blocked' || status === 'awaiting_human') {
     return 'warn';
   }
-  if (status === 'ready' || status === 'review') {
+  if (status === 'ready' || status === 'review' || status === 'human_testing') {
     return 'info';
   }
   return 'secondary';

@@ -213,7 +213,9 @@ When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base
 
 ### Review task finalization
 
-When a task is in logical `review`, the worker periodically checks the associated GitLab merge request. If GitLab reports the MR as merged, the worker treats that as authoritative completion evidence and moves the task to `done`. If the MR is closed without merge, the task moves to a human hold state instead of being marked complete.
+When a task is in logical `review`, the worker periodically checks the associated GitLab merge request. If GitLab reports the MR as merged, the worker treats that as code-delivery evidence, not human acceptance. In direct Yandex mode, the external issue remains in logical `review`; configure that logical status to the Yandex status `Тестируется`. In internal-tracker mode, the task moves to `human_testing`, which also syncs to external logical `review`. The internal task moves to `done` only after the external Yandex task is manually resolved.
+
+If the MR is closed without merge, the task moves to a human hold state instead of being marked complete. Open MRs keep the existing unresolved review discussion handling.
 
 The `GITLAB_TOKEN` must be able to read merged and closed merge requests, not only opened MRs. New `AI MR` comments include the MR IID; older comments are still resolved through the MR URL or source branch.
 

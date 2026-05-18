@@ -75,8 +75,11 @@ const typeForStatusTransition = (
   if (to === "failed") {
     return { observabilityType: "task_failed", status: "error" };
   }
-  if (to === "awaiting_human" || to === "blocked") {
-    return { observabilityType: "task_waiting", status: "warning" };
+  if (to === "awaiting_human" || to === "blocked" || to === "human_testing") {
+    return {
+      observabilityType: "task_waiting",
+      status: to === "human_testing" ? "info" : "warning",
+    };
   }
   if (to === "review") {
     return { observabilityType: "mr_ready", status: "info" };

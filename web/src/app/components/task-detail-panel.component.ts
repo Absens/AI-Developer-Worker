@@ -57,6 +57,7 @@ const ACTIVE_DETAIL_STATUSES = new Set<TaskStatusDto>([
   'implementing',
   'validating',
   'review',
+  'human_testing',
   'fixing_review',
 ]);
 

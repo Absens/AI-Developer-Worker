@@ -455,7 +455,8 @@ describe("Yandex bridge", () => {
     await tracker.setStatus(claim.task.id, "implementing", "Implementation started.");
     await tracker.setStatus(claim.task.id, "validating", "Validation passed.");
     await tracker.setStatus(claim.task.id, "review", "Merge Request ready.");
-    await tracker.setStatus(claim.task.id, "done", "Merge Request merged.");
+    await tracker.setStatus(claim.task.id, "human_testing", "Merge Request merged; awaiting human testing.");
+    await tracker.setStatus(claim.task.id, "done", "External Yandex task is resolved; internal task marked done.");
     await bridge.exportTaskDigests(claim.task.id);
     await bridge.syncTaskStatus(claim.task.id);
     await bridge.exportTaskDigests(claim.task.id);
@@ -474,6 +475,83 @@ describe("Yandex bridge", () => {
         targetBusinessStatus: "done" satisfies LogicalStatus,
       }),
     ]);
+  });
+
+  it("syncs human_testing to external review instead of external done", async () => {
+    const source = new FakeYandexSource([issue()]);
+    const { bridge, tracker } = createBridge(source);
+
+    await bridge.importCandidates();
+    const task = await tracker.findTaskByExternalRef(YANDEX_TRACKER_PROVIDER, "DEV-1");
+    if (!task) {
+      throw new Error("Expected imported task.");
+    }
+
+    await tracker.setStatus(task.id, "claimed", "Claimed.");
+    await tracker.setStatus(task.id, "analyzing", "Analysis started.");
+    await tracker.setStatus(task.id, "implementing", "Implementation started.");
+    await tracker.setStatus(task.id, "validating", "Validation passed.");
+    await tracker.setStatus(task.id, "review", "Merge Request ready.");
+    await tracker.setStatus(task.id, "human_testing", "Merge Request merged; awaiting human testing.");
+
+    await bridge.syncTaskStatus(task.id);
+    await bridge.syncTaskStatus(task.id);
+
+    expect(source.transitions).toEqual([
+      expect.objectContaining({
+        externalKey: "DEV-1",
+        targetBusinessStatus: "review" satisfies LogicalStatus,
+      }),
+    ]);
+  });
+
+  it("marks an internal human_testing task done when Yandex becomes resolved", async () => {
+    const source = new FakeYandexSource([issue()]);
+    const { bridge, tracker } = createBridge(source);
+
+    await bridge.importCandidates();
+    const task = await tracker.findTaskByExternalRef(YANDEX_TRACKER_PROVIDER, "DEV-1");
+    if (!task) {
+      throw new Error("Expected imported task.");
+    }
+
+    await tracker.setStatus(task.id, "claimed", "Claimed.");
+    await tracker.setStatus(task.id, "analyzing", "Analysis started.");
+    await tracker.setStatus(task.id, "implementing", "Implementation started.");
+    await tracker.setStatus(task.id, "validating", "Validation passed.");
+    await tracker.setStatus(task.id, "review", "Merge Request ready.");
+    await tracker.setStatus(task.id, "human_testing", "Merge Request merged; awaiting human testing.");
+
+    source.snapshots = [
+      issueToSnapshot(
+        issue({
+          logicalStatus: "done",
+          statusKey: "resolved",
+          statusDisplay: "Решено",
+          updatedAt: "2026-04-28T11:00:00.000Z",
+        }),
+        "2026-04-28T11:00:00.000Z",
+      ),
+    ];
+
+    await bridge.importCandidates();
+
+    const updated = await tracker.getTask(task.id);
+    expect(updated.status).toBe("done");
+    expect(updated.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_completed",
+          source: "external_source",
+          message: "External Yandex task is resolved; internal task marked done.",
+          payload: expect.objectContaining({
+            provider: YANDEX_TRACKER_PROVIDER,
+            externalKey: "DEV-1",
+            externalBusinessStatus: "done",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("does not mirror child tasks by default, but mirrors approved children", async () => {

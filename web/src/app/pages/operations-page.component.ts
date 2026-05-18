@@ -32,6 +32,7 @@ const HOLDABLE_STATUSES = new Set([
   'implementing',
   'validating',
   'review',
+  'human_testing',
 ]);
 
 export type HeartbeatHealth = 'healthy' | 'warning' | 'error' | 'unknown';

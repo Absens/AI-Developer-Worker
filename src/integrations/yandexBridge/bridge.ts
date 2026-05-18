@@ -509,7 +509,40 @@ export class YandexBridge {
       });
     }
 
-    return updated;
+    return this.applyExternalAcceptance(updated, snapshot);
+  }
+
+  private async applyExternalAcceptance(
+    task: TaskRecord,
+    snapshot: ExternalIssueSnapshot,
+  ): Promise<TaskRecord> {
+    if (
+      snapshot.businessStatus !== "done" ||
+      task.status === "done" ||
+      task.status === "failed" ||
+      task.status === "cancelled"
+    ) {
+      return task;
+    }
+
+    await this.options.taskTracker.setStatus(
+      task.id,
+      "done",
+      "External Yandex task is resolved; internal task marked done.",
+    );
+    await this.options.taskTracker.appendEvent(task.id, {
+      kind: "task_completed",
+      source: "external_source",
+      actor: EXTERNAL_ACTOR,
+      message: "External Yandex task is resolved; internal task marked done.",
+      payload: {
+        provider: snapshot.provider,
+        externalKey: snapshot.externalKey,
+        externalBusinessStatus: snapshot.businessStatus,
+      },
+      createdAt: this.now().toISOString(),
+    });
+    return this.options.taskTracker.getTask(task.id);
   }
 
   private async importComments(task: TaskRecord): Promise<number> {

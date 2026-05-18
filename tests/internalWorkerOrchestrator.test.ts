@@ -371,7 +371,7 @@ const createOrchestrator = (
   );
 
 describe("InternalWorkerOrchestrator review reconciliation", () => {
-  it("marks review tasks done when the latest merge request is merged", async () => {
+  it("moves review tasks to human_testing when the latest merge request is merged", async () => {
     const tracker = new InMemoryTaskTrackerClient();
     const task = await tracker.createTask(baseTaskInput({ id: "internal-merged" }));
     await tracker.recordMergeRequest(task.id, {
@@ -406,13 +406,17 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
     const updated = await tracker.getTask(task.id);
 
     expect(outcome).toBe("processed");
-    expect(updated.status).toBe("done");
+    expect(updated.status).toBe("human_testing");
     expect(updated.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: "task_completed",
+          kind: "human_testing_started",
           source: "gitlab_sync",
-          message: "Merge request is merged; task marked done.",
+          message: "Merge request is merged; task is waiting for human testing.",
+          payload: expect.objectContaining({
+            mergeRequestIid: 17,
+            mergeRequestUrl: "https://gitlab.example.com/project/-/merge_requests/17",
+          }),
         }),
       ]),
     );
