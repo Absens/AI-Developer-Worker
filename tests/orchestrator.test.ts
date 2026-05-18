@@ -1782,7 +1782,7 @@ Reply with /resume A or /resume B.
     expect(tracker.candidateIssueLookups).toBe(0);
   });
 
-  it("marks review tasks done when the merge request is already merged", async () => {
+  it("keeps review tasks waiting for human testing when the merge request is already merged", async () => {
     const branch = "feature/ai-task-DEV-REVIEW-MERGED";
     const mrUrl = "https://gitlab.example.com/project/-/merge_requests/17";
     const mrComment = formatMergeRequestComment("worker-1", mrUrl, branch, 17);
@@ -1842,29 +1842,28 @@ Reply with /resume A or /resume B.
     expect(codex.resumeCalls).toHaveLength(0);
     expect(gitlab.getCalls).toEqual([17]);
     expect(gitlab.discussionCalls).toEqual([]);
-    expect(tracker.transitions).toEqual([
-      { issueKey: "DEV-REVIEW-MERGED", target: "done" },
-    ]);
-    expect(
-      tracker.addedComments.map((comment) => parseServiceComment(comment.text)),
-    ).toContainEqual({
-      kind: "AI STATUS",
-      worker: "worker-1",
-      state: "done",
-      details: `Merge Request merged: ${mrUrl}`,
-    });
+    expect(tracker.transitions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          issueKey: "DEV-REVIEW-MERGED",
+          target: "done",
+        }),
+      ]),
+    );
+    expect(tracker.addedComments.at(-1)?.text).toContain("awaiting human testing");
+    expect(tracker.addedComments.at(-1)?.text).toContain(mrUrl);
     expect(telemetry.events).toContainEqual(
       expect.objectContaining({
-        type: "task_completed",
+        type: "task_waiting",
         status: "info",
-        message: "Merge request is merged; task marked done.",
+        message: "Merge request is merged; task is waiting for human testing.",
         mergeRequestUrl: mrUrl,
         mergeRequestIid: 17,
       }),
     );
     expect(telemetry.taskFinished.at(-1)).toMatchObject({
-      outcome: "success",
-      message: "Merge request is merged; task marked done.",
+      outcome: "waiting",
+      message: "Merge request is merged; task is waiting for human testing.",
       context: {
         issueKey: "DEV-REVIEW-MERGED",
         branch,
@@ -1872,6 +1871,14 @@ Reply with /resume A or /resume B.
         mergeRequestIid: 17,
       },
     });
+
+    const secondOutcome = await orchestrator.runOnce();
+    expect(secondOutcome).toBe("idle");
+    expect(
+      tracker.addedComments.filter((comment) =>
+        comment.text.includes("awaiting human testing"),
+      ),
+    ).toHaveLength(1);
   });
 
   it("moves review tasks to human hold when the merge request was closed without merge", async () => {

@@ -57,6 +57,7 @@ describe('task UI labels', () => {
   it('renders Russian task status and command labels', () => {
     expect(statusLabel('ready')).toBe('Готова');
     expect(statusLabel('awaiting_human')).toBe('Ждет человека');
+    expect(statusLabel('human_testing')).toBe('Тестируется человеком');
     expect(statusLabel('fixing_review')).toBe('Исправление ревью');
     expect(statusLabel('codex_agent_message')).toBe('Сообщение Codex');
     expect(statusLabel('codex_command_progress')).toBe('Codex выполняется');

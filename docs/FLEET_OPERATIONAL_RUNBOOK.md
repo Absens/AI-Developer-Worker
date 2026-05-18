@@ -129,7 +129,7 @@ For a single worker process, `LOCK_BACKEND=none` disables task and repository lo
 
 ## Review Recovery
 
-When a task is in logical `review`, the worker reconciles the stored GitLab merge request before claiming new implementation work. A merged MR moves the task to `done`; a closed but unmerged MR moves the task to human hold.
+When a task is in logical `review`, the worker reconciles the stored GitLab merge request before claiming new implementation work. A merged MR moves internal tasks to `human_testing` and keeps Yandex in `Тестируется`; it does not mark the task resolved. A human resolving the Yandex task is the acceptance signal that moves the internal task to `done`.
 
 If tasks remain in `review` after humans merge their MRs, check:
 
@@ -137,6 +137,7 @@ If tasks remain in `review` after humans merge their MRs, check:
 2. The GitLab token can read merged and closed MRs, not only opened MRs.
 3. The MR source branch or IID still matches the stored task metadata.
 4. The worker poll loop is running for the repository profile that owns the task.
+5. The `review` logical status in `TRACKER_STATUS_MAP_FILE` includes the Yandex status `Тестируется`.
 
 ## Validation
 

@@ -26,6 +26,7 @@ export const TASK_STATUSES = [
   "implementing",
   "validating",
   "review",
+  "human_testing",
   "fixing_review",
   "blocked",
   "done",

@@ -9,6 +9,7 @@ export type TaskStatusDto =
   | 'implementing'
   | 'validating'
   | 'review'
+  | 'human_testing'
   | 'fixing_review'
   | 'blocked'
   | 'done'

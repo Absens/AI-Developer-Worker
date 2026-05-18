@@ -952,8 +952,12 @@ export class WorkerOrchestrator {
     const codexOptions: CodexRunOptions = { imagePaths: imageContext.imagePaths };
     const resolution = await this.resolveReviewMergeRequest(issue, comments);
     if (resolution.outcome === "merged") {
-      await this.finalizeMergedReview(issue, resolution.branch, resolution.mergeRequest);
-      return "processed";
+      return this.finalizeMergedReview(
+        issue,
+        resolution.branch,
+        resolution.mergeRequest,
+        comments,
+      );
     }
     if (resolution.outcome === "closed" || resolution.outcome === "missing") {
       await this.pauseReviewForHuman(issue, resolution);
@@ -1246,14 +1250,18 @@ export class WorkerOrchestrator {
     issue: TrackerIssue,
     branch: string,
     mergeRequest: MergeRequestInfo,
-  ): Promise<void> {
-    await this.tracker.transition(issue.key, "done");
+    comments: CommentWithMetadata[],
+  ): Promise<"processed" | "idle"> {
+    if (this.hasMergedReviewAwaitingHumanTestingComment(comments, mergeRequest)) {
+      return "idle";
+    }
+
     await this.tracker.addComment(
       issue.key,
       formatStatusComment(
         this.config.workerId,
-        "done",
-        `Merge Request merged: ${mergeRequest.url}`,
+        "review",
+        `Merge Request merged; awaiting human testing in Yandex: ${mergeRequest.url}`,
       ),
     );
     this.telemetry.recordEvent({
@@ -1263,20 +1271,38 @@ export class WorkerOrchestrator {
       branch,
       mergeRequestUrl: mergeRequest.url,
       mergeRequestIid: mergeRequest.iid,
-      type: "task_completed",
+      type: "task_waiting",
       status: "info",
-      message: "Merge request is merged; task marked done.",
+      message: "Merge request is merged; task is waiting for human testing.",
       details: {
         mergeRequestState: mergeRequest.state,
         mergedAt: mergeRequest.mergedAt,
       },
     });
     this.terminalOutcomes.set(issue.key, {
-      outcome: "success",
-      message: "Merge request is merged; task marked done.",
+      outcome: "waiting",
+      message: "Merge request is merged; task is waiting for human testing.",
       branch,
       mergeRequestUrl: mergeRequest.url,
       mergeRequestIid: mergeRequest.iid,
+    });
+    return "processed";
+  }
+
+  private hasMergedReviewAwaitingHumanTestingComment(
+    comments: CommentWithMetadata[],
+    mergeRequest: MergeRequestInfo,
+  ): boolean {
+    return comments.some((comment) => {
+      const metadata = comment.metadata;
+      return (
+        metadata?.kind === "AI STATUS" &&
+        metadata.worker === this.config.workerId &&
+        metadata.state === "review" &&
+        typeof metadata.details === "string" &&
+        metadata.details.includes("awaiting human testing") &&
+        metadata.details.includes(mergeRequest.url)
+      );
     });
   }
 
