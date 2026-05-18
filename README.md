@@ -1,32 +1,49 @@
 # AI Developer Worker
 
-Node.js/TypeScript воркер, который опрашивает Yandex Tracker, запускает `codex-cli` в целевом репозитории, валидирует результат и создает или переиспользует merge request в GitLab.
+Node.js/TypeScript воркер для AI-разработки: он забирает задачи из Yandex Tracker или внутреннего task tracker, запускает `codex-cli` в целевом репозитории, валидирует результат и создает или переиспользует merge request в GitLab.
 
-Проект рассчитан на запуск как локально, так и в Docker. Основной сценарий: воркер берет подходящую задачу Tracker, готовит ветку в смонтированном checkout, передает задачу Codex, прогоняет проверки качества, публикует изменения в GitLab и обновляет задачу комментариями/статусами.
+Проект рассчитан на запуск как локально, так и в Docker. Основной сценарий: воркер берет подходящую задачу, готовит ветку в смонтированном checkout, передает задачу Codex, прогоняет проверки качества, публикует изменения в GitLab и обновляет задачу комментариями, статусами и структурированными событиями.
 
 ## Что делает воркер
 
 За один цикл воркер:
 
 1. Восстанавливает незавершенную задачу текущего `WORKER_ID`, если такая есть.
-2. Иначе выбирает подходящую задачу Tracker с учетом lease-aware priority scoring.
-3. Делает структурированный анализ задачи, сохраняет комментарий `AI ANALYSIS:` и выбирает режим обработки.
+2. Иначе выбирает подходящую задачу через Yandex queue/tag или internal tracker claim queue с учетом lease-aware priority scoring.
+3. Делает структурированный анализ задачи, сохраняет `AI ANALYSIS:` в Tracker или structured decision во внутреннем tracker и выбирает режим обработки.
 4. Проверяет зависимости `blockedBy` до получения lease и до изменения git-состояния.
 5. Переводит задачу по логическим статусам из `TRACKER_STATUS_MAP_FILE`.
 6. Готовит ветку `feature/ai-task-{tracker_id}` в локальном checkout целевого репозитория.
 7. Запускает `codex exec`, затем настроенные проверки качества.
-8. Создает commit, push, merge request и обновляет Tracker.
+8. Создает commit, push, merge request и обновляет task tracker.
 
-Если Codex не может продолжить без бизнес-уточнения, он возвращает одну строку `AI_QUESTION:`. Воркер сохраняет `threadId`, переводит задачу в ожидание ответа и позже возобновляет тот же Codex-сеанс после комментария человека.
+Если Codex не может продолжить без бизнес-уточнения, он возвращает одну строку `AI_QUESTION:`. Воркер сохраняет `threadId`, переводит задачу в ожидание ответа и позже возобновляет тот же Codex-сеанс после команды человека.
+
+## Архитектура и поток данных
+
+Точка входа [src/index.ts](src/index.ts) загружает конфигурацию, запускает observability/cleanup, проверяет готовность целевого репозитория и Codex auth, затем вызывает orchestrator в one-shot или continuous режиме.
+
+Основные runtime-режимы:
+
+- **Direct Yandex mode**: `WorkerOrchestrator` использует Yandex Tracker как очередь задач и runtime state store. Технические события пишутся структурированными комментариями `AI STATUS`, `AI QUESTION`, `AI MR`, `AI REVIEW`, `AI LEASE`, `AI ANALYSIS` и `AI DECOMPOSITION`.
+- **Internal tracker mode**: `InternalWorkerOrchestrator` работает с внутренней task-моделью, atomic claim/lease, task events, decisions, validations и MR records. PostgreSQL - production storage, in-memory storage используется только для тестов и локальных smoke-сценариев.
+- **Fleet mode**: `WORKER_CONFIG_FILE` описывает несколько repository profiles. Для каждого профиля строится отдельный runtime context с собственным `repoPath`, `baseBranch`, GitLab project id, queues/tags и quality gates.
+
+Упрощенный поток:
+
+```text
+Task source -> Orchestrator -> Codex CLI -> Quality gates -> Git/GitLab -> Task tracker
+```
 
 ## Структура проекта
 
 - [src/](src/) - runtime-код воркера.
 - [src/domain/](src/domain/) - оркестрация, маршрутизация задач, сборка prompt-ов и проверки качества.
-- [src/integrations/](src/integrations/) - адаптеры Tracker, GitLab, Git и Codex.
+- [src/integrations/](src/integrations/) - адаптеры Tracker, internal tracker, Yandex bridge, GitLab, Git и Codex.
 - [src/observability/](src/observability/) - health/readiness, метрики и оповещения.
 - [src/utils/](src/utils/) - запуск shell-команд, retry, логирование и общие helper-ы.
 - [tests/](tests/) - unit и smoke tests на Vitest.
+- [web/](web/) - Angular human console для internal task tracker.
 - [scripts/](scripts/) - операционные helper-ы, включая bootstrap Codex auth.
 - [docs/](docs/) - runbook-и по окружению, Docker, fleet mode, memory и observability.
 - [config/](config/) - пример карты статусов Tracker.
@@ -78,6 +95,8 @@ docker compose up --build
 - `npm run build` - собрать production bundle в `dist/`.
 - `npm run verify:codex-cli` - проверить статический контракт установленного Codex CLI.
 - `npm run dev` - запустить воркер через `tsx` с `.env`.
+- `npm run start` - запустить собранный bundle из `dist/`.
+- `npm run tracker:migrate` - применить PostgreSQL migrations для internal task tracker.
 - `npm run web:typecheck` - проверить Angular console TypeScript.
 - `npm run web:test` - запустить Angular unit tests.
 - `npm run web:build` - собрать Angular console в `web/dist/task-tracker-console/browser`.
@@ -121,6 +140,12 @@ docker compose up --build
 - `CODEX_SANDBOX=danger-full-access`
 - `CODEX_MODEL` и `CODEX_PROFILE`, если нужен явный выбор Codex-конфигурации.
 - `TRACKER_IMAGE_CONTEXT_ENABLED=true` для передачи screenshot-вложений Tracker в Codex.
+- `TASK_TRACKER_PROVIDER=yandex|internal` - источник runtime-состояния задач.
+- `TASK_INTAKE_MODE=standalone|yandex_integration|hybrid|system_only|ai_proposed` для internal tracker.
+- `YANDEX_SYNC_ENABLED=true|false` для импорта и зеркалирования Yandex через internal tracker.
+- `TASK_TRACKER_DATABASE_URL=postgres://...` для production internal tracker.
+- `TASK_TRACKER_UI_ENABLED=true|false`, `TASK_TRACKER_UI_STATIC_DIR=...`, `TASK_TRACKER_SYSTEM_TOKEN` и trusted proxy headers для human UI/API.
+- `AI_PROPOSALS_ENABLED`, `AUTO_EXECUTE_LOW_RISK_ENABLED` и лимиты `AI_PROPOSAL_*` для AI-created proposals.
 - `WORKER_RUN_ONCE=true|false`
 - `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` для fleet mode.
 
@@ -140,6 +165,23 @@ When a Yandex Tracker issue includes image attachments, the worker downloads sup
 
 Полная таблица переменных окружения находится в [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md).
 
+## Провайдеры задач
+
+Воркер поддерживает два источника runtime-состояния:
+
+- `TASK_TRACKER_PROVIDER=yandex` - прямой режим совместимости. Очередь, статусы, вопросы, MR metadata и leases хранятся в Yandex Tracker через статусы и structured comments.
+- `TASK_TRACKER_PROVIDER=internal` - внутренний task tracker. Каноническая задача, lifecycle, leases, decisions, agent runs, validation results и MR records хранятся во внутренней модели. Для production используйте `TASK_TRACKER_STORAGE=postgres`, примените `npm run tracker:migrate`, затем запускайте `npm run preflight`.
+
+Для internal provider `TASK_INTAKE_MODE` задает, откуда появляются задачи:
+
+- `standalone` - задачи создаются напрямую во внутреннем tracker через UI/API.
+- `yandex_integration` - Yandex bridge импортирует задачи из Yandex и зеркалит важные обновления обратно.
+- `hybrid` - разрешены и native/internal задачи, и импорт из Yandex.
+- `system_only` - задачи создает service account или внешняя automation-система.
+- `ai_proposed` - AI создает proposals, а выполнение контролируется policy и approval.
+
+`YANDEX_SYNC_ENABLED=true` допустим только для `yandex_integration` или `hybrid` и требует обычные Yandex credentials. Внутренний tracker не считает GitLab merge сам по себе бизнес-приемкой: merged MR переводит задачу в `human_testing`, а `done` наступает после ручного принятия внешней или внутренней задачи.
+
 ## Режимы работы
 
 `TASK_MODE` управляет маршрутизацией задач:
@@ -158,6 +200,18 @@ WORKER_RUN_ONCE=true
 ```
 
 В этом режиме воркер загружает только указанную задачу и не сканирует очередь.
+
+## Команды человека
+
+Когда Codex задает вопрос, воркер переводит задачу в ожидание ответа и сохраняет `threadId`. Для возобновления нужна явная команда в новом человеческом комментарии или через internal UI/API:
+
+- `/resume` или `/resume continue` - продолжить с новым контекстом.
+- `/resume A` - выбрать вариант из предложенных Codex options.
+- `/resume freeform: <ответ>` - передать произвольный ответ; строки после команды также попадут в ответ.
+- `/skip` - пропустить текущую задачу без продолжения реализации.
+- `/cancel` - отменить обработку задачи.
+
+Обычный комментарий без slash-команды не возобновляет задачу. Это защищает воркер от случайного продолжения после обсуждений, не адресованных AI.
 
 ## Проверки качества
 
@@ -187,12 +241,16 @@ Observability по умолчанию выключена. При `OBSERVABILITY_
 
 Для `TASK_TRACKER_PROVIDER=internal` production mode используйте PostgreSQL, примените `npm run tracker:migrate`, затем `npm run preflight`. Human workflow UI включается через `TASK_TRACKER_UI_ENABLED=true`; Angular UI будет на `/tasks` при configured `TASK_TRACKER_UI_STATIC_DIR`, JSON API начинается с `/api`, а write actions требуют trusted proxy role headers или `TASK_TRACKER_SYSTEM_TOKEN`.
 
-Docker builds the Angular console into the image by default and sets
-`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
-The old embedded task UI is removed; if the UI is enabled without static assets,
-`/tasks` returns a clear error instead of fallback HTML. Bearer auth remains a
-backend/service-client or reverse-proxy concern; the browser app does not store
-bearer tokens.
+Для локальной разработки UI сначала поднимите Node observability/API server на `127.0.0.1:9464`, затем выполните:
+
+```bash
+npm install --prefix web
+npm run web:dev
+```
+
+Angular dev server будет доступен на `http://127.0.0.1:4200/tasks` и проксирует `/api` в Node server. Production bundle собирается командой `npm run web:build` в `web/dist/task-tracker-console/browser`.
+
+Docker по умолчанию собирает Angular console в image и задает `TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`. Старый embedded task UI удален: если UI включен без static assets, `/tasks` возвращает явную ошибку, а не fallback HTML. Bearer auth остается задачей backend/service-client или reverse proxy; browser app не хранит bearer tokens.
 
 ## Документация
 
@@ -203,6 +261,7 @@ bearer tokens.
 - [docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md) - PostgreSQL migrations, retention, backup/restore и rollback для internal tracker.
 - [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) - локальный Docker-запуск и prerequisites.
 - [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md) - команды для Windows PowerShell.
+- [web/README.md](web/README.md) - локальная разработка и сборка Angular human console.
 - [docs/CODEX_AUTH_TROUBLESHOOTING.md](docs/CODEX_AUTH_TROUBLESHOOTING.md) - диагностика Codex auth, включая `refresh_token_reused`.
 - [docs/CODEX_CLI_UPDATE_RUNBOOK.md](docs/CODEX_CLI_UPDATE_RUNBOOK.md) - обновление Codex CLI и compatibility checks.
 - [compose.yaml](compose.yaml) - Compose-конфигурация.
@@ -215,5 +274,6 @@ bearer tokens.
 - Целевой репозиторий должен иметь рабочие credentials для `git fetch`, `git pull` и `git push`.
 - Если remote целевого репозитория использует SSH, воркер может переписать `origin` на HTTPS и использовать `GIT_REPOSITORY_TOKEN` или `GITLAB_TOKEN`.
 - Для commit внутри Docker задайте `GIT_AUTHOR_NAME` и `GIT_AUTHOR_EMAIL` либо настройте `user.name` и `user.email` в целевом checkout.
+- Не открывайте `TASK_TRACKER_UI_BIND_HOST=0.0.0.0` без trusted reverse proxy или bearer/system tokens; `localhost` auth mode предназначен только для локальной разработки.
 - Dockerfile устанавливает `git`, `curl`, `jq`, `ripgrep`, `openssh-client` и зафиксированную версию `@openai/codex@0.130.0`.
 - `CODEX_API_KEY` можно использовать как прямой источник неинтерактивной аутентификации. Если есть только `OPENAI_API_KEY`, заранее сохраните его в `CODEX_HOME` через `printenv OPENAI_API_KEY | codex login --with-api-key`.
