@@ -790,6 +790,8 @@ export interface ValidationResult {
   diagnostic: string;
 }
 
+export type MergeRequestState = "opened" | "merged" | "closed" | (string & {});
+
 export interface MergeRequestInfo {
   id: number;
   iid: number;
@@ -797,6 +799,10 @@ export interface MergeRequestInfo {
   title: string;
   sourceBranch: string;
   targetBranch: string;
+  state?: MergeRequestState;
+  mergedAt?: string;
+  closedAt?: string;
+  updatedAt?: string;
 }
 
 export interface MergeRequestDiscussion {
@@ -872,9 +878,11 @@ export interface GitService {
 export interface GitLabService {
   checkReadAccess(): Promise<void>;
   checkMergeRequestWriteAccess(sourceBranch: string): Promise<MergeRequestInfo>;
+  findMergeRequestByBranch(sourceBranch: string): Promise<MergeRequestInfo | null>;
   findOpenMergeRequestByBranch(
     sourceBranch: string,
   ): Promise<MergeRequestInfo | null>;
+  getMergeRequest(iid: number): Promise<MergeRequestInfo | null>;
   getMergeRequestDiscussions(iid: number): Promise<MergeRequestDiscussion[]>;
   replyToDiscussion(iid: number, discussionId: string, body: string): Promise<void>;
   getCurrentUser(): Promise<{ username: string }>;

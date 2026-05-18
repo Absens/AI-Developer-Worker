@@ -450,6 +450,30 @@ describe("Yandex bridge", () => {
         targetBusinessStatus: "in_progress" satisfies LogicalStatus,
       }),
     ]);
+
+    await tracker.setStatus(claim.task.id, "analyzing", "Analysis started.");
+    await tracker.setStatus(claim.task.id, "implementing", "Implementation started.");
+    await tracker.setStatus(claim.task.id, "validating", "Validation passed.");
+    await tracker.setStatus(claim.task.id, "review", "Merge Request ready.");
+    await tracker.setStatus(claim.task.id, "done", "Merge Request merged.");
+    await bridge.exportTaskDigests(claim.task.id);
+    await bridge.syncTaskStatus(claim.task.id);
+    await bridge.exportTaskDigests(claim.task.id);
+    await bridge.syncTaskStatus(claim.task.id);
+
+    const doneDigests = source.digests.filter(
+      (digest) => parseServiceComment(digest.digest)?.digestKind === "done",
+    );
+    const doneTransitions = source.transitions.filter(
+      (transition) => transition.targetBusinessStatus === "done",
+    );
+    expect(doneDigests).toHaveLength(1);
+    expect(doneTransitions).toEqual([
+      expect.objectContaining({
+        externalKey: "DEV-1",
+        targetBusinessStatus: "done" satisfies LogicalStatus,
+      }),
+    ]);
   });
 
   it("does not mirror child tasks by default, but mirrors approved children", async () => {

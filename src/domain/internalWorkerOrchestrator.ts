@@ -315,6 +315,10 @@ export class InternalWorkerOrchestrator {
       stage: "internal_polling",
     });
     await this.importExternalTasks();
+    const reconciled = await this.reconcileReviewTasks();
+    if (reconciled > 0) {
+      return "processed";
+    }
     const queueTasks = await this.recordInternalQueueMetrics();
 
     const claimStarted = Date.now();
@@ -456,6 +460,107 @@ export class InternalWorkerOrchestrator {
       }
       await bridge.mirrorApprovedChildTasks(taskId);
     }
+  }
+
+  private async reconcileReviewTasks(): Promise<number> {
+    const reviewTasks = await this.taskTracker.listTasks({
+      statuses: ["review"],
+      limit: 50,
+    });
+    let reconciled = 0;
+
+    for (const task of reviewTasks) {
+      try {
+        if (await this.reconcileReviewTask(task)) {
+          reconciled += 1;
+        }
+      } catch (error) {
+        if (error instanceof TemporaryIntegrationError) {
+          this.logger.warn("Skipping internal review reconciliation after transient GitLab error.", {
+            taskId: task.id,
+            error: error.message,
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return reconciled;
+  }
+
+  private async reconcileReviewTask(task: TaskRecord): Promise<boolean> {
+    const context = this.contextForTask(task);
+    if (!context) {
+      this.logger.warn("Skipping review reconciliation for task with unknown repository.", {
+        taskId: task.id,
+        repositoryName: task.repositoryName,
+      });
+      return false;
+    }
+
+    const latest = [...task.mergeRequests]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .at(-1);
+    if (!latest) {
+      return false;
+    }
+
+    const mergeRequest =
+      (latest.mergeRequest.iid
+        ? await context.gitlab.getMergeRequest(latest.mergeRequest.iid)
+        : null) ?? (await context.gitlab.findMergeRequestByBranch(latest.branch));
+    if (!mergeRequest) {
+      return false;
+    }
+
+    if (mergeRequest.state === "merged" || mergeRequest.mergedAt) {
+      await this.taskTracker.setStatus(
+        task.id,
+        "done",
+        `Merge Request merged: ${mergeRequest.url}`,
+      );
+      await this.workflow.recordLifecycleEvent(task.id, {
+        kind: "task_completed",
+        source: "gitlab_sync",
+        actor: { owner: "worker_agent", id: this.config.workerId },
+        message: "Merge request is merged; task marked done.",
+        payload: {
+          mergeRequestIid: mergeRequest.iid,
+          mergeRequestUrl: mergeRequest.url,
+          ...(mergeRequest.mergedAt ? { mergedAt: mergeRequest.mergedAt } : {}),
+        },
+      });
+      await this.syncExternalMirror(task.id);
+      return true;
+    }
+
+    if (mergeRequest.state === "closed") {
+      await this.taskTracker.setStatus(
+        task.id,
+        "awaiting_human",
+        `Merge Request was closed without merge: ${mergeRequest.url}`,
+      );
+      await this.workflow.recordLifecycleEvent(task.id, {
+        kind: "manual_hold",
+        source: "gitlab_sync",
+        actor: { owner: "worker_agent", id: this.config.workerId },
+        message: "Merge request was closed without merge; human decision required.",
+        payload: {
+          mergeRequestIid: mergeRequest.iid,
+          mergeRequestUrl: mergeRequest.url,
+          ...(mergeRequest.closedAt ? { closedAt: mergeRequest.closedAt } : {}),
+        },
+      });
+      await this.syncExternalMirror(task.id);
+      return true;
+    }
+
+    return false;
+  }
+
+  private contextForTask(task: TaskRecord): InternalExecutionContext | undefined {
+    return this.contexts.find((candidate) => candidate.profile.name === task.repositoryName);
   }
 
   private contextForClaim(claim: ClaimedTask): InternalExecutionContext {

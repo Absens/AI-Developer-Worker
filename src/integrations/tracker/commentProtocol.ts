@@ -90,6 +90,16 @@ const normalizeNumber = (value: unknown): number | undefined => {
   return value;
 };
 
+const parseMergeRequestIidFromUrl = (url: string): number | undefined => {
+  const match = url.match(/\/(?:-\/)?merge_requests\/(\d+)(?:[/?#]|$)/);
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const iid = Number(match[1]);
+  return Number.isInteger(iid) ? iid : undefined;
+};
+
 const normalizeBoolean = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined;
 
@@ -287,12 +297,15 @@ const parseStructuredServiceComment = (
       if (!url || !branch) {
         return undefined;
       }
+      const mergeRequestIid =
+        normalizeNumber(jsonPayload.mergeRequestIid) ?? parseMergeRequestIidFromUrl(url);
 
       return {
         kind,
         worker,
         url,
         branch,
+        ...(mergeRequestIid !== undefined ? { mergeRequestIid } : {}),
       };
     }
 
@@ -456,11 +469,13 @@ const parseStructuredServiceComment = (
   }
 
   if (kind === "AI MR" && parsed.url && parsed.branch) {
+    const mergeRequestIid = parseMergeRequestIidFromUrl(parsed.url);
     return {
       kind,
       worker: parsed.worker,
       url: parsed.url,
       branch: parsed.branch,
+      ...(mergeRequestIid !== undefined ? { mergeRequestIid } : {}),
     };
   }
 
@@ -525,6 +540,7 @@ export const formatMergeRequestComment = (
   worker: string,
   url: string,
   branch: string,
+  mergeRequestIid?: number,
 ): string =>
   buildStructuredComment(
     MR_PREFIX,
@@ -532,8 +548,15 @@ export const formatMergeRequestComment = (
       worker,
       url,
       branch,
+      ...(mergeRequestIid !== undefined ? { mergeRequestIid } : {}),
     },
-    `Merge request: ${url}\nBranch: ${branch}`,
+    [
+      `Merge request: ${url}`,
+      `Branch: ${branch}`,
+      mergeRequestIid !== undefined ? `Merge request IID: ${mergeRequestIid}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
   );
 
 export const formatReviewMetadataComment = (

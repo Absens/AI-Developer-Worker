@@ -171,6 +171,10 @@ typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visu
 
 When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH> --uncommitted` after tests/lint/build pass and before publishing the merge request. Blocking review findings are fed back into the existing Codex fix loop, then local quality gates and self-review run again. Human GitLab review remains the source of truth after the MR is published.
 
+### Review task finalization
+
+When a task is in logical `review`, the worker periodically checks the associated GitLab merge request. If GitLab reports the MR as merged, the worker treats that as authoritative completion evidence and moves the task to `done`. If the MR is closed without merge, the task moves to a human hold state instead of being marked complete. Open MRs keep the existing unresolved review discussion handling.
+
 ## Fleet, memory и observability
 
 Fleet mode включается через `WORKER_CONFIG_FILE` и позволяет одному процессу обслуживать несколько репозиториев. Координация между воркерами выполняется через Tracker-комментарии `AI LEASE:`.

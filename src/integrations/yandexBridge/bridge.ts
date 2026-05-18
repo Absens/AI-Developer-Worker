@@ -218,10 +218,22 @@ export class YandexBridge {
     }
 
     if (task.status === "done") {
-      await this.exportDigestOnce(task, ref.externalKey, `done:${task.updatedAt}`, {
-        digestKind: "done",
-        details: `Internal task ${task.id} is done.`,
-      });
+      const completion = [...task.events].reverse().find(
+        (event) =>
+          event.kind === "task_completed" ||
+          (event.kind === "task_status_changed" &&
+            (event.payload as { to?: unknown } | undefined)?.to === "done"),
+      );
+      await this.exportDigestOnce(
+        task,
+        ref.externalKey,
+        `done:${completion?.id ?? task.updatedAt}`,
+        {
+          digestKind: "done",
+          details: completion?.message ?? `Internal task ${task.id} is done.`,
+          ...(completion?.payload ? { payload: completion.payload } : {}),
+        },
+      );
     }
   }
 

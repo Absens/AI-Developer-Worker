@@ -29,6 +29,7 @@ import type {
   TrackerClient,
   TrackerIssue,
 } from "../src/models/types.js";
+import type { ObservabilityTelemetry } from "../src/observability/service.js";
 import { Logger } from "../src/utils/logger.js";
 
 const cleanupPaths: string[] = [];
@@ -241,8 +242,13 @@ class FakeGitLabService implements GitLabService {
   createCalls: string[] = [];
   createDescriptions: Array<string | undefined> = [];
   findCalls: string[] = [];
+  findAllCalls: string[] = [];
+  getCalls: number[] = [];
+  discussionCalls: number[] = [];
   replies: Array<{ iid: number; discussionId: string; body: string }> = [];
   openMergeRequestsByBranch: Record<string, MergeRequestInfo> = {};
+  mergeRequestsByBranch: Record<string, MergeRequestInfo> = {};
+  mergeRequestsByIid: Record<number, MergeRequestInfo> = {};
   discussionsByIid: Record<number, MergeRequestDiscussion[]> = {};
   currentUsername = "ai-worker";
 
@@ -261,6 +267,21 @@ class FakeGitLabService implements GitLabService {
   async findOpenMergeRequestByBranch(sourceBranch: string): Promise<MergeRequestInfo | null> {
     this.findCalls.push(sourceBranch);
     return this.openMergeRequestsByBranch[sourceBranch] ?? null;
+  }
+
+  async findMergeRequestByBranch(sourceBranch: string): Promise<MergeRequestInfo | null> {
+    this.findAllCalls.push(sourceBranch);
+    this.findCalls.push(sourceBranch);
+    return (
+      this.mergeRequestsByBranch[sourceBranch] ??
+      this.openMergeRequestsByBranch[sourceBranch] ??
+      null
+    );
+  }
+
+  async getMergeRequest(iid: number): Promise<MergeRequestInfo | null> {
+    this.getCalls.push(iid);
+    return this.mergeRequestsByIid[iid] ?? null;
   }
 
   async createMergeRequest(input: {
@@ -282,6 +303,7 @@ class FakeGitLabService implements GitLabService {
   }
 
   async getMergeRequestDiscussions(iid: number) {
+    this.discussionCalls.push(iid);
     return this.discussionsByIid[iid] ?? [];
   }
 
@@ -292,6 +314,66 @@ class FakeGitLabService implements GitLabService {
   async getCurrentUser(): Promise<{ username: string }> {
     return { username: this.currentUsername };
   }
+}
+
+class FakeObservability implements ObservabilityTelemetry {
+  readonly events: Array<Parameters<ObservabilityTelemetry["recordEvent"]>[0]> = [];
+  readonly taskFinished: Array<{
+    context: Parameters<ObservabilityTelemetry["recordTaskFinished"]>[0];
+    outcome: Parameters<ObservabilityTelemetry["recordTaskFinished"]>[1];
+    message?: string;
+  }> = [];
+
+  setWorkerState(_input: Parameters<ObservabilityTelemetry["setWorkerState"]>[0]): void {}
+
+  heartbeat(_workerId: string): void {}
+
+  setQueueDepth(_repositoryName: string, _queue: string, _depth: number): void {}
+
+  recordEvent(event: Parameters<ObservabilityTelemetry["recordEvent"]>[0]): void {
+    this.events.push(event);
+  }
+
+  incrementCounter(
+    _name: string,
+    _labels?: Parameters<ObservabilityTelemetry["incrementCounter"]>[1],
+    _value?: number,
+  ): void {}
+
+  observeHistogram(
+    _name: string,
+    _labels: Parameters<ObservabilityTelemetry["observeHistogram"]>[1],
+    _value: number,
+  ): void {}
+
+  setGauge(
+    _name: string,
+    _labels: Parameters<ObservabilityTelemetry["setGauge"]>[1],
+    _value: number,
+  ): void {}
+
+  recordTaskFinished(
+    context: Parameters<ObservabilityTelemetry["recordTaskFinished"]>[0],
+    outcome: Parameters<ObservabilityTelemetry["recordTaskFinished"]>[1],
+    _durationMs: number,
+    message?: string,
+  ): void {
+    this.taskFinished.push({
+      context,
+      outcome,
+      ...(message ? { message } : {}),
+    });
+  }
+
+  recordCodexRun(_input: Parameters<ObservabilityTelemetry["recordCodexRun"]>[0]): void {}
+
+  recordValidationGate(
+    _input: Parameters<ObservabilityTelemetry["recordValidationGate"]>[0],
+  ): void {}
+
+  recordMergeRequest(
+    _input: Parameters<ObservabilityTelemetry["recordMergeRequest"]>[0],
+  ): void {}
 }
 
 class FakeCodexRunner implements CodexRunner {
@@ -1698,6 +1780,165 @@ Reply with /resume A or /resume B.
     expect(codex.initialCalls).toHaveLength(0);
     expect(tracker.transitions).toEqual([]);
     expect(tracker.candidateIssueLookups).toBe(0);
+  });
+
+  it("marks review tasks done when the merge request is already merged", async () => {
+    const branch = "feature/ai-task-DEV-REVIEW-MERGED";
+    const mrUrl = "https://gitlab.example.com/project/-/merge_requests/17";
+    const mrComment = formatMergeRequestComment("worker-1", mrUrl, branch, 17);
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-REVIEW-MERGED",
+          title: "Merged review task",
+          description: "Already merged",
+          createdAt: "2026-05-15T10:01:00.000Z",
+          logicalStatus: "review",
+        },
+      ],
+      {
+        "DEV-REVIEW-MERGED": [
+          {
+            id: "1",
+            text: mrComment,
+            createdAt: "2026-05-15T10:02:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(mrComment),
+          },
+        ],
+      },
+    );
+    const gitlab = new FakeGitLabService();
+    gitlab.mergeRequestsByIid[17] = {
+      id: 101,
+      iid: 17,
+      url: mrUrl,
+      title: "[AI] DEV-REVIEW-MERGED implementation",
+      sourceBranch: branch,
+      targetBranch: "main",
+      state: "merged",
+      mergedAt: "2026-05-15T10:30:00.000Z",
+    };
+    const codex = new FakeCodexRunner([]);
+    const telemetry = new FakeObservability();
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { targetIssueKey: "DEV-REVIEW-MERGED" }),
+      tracker,
+      new FakeGitService(),
+      gitlab,
+      codex,
+      new Logger(),
+      undefined,
+      undefined,
+      undefined,
+      telemetry,
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(codex.initialCalls).toHaveLength(0);
+    expect(codex.resumeCalls).toHaveLength(0);
+    expect(gitlab.getCalls).toEqual([17]);
+    expect(gitlab.discussionCalls).toEqual([]);
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-REVIEW-MERGED", target: "done" },
+    ]);
+    expect(
+      tracker.addedComments.map((comment) => parseServiceComment(comment.text)),
+    ).toContainEqual({
+      kind: "AI STATUS",
+      worker: "worker-1",
+      state: "done",
+      details: `Merge Request merged: ${mrUrl}`,
+    });
+    expect(telemetry.events).toContainEqual(
+      expect.objectContaining({
+        type: "task_completed",
+        status: "info",
+        message: "Merge request is merged; task marked done.",
+        mergeRequestUrl: mrUrl,
+        mergeRequestIid: 17,
+      }),
+    );
+    expect(telemetry.taskFinished.at(-1)).toMatchObject({
+      outcome: "success",
+      message: "Merge request is merged; task marked done.",
+      context: {
+        issueKey: "DEV-REVIEW-MERGED",
+        branch,
+        mergeRequestUrl: mrUrl,
+        mergeRequestIid: 17,
+      },
+    });
+  });
+
+  it("moves review tasks to human hold when the merge request was closed without merge", async () => {
+    const branch = "feature/ai-task-DEV-REVIEW-CLOSED";
+    const mrUrl = "https://gitlab.example.com/project/-/merge_requests/18";
+    const mrComment = formatMergeRequestComment("worker-1", mrUrl, branch, 18);
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-REVIEW-CLOSED",
+          title: "Closed review task",
+          description: "Closed without merge",
+          createdAt: "2026-05-15T10:01:00.000Z",
+          logicalStatus: "review",
+        },
+      ],
+      {
+        "DEV-REVIEW-CLOSED": [
+          {
+            id: "1",
+            text: mrComment,
+            createdAt: "2026-05-15T10:02:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(mrComment),
+          },
+        ],
+      },
+    );
+    const gitlab = new FakeGitLabService();
+    gitlab.mergeRequestsByIid[18] = {
+      id: 102,
+      iid: 18,
+      url: mrUrl,
+      title: "[AI] DEV-REVIEW-CLOSED implementation",
+      sourceBranch: branch,
+      targetBranch: "main",
+      state: "closed",
+      closedAt: "2026-05-15T10:30:00.000Z",
+    };
+    const codex = new FakeCodexRunner([]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), { targetIssueKey: "DEV-REVIEW-CLOSED" }),
+      tracker,
+      new FakeGitService(),
+      gitlab,
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("waiting");
+    expect(codex.initialCalls).toHaveLength(0);
+    expect(gitlab.discussionCalls).toEqual([]);
+    expect(tracker.transitions).toEqual([
+      { issueKey: "DEV-REVIEW-CLOSED", target: "waiting_for_answer" },
+    ]);
+    expect(tracker.addedComments[0]?.text).toContain(
+      `Merge Request was closed without merge: ${mrUrl}`,
+    );
+    expect(parseServiceComment(tracker.addedComments[0]?.text ?? "")).toMatchObject({
+      kind: "AI STATUS",
+      worker: "worker-1",
+      state: "waiting_for_answer",
+      waitingReason: "manual_hold",
+    });
   });
 
   it("does not create a duplicate merge request for a target issue already in review", async () => {

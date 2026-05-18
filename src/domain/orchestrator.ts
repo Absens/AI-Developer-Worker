@@ -115,6 +115,12 @@ type SelfReviewGateOutcome =
     }
   | { outcome: "waiting" };
 
+type ReviewMergeRequestResolution =
+  | { outcome: "opened"; branch: string; mergeRequest: MergeRequestInfo }
+  | { outcome: "merged"; branch: string; mergeRequest: MergeRequestInfo }
+  | { outcome: "closed"; branch: string; mergeRequest: MergeRequestInfo }
+  | { outcome: "missing"; branch: string };
+
 const ACTIVE_STATES: LogicalStatus[] = ["in_progress", "waiting_for_answer"];
 const OWNED_TASK_STATES: LogicalStatus[] = [...ACTIVE_STATES, "review"];
 const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
@@ -944,7 +950,17 @@ export class WorkerOrchestrator {
     imageContext: PreparedTrackerImageContext,
   ): Promise<CycleOutcome> {
     const codexOptions: CodexRunOptions = { imagePaths: imageContext.imagePaths };
-    const { branch, mergeRequest } = await this.resolveReviewMergeRequest(issue, comments);
+    const resolution = await this.resolveReviewMergeRequest(issue, comments);
+    if (resolution.outcome === "merged") {
+      await this.finalizeMergedReview(issue, resolution.branch, resolution.mergeRequest);
+      return "processed";
+    }
+    if (resolution.outcome === "closed" || resolution.outcome === "missing") {
+      await this.pauseReviewForHuman(issue, resolution);
+      return "waiting";
+    }
+
+    const { branch, mergeRequest } = resolution;
     const pendingDiscussions = await this.findPendingReviewDiscussions(
       issue,
       comments,
@@ -1159,20 +1175,37 @@ export class WorkerOrchestrator {
   private async resolveReviewMergeRequest(
     issue: TrackerIssue,
     comments: CommentWithMetadata[],
-  ): Promise<{ branch: string; mergeRequest: MergeRequestInfo }> {
-    const branch = this.findLatestMergeRequestBranch(comments) ?? branchNameForIssue(issue.key);
-    const mergeRequest = await this.gitlab.findOpenMergeRequestByBranch(branch);
-    if (!mergeRequest) {
-      throw new PermanentTaskError(
-        `Issue ${issue.key} is in review, but no open merge request was found for ${branch}.`,
-      );
+  ): Promise<ReviewMergeRequestResolution> {
+    const metadata = this.findLatestMergeRequestMetadata(comments);
+    if (metadata?.mergeRequestIid !== undefined) {
+      const mergeRequest = await this.gitlab.getMergeRequest(metadata.mergeRequestIid);
+      if (mergeRequest) {
+        return this.classifyReviewMergeRequest(metadata.branch, mergeRequest);
+      }
     }
 
-    return { branch, mergeRequest };
+    if (metadata?.branch) {
+      const mergeRequest = await this.gitlab.findMergeRequestByBranch(metadata.branch);
+      return mergeRequest
+        ? this.classifyReviewMergeRequest(metadata.branch, mergeRequest)
+        : { outcome: "missing", branch: metadata.branch };
+    }
+
+    const branch = branchNameForIssue(issue.key);
+    const mergeRequest = await this.gitlab.findMergeRequestByBranch(branch);
+    return mergeRequest
+      ? this.classifyReviewMergeRequest(branch, mergeRequest)
+      : { outcome: "missing", branch };
   }
 
   private findLatestMergeRequestBranch(comments: CommentWithMetadata[]): string | undefined {
-    return comments
+    return this.findLatestMergeRequestMetadata(comments)?.branch;
+  }
+
+  private findLatestMergeRequestMetadata(
+    comments: CommentWithMetadata[],
+  ): { branch: string; mergeRequestIid?: number } | undefined {
+    const metadata = comments
       .filter(
         (comment) =>
           comment.metadata?.kind === "AI MR" &&
@@ -1180,7 +1213,131 @@ export class WorkerOrchestrator {
           comment.metadata.branch,
       )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .at(-1)?.metadata?.branch;
+      .at(-1)?.metadata;
+
+    if (!metadata?.branch) {
+      return undefined;
+    }
+
+    return {
+      branch: metadata.branch,
+      ...(metadata.mergeRequestIid !== undefined
+        ? { mergeRequestIid: metadata.mergeRequestIid }
+        : {}),
+    };
+  }
+
+  private classifyReviewMergeRequest(
+    fallbackBranch: string,
+    mergeRequest: MergeRequestInfo,
+  ): ReviewMergeRequestResolution {
+    const branch = mergeRequest.sourceBranch || fallbackBranch;
+    if (mergeRequest.state === "merged" || mergeRequest.mergedAt) {
+      return { outcome: "merged", branch, mergeRequest };
+    }
+    if (mergeRequest.state === "closed") {
+      return { outcome: "closed", branch, mergeRequest };
+    }
+
+    return { outcome: "opened", branch, mergeRequest };
+  }
+
+  private async finalizeMergedReview(
+    issue: TrackerIssue,
+    branch: string,
+    mergeRequest: MergeRequestInfo,
+  ): Promise<void> {
+    await this.tracker.transition(issue.key, "done");
+    await this.tracker.addComment(
+      issue.key,
+      formatStatusComment(
+        this.config.workerId,
+        "done",
+        `Merge Request merged: ${mergeRequest.url}`,
+      ),
+    );
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      branch,
+      mergeRequestUrl: mergeRequest.url,
+      mergeRequestIid: mergeRequest.iid,
+      type: "task_completed",
+      status: "info",
+      message: "Merge request is merged; task marked done.",
+      details: {
+        mergeRequestState: mergeRequest.state,
+        mergedAt: mergeRequest.mergedAt,
+      },
+    });
+    this.terminalOutcomes.set(issue.key, {
+      outcome: "success",
+      message: "Merge request is merged; task marked done.",
+      branch,
+      mergeRequestUrl: mergeRequest.url,
+      mergeRequestIid: mergeRequest.iid,
+    });
+  }
+
+  private async pauseReviewForHuman(
+    issue: TrackerIssue,
+    resolution: Extract<
+      ReviewMergeRequestResolution,
+      { outcome: "closed" | "missing" }
+    >,
+  ): Promise<void> {
+    const details =
+      resolution.outcome === "closed"
+        ? `Merge Request was closed without merge: ${resolution.mergeRequest.url}`
+        : `No GitLab merge request was found for review branch: ${resolution.branch}`;
+    await this.tracker.transition(issue.key, "waiting_for_answer");
+    await this.tracker.addComment(
+      issue.key,
+      formatStatusComment(
+        this.config.workerId,
+        "waiting_for_answer",
+        details,
+        "manual_hold",
+      ),
+    );
+    this.telemetry.recordEvent({
+      workerId: this.config.workerId,
+      repositoryName: this.repositoryName(),
+      issueKey: issue.key,
+      branch: resolution.branch,
+      ...(resolution.outcome === "closed"
+        ? {
+            mergeRequestUrl: resolution.mergeRequest.url,
+            mergeRequestIid: resolution.mergeRequest.iid,
+          }
+        : {}),
+      type: "manual_hold",
+      status: "warning",
+      message:
+        resolution.outcome === "closed"
+          ? "Merge request was closed without merge; human decision required."
+          : "Review task has no associated GitLab merge request; human decision required.",
+      ...(resolution.outcome === "closed"
+        ? {
+            details: {
+              mergeRequestState: resolution.mergeRequest.state,
+              closedAt: resolution.mergeRequest.closedAt,
+            },
+          }
+        : {}),
+    });
+    this.terminalOutcomes.set(issue.key, {
+      outcome: "waiting",
+      message: details,
+      branch: resolution.branch,
+      ...(resolution.outcome === "closed"
+        ? {
+            mergeRequestUrl: resolution.mergeRequest.url,
+            mergeRequestIid: resolution.mergeRequest.iid,
+          }
+        : {}),
+    });
   }
 
   private async findPendingReviewDiscussions(
@@ -2238,7 +2395,12 @@ export class WorkerOrchestrator {
   ): Promise<void> {
     await this.tracker.addComment(
       issue.key,
-      formatMergeRequestComment(this.config.workerId, mergeRequest.url, branch),
+      formatMergeRequestComment(
+        this.config.workerId,
+        mergeRequest.url,
+        branch,
+        mergeRequest.iid,
+      ),
     );
     await this.tracker.transition(issue.key, "review");
     await this.tracker.addComment(
