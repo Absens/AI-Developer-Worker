@@ -187,6 +187,14 @@ class FakeGitLabService implements GitLabService {
     return null;
   }
 
+  async findMergeRequestByBranch(): Promise<MergeRequestInfo | null> {
+    return null;
+  }
+
+  async getMergeRequest(): Promise<MergeRequestInfo | null> {
+    return null;
+  }
+
   async createMergeRequest(input: {
     sourceBranch: string;
     targetBranch: string;

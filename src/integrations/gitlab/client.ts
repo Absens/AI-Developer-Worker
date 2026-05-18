@@ -16,6 +16,10 @@ interface GitLabMergeRequestResponse {
   title: string;
   source_branch: string;
   target_branch: string;
+  state?: string;
+  merged_at?: string | null;
+  closed_at?: string | null;
+  updated_at?: string;
 }
 
 interface GitLabUserResponse {
@@ -56,7 +60,18 @@ const toMergeRequestInfo = (
   title: payload.title,
   sourceBranch: payload.source_branch,
   targetBranch: payload.target_branch,
+  ...(payload.state ? { state: payload.state } : {}),
+  ...(payload.merged_at ? { mergedAt: payload.merged_at } : {}),
+  ...(payload.closed_at ? { closedAt: payload.closed_at } : {}),
+  ...(payload.updated_at ? { updatedAt: payload.updated_at } : {}),
 });
+
+class GitLabNotFoundError extends Error {
+  constructor(path: string, body: string) {
+    super(`GitLab request failed for ${path}: 404 ${body}`);
+    this.name = "GitLabNotFoundError";
+  }
+}
 
 const toMergeRequestNote = (payload: GitLabNoteResponse): MergeRequestNote => ({
   id: payload.id,
@@ -154,6 +169,37 @@ export class GitLabApiClient implements GitLabService {
     );
 
     return response[0] ? toMergeRequestInfo(response[0]) : null;
+  }
+
+  async findMergeRequestByBranch(sourceBranch: string): Promise<MergeRequestInfo | null> {
+    const response = await this.request<GitLabMergeRequestResponse[]>(
+      `/projects/${encodeURIComponent(this.config.gitlabProjectId)}/merge_requests`,
+      {
+        query: {
+          state: "all",
+          source_branch: sourceBranch,
+          order_by: "updated_at",
+          sort: "desc",
+        },
+      },
+    );
+
+    return response[0] ? toMergeRequestInfo(response[0]) : null;
+  }
+
+  async getMergeRequest(iid: number): Promise<MergeRequestInfo | null> {
+    try {
+      const response = await this.request<GitLabMergeRequestResponse>(
+        `/projects/${encodeURIComponent(this.config.gitlabProjectId)}/merge_requests/${iid}`,
+      );
+
+      return toMergeRequestInfo(response);
+    } catch (error) {
+      if (error instanceof GitLabNotFoundError) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async createMergeRequest(input: {
@@ -263,6 +309,9 @@ export class GitLabApiClient implements GitLabService {
 
         if (!response.ok) {
           const body = await response.text();
+          if (response.status === 404) {
+            throw new GitLabNotFoundError(path, body);
+          }
           throw new Error(`GitLab request failed for ${path}: ${response.status} ${body}`);
         }
 

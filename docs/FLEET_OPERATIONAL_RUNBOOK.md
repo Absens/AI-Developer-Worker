@@ -127,6 +127,17 @@ For a single worker process, `LOCK_BACKEND=none` disables task and repository lo
 - Expired `AI LEASE:` comments do not block acquisition. Released lease comments make the latest lease inactive immediately.
 - Legacy `AI STATUS:` comments remain readable in single-repository orchestration, but fleet scheduling uses leases as the coordination source.
 
+## Review Recovery
+
+When a task is in logical `review`, the worker reconciles the stored GitLab merge request before claiming new implementation work. A merged MR moves the task to `done`; a closed but unmerged MR moves the task to human hold.
+
+If tasks remain in `review` after humans merge their MRs, check:
+
+1. The task has an `AI MR` comment or internal `merge_request_records` entry.
+2. The GitLab token can read merged and closed MRs, not only opened MRs.
+3. The MR source branch or IID still matches the stored task metadata.
+4. The worker poll loop is running for the repository profile that owns the task.
+
 ## Validation
 
 Recommended checks after changing fleet config:

@@ -107,6 +107,45 @@ describe("comment protocol", () => {
     });
   });
 
+  it("formats and parses AI MR comments with merge request IID", () => {
+    expect(
+      parseServiceComment(
+        formatMergeRequestComment(
+          "worker-1",
+          "https://gitlab/project/-/merge_requests/17",
+          "feature/x",
+          17,
+        ),
+      ),
+    ).toEqual({
+      kind: "AI MR",
+      worker: "worker-1",
+      url: "https://gitlab/project/-/merge_requests/17",
+      branch: "feature/x",
+      mergeRequestIid: 17,
+    });
+  });
+
+  it("recovers AI MR IID from legacy merge request URLs", () => {
+    const legacyText = `AI MR:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "url": "https://gitlab/project/-/merge_requests/17",
+  "branch": "feature/x"
+}
+\`\`\``;
+
+    expect(parseServiceComment(legacyText)).toEqual({
+      kind: "AI MR",
+      worker: "worker-1",
+      url: "https://gitlab/project/-/merge_requests/17",
+      branch: "feature/x",
+      mergeRequestIid: 17,
+    });
+  });
+
   it("formats, parses, and finds latest AI REVIEW metadata", () => {
     const first = formatReviewMetadataComment({
       worker: "worker-1",

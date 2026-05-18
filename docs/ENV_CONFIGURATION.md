@@ -211,6 +211,12 @@ typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visu
 
 When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH> --uncommitted` after quality gates pass and before publishing the merge request. Blocking self-review findings are fed into the same Codex fix prompt path, quality gates run again, and self-review reruns. If findings remain after `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS`, the task fails without creating or updating the merge request.
 
+### Review task finalization
+
+When a task is in logical `review`, the worker periodically checks the associated GitLab merge request. If GitLab reports the MR as merged, the worker treats that as authoritative completion evidence and moves the task to `done`. If the MR is closed without merge, the task moves to a human hold state instead of being marked complete.
+
+The `GITLAB_TOKEN` must be able to read merged and closed merge requests, not only opened MRs. New `AI MR` comments include the MR IID; older comments are still resolved through the MR URL or source branch.
+
 Coverage parsing поддерживает такой Istanbul/Vitest-style summary:
 
 ```json
