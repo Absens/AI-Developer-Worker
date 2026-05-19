@@ -125,6 +125,10 @@ interface InternalResumeContext {
 const isValidationSuccessful = (validation: ValidationResult): boolean =>
   validation.changed && qualityGatesPassed(validation.gates);
 
+const isDirtyRepositorySwitchError = (error: unknown): error is PermanentTaskError =>
+  error instanceof PermanentTaskError &&
+  /^Repository has uncommitted changes on .+; refusing to switch tasks\.$/.test(error.message);
+
 const hasRepositoryPromptProfileOverrides = (
   config: AppConfig,
 ): AppConfig["promptProfiles"] | undefined => config.promptProfiles;
@@ -641,8 +645,12 @@ export class InternalWorkerOrchestrator {
         return handled;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (error instanceof TemporaryIntegrationError) {
-          this.logger.warn("Temporary integration error during internal review feedback fix.", {
+        if (error instanceof TemporaryIntegrationError || isDirtyRepositorySwitchError(error)) {
+          const retryReason =
+            error instanceof TemporaryIntegrationError
+              ? "Temporary review feedback error"
+              : "Repository checkout blocked";
+          this.logger.warn(`${retryReason} during internal review feedback fix.`, {
             taskId: claim.task.id,
             mergeRequestIid: mergeRequest.iid,
             error: message,
@@ -650,7 +658,7 @@ export class InternalWorkerOrchestrator {
           await this.taskTracker.setStatus(
             claim.task.id,
             "review",
-            `Temporary review feedback error; will retry: ${message}`,
+            `${retryReason}; will retry: ${message}`,
           );
           await this.syncExternalMirror(claim.task.id);
           return true;

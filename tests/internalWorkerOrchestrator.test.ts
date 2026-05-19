@@ -833,4 +833,85 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
       ]),
     );
   });
+
+  it("keeps internal review tasks retryable when checkout is blocked by another dirty branch", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "internal-review-dirty-branch" }));
+    await tracker.recordMergeRequest(task.id, {
+      workerId: "worker-1",
+      branch: "feature/ai-task-internal-review-dirty-branch",
+      outcome: "created",
+      mergeRequest: {
+        id: 108,
+        iid: 24,
+        url: "https://gitlab.example.com/project/-/merge_requests/24",
+        title: "[AI] internal-review-dirty-branch implementation",
+        sourceBranch: "feature/ai-task-internal-review-dirty-branch",
+        targetBranch: "main",
+        state: "opened",
+      },
+    });
+    await moveReadyTaskToReview(tracker, task.id);
+
+    const git = new FakeGitService();
+    git.hasCommittedDiff = true;
+    git.checkoutError = new PermanentTaskError(
+      "Repository has uncommitted changes on ai/lazy-ai-agent-session; refusing to switch tasks.",
+    );
+    const gitlab = new FakeGitLabService();
+    gitlab.mergeRequestsByIid[24] = {
+      id: 108,
+      iid: 24,
+      url: "https://gitlab.example.com/project/-/merge_requests/24",
+      title: "[AI] internal-review-dirty-branch implementation",
+      sourceBranch: "feature/ai-task-internal-review-dirty-branch",
+      targetBranch: "main",
+      state: "opened",
+    };
+    gitlab.discussionsByIid[24] = [
+      {
+        id: "discussion-dirty-branch",
+        individualNote: false,
+        resolved: false,
+        notes: [
+          {
+            id: 24780,
+            body: "Retry after repository working tree is available.",
+            authorUsername: "reviewer",
+            system: false,
+            resolvable: true,
+            resolved: false,
+            createdAt: "2026-05-18T15:45:00.000Z",
+          },
+        ],
+      },
+    ];
+    const codex = new FakeCodexRunner(git);
+    const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
+
+    const outcome = await orchestrator.runOnce();
+    const updated = await tracker.getTask(task.id);
+
+    expect(outcome).toBe("processed");
+    expect(updated.status).toBe("review");
+    expect(codex.initialCalls).toBe(0);
+    expect(gitlab.replies).toEqual([]);
+    expect(updated.reviewMetadata).toHaveLength(0);
+    expect(updated.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_status_changed",
+          payload: expect.objectContaining({ from: "fixing_review", to: "review" }),
+        }),
+      ]),
+    );
+    expect(updated.events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_status_changed",
+          payload: expect.objectContaining({ to: "failed" }),
+        }),
+      ]),
+    );
+  });
 });
