@@ -6,6 +6,12 @@ import {
   type CreateTaskInput,
   type TaskActor,
 } from "../src/domain/taskTracker/index.js";
+import {
+  InMemoryYandexBridgeStore,
+  YANDEX_TRACKER_PROVIDER,
+  YandexBridge,
+  type YandexBridgeExternalSource,
+} from "../src/integrations/yandexBridge/index.js";
 import type {
   AppConfig,
   CodexExecution,
@@ -13,6 +19,10 @@ import type {
   CodexRunObserver,
   CodexRunOptions,
   CodexRunner,
+  ExportDigestInput,
+  ExternalIssueSnapshot,
+  ExternalTransitionInput,
+  ImportCandidatesInput,
   GitLabService,
   GitService,
   GlobalWorkerConfig,
@@ -385,11 +395,33 @@ class FakeCodexRunner implements CodexRunner {
   }
 }
 
+class FakeYandexSource implements YandexBridgeExternalSource {
+  readonly transitions: ExternalTransitionInput[] = [];
+  readonly digests: ExportDigestInput[] = [];
+
+  async importCandidates(_input: ImportCandidatesInput): Promise<ExternalIssueSnapshot[]> {
+    return [];
+  }
+
+  async exportDigest(input: ExportDigestInput): Promise<void> {
+    this.digests.push(input);
+  }
+
+  async transitionExternal(input: ExternalTransitionInput): Promise<void> {
+    this.transitions.push(input);
+  }
+
+  async getComments() {
+    return [];
+  }
+}
+
 const createOrchestrator = (
   tracker: InMemoryTaskTrackerClient,
   gitlab: FakeGitLabService,
   codex: FakeCodexRunner = new FakeCodexRunner(),
   git: FakeGitService = new FakeGitService(),
+  yandexBridges: YandexBridge[] = [],
 ): InternalWorkerOrchestrator =>
   new InternalWorkerOrchestrator(
     createGlobalConfig(),
@@ -404,7 +436,68 @@ const createOrchestrator = (
     ],
     tracker,
     new Logger(),
+    undefined,
+    undefined,
+    yandexBridges,
   );
+
+describe("InternalWorkerOrchestrator Yandex bridge status sync", () => {
+  it("syncs Yandex-sourced internal tasks to in_progress immediately after claim", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    await tracker.createTask(
+      baseTaskInput({
+        id: "yt_DEV-START",
+        source: {
+          kind: "external",
+          provider: YANDEX_TRACKER_PROVIDER,
+          externalKey: "DEV-START",
+        },
+        externalRefs: [
+          {
+            provider: YANDEX_TRACKER_PROVIDER,
+            externalKey: "DEV-START",
+            businessStatus: "open",
+            lastSeenAt: "2026-05-19T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    const codex = new FakeCodexRunner(git);
+    const source = new FakeYandexSource();
+    const bridge = new YandexBridge({
+      taskTracker: tracker,
+      source,
+      store: new InMemoryYandexBridgeStore(),
+      repository: {
+        repositoryName: "developer",
+        repoPathKey: "developer",
+        baseBranch: "main",
+        queues: ["DEV"],
+        tags: ["ai_dev"],
+      },
+      workerId: "worker-1",
+    });
+    const orchestrator = createOrchestrator(tracker, gitlab, codex, git, [bridge]);
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(source.transitions.map((transition) => transition.targetBusinessStatus)).toEqual([
+      "in_progress",
+      "review",
+    ]);
+    expect(source.digests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          externalKey: "DEV-START",
+          digest: expect.stringContaining("AI DIGEST:"),
+        }),
+      ]),
+    );
+  });
+});
 
 describe("InternalWorkerOrchestrator review reconciliation", () => {
   it("moves review tasks to human_testing when the latest merge request is merged", async () => {
