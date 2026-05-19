@@ -747,6 +747,7 @@ export class InternalWorkerOrchestrator {
     });
 
     try {
+      await this.syncExternalMirror(claim.task.id);
       const outcome = await this.processTask(context, claim);
       await this.syncExternalMirror(claim.task.id);
       this.telemetry.recordTaskFinished(

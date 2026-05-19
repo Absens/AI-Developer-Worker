@@ -664,7 +664,7 @@ describe("worker smoke", () => {
       expect(mockServer.searchBodies).toEqual([
         { query: '"Queue": "FRONTEND" AND "Tags": "ai_dev"' },
       ]);
-      expect(mockServer.transitions).toEqual(["review"]);
+      expect(mockServer.transitions).toEqual(["start", "review"]);
       expect(
         mockServer.trackerComments.some((comment) => comment.text.startsWith("AI DIGEST:")),
       ).toBe(true);
