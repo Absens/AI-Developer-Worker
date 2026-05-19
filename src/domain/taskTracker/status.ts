@@ -49,7 +49,7 @@ const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   validating: ["review", "fixing_review", "implementing", "done", "failed", "cancelled"],
   review: ["fixing_review", "human_testing", "done", "awaiting_human", "failed", "cancelled"],
   human_testing: ["done", "awaiting_human", "failed", "cancelled"],
-  fixing_review: ["validating", "review", "failed", "cancelled"],
+  fixing_review: ["validating", "review", "awaiting_human", "failed", "cancelled"],
   blocked: ["ready", "failed", "cancelled"],
   done: [],
   failed: ["ready", "cancelled"],

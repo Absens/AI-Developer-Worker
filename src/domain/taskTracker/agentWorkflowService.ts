@@ -1,5 +1,6 @@
 import type {
   AgentRunInput,
+  ClaimReviewTaskInput,
   ClaimTaskInput,
   ClaimedTask,
   ClarificationQuestionInput,
@@ -46,6 +47,16 @@ export class AgentWorkflowService {
       throw new Error("leaseTtlSeconds must be a positive number.");
     }
     return this.tracker.claimNextTask(input);
+  }
+
+  async claimReviewTask(input: ClaimReviewTaskInput): Promise<ClaimedTask | null> {
+    requireNonEmpty(input.workerId, "workerId");
+    requireNonEmpty(input.taskId, "taskId");
+    requireArray(input.repositoryProfiles, "repositoryProfiles");
+    if (!Number.isFinite(input.leaseTtlSeconds) || input.leaseTtlSeconds <= 0) {
+      throw new Error("leaseTtlSeconds must be a positive number.");
+    }
+    return this.tracker.claimReviewTask(input);
   }
 
   async recordLifecycleEvent(taskId: string, input: TaskEventInput): Promise<void> {

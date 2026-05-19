@@ -247,6 +247,77 @@ describe("internal task tracker queue", () => {
 
     await expect(client.claimNextTask(claimInput())).resolves.toBeNull();
   });
+
+  it("claims a review task for review feedback and moves it to fixing_review", async () => {
+    const client = new InMemoryTaskTrackerClient();
+    await client.createTask(baseTaskInput({ id: "review-task", status: "ready" }));
+    await client.setStatus("review-task", "claimed", "Claimed for setup.");
+    await client.setStatus("review-task", "analyzing", "Analyzing for setup.");
+    await client.setStatus("review-task", "implementing", "Implementing for setup.");
+    await client.setStatus("review-task", "validating", "Validating for setup.");
+    await client.setStatus("review-task", "review", "Ready for review.");
+
+    const claim = await client.claimReviewTask({
+      workerId: "worker-1",
+      taskId: "review-task",
+      repositoryProfiles: [{ name: "developer", repoPathKey: "developer", queues: ["DEV"] }],
+      leaseTtlSeconds: 60,
+    });
+
+    const updated = await client.getTask("review-task");
+    expect(claim?.task.id).toBe("review-task");
+    expect(claim?.task.status).toBe("fixing_review");
+    expect(updated.status).toBe("fixing_review");
+    expect(claim?.taskLease.kind).toBe("task");
+    expect(claim?.repositoryLease.kind).toBe("repository");
+  });
+
+  it("does not claim a review task when the repository lease is active", async () => {
+    const client = new InMemoryTaskTrackerClient();
+    await client.createTask(baseTaskInput({ id: "ready-task", title: "Ready" }));
+    await client.createTask(baseTaskInput({ id: "review-task", title: "Review" }));
+    await client.setStatus("review-task", "claimed", "Claimed for setup.");
+    await client.setStatus("review-task", "analyzing", "Analyzing for setup.");
+    await client.setStatus("review-task", "implementing", "Implementing for setup.");
+    await client.setStatus("review-task", "validating", "Validating for setup.");
+    await client.setStatus("review-task", "review", "Ready for review.");
+
+    await client.claimNextTask(claimInput({ targetExternalKey: "ready-task" }));
+    const reviewClaim = await client.claimReviewTask({
+      workerId: "worker-2",
+      taskId: "review-task",
+      repositoryProfiles: [{ name: "developer", repoPathKey: "developer", queues: ["DEV"] }],
+      leaseTtlSeconds: 60,
+    });
+
+    expect(reviewClaim).toBeNull();
+  });
+
+  it("does not claim the same review task twice", async () => {
+    const client = new InMemoryTaskTrackerClient();
+    await client.createTask(baseTaskInput({ id: "review-task", status: "ready" }));
+    await client.setStatus("review-task", "claimed", "Claimed for setup.");
+    await client.setStatus("review-task", "analyzing", "Analyzing for setup.");
+    await client.setStatus("review-task", "implementing", "Implementing for setup.");
+    await client.setStatus("review-task", "validating", "Validating for setup.");
+    await client.setStatus("review-task", "review", "Ready for review.");
+
+    const firstClaim = await client.claimReviewTask({
+      workerId: "worker-1",
+      taskId: "review-task",
+      repositoryProfiles: [{ name: "developer", repoPathKey: "developer", queues: ["DEV"] }],
+      leaseTtlSeconds: 60,
+    });
+    const secondClaim = await client.claimReviewTask({
+      workerId: "worker-2",
+      taskId: "review-task",
+      repositoryProfiles: [{ name: "developer", repoPathKey: "developer", queues: ["DEV"] }],
+      leaseTtlSeconds: 60,
+    });
+
+    expect(firstClaim?.task.status).toBe("fixing_review");
+    expect(secondClaim).toBeNull();
+  });
 });
 
 const testDatabaseUrl = process.env.TASK_TRACKER_TEST_DATABASE_URL;
@@ -310,5 +381,26 @@ describePostgres("PostgresTaskTrackerClient queue", () => {
       workerId: "worker-1",
       token: claim?.repositoryLease.token ?? "",
     });
+  });
+
+  it("claims a review task through PostgreSQL storage", async () => {
+    const client = new PostgresTaskTrackerClient(pg);
+    await client.createTask(baseTaskInput({ id: "pg-review-task", status: "ready" }));
+    await client.setStatus("pg-review-task", "claimed", "Claimed for setup.");
+    await client.setStatus("pg-review-task", "analyzing", "Analyzing for setup.");
+    await client.setStatus("pg-review-task", "implementing", "Implementing for setup.");
+    await client.setStatus("pg-review-task", "validating", "Validating for setup.");
+    await client.setStatus("pg-review-task", "review", "Ready for review.");
+
+    const claim = await client.claimReviewTask({
+      workerId: "worker-1",
+      taskId: "pg-review-task",
+      repositoryProfiles: [{ name: "developer", repoPathKey: "developer", queues: ["DEV"] }],
+      leaseTtlSeconds: 60,
+    });
+
+    const updated = await client.getTask("pg-review-task");
+    expect(claim?.task.id).toBe("pg-review-task");
+    expect(updated.status).toBe("fixing_review");
   });
 });

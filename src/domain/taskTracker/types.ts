@@ -684,6 +684,13 @@ export interface ClaimTaskInput {
   idempotencyKey?: string;
 }
 
+export interface ClaimReviewTaskInput {
+  workerId: string;
+  taskId: string;
+  repositoryProfiles: ClaimRepositoryProfile[];
+  leaseTtlSeconds: number;
+}
+
 export interface TaskLeaseRecord {
   leaseId: string;
   kind: "task" | "repository";
@@ -830,6 +837,7 @@ export interface TaskTrackerClient {
   recordMemoryContext(taskId: string, input: MemoryContextRecordInput): Promise<void>;
   addDependency(input: TaskDependencyInput): Promise<TaskDependency>;
   claimNextTask(input: ClaimTaskInput): Promise<ClaimedTask | null>;
+  claimReviewTask(input: ClaimReviewTaskInput): Promise<ClaimedTask | null>;
   heartbeatLease(
     leaseId: string,
     input: LeaseHeartbeatInput,

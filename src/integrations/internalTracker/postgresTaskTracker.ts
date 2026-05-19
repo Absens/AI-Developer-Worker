@@ -47,6 +47,7 @@ import type {
   ClarificationQuestionInput,
   ClarificationQuestionRecord,
   ClaimRepositoryProfile,
+  ClaimReviewTaskInput,
   ClaimTaskInput,
   CommentInput,
   CreateTaskInput,
@@ -1871,6 +1872,94 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     return clone(dependency);
   }
 
+  async claimReviewTask(input: ClaimReviewTaskInput): Promise<ClaimedTask | null> {
+    this.assertClaimInput(input);
+    if (!input.taskId.trim()) {
+      throw new Error("taskId is required to claim a review task.");
+    }
+    const now = this.now();
+    const nowIso = now.toISOString();
+
+    return this.withTransaction(async (client) => {
+      await client.query(
+        `
+          UPDATE task_leases
+          SET released_at = $1
+          WHERE released_at IS NULL AND expires_at <= $1
+        `,
+        [nowIso],
+      );
+
+      const taskId = await this.selectReviewClaimCandidate(client, input, nowIso);
+      if (!taskId) {
+        return null;
+      }
+
+      const task = await this.getTaskUsing(client, taskId);
+      if (activeBlockingDependenciesForTask(task.id, task.dependencies).length > 0) {
+        return null;
+      }
+
+      const taskLease = this.createLeaseRecord(
+        "task",
+        taskLeaseKeyForTask(task.id),
+        task,
+        input.workerId,
+        now,
+        input.leaseTtlSeconds,
+      );
+      const repositoryLease = this.createLeaseRecord(
+        "repository",
+        repositoryLeaseKeyForTask(task),
+        task,
+        input.workerId,
+        now,
+        input.leaseTtlSeconds,
+      );
+
+      const repositoryInserted = await this.insertLeaseIfAvailable(client, repositoryLease);
+      if (!repositoryInserted) {
+        return null;
+      }
+
+      const taskInserted = await this.insertLeaseIfAvailable(client, taskLease);
+      if (!taskInserted) {
+        await client.query("DELETE FROM task_leases WHERE lease_id = $1", [
+          repositoryLease.leaseId,
+        ]);
+        return null;
+      }
+
+      await client.query(
+        "UPDATE tasks SET status = 'fixing_review', updated_at = $2 WHERE id = $1",
+        [task.id, nowIso],
+      );
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId: task.id,
+        kind: "task_claimed",
+        source: "worker_agent",
+        actor: { owner: "worker_agent", id: input.workerId },
+        payload: {
+          fromStatus: "review",
+          toStatus: "fixing_review",
+          taskLeaseId: taskLease.leaseId,
+          repositoryLeaseId: repositoryLease.leaseId,
+          repositoryLeaseKey: repositoryLease.leaseKey,
+        },
+        createdAt: nowIso,
+      });
+
+      const claimedTask = await this.getTaskUsing(client, task.id);
+      return {
+        task: claimedTask,
+        agentContext: buildAgentTaskContext(claimedTask),
+        taskLease,
+        repositoryLease,
+      };
+    });
+  }
+
   async claimNextTask(input: ClaimTaskInput): Promise<ClaimedTask | null> {
     this.assertClaimInput(input);
     const now = this.now();
@@ -3527,6 +3616,70 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
           LIMIT 1
         )
         SELECT id FROM candidate
+      `,
+      params,
+    );
+
+    return result.rows[0]?.id ?? null;
+  }
+
+  private async selectReviewClaimCandidate(
+    client: PostgresQueryable,
+    input: ClaimReviewTaskInput,
+    nowIso: string,
+  ): Promise<string | null> {
+    const params: unknown[] = [];
+    const addParam = (value: unknown): string => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+    const repositoryWhere = buildRepositoryProfileWhere(input.repositoryProfiles, addParam);
+    const taskRef = addParam(input.taskId);
+    const nowRef = addParam(nowIso);
+
+    const result = await client.query<{ id: string }>(
+      `
+        SELECT t.id
+        FROM tasks t
+        WHERE t.id = ${taskRef}
+          AND (${repositoryWhere})
+          AND t.status = 'review'
+          AND t.repository_name IS NOT NULL
+          AND t.repo_path_key IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM task_dependencies dep
+            WHERE dep.status = 'active'
+              AND (
+                (dep.kind = 'blocks' AND dep.to_task_id = t.id)
+                OR (
+                  dep.kind IN (
+                    'blocked_by',
+                    'requires_human_input',
+                    'requires_external_change'
+                  )
+                  AND dep.from_task_id = t.id
+                )
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM task_leases lease
+            WHERE lease.kind = 'task'
+              AND lease.task_id = t.id
+              AND lease.released_at IS NULL
+              AND lease.expires_at > ${nowRef}::timestamptz
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM task_leases lease
+            WHERE lease.kind = 'repository'
+              AND lease.lease_key = 'repo:' || lower(replace(coalesce(t.repo_path_key, t.repository_name), chr(92), '/'))
+              AND lease.released_at IS NULL
+              AND lease.expires_at > ${nowRef}::timestamptz
+          )
+        FOR UPDATE OF t SKIP LOCKED
+        LIMIT 1
       `,
       params,
     );
