@@ -48,6 +48,7 @@ import type {
   ClaimedTask,
   ClarificationQuestionInput,
   ClarificationQuestionRecord,
+  ClaimReviewTaskInput,
   ClaimTaskInput,
   CommentInput,
   CreateTaskInput,
@@ -1508,6 +1509,59 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     return clone(claimed);
   }
 
+  async claimReviewTask(input: ClaimReviewTaskInput): Promise<ClaimedTask | null> {
+    this.assertClaimInput(input);
+    if (!input.taskId.trim()) {
+      throw new Error("taskId is required to claim a review task.");
+    }
+
+    const now = this.now();
+    const task = this.tasks.get(input.taskId);
+    if (!task || task.status !== "review") {
+      return null;
+    }
+    if (!this.isEligibleReviewClaimCandidate(task, input, now)) {
+      return null;
+    }
+
+    const timestamp = now.toISOString();
+    const taskLease = this.createLeaseRecord("task", taskLeaseKeyForTask(task.id), task, input, now);
+    const repositoryLease = this.createLeaseRecord(
+      "repository",
+      repositoryLeaseKeyForTask(task),
+      task,
+      input,
+      now,
+    );
+
+    this.leases.set(taskLease.leaseId, taskLease);
+    this.leases.set(repositoryLease.leaseId, repositoryLease);
+    task.status = "fixing_review";
+    task.updatedAt = timestamp;
+    task.events.push({
+      id: `evt_${randomUUID()}`,
+      taskId: task.id,
+      kind: "task_claimed",
+      source: "worker_agent",
+      actor: { owner: "worker_agent", id: input.workerId },
+      payload: {
+        fromStatus: "review",
+        toStatus: "fixing_review",
+        taskLeaseId: taskLease.leaseId,
+        repositoryLeaseId: repositoryLease.leaseId,
+        repositoryLeaseKey: repositoryLease.leaseKey,
+      },
+      createdAt: timestamp,
+    });
+
+    return {
+      task: clone(task),
+      agentContext: buildAgentTaskContext(task),
+      taskLease: clone(taskLease),
+      repositoryLease: clone(repositoryLease),
+    };
+  }
+
   async heartbeatLease(
     leaseId: string,
     input: LeaseHeartbeatInput,
@@ -1802,6 +1856,42 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
 
     const dependencies = this.allDependencies();
     if (activeBlockingDependenciesForTask(task.id, dependencies).length > 0) {
+      return false;
+    }
+
+    const activeLeases = [...this.leases.values()].filter((lease) =>
+      isLeaseActiveAt(lease, now),
+    );
+    const taskLeaseKey = taskLeaseKeyForTask(task.id);
+    if (
+      activeLeases.some(
+        (lease) => lease.kind === "task" && lease.leaseKey === taskLeaseKey,
+      )
+    ) {
+      return false;
+    }
+
+    const repositoryLeaseKey = repositoryLeaseKeyForTask(task);
+    return !activeLeases.some(
+      (lease) => lease.kind === "repository" && lease.leaseKey === repositoryLeaseKey,
+    );
+  }
+
+  private isEligibleReviewClaimCandidate(
+    task: TaskRecord,
+    input: ClaimReviewTaskInput,
+    now: Date,
+  ): boolean {
+    if (task.status !== "review") {
+      return false;
+    }
+    if (!task.repositoryName || !task.repoPathKey) {
+      return false;
+    }
+    if (!taskMatchesRepositoryProfile(task, input.repositoryProfiles)) {
+      return false;
+    }
+    if (activeBlockingDependenciesForTask(task.id, this.allDependencies()).length > 0) {
       return false;
     }
 

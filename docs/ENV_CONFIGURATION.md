@@ -158,7 +158,7 @@ Copy-Item .env.example .env
 | `VISUAL_REGRESSION_COMMAND` | Нет | Не задано | Необязательный command-based visual regression gate. Воркер не предполагает наличие Playwright или конкретного frontend stack. |
 | `VISUAL_REGRESSION_ARTIFACTS_DIR` | Нет | Не задано | Необязательный artifact path, включаемый в validation summaries и MR notes, когда visual regression gate настроен. |
 | `MAX_FIX_ATTEMPTS` | Да | Не задано | Положительное целое число. Выберите, сколько automated fix attempts воркер может выполнить для одной задачи. |
-| `MAX_REVIEW_FIX_ATTEMPTS` | Нет | `MAX_FIX_ATTEMPTS` | Положительное целое число. Выберите, сколько validation repair attempts воркер может выполнить при обработке unresolved GitLab review discussions. |
+| `MAX_REVIEW_FIX_ATTEMPTS` | Нет | `MAX_FIX_ATTEMPTS` | Положительное целое число. Выберите, сколько validation repair attempts воркер может выполнить при обработке unresolved GitLab review discussions. Applies to both direct Yandex mode review discussions and internal tracker `review -> fixing_review -> review` cycles. In internal tracker mode, opened GitLab MRs are checked during review reconciliation before normal ready-task claiming. |
 | `WORKER_ID` | Да | Не задано | Стабильный идентификатор этого экземпляра воркера. Используйте уникальное значение для каждого запущенного воркера, например `worker-1` или `gitlab-bot-prod-1`. |
 | `WORKER_RUN_ONCE` | Нет | `false` | Установите `true` для single validation cycle или local smoke run. |
 | `WORKER_PREFLIGHT_ONLY` | Нет | `false` | Установите `true`, чтобы выполнить только preflight report и выйти без обработки задач Tracker. `npm run preflight` включает этот режим автоматически. |

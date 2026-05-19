@@ -14,7 +14,6 @@ import type {
   FailureMemoryEntry,
   MergeRequestDiscussion,
   MergeRequestInfo,
-  MergeRequestNote,
   PromptProfile,
   SubtaskDraft,
   TaskAnalysisDecision,
@@ -93,6 +92,11 @@ import {
   parseSelfReviewResult,
 } from "./selfReview.js";
 import {
+  findPendingReviewDiscussions,
+  formatReviewReplyBody,
+  mergeReviewMetadata,
+} from "./reviewFeedback.js";
+import {
   noopObservability,
   type ObservabilityTelemetry,
   type TaskTelemetryContext,
@@ -155,14 +159,6 @@ const isResumableStatus = (
   ACTIVE_STATES.includes(latestStatus.state) &&
   latestStatus.waitingReason !== "failure_recovery" &&
   latestStatus.waitingReason !== "manual_hold";
-
-const mergeUniqueStrings = (first: string[], second: string[]): string[] => [
-  ...new Set([...first, ...second]),
-];
-
-const mergeUniqueNumbers = (first: number[], second: number[]): number[] => [
-  ...new Set([...first, ...second]),
-];
 
 const hasRepositoryPromptProfileOverrides = (
   config: AppConfig,
@@ -1126,7 +1122,7 @@ export class WorkerOrchestrator {
     await this.git.push(checkedOutBranch);
 
     const validationSummary = this.formatValidationSummary(validation);
-    const replyBody = this.formatReviewReplyBody(headAfter, validationSummary);
+    const replyBody = formatReviewReplyBody(headAfter, validationSummary);
     for (const discussion of pendingDiscussions) {
       await this.gitlab.replyToDiscussion(mergeRequest.iid, discussion.id, replyBody);
     }
@@ -1138,22 +1134,16 @@ export class WorkerOrchestrator {
     );
     await this.tracker.addComment(
       issue.key,
-      formatReviewMetadataComment({
-        worker: this.config.workerId,
-        issueKey: issue.key,
-        mergeRequestIid: mergeRequest.iid,
-        processedDiscussionIds: mergeUniqueStrings(
-          previousMetadata?.processedDiscussionIds ?? [],
-          pendingDiscussions.map((discussion) => discussion.id),
-        ),
-        processedNoteIds: mergeUniqueNumbers(
-          previousMetadata?.processedNoteIds ?? [],
-          pendingDiscussions.flatMap((discussion) =>
-            discussion.notes.map((note) => note.id),
-          ),
-        ),
-        lastFixCommit: headAfter,
-      }),
+      formatReviewMetadataComment(
+        mergeReviewMetadata({
+          worker: this.config.workerId,
+          issueKey: issue.key,
+          mergeRequestIid: mergeRequest.iid,
+          previousMetadata,
+          discussions: pendingDiscussions,
+          lastFixCommit: headAfter,
+        }),
+      ),
     );
 
     await this.tracker.transition(issue.key, "review");
@@ -1371,78 +1361,15 @@ export class WorkerOrchestrator {
     comments: CommentWithMetadata[],
     mergeRequest: MergeRequestInfo,
   ): Promise<MergeRequestDiscussion[]> {
-    const [currentUser, discussions] = await Promise.all([
-      this.gitlab.getCurrentUser(),
-      this.gitlab.getMergeRequestDiscussions(mergeRequest.iid),
-    ]);
-    const previousMetadata = findLatestReviewMetadata(
-      comments,
-      issue.key,
-      mergeRequest.iid,
-    );
-    const processedDiscussionIds = new Set(
-      previousMetadata?.processedDiscussionIds ?? [],
-    );
-    const processedNoteIds = new Set(previousMetadata?.processedNoteIds ?? []);
-
-    return discussions
-      .filter((discussion) => !discussion.resolved)
-      .map((discussion) =>
-        this.filterPendingReviewNotes(
-          discussion,
-          currentUser.username,
-          processedDiscussionIds,
-          processedNoteIds,
-        ),
-      )
-      .filter(
-        (discussion): discussion is MergeRequestDiscussion =>
-          discussion !== undefined && discussion.notes.length > 0,
-      );
-  }
-
-  private filterPendingReviewNotes(
-    discussion: MergeRequestDiscussion,
-    currentUsername: string,
-    processedDiscussionIds: Set<string>,
-    processedNoteIds: Set<number>,
-  ): MergeRequestDiscussion | undefined {
-    if (processedDiscussionIds.has(discussion.id) && processedNoteIds.size === 0) {
-      return undefined;
-    }
-
-    const anchorPosition = discussion.notes.find((note) => note.position)?.position;
-    const notes = discussion.notes
-      .filter((note) => this.isPendingReviewerNote(note, currentUsername, processedNoteIds))
-      .map((note) =>
-        note.position || !anchorPosition
-          ? note
-          : {
-              ...note,
-              position: anchorPosition,
-            },
-      );
-
-    if (notes.length === 0) {
-      return undefined;
-    }
-
-    return {
-      ...discussion,
-      notes,
-    };
-  }
-
-  private isPendingReviewerNote(
-    note: MergeRequestNote,
-    currentUsername: string,
-    processedNoteIds: Set<number>,
-  ): boolean {
-    return (
-      !note.system &&
-      note.authorUsername !== currentUsername &&
-      !processedNoteIds.has(note.id)
-    );
+    return findPendingReviewDiscussions({
+      gitlab: this.gitlab,
+      mergeRequestIid: mergeRequest.iid,
+      previousMetadata: findLatestReviewMetadata(
+        comments,
+        issue.key,
+        mergeRequest.iid,
+      ),
+    });
   }
 
   private resolveResumeContext(
@@ -2349,15 +2276,6 @@ export class WorkerOrchestrator {
     ]
       .filter(Boolean)
       .join("\n");
-  }
-
-  private formatReviewReplyBody(commitSha: string, validationSummary: string): string {
-    return [
-      `Applied the review feedback in commit ${commitSha}.`,
-      "",
-      "Validation:",
-      validationSummary,
-    ].join("\n");
   }
 
   private async publish(

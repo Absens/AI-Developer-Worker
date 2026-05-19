@@ -21,7 +21,7 @@ import type {
   MergeRequestInfo,
   RepositoryProfile,
 } from "../src/models/types.js";
-import { TemporaryIntegrationError } from "../src/utils/errors.js";
+import { PermanentTaskError, TemporaryIntegrationError } from "../src/utils/errors.js";
 import { Logger } from "../src/utils/logger.js";
 
 const worker: TaskActor = { owner: "worker_agent", id: "worker-1" };
@@ -173,8 +173,13 @@ class FakeGitLabService implements GitLabService {
   readonly findAllCalls: string[] = [];
   readonly findOpenCalls: string[] = [];
   readonly createCalls: string[] = [];
+  discussionCalls: number[] = [];
+  replies: Array<{ iid: number; discussionId: string; body: string }> = [];
   mergeRequestsByIid: Record<number, MergeRequestInfo> = {};
   mergeRequestsByBranch: Record<string, MergeRequestInfo> = {};
+  discussionsByIid: Record<number, MergeRequestDiscussion[]> = {};
+  discussionResponsesByIid: Record<number, MergeRequestDiscussion[][]> = {};
+  temporaryReplyFailures = 0;
   throwTemporary = false;
 
   async checkReadAccess(): Promise<void> {}
@@ -208,11 +213,23 @@ class FakeGitLabService implements GitLabService {
     return null;
   }
 
-  async getMergeRequestDiscussions(_iid: number): Promise<MergeRequestDiscussion[]> {
-    return [];
+  async getMergeRequestDiscussions(iid: number): Promise<MergeRequestDiscussion[]> {
+    this.discussionCalls.push(iid);
+    const queuedResponses = this.discussionResponsesByIid[iid];
+    const queued = queuedResponses?.shift();
+    if (queued) {
+      return queued;
+    }
+    return this.discussionsByIid[iid] ?? [];
   }
 
-  async replyToDiscussion(_iid: number, _discussionId: string, _body: string): Promise<void> {}
+  async replyToDiscussion(iid: number, discussionId: string, body: string): Promise<void> {
+    if (this.temporaryReplyFailures > 0) {
+      this.temporaryReplyFailures -= 1;
+      throw new TemporaryIntegrationError("GitLab reply temporarily unavailable.");
+    }
+    this.replies.push({ iid, discussionId, body });
+  }
 
   async getCurrentUser(): Promise<{ username: string }> {
     return { username: "ai-worker" };
@@ -241,7 +258,9 @@ class FakeGitService implements GitService {
   currentBranch = "main";
   hasUncommittedChanges = false;
   hasCommittedDiff = false;
+  checkoutError?: Error;
   commits: string[] = [];
+  pushes: string[] = [];
 
   async assertRepositoryReady(): Promise<void> {}
 
@@ -262,6 +281,9 @@ class FakeGitService implements GitService {
   }
 
   async checkoutBranch(branch: string): Promise<string> {
+    if (this.checkoutError) {
+      throw this.checkoutError;
+    }
     this.currentBranch = branch;
     return branch;
   }
@@ -289,12 +311,15 @@ class FakeGitService implements GitService {
     this.hasCommittedDiff = true;
   }
 
-  async push(_branch: string): Promise<void> {}
+  async push(branch: string): Promise<void> {
+    this.pushes.push(branch);
+  }
 }
 
 class FakeCodexRunner implements CodexRunner {
   initialCalls = 0;
   resumeCalls = 0;
+  initialPrompts: string[] = [];
 
   constructor(private readonly git?: FakeGitService) {}
 
@@ -304,6 +329,17 @@ class FakeCodexRunner implements CodexRunner {
     _options?: CodexRunOptions,
   ): Promise<CodexExecution> {
     this.initialCalls += 1;
+    this.initialPrompts.push(_prompt);
+    if (_prompt.includes("Unresolved reviewer comments:")) {
+      if (this.git) {
+        this.git.hasUncommittedChanges = true;
+      }
+      return {
+        process: { stdout: "", stderr: "", exitCode: 0 },
+        finalMessage: "Fixed max.ru bot link handling.",
+        threadId: "thread-internal-review-fix",
+      };
+    }
     return {
       process: { stdout: "", stderr: "", exitCode: 0 },
       finalMessage: "READY_FOR_IMPLEMENTATION",
@@ -500,6 +536,7 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
       targetBranch: "main",
       state: "opened",
     };
+    gitlab.discussionsByIid[19] = [];
     const codex = new FakeCodexRunner(git);
     const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
 
@@ -512,5 +549,288 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
     expect(readyUpdated.status).toBe("review");
     expect(codex.initialCalls).toBe(1);
     expect(codex.resumeCalls).toBe(1);
+    expect(gitlab.discussionCalls).toEqual([19]);
+  });
+
+  it("fixes unresolved GitLab review discussions for internal review tasks", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "internal-review-fix" }));
+    await tracker.recordMergeRequest(task.id, {
+      workerId: "worker-1",
+      branch: "feature/ai-task-internal-review-fix",
+      outcome: "created",
+      mergeRequest: {
+        id: 104,
+        iid: 20,
+        url: "https://gitlab.example.com/project/-/merge_requests/20",
+        title: "[AI] internal-review-fix implementation",
+        sourceBranch: "feature/ai-task-internal-review-fix",
+        targetBranch: "main",
+        state: "opened",
+      },
+    });
+    await moveReadyTaskToReview(tracker, task.id);
+
+    const git = new FakeGitService();
+    git.hasCommittedDiff = true;
+    const gitlab = new FakeGitLabService();
+    gitlab.mergeRequestsByIid[20] = {
+      id: 104,
+      iid: 20,
+      url: "https://gitlab.example.com/project/-/merge_requests/20",
+      title: "[AI] internal-review-fix implementation",
+      sourceBranch: "feature/ai-task-internal-review-fix",
+      targetBranch: "main",
+      state: "opened",
+    };
+    gitlab.discussionsByIid[20] = [
+      {
+        id: "discussion-1",
+        individualNote: false,
+        resolved: false,
+        notes: [
+          {
+            id: 24737,
+            body: "Please account for max.ru bot links.",
+            authorUsername: "reviewer",
+            system: false,
+            resolvable: true,
+            resolved: false,
+            createdAt: "2026-05-18T15:14:12.667Z",
+            position: { newPath: "src/example.ts", newLine: 12 },
+          },
+        ],
+      },
+    ];
+    const codex = new FakeCodexRunner(git);
+    const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
+
+    const outcome = await orchestrator.runOnce();
+    const updated = await tracker.getTask(task.id);
+
+    expect(outcome).toBe("processed");
+    expect(updated.status).toBe("review");
+    expect(codex.initialPrompts.at(-1)).toContain("Please account for max.ru bot links.");
+    expect(codex.initialPrompts.at(-1)).toContain("Unresolved reviewer comments:");
+    expect(git.commits).toEqual(["feat: fixed max.ru bot link handling internal-review-fix"]);
+    expect(git.pushes).toEqual(["feature/ai-task-internal-review-fix"]);
+    expect(gitlab.discussionCalls).toEqual([20, 20]);
+    expect(gitlab.replies).toHaveLength(1);
+    expect(gitlab.replies[0]).toMatchObject({
+      iid: 20,
+      discussionId: "discussion-1",
+    });
+    expect(gitlab.replies[0]?.body).toContain("commit-1");
+    expect(updated.reviewMetadata.at(-1)?.metadata).toMatchObject({
+      mergeRequestIid: 20,
+      processedDiscussionIds: ["discussion-1"],
+      processedNoteIds: [24737],
+      lastFixCommit: "commit-1",
+    });
+    expect(updated.agentRuns.some((run) => run.stage === "review_fix")).toBe(true);
+  });
+
+  it("does not run Codex when pending feedback disappears after the review claim", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "internal-review-race" }));
+    await tracker.recordMergeRequest(task.id, {
+      workerId: "worker-1",
+      branch: "feature/ai-task-internal-review-race",
+      outcome: "created",
+      mergeRequest: {
+        id: 107,
+        iid: 23,
+        url: "https://gitlab.example.com/project/-/merge_requests/23",
+        title: "[AI] internal-review-race implementation",
+        sourceBranch: "feature/ai-task-internal-review-race",
+        targetBranch: "main",
+        state: "opened",
+      },
+    });
+    await moveReadyTaskToReview(tracker, task.id);
+
+    const git = new FakeGitService();
+    const gitlab = new FakeGitLabService();
+    gitlab.mergeRequestsByIid[23] = {
+      id: 107,
+      iid: 23,
+      url: "https://gitlab.example.com/project/-/merge_requests/23",
+      title: "[AI] internal-review-race implementation",
+      sourceBranch: "feature/ai-task-internal-review-race",
+      targetBranch: "main",
+      state: "opened",
+    };
+    gitlab.discussionResponsesByIid[23] = [
+      [
+        {
+          id: "discussion-race",
+          individualNote: false,
+          resolved: false,
+          notes: [
+            {
+              id: 24770,
+              body: "This feedback was fixed by another worker.",
+              authorUsername: "reviewer",
+              system: false,
+              resolvable: true,
+              resolved: false,
+              createdAt: "2026-05-18T15:40:00.000Z",
+            },
+          ],
+        },
+      ],
+      [],
+    ];
+    const codex = new FakeCodexRunner(git);
+    const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
+
+    const outcome = await orchestrator.runOnce();
+    const updated = await tracker.getTask(task.id);
+
+    expect(outcome).toBe("idle");
+    expect(updated.status).toBe("review");
+    expect(codex.initialCalls).toBe(0);
+    expect(gitlab.discussionCalls).toEqual([23, 23]);
+    expect(gitlab.replies).toEqual([]);
+    expect(updated.reviewMetadata).toHaveLength(0);
+  });
+
+  it("recovers stale fixing_review tasks without an active lease", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "internal-stale-review-fix" }));
+    await tracker.recordMergeRequest(task.id, {
+      workerId: "worker-1",
+      branch: "feature/ai-task-internal-stale-review-fix",
+      outcome: "created",
+      mergeRequest: {
+        id: 105,
+        iid: 21,
+        url: "https://gitlab.example.com/project/-/merge_requests/21",
+        title: "[AI] internal-stale-review-fix implementation",
+        sourceBranch: "feature/ai-task-internal-stale-review-fix",
+        targetBranch: "main",
+        state: "opened",
+      },
+    });
+    await moveReadyTaskToReview(tracker, task.id);
+    await tracker.setStatus(task.id, "fixing_review", "Simulate crashed review fix.");
+
+    const git = new FakeGitService();
+    git.hasCommittedDiff = true;
+    const gitlab = new FakeGitLabService();
+    gitlab.mergeRequestsByIid[21] = {
+      id: 105,
+      iid: 21,
+      url: "https://gitlab.example.com/project/-/merge_requests/21",
+      title: "[AI] internal-stale-review-fix implementation",
+      sourceBranch: "feature/ai-task-internal-stale-review-fix",
+      targetBranch: "main",
+      state: "opened",
+    };
+    gitlab.discussionsByIid[21] = [
+      {
+        id: "discussion-stale",
+        individualNote: false,
+        resolved: false,
+        notes: [
+          {
+            id: 24750,
+            body: "Retry stale review feedback.",
+            authorUsername: "reviewer",
+            system: false,
+            resolvable: true,
+            resolved: false,
+            createdAt: "2026-05-18T15:30:00.000Z",
+          },
+        ],
+      },
+    ];
+    const codex = new FakeCodexRunner(git);
+    const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
+
+    const outcome = await orchestrator.runOnce();
+    const updated = await tracker.getTask(task.id);
+
+    expect(outcome).toBe("processed");
+    expect(updated.status).toBe("review");
+    expect(gitlab.replies).toHaveLength(1);
+    expect(updated.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_status_changed",
+          payload: expect.objectContaining({ from: "fixing_review", to: "review" }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps internal review tasks retryable when replying to GitLab temporarily fails", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "internal-review-retry" }));
+    await tracker.recordMergeRequest(task.id, {
+      workerId: "worker-1",
+      branch: "feature/ai-task-internal-review-retry",
+      outcome: "created",
+      mergeRequest: {
+        id: 106,
+        iid: 22,
+        url: "https://gitlab.example.com/project/-/merge_requests/22",
+        title: "[AI] internal-review-retry implementation",
+        sourceBranch: "feature/ai-task-internal-review-retry",
+        targetBranch: "main",
+        state: "opened",
+      },
+    });
+    await moveReadyTaskToReview(tracker, task.id);
+
+    const git = new FakeGitService();
+    git.hasCommittedDiff = true;
+    const gitlab = new FakeGitLabService();
+    gitlab.temporaryReplyFailures = 1;
+    gitlab.mergeRequestsByIid[22] = {
+      id: 106,
+      iid: 22,
+      url: "https://gitlab.example.com/project/-/merge_requests/22",
+      title: "[AI] internal-review-retry implementation",
+      sourceBranch: "feature/ai-task-internal-review-retry",
+      targetBranch: "main",
+      state: "opened",
+    };
+    gitlab.discussionsByIid[22] = [
+      {
+        id: "discussion-retry",
+        individualNote: false,
+        resolved: false,
+        notes: [
+          {
+            id: 24760,
+            body: "Retry after temporary GitLab failure.",
+            authorUsername: "reviewer",
+            system: false,
+            resolvable: true,
+            resolved: false,
+            createdAt: "2026-05-18T15:35:00.000Z",
+          },
+        ],
+      },
+    ];
+    const codex = new FakeCodexRunner(git);
+    const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
+
+    const outcome = await orchestrator.runOnce();
+    const updated = await tracker.getTask(task.id);
+
+    expect(outcome).toBe("processed");
+    expect(updated.status).toBe("review");
+    expect(gitlab.replies).toEqual([]);
+    expect(updated.reviewMetadata).toHaveLength(0);
+    expect(updated.events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_status_changed",
+          payload: expect.objectContaining({ to: "failed" }),
+        }),
+      ]),
+    );
   });
 });

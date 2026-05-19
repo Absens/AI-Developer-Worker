@@ -57,6 +57,7 @@ export type {
   ClarificationQuestionInput,
   ClarificationQuestionRecord,
   ClaimRepositoryProfile,
+  ClaimReviewTaskInput,
   ClaimTaskInput,
   CommentInput,
   CreateTaskInput,

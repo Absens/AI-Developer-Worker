@@ -55,6 +55,7 @@ import {
   buildDecompositionPrompt,
   buildFixPrompt,
   buildImplementationPrompt,
+  buildReviewFixPrompt,
   buildResumePrompt,
 } from "./promptBuilder.js";
 import { selectPromptProfile } from "./promptProfiles.js";
@@ -88,6 +89,12 @@ import {
 } from "../utils/errors.js";
 import { Logger } from "../utils/logger.js";
 import type { CycleOutcome } from "./orchestrator.js";
+import {
+  findPendingReviewDiscussions,
+  formatReviewReplyBody,
+  latestReviewMetadataForMergeRequest,
+  mergeReviewMetadata,
+} from "./reviewFeedback.js";
 
 const ANALYSIS_READY_MARKER = "READY_FOR_IMPLEMENTATION";
 const DEFAULT_TASK_MODE = "auto";
@@ -464,13 +471,34 @@ export class InternalWorkerOrchestrator {
 
   private async reconcileReviewTasks(): Promise<number> {
     const reviewTasks = await this.taskTracker.listTasks({
-      statuses: ["review"],
+      statuses: ["review", "fixing_review"],
       limit: 50,
     });
+    const activeTaskLeaseTaskIds = new Set(
+      (await this.taskTracker.listActiveLeases())
+        .filter((lease) => lease.kind === "task")
+        .map((lease) => lease.taskId),
+    );
     let reconciled = 0;
 
-    for (const task of reviewTasks) {
+    for (const candidate of reviewTasks) {
+      let task = candidate;
       try {
+        if (task.status === "fixing_review") {
+          if (activeTaskLeaseTaskIds.has(task.id)) {
+            this.logger.info("Skipping active internal review fix reconciliation.", {
+              taskId: task.id,
+            });
+            continue;
+          }
+          await this.taskTracker.setStatus(
+            task.id,
+            "review",
+            "Recovering stale review fix after inactive lease.",
+          );
+          task = await this.taskTracker.getTask(task.id);
+        }
+
         if (await this.reconcileReviewTask(task)) {
           reconciled += 1;
         }
@@ -556,7 +584,83 @@ export class InternalWorkerOrchestrator {
       return true;
     }
 
-    return false;
+    return this.reconcileOpenedReviewTask(context, task, latest.branch, mergeRequest);
+  }
+
+  private async reconcileOpenedReviewTask(
+    context: InternalExecutionContext,
+    task: TaskRecord,
+    branch: string,
+    mergeRequest: MergeRequestInfo,
+  ): Promise<boolean> {
+    const initialMetadata = latestReviewMetadataForMergeRequest(
+      task.reviewMetadata,
+      mergeRequest.iid,
+    );
+    const initialPendingDiscussions = await findPendingReviewDiscussions({
+      gitlab: context.gitlab,
+      mergeRequestIid: mergeRequest.iid,
+      previousMetadata: initialMetadata,
+    });
+
+    if (initialPendingDiscussions.length === 0) {
+      this.logger.info("Internal review task has no pending unresolved reviewer comments.", {
+        taskId: task.id,
+        mergeRequestIid: mergeRequest.iid,
+      });
+      return false;
+    }
+
+    const claim = await this.workflow.claimReviewTask({
+      workerId: this.config.workerId,
+      taskId: task.id,
+      repositoryProfiles: this.contexts.map((candidate) => ({
+        name: candidate.profile.name,
+        queues: candidate.profile.queues,
+        tags: candidate.profile.tags,
+      })),
+      leaseTtlSeconds: Math.max(1, Math.floor(this.config.coordination.lockTtlMs / 1000)),
+    });
+    if (!claim) {
+      this.logger.info("Internal review task was not claimed for review feedback.", {
+        taskId: task.id,
+        mergeRequestIid: mergeRequest.iid,
+      });
+      return false;
+    }
+
+    return this.withLeaseHeartbeat(claim, async () => {
+      try {
+        const handled = await this.handleInternalReviewFeedback(
+          context,
+          claim,
+          branch,
+          mergeRequest,
+        );
+        await this.syncExternalMirror(claim.task.id);
+        return handled;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof TemporaryIntegrationError) {
+          this.logger.warn("Temporary integration error during internal review feedback fix.", {
+            taskId: claim.task.id,
+            mergeRequestIid: mergeRequest.iid,
+            error: message,
+          });
+          await this.taskTracker.setStatus(
+            claim.task.id,
+            "review",
+            `Temporary review feedback error; will retry: ${message}`,
+          );
+          await this.syncExternalMirror(claim.task.id);
+          return true;
+        }
+
+        await this.finalizeFailure(context, claim.task.id, message);
+        await this.syncExternalMirror(claim.task.id);
+        return true;
+      }
+    });
   }
 
   private contextForTask(task: TaskRecord): InternalExecutionContext | undefined {
@@ -941,6 +1045,226 @@ export class InternalWorkerOrchestrator {
     await this.publish(context, task.id, issue, branch, existingMr, validation, implementationSummary);
     await this.workflow.recordTaskStep(task.id, { kind: "publish", status: "done" });
     return "processed";
+  }
+
+  private async handleInternalReviewFeedback(
+    context: InternalExecutionContext,
+    claim: ClaimedTask,
+    branch: string,
+    mergeRequest: MergeRequestInfo,
+  ): Promise<boolean> {
+    const task = await this.taskTracker.getTask(claim.task.id);
+    const previousMetadata = latestReviewMetadataForMergeRequest(
+      task.reviewMetadata,
+      mergeRequest.iid,
+    );
+    const pendingDiscussions = await findPendingReviewDiscussions({
+      gitlab: context.gitlab,
+      mergeRequestIid: mergeRequest.iid,
+      previousMetadata,
+    });
+
+    if (pendingDiscussions.length === 0) {
+      this.logger.info("Internal review feedback disappeared after claim.", {
+        taskId: task.id,
+        mergeRequestIid: mergeRequest.iid,
+      });
+      await this.taskTracker.setStatus(
+        task.id,
+        "review",
+        "Review feedback already addressed before this worker started fixing it.",
+      );
+      return false;
+    }
+
+    const imageContext = await this.prepareImageContext(context, task);
+    try {
+      const issue = taskToIssue(task);
+      const comments = commentsForPrompt(task.comments);
+      const analysisDecision = latestAnalysisDecision(task.decisions);
+      const promptProfile = this.selectProfile(context.config, issue, analysisDecision);
+      const codexOptions: CodexRunOptions = { imagePaths: imageContext?.imagePaths ?? [] };
+
+      await this.workflow.recordTaskStep(task.id, {
+        kind: "review_fix",
+        status: "running",
+        outputSummary: "Fixing unresolved GitLab review discussions.",
+      });
+      await this.recordWorkflowEvent(context, task.id, {
+        type: "review_fix_started",
+        status: "info",
+        message: "Fixing unresolved GitLab review discussions.",
+        details: {
+          mergeRequestIid: mergeRequest.iid,
+          discussionIds: pendingDiscussions.map((discussion) => discussion.id),
+        },
+      });
+
+      const checkedOutBranch = await context.git.checkoutBranch(branch);
+      const headBefore = await context.git.getHeadSha();
+      const diffFromBase = await context.git.getDiffFromBase();
+      const changedFiles = await context.git.getChangedFilesFromBase();
+      const prompt = buildReviewFixPrompt(
+        issue,
+        comments,
+        {
+          mergeRequest,
+          discussions: pendingDiscussions,
+          changedFiles,
+          diffFromBase,
+        },
+        promptProfile,
+        analysisDecision,
+        imageContext,
+      );
+
+      let execution = await this.runCodexStage(context, task.id, "review_fix", (observer) =>
+        context.codex.runInitial(prompt, observer, codexOptions),
+      );
+      let reviewThreadId = execution.threadId;
+      let reviewFixSummary = execution.finalMessage?.trim();
+      if (execution.clarification) {
+        await this.pauseForClarification(context, task.id, execution.clarification, reviewThreadId);
+        return true;
+      }
+      if (execution.process.exitCode !== 0) {
+        this.logger.warn("Codex internal review fix run exited with non-zero code.", {
+          taskId: task.id,
+          exitCode: execution.process.exitCode,
+        });
+      }
+
+      await this.taskTracker.setStatus(task.id, "validating", "Internal review fix validation started.");
+      await this.workflow.recordTaskStep(task.id, { kind: "validate", status: "running" });
+      let validation = await this.validateRepositoryState(context, task.id);
+      let attempt = 0;
+      while (!isValidationSuccessful(validation) && attempt < context.config.maxReviewFixAttempts) {
+        attempt += 1;
+        await this.taskTracker.setStatus(task.id, "fixing_review", "Applying review validation fix.");
+        await this.workflow.recordTaskStep(task.id, {
+          kind: "review_fix",
+          attempt,
+          status: "running",
+          diagnostic: validation.diagnostic,
+        });
+        execution = await this.runCodexStage(context, task.id, "review_fix", (observer) =>
+          reviewThreadId
+            ? context.codex.runResume(
+                reviewThreadId,
+                buildFixPrompt(
+                  issue,
+                  validation.diagnostic,
+                  promptProfile,
+                  analysisDecision,
+                  imageContext,
+                ),
+                observer,
+                codexOptions,
+              )
+            : context.codex.runFix(
+                buildFixPrompt(
+                  issue,
+                  validation.diagnostic,
+                  promptProfile,
+                  analysisDecision,
+                  imageContext,
+                ),
+                observer,
+                codexOptions,
+              ),
+        );
+        reviewThreadId = execution.threadId ?? reviewThreadId;
+        reviewFixSummary = execution.finalMessage?.trim() ?? reviewFixSummary;
+        if (execution.clarification) {
+          await this.pauseForClarification(context, task.id, execution.clarification, reviewThreadId);
+          return true;
+        }
+        await this.taskTracker.setStatus(task.id, "validating", "Re-running validation after review fix.");
+        validation = await this.validateRepositoryState(context, task.id);
+      }
+
+      if (!isValidationSuccessful(validation)) {
+        await this.recordFailureMemory(context, {
+          issue,
+          failureKind: "review_validation_exhausted",
+          diagnostic: validation.diagnostic,
+          promptProfile,
+          analysisDecision,
+        });
+        await this.workflow.recordTaskStep(task.id, {
+          kind: "validate",
+          status: "failed",
+          failureKind: "review_validation_exhausted",
+          diagnostic: validation.diagnostic,
+        });
+        throw new PermanentTaskError(validation.diagnostic);
+      }
+
+      await this.workflow.recordTaskStep(task.id, {
+        kind: "validate",
+        status: "done",
+        outputSummary: this.formatValidationSummary(validation),
+      });
+
+      if (await context.git.hasChanges()) {
+        const commitChangedFiles = await context.git.getChangedFilesFromBase();
+        await context.git.commit(
+          buildCommitMessage({
+            issue,
+            changedFiles: commitChangedFiles,
+            summary: reviewFixSummary,
+          }),
+        );
+      }
+
+      const headAfter = await context.git.getHeadSha();
+      if (headAfter === headBefore) {
+        throw new PermanentTaskError(
+          "Codex completed the internal review fix without producing a new commit.",
+        );
+      }
+
+      await context.git.push(checkedOutBranch);
+      const validationSummary = this.formatValidationSummary(validation);
+      const replyBody = formatReviewReplyBody(headAfter, validationSummary);
+      for (const discussion of pendingDiscussions) {
+        await context.gitlab.replyToDiscussion(mergeRequest.iid, discussion.id, replyBody);
+      }
+
+      await this.workflow.recordReviewMetadata(task.id, {
+        metadata: mergeReviewMetadata({
+          worker: this.config.workerId,
+          issueKey: task.id,
+          mergeRequestIid: mergeRequest.iid,
+          previousMetadata,
+          discussions: pendingDiscussions,
+          lastFixCommit: headAfter,
+        }),
+      });
+      await this.workflow.recordTaskStep(task.id, {
+        kind: "review_fix",
+        status: "done",
+        outputSummary: reviewFixSummary,
+      });
+      await this.taskTracker.setStatus(
+        task.id,
+        "review",
+        `Review feedback addressed and pushed: ${mergeRequest.url}`,
+      );
+      await this.recordWorkflowEvent(context, task.id, {
+        type: "review_fix_completed",
+        status: "info",
+        message: "Review feedback addressed.",
+        details: {
+          mergeRequestIid: mergeRequest.iid,
+          mergeRequestUrl: mergeRequest.url,
+          lastFixCommit: headAfter,
+        },
+      });
+      return true;
+    } finally {
+      await imageContext?.cleanup();
+    }
   }
 
   private async prepareImageContext(

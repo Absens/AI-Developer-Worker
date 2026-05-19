@@ -285,6 +285,10 @@ describe("internal task tracker core", () => {
     expect(canTransitionTaskStatus("human_testing", "review")).toBe(false);
   });
 
+  it("allows review fixes to pause for human clarification", () => {
+    expect(canTransitionTaskStatus("fixing_review", "awaiting_human")).toBe(true);
+  });
+
   it("preserves schema-versioned decision payloads", async () => {
     const client = new InMemoryTaskTrackerClient({ now: createClock() });
     const task = await client.createTask(baseTaskInput());
