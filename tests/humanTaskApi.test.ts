@@ -296,6 +296,12 @@ describe("Phase 7F human task API", () => {
     const rejectGoal = await createProjectGoal(projectManagerStore, {
       title: "Reject this goal",
     });
+    const reasonAliasGoal = await createProjectGoal(projectManagerStore, {
+      title: "Reject this goal with reason",
+    });
+    const missingReasonGoal = await createProjectGoal(projectManagerStore, {
+      title: "Reject this goal without reason",
+    });
     const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, {
       store: projectManagerStore,
     });
@@ -352,6 +358,34 @@ describe("Phase 7F human task API", () => {
       rejectionReason: "Out of scope.",
       rejectedBy: { owner: "human", id: "dev-1" },
     });
+
+    const rejectedWithReasonAlias = await requestJson(
+      baseUrl,
+      `/api/project-goals/${reasonAliasGoal.id}/commands/reject`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+        body: JSON.stringify({ reason: "Not aligned." }),
+      },
+    );
+    expect(rejectedWithReasonAlias.status).toBe(200);
+    expect(rejectedWithReasonAlias.body.goal).toMatchObject({
+      id: reasonAliasGoal.id,
+      status: "rejected",
+      rejectionReason: "Not aligned.",
+    });
+
+    const missingReason = await requestJson(
+      baseUrl,
+      `/api/project-goals/${missingReasonGoal.id}/commands/reject`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+    expect(missingReason.status).toBe(400);
+    expect(missingReason.body.error).toContain("reason is required");
   });
 
   it("allows operators to run the project manager without a task tracker", async () => {

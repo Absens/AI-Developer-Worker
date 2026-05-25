@@ -74,8 +74,14 @@ interface ProjectManagerStoreController {
 const createProjectManagerStoreController = (
   fleetConfig: ReturnType<typeof loadFleetConfig>,
 ): ProjectManagerStoreController => {
+  const projectManagerEnabled =
+    fleetConfig.projectManager?.enabled === true ||
+    fleetConfig.repositories.some(
+      (repository) => repository.projectManager?.enabled === true,
+    );
+
   if (
-    !fleetConfig.projectManager?.enabled ||
+    !projectManagerEnabled ||
     fleetConfig.taskTracker?.provider !== "internal"
   ) {
     return {
@@ -262,6 +268,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       preflight,
       observability,
       cleanup,
+      projectManager: projectManager.dependencies,
       taskTracker: internalTaskTracker,
       yandexBridges,
       assertRepositoryReady: async () => {
@@ -329,6 +336,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     preflight,
     observability,
     cleanup,
+    projectManager: projectManager.dependencies,
     taskTracker: internalTaskTracker,
     yandexBridges,
     assertRepositoryReady: () => git.assertRepositoryReady(),
