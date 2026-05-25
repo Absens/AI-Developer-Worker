@@ -522,4 +522,3 @@ Required JSON shape:
 - Existing Yandex direct mode and internal worker execution tests continue to pass.
 - No PM path can directly modify a target repository or bypass quality gates.
 - PM autonomy can be disabled globally without disabling normal worker task execution.
-

@@ -2156,4 +2156,3 @@ Plan complete when this file exists and passes markdown self-review. Execute wit
 2. **Inline Execution** - use `superpowers:executing-plans` in this session if subagents are unavailable.
 
 Recommended next action: execute Task 1 with a fresh implementation subagent, then review before moving to Task 2.
-
