@@ -7,11 +7,18 @@ import { InternalWorkerOrchestrator } from "./domain/internalWorkerOrchestrator.
 import { NoopLockBackend, TrackerCommentLockBackend } from "./domain/lockBackend.js";
 import { WorkerOrchestrator } from "./domain/orchestrator.js";
 import { PreflightService } from "./domain/preflight.js";
+import {
+  InMemoryProjectManagerStore,
+  type ProjectManagerStore,
+} from "./domain/projectManager/index.js";
 import { buildRepositoryContext } from "./domain/repositoryContext.js";
 import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
-import { createInternalTaskTrackerClient } from "./integrations/internalTracker/index.js";
+import {
+  createInternalTaskTrackerClient,
+  PostgresProjectManagerStore,
+} from "./integrations/internalTracker/index.js";
 import {
   InternalTrackerCleanupRunner,
   InternalTrackerCleanupScheduler,
@@ -27,6 +34,7 @@ import {
   type YandexBridgeStore,
 } from "./integrations/yandexBridge/index.js";
 import { createObservabilityService } from "./observability/service.js";
+import type { ProjectManagerApiDependencies } from "./observability/taskTrackerHumanApi.js";
 import { Logger } from "./utils/logger.js";
 
 interface CleanupController {
@@ -58,6 +66,40 @@ const createYandexBridgeStore = (
   );
 };
 
+interface ProjectManagerStoreController {
+  dependencies?: ProjectManagerApiDependencies;
+  stop(): Promise<void>;
+}
+
+const createProjectManagerStoreController = (
+  fleetConfig: ReturnType<typeof loadFleetConfig>,
+): ProjectManagerStoreController => {
+  if (
+    !fleetConfig.projectManager?.enabled ||
+    fleetConfig.taskTracker?.provider !== "internal"
+  ) {
+    return {
+      async stop(): Promise<void> {},
+    };
+  }
+
+  if (fleetConfig.taskTracker.internal.storage === "memory") {
+    return {
+      dependencies: { store: new InMemoryProjectManagerStore() },
+      async stop(): Promise<void> {},
+    };
+  }
+
+  const pool = new Pool({
+    connectionString: fleetConfig.taskTracker.internal.databaseUrl,
+  });
+  const store: ProjectManagerStore = new PostgresProjectManagerStore(pool);
+  return {
+    dependencies: { store },
+    stop: () => pool.end(),
+  };
+};
+
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
   const fleetConfig = loadFleetConfig(env);
@@ -65,13 +107,15 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     fleetConfig.taskTracker,
     fleetConfig.autonomy,
   );
+  const projectManager = createProjectManagerStoreController(fleetConfig);
   const observability = createObservabilityService(
     fleetConfig.observability,
     logger,
     fleetConfig.repositories,
     internalTaskTracker,
+    projectManager.dependencies,
   );
-  const cleanup =
+  const internalCleanup =
     fleetConfig.taskTracker?.provider === "internal" &&
     fleetConfig.taskTracker.internal.storage === "postgres" &&
     internalTaskTracker
@@ -102,6 +146,17 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
           } satisfies CleanupController;
         })()
       : noopCleanupController;
+  const cleanup: CleanupController = {
+    start: () => internalCleanup.start(),
+    runOnce: () => internalCleanup.runOnce(),
+    stop: async () => {
+      try {
+        await internalCleanup.stop();
+      } finally {
+        await projectManager.stop();
+      }
+    },
+  };
   const primaryRepository = fleetConfig.repositories[0];
   if (!primaryRepository) {
     throw new Error("No repository profiles configured.");

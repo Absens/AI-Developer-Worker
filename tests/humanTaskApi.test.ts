@@ -2,12 +2,17 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  InMemoryProjectManagerStore,
+  type ProjectManagerOrchestrator,
+} from "../src/domain/projectManager/index.js";
 import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
 import type { CreateTaskInput, TaskActor } from "../src/domain/taskTracker/index.js";
 import { defaultObservabilityConfig } from "../src/observability/config.js";
 import { InMemoryMetricsRegistry } from "../src/observability/metrics.js";
 import { ObservabilityHttpServer } from "../src/observability/server.js";
 import { InMemoryWorkerStateRegistry } from "../src/observability/state.js";
+import type { ProjectManagerApiDependencies } from "../src/observability/taskTrackerHumanApi.js";
 import type { TaskTrackerUiConfig } from "../src/models/types.js";
 
 const servers: ObservabilityHttpServer[] = [];
@@ -52,8 +57,9 @@ const viewerHeaders = {
 };
 
 const createServer = async (
-  tracker = new InMemoryTaskTrackerClient(),
+  tracker: InMemoryTaskTrackerClient | undefined | null = new InMemoryTaskTrackerClient(),
   taskTrackerUiOverrides: Partial<TaskTrackerUiConfig> = {},
+  projectManager?: ProjectManagerApiDependencies,
 ) => {
   const config = {
     ...defaultObservabilityConfig(),
@@ -61,12 +67,12 @@ const createServer = async (
     host: "127.0.0.1",
     port: 0,
     baseUrl: "http://127.0.0.1",
-      taskTrackerUi: {
-        ...defaultObservabilityConfig().taskTrackerUi,
-        enabled: true,
-        systemToken: "system-token",
-        ...taskTrackerUiOverrides,
-      },
+    taskTrackerUi: {
+      ...defaultObservabilityConfig().taskTrackerUi,
+      enabled: true,
+      systemToken: "system-token",
+      ...taskTrackerUiOverrides,
+    },
   };
   const metrics = new InMemoryMetricsRegistry();
   const state = new InMemoryWorkerStateRegistry();
@@ -81,7 +87,8 @@ const createServer = async (
     state,
     readiness: () => ({ ready: true, reason: "ready" }),
     repositories: () => ["developer"],
-    taskTracker: tracker,
+    ...(tracker ? { taskTracker: tracker } : {}),
+    ...(projectManager ? { projectManager } : {}),
   });
   servers.push(server);
   await server.start();
@@ -105,6 +112,35 @@ const requestJson = async (
     body: text ? JSON.parse(text) : undefined,
     contentType: response.headers.get("content-type"),
   };
+};
+
+const createProjectGoal = async (
+  store: InMemoryProjectManagerStore,
+  overrides: { sourceAnalysisId?: string; repositoryName?: string; title?: string } = {},
+) => {
+  const [goal] = await store.createGoalsFromAnalysis({
+    sourceAnalysisId: overrides.sourceAnalysisId ?? "analysis-1",
+    repositoryName: overrides.repositoryName ?? "developer",
+    goals: [
+      {
+        title: overrides.title ?? "Improve task visibility",
+        problemStatement: "Operators cannot see enough project-level context.",
+        desiredOutcome: "Project-level goals are visible and reviewable.",
+        successMetrics: ["Goals can be reviewed from the human API."],
+        evidenceRefs: [
+          {
+            kind: "metric",
+            ref: "pm:test",
+            summary: "Project manager analysis found a visibility gap.",
+          },
+        ],
+        priority: "normal",
+        riskLevel: "low",
+        suggestedTaskProposals: [],
+      },
+    ],
+  });
+  return goal!;
 };
 
 describe("Phase 7F human task API", () => {
@@ -195,6 +231,203 @@ describe("Phase 7F human task API", () => {
       (await requestJson(baseUrl, "/api/tasks/task-read/agent-context-preview")).body
         .agentContext,
     ).toMatchObject({ taskId: "task-read", status: "ready" });
+  });
+
+  it("allows viewers to list and get project goals", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const goal = await createProjectGoal(projectManagerStore);
+    await projectManagerStore.linkGoalTask({
+      goalId: goal.id,
+      taskId: "task-1",
+      linkType: "suggested",
+    });
+    await createProjectGoal(projectManagerStore, {
+      sourceAnalysisId: "analysis-2",
+      title: "Unrelated goal",
+    });
+    const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, {
+      store: projectManagerStore,
+    });
+
+    const listed = await requestJson(
+      baseUrl,
+      "/api/project-goals?repositoryName=developer&sourceAnalysisId=analysis-1&status=proposed",
+      { headers: viewerHeaders },
+    );
+    expect(listed.status).toBe(200);
+    expect(listed.body.goals).toHaveLength(1);
+    expect(listed.body.goals[0]).toMatchObject({
+      id: goal.id,
+      repositoryName: "developer",
+      sourceAnalysisId: "analysis-1",
+      status: "proposed",
+    });
+
+    const repeatedStatusList = await requestJson(
+      baseUrl,
+      "/api/project-goals?repositoryName=developer&status=proposed&status=approved",
+      { headers: viewerHeaders },
+    );
+    expect(repeatedStatusList.status).toBe(200);
+    expect(repeatedStatusList.body.goals.map((entry: { id: string }) => entry.id)).toEqual(
+      expect.arrayContaining([goal.id]),
+    );
+
+    const detail = await requestJson(baseUrl, `/api/project-goals/${goal.id}`, {
+      headers: viewerHeaders,
+    });
+    expect(detail.status).toBe(200);
+    expect(detail.body.goal).toMatchObject({ id: goal.id });
+    expect(detail.body.auditEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "project_goal_created" }),
+      ]),
+    );
+    expect(detail.body.taskLinks).toEqual([
+      expect.objectContaining({ taskId: "task-1", linkType: "suggested" }),
+    ]);
+  });
+
+  it("protects project goal approval and rejection by role", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const approveGoal = await createProjectGoal(projectManagerStore, {
+      title: "Approve this goal",
+    });
+    const rejectGoal = await createProjectGoal(projectManagerStore, {
+      title: "Reject this goal",
+    });
+    const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, {
+      store: projectManagerStore,
+    });
+
+    const viewerApprove = await requestJson(
+      baseUrl,
+      `/api/project-goals/${approveGoal.id}/commands/approve`,
+      {
+        method: "POST",
+        headers: viewerHeaders,
+      },
+    );
+    expect(viewerApprove.status).toBe(403);
+
+    const viewerReject = await requestJson(
+      baseUrl,
+      `/api/project-goals/${rejectGoal.id}/commands/reject`,
+      {
+        method: "POST",
+        headers: viewerHeaders,
+        body: JSON.stringify({ rejectionReason: "Out of scope." }),
+      },
+    );
+    expect(viewerReject.status).toBe(403);
+
+    const approved = await requestJson(
+      baseUrl,
+      `/api/project-goals/${approveGoal.id}/commands/approve`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+      },
+    );
+    expect(approved.status).toBe(200);
+    expect(approved.body.goal).toMatchObject({
+      id: approveGoal.id,
+      status: "approved",
+      approvedBy: { owner: "human", id: "dev-1" },
+    });
+
+    const rejected = await requestJson(
+      baseUrl,
+      `/api/project-goals/${rejectGoal.id}/commands/reject`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+        body: JSON.stringify({ rejectionReason: "Out of scope." }),
+      },
+    );
+    expect(rejected.status).toBe(200);
+    expect(rejected.body.goal).toMatchObject({
+      id: rejectGoal.id,
+      status: "rejected",
+      rejectionReason: "Out of scope.",
+      rejectedBy: { owner: "human", id: "dev-1" },
+    });
+  });
+
+  it("allows operators to run the project manager without a task tracker", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const calls: Array<{ repositoryName: string; trigger?: string }> = [];
+    const runner: Pick<ProjectManagerOrchestrator, "runAnalysisOnce"> = {
+      runAnalysisOnce: async (input) => {
+        calls.push(input);
+        return {
+          run: {
+            id: "pm-run-1",
+            repositoryName: input.repositoryName,
+            trigger: input.trigger ?? "manual",
+            status: "completed",
+            analysisId: "analysis-1",
+            proposedGoalIds: ["goal-1"],
+            proposedTaskIds: [],
+            startedAt: "2026-05-25T00:00:00.000Z",
+            completedAt: "2026-05-25T00:01:00.000Z",
+          },
+          analysis: {
+            id: "analysis-1",
+            repositoryName: input.repositoryName,
+            summary: "Manual analysis completed.",
+            healthSignals: [],
+            proposedGoals: [],
+            staleGoalIds: [],
+            createdAt: "2026-05-25T00:01:00.000Z",
+          },
+        };
+      },
+    };
+    const { baseUrl } = await createServer(null, {}, {
+      store: projectManagerStore,
+      runner,
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({ repositoryName: "developer" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{ repositoryName: "developer", trigger: "manual" }]);
+    expect(response.body.result.run).toMatchObject({
+      id: "pm-run-1",
+      trigger: "manual",
+      status: "completed",
+    });
+  });
+
+  it("returns 503 for project manager routes when dependencies are absent", async () => {
+    const missingProjectManager = await createServer(null);
+    const listResponse = await requestJson(
+      missingProjectManager.baseUrl,
+      "/api/project-goals",
+      { headers: viewerHeaders },
+    );
+    expect(listResponse.status).toBe(503);
+    expect(listResponse.body.error).toContain("Project manager API is not configured");
+
+    const missingRunner = await createServer(null, {}, {
+      store: new InMemoryProjectManagerStore(),
+    });
+    const runResponse = await requestJson(
+      missingRunner.baseUrl,
+      "/api/project-manager/runs",
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({ repositoryName: "developer" }),
+      },
+    );
+    expect(runResponse.status).toBe(503);
+    expect(runResponse.body.error).toContain("Project manager runner is not configured");
   });
 
   it("creates a human task, previews agent context, and marks it ready", async () => {
@@ -322,7 +555,8 @@ describe("Phase 7F human task API", () => {
   });
 
   it("creates and reviews AI proposals through the human API", async () => {
-    const { baseUrl, tracker } = await createServer();
+    const tracker = new InMemoryTaskTrackerClient();
+    const { baseUrl } = await createServer(tracker);
 
     const proposed = await requestJson(baseUrl, "/api/proposals", {
       method: "POST",
