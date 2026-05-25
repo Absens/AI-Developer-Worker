@@ -369,6 +369,10 @@ const withoutSandboxArgs = (args: readonly string[]): string[] => {
         continue;
       }
       filtered.push(arg);
+      if (value !== undefined) {
+        filtered.push(value);
+        index += 1;
+      }
       continue;
     }
     if (
@@ -671,6 +675,9 @@ export class CliCodexRunner implements CodexRunner {
         input.mode === "review" && input.review
           ? this.buildReviewArgs(lastMessagePath, input.review)
           : this.buildBaseArgs(lastMessagePath, input.sandbox);
+      const codexCliArgs = input.sandbox
+        ? withoutSandboxArgs(this.config.codexCliArgs)
+        : this.config.codexCliArgs;
       if (input.mode === "resume" && input.threadId) {
         args.push("resume");
         appendImageArgs(args, input.imagePaths);
@@ -680,13 +687,13 @@ export class CliCodexRunner implements CodexRunner {
       }
       this.logger.info("Running Codex command.", {
         command: this.config.codexCliCommand,
-        args: [...this.config.codexCliArgs, ...args],
+        args: [...codexCliArgs, ...args],
         mode: input.mode,
       });
 
       const process = await runCommand({
         command: this.config.codexCliCommand,
-        args: [...this.config.codexCliArgs, ...args],
+        args: [...codexCliArgs, ...args],
         cwd: this.config.repoPath,
         stdin: input.prompt,
         env: getCodexShellEnv(this.config),

@@ -327,6 +327,30 @@ describe("ProjectManagerOrchestrator", () => {
     expect(tracker.recordAnalysis).not.toHaveBeenCalled();
   });
 
+  it("uses focus areas from project manager config when explicit focus areas are not supplied", async () => {
+    const tracker = readonlyTracker([baseTask()]);
+    const codex = new FakeCodexRunner(codexExecution(validAnalysisResponse));
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config: {
+        ...config,
+        focusAreas: ["accessibility", "test coverage"],
+      },
+    });
+
+    await orchestrator.runAnalysisOnce({
+      repositoryName: "developer",
+      trigger: "manual",
+    });
+
+    expect(codex.prompts[0]).toContain("Focus areas: accessibility, test coverage");
+  });
+
   it("stores a failed run when Codex output is not valid PROJECT_ANALYSIS", async () => {
     const tracker = readonlyTracker([baseTask()]);
     const codex = new FakeCodexRunner(codexExecution("not project analysis"));

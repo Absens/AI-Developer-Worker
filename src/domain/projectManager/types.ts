@@ -108,6 +108,7 @@ export interface ProjectManagerRun {
 
 export interface ProjectManagerConfig {
   enabled: boolean;
+  focusAreas?: string[];
   runOnce: boolean;
   intervalMinutes: number;
   maxGoalsPerRun: number;

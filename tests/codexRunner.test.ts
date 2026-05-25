@@ -351,6 +351,68 @@ describe("CliCodexRunner", () => {
     expect(args.some((arg) => arg.includes("sandbox_mode"))).toBe(false);
   });
 
+  it("strips sandbox-affecting global cli args and preserves ordinary config args", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-global-sandbox-args' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [
+          scriptPath,
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--config",
+          "sandbox_mode=\"danger-full-access\"",
+          "--config",
+          "model_provider=\"local\"",
+        ]),
+        codexSandbox: "workspace-write",
+        codexExecArgs: [
+          "--config",
+          "model_reasoning_effort=\"low\"",
+          "--sandbox",
+          "danger-full-access",
+        ],
+      },
+      new Logger(),
+    );
+
+    await runner.runInitial("Analyze this change.", undefined, {
+      sandbox: "read-only",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(args.join(" ")).not.toContain("danger-full-access");
+    expect(args.some((arg) => arg.includes("sandbox_mode"))).toBe(false);
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "--config",
+        "model_provider=\"local\"",
+        "--config",
+        "model_reasoning_effort=\"low\"",
+        "--sandbox",
+        "read-only",
+      ]),
+    );
+  });
+
   it("passes image paths to resume codex exec runs", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

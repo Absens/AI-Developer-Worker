@@ -79,7 +79,7 @@ export class ProjectManagerOrchestrator {
     this.codex = input.codex;
     this.store = input.store;
     this.config = input.config;
-    this.focusAreas = input.focusAreas;
+    this.focusAreas = input.focusAreas ?? input.config.focusAreas;
   }
 
   public async runAnalysisOnce(

@@ -1325,6 +1325,9 @@ const resolveRepositoryProjectManagerConfig = (
     ...(repositoryProjectManager?.enabled !== undefined
       ? { enabled: repositoryProjectManager.enabled }
       : {}),
+    ...(repositoryProjectManager?.focusAreas !== undefined
+      ? { focusAreas: repositoryProjectManager.focusAreas }
+      : {}),
     ...(repositoryProjectManager?.allowedTaskTypes !== undefined
       ? { allowedTaskTypes: repositoryProjectManager.allowedTaskTypes }
       : {}),

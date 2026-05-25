@@ -1000,6 +1000,7 @@ describe("config", () => {
     });
     expect(runtimeConfig.projectManager).toEqual({
       enabled: false,
+      focusAreas: ["accessibility", "test coverage"],
       runOnce: true,
       intervalMinutes: 120,
       maxGoalsPerRun: 1,
@@ -1011,7 +1012,6 @@ describe("config", () => {
       repositoryScanMaxFiles: 75,
       requireHumanGoalApproval: false,
     });
-    expect(runtimeConfig.projectManager).not.toHaveProperty("focusAreas");
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
