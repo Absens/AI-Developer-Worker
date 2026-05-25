@@ -344,6 +344,21 @@ const appendImageArgs = (args: string[], imagePaths: readonly string[]): void =>
   }
 };
 
+const withoutSandboxArgs = (args: readonly string[]): string[] => {
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--sandbox") {
+      index += 1;
+      continue;
+    }
+    const arg = args[index];
+    if (arg !== undefined) {
+      filtered.push(arg);
+    }
+  }
+  return filtered;
+};
+
 const summarizeEvent = (
   mode: CodexRunnerMode,
   event: CodexEvent,
@@ -541,7 +556,7 @@ export class CliCodexRunner implements CodexRunner {
 
   private buildBaseArgs(
     lastMessagePath: string,
-    sandbox: CodexSandbox = this.config.codexSandbox,
+    sandboxOverride?: CodexSandbox,
   ): string[] {
     const args = [
       "exec",
@@ -552,7 +567,7 @@ export class CliCodexRunner implements CodexRunner {
       this.config.repoPath,
       "--skip-git-repo-check",
       "--sandbox",
-      sandbox,
+      this.config.codexSandbox,
     ];
 
     if (this.config.codexModel) {
@@ -562,6 +577,9 @@ export class CliCodexRunner implements CodexRunner {
       args.push("--profile", this.config.codexProfile);
     }
     args.push(...this.config.codexExecArgs);
+    if (sandboxOverride) {
+      return [...withoutSandboxArgs(args), "--sandbox", sandboxOverride];
+    }
     return args;
   }
 

@@ -236,6 +236,57 @@ describe("CliCodexRunner", () => {
     expect(args).not.toContain("workspace-write");
   });
 
+  it("keeps sandbox override authoritative over configured exec args", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-sandbox-exec-args' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexSandbox: "workspace-write",
+        codexExecArgs: ["--sandbox", "danger-full-access"],
+      },
+      new Logger(),
+    );
+
+    await runner.runInitial("Analyze this change.", undefined, {
+      sandbox: "read-only",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const sandboxIndexes = args
+      .map((arg, index) => (arg === "--sandbox" ? index : -1))
+      .filter((index) => index >= 0);
+    const lastSandboxIndex = sandboxIndexes.at(-1);
+
+    if (lastSandboxIndex === undefined) {
+      throw new Error("Expected sandbox argument to be present.");
+    }
+    expect(args.slice(lastSandboxIndex, lastSandboxIndex + 2)).toEqual([
+      "--sandbox",
+      "read-only",
+    ]);
+    expect(args.slice(lastSandboxIndex + 2)).not.toContain("--sandbox");
+    expect(args).not.toContain("danger-full-access");
+  });
+
   it("passes image paths to resume codex exec runs", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");
