@@ -97,6 +97,14 @@ describe("project manager analysis parser", () => {
     expect(parseProjectAnalysisResponse("summary only")).toBeUndefined();
   });
 
+  it("rejects responses where the marker is not the exact prefix", () => {
+    expect(
+      parseProjectAnalysisResponse(
+        ` ${PROJECT_ANALYSIS_MARKER} {"summary":"Leading whitespace"}`,
+      ),
+    ).toBeUndefined();
+  });
+
   it("rejects invalid priority and risk values", () => {
     const parsed = parseProjectAnalysisResponse(
       `${PROJECT_ANALYSIS_MARKER} ${JSON.stringify({

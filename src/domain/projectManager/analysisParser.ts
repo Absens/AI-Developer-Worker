@@ -220,12 +220,11 @@ const parseProposedGoals = (value: unknown): ProjectGoalDraft[] | undefined => {
 export const parseProjectAnalysisResponse = (
   message: string | undefined,
 ): ParsedProjectAnalysis | undefined => {
-  const trimmed = message?.trim();
-  if (!trimmed?.startsWith(PROJECT_ANALYSIS_MARKER)) {
+  if (!message?.startsWith(PROJECT_ANALYSIS_MARKER)) {
     return undefined;
   }
 
-  const payload = trimmed.slice(PROJECT_ANALYSIS_MARKER.length).trim();
+  const payload = message.slice(PROJECT_ANALYSIS_MARKER.length).trim();
   if (!payload.startsWith("{")) {
     return undefined;
   }
