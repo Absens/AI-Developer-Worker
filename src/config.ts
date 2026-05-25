@@ -15,10 +15,12 @@ import type {
   MemoryBootstrapCodexSandbox,
   MemoryConfig,
   PriorityQueueConfig,
+  ProjectManagerConfig,
   PromptProfileOverrideMap,
   RepositoryAutonomyPolicyConfig,
   RepositoryDecompositionConfig,
   RepositoryProfile,
+  RepositoryProjectManagerConfig,
   RepositoryRuntimeConfig,
   TaskIntakeMode,
   TaskTrackerConfig,
@@ -111,6 +113,19 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
   maxBytes: 10 * 1024 * 1024,
 };
 const DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS = 1;
+const DEFAULT_PROJECT_MANAGER_CONFIG: ProjectManagerConfig = {
+  enabled: false,
+  runOnce: false,
+  intervalMinutes: 1440,
+  maxGoalsPerRun: 5,
+  maxTaskProposalsPerGoal: 5,
+  defaultAutonomyLevel: "proposal_only",
+  autoApproveLowRisk: false,
+  allowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
+  repositoryScanEnabled: false,
+  repositoryScanMaxFiles: 200,
+  requireHumanGoalApproval: true,
+};
 
 const requireEnv = (env: NodeJS.ProcessEnv, key: string): string => {
   const value = env[key]?.trim();
@@ -475,6 +490,29 @@ const parseTaskTypeArrayEnv = (
     throw new ConfigurationError(`${key} must be valid JSON. ${(error as Error).message}`);
   }
   return parseTaskTypeArray(parsed, key, defaultValue);
+};
+
+const parseAutonomyLevel = (
+  input: string | undefined,
+  key: string,
+  defaultValue: ProjectManagerConfig["defaultAutonomyLevel"],
+): ProjectManagerConfig["defaultAutonomyLevel"] => {
+  const normalized = input?.trim();
+  if (!normalized) {
+    return defaultValue;
+  }
+
+  if (
+    normalized === "proposal_only" ||
+    normalized === "auto_triage" ||
+    normalized === "auto_execute_low_risk"
+  ) {
+    return normalized;
+  }
+
+  throw new ConfigurationError(
+    `${key} must be one of: proposal_only, auto_triage, auto_execute_low_risk.`,
+  );
 };
 
 const parseOptionalRepositoryAutonomyPolicy = (
@@ -947,6 +985,22 @@ const optionalPercentIntValue = (
   return value;
 };
 
+const optionalAutonomyLevel = (
+  value: unknown,
+  key: string,
+  defaultValue: ProjectManagerConfig["defaultAutonomyLevel"],
+): ProjectManagerConfig["defaultAutonomyLevel"] => {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+
+  if (typeof value !== "string") {
+    throw new ConfigurationError(`${key} must be a string.`);
+  }
+
+  return parseAutonomyLevel(value, key, defaultValue);
+};
+
 const optionalStringArrayValue = (
   value: unknown,
   key: string,
@@ -1055,6 +1109,188 @@ const parseRepositoryDecompositionConfig = (
         }
       : {}),
     ...(maxSubtasks !== undefined ? { maxSubtasks } : {}),
+  };
+};
+
+const parseProjectManagerConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue: Record<string, unknown> | undefined,
+  taskTracker: TaskTrackerConfig,
+): ProjectManagerConfig => {
+  const enabled = env.PROJECT_MANAGER_ENABLED?.trim()
+    ? parseBooleanFlag(
+        env.PROJECT_MANAGER_ENABLED,
+        "PROJECT_MANAGER_ENABLED",
+        DEFAULT_PROJECT_MANAGER_CONFIG.enabled,
+      )
+    : optionalBoolean(
+        rawValue?.enabled,
+        "projectManager.enabled",
+        DEFAULT_PROJECT_MANAGER_CONFIG.enabled,
+      );
+
+  if (enabled && taskTracker.provider !== "internal") {
+    throw new ConfigurationError(
+      "PROJECT_MANAGER_ENABLED=true requires TASK_TRACKER_PROVIDER=internal.",
+    );
+  }
+
+  return {
+    enabled,
+    runOnce: env.PROJECT_MANAGER_RUN_ONCE?.trim()
+      ? parseBooleanFlag(
+          env.PROJECT_MANAGER_RUN_ONCE,
+          "PROJECT_MANAGER_RUN_ONCE",
+          DEFAULT_PROJECT_MANAGER_CONFIG.runOnce,
+        )
+      : optionalBoolean(
+          rawValue?.runOnce,
+          "projectManager.runOnce",
+          DEFAULT_PROJECT_MANAGER_CONFIG.runOnce,
+        ),
+    intervalMinutes: env.PROJECT_MANAGER_INTERVAL_MINUTES?.trim()
+      ? parsePositiveInt(
+          env.PROJECT_MANAGER_INTERVAL_MINUTES,
+          "PROJECT_MANAGER_INTERVAL_MINUTES",
+        )
+      : optionalPositiveInt(
+          rawValue?.intervalMinutes,
+          "projectManager.intervalMinutes",
+          DEFAULT_PROJECT_MANAGER_CONFIG.intervalMinutes,
+        ),
+    maxGoalsPerRun: env.PROJECT_MANAGER_MAX_GOALS_PER_RUN?.trim()
+      ? parsePositiveInt(
+          env.PROJECT_MANAGER_MAX_GOALS_PER_RUN,
+          "PROJECT_MANAGER_MAX_GOALS_PER_RUN",
+        )
+      : optionalPositiveInt(
+          rawValue?.maxGoalsPerRun,
+          "projectManager.maxGoalsPerRun",
+          DEFAULT_PROJECT_MANAGER_CONFIG.maxGoalsPerRun,
+        ),
+    maxTaskProposalsPerGoal: env.PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL?.trim()
+      ? parsePositiveInt(
+          env.PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL,
+          "PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL",
+        )
+      : optionalPositiveInt(
+          rawValue?.maxTaskProposalsPerGoal,
+          "projectManager.maxTaskProposalsPerGoal",
+          DEFAULT_PROJECT_MANAGER_CONFIG.maxTaskProposalsPerGoal,
+        ),
+    defaultAutonomyLevel: env.PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL?.trim()
+      ? parseAutonomyLevel(
+          env.PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL,
+          "PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL",
+          DEFAULT_PROJECT_MANAGER_CONFIG.defaultAutonomyLevel,
+        )
+      : optionalAutonomyLevel(
+          rawValue?.defaultAutonomyLevel,
+          "projectManager.defaultAutonomyLevel",
+          DEFAULT_PROJECT_MANAGER_CONFIG.defaultAutonomyLevel,
+        ),
+    autoApproveLowRisk: env.PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK?.trim()
+      ? parseBooleanFlag(
+          env.PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK,
+          "PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK",
+          DEFAULT_PROJECT_MANAGER_CONFIG.autoApproveLowRisk,
+        )
+      : optionalBoolean(
+          rawValue?.autoApproveLowRisk,
+          "projectManager.autoApproveLowRisk",
+          DEFAULT_PROJECT_MANAGER_CONFIG.autoApproveLowRisk,
+        ),
+    allowedTaskTypes: env.PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON?.trim()
+      ? parseTaskTypeArrayEnv(
+          env.PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON,
+          "PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON",
+          DEFAULT_PROJECT_MANAGER_CONFIG.allowedTaskTypes,
+        )
+      : parseTaskTypeArray(
+          rawValue?.allowedTaskTypes,
+          "projectManager.allowedTaskTypes",
+          DEFAULT_PROJECT_MANAGER_CONFIG.allowedTaskTypes,
+        ),
+    repositoryScanEnabled: env.PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED,
+          "PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED",
+          DEFAULT_PROJECT_MANAGER_CONFIG.repositoryScanEnabled,
+        )
+      : optionalBoolean(
+          rawValue?.repositoryScanEnabled,
+          "projectManager.repositoryScanEnabled",
+          DEFAULT_PROJECT_MANAGER_CONFIG.repositoryScanEnabled,
+        ),
+    repositoryScanMaxFiles: env.PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES?.trim()
+      ? parsePositiveInt(
+          env.PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES,
+          "PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES",
+        )
+      : optionalPositiveInt(
+          rawValue?.repositoryScanMaxFiles,
+          "projectManager.repositoryScanMaxFiles",
+          DEFAULT_PROJECT_MANAGER_CONFIG.repositoryScanMaxFiles,
+        ),
+    requireHumanGoalApproval: env.PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL?.trim()
+      ? parseBooleanFlag(
+          env.PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL,
+          "PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL",
+          DEFAULT_PROJECT_MANAGER_CONFIG.requireHumanGoalApproval,
+        )
+      : optionalBoolean(
+          rawValue?.requireHumanGoalApproval,
+          "projectManager.requireHumanGoalApproval",
+          DEFAULT_PROJECT_MANAGER_CONFIG.requireHumanGoalApproval,
+        ),
+  };
+};
+
+const parseRepositoryProjectManagerConfig = (
+  value: unknown,
+  path: string,
+): RepositoryProjectManagerConfig | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const raw = asRecord(value, path);
+  return {
+    ...(raw.enabled !== undefined
+      ? { enabled: optionalBoolean(raw.enabled, `${path}.enabled`, false) }
+      : {}),
+    ...(raw.focusAreas !== undefined
+      ? {
+          focusAreas: optionalStringArrayValue(raw.focusAreas, `${path}.focusAreas`, []),
+        }
+      : {}),
+    ...(raw.allowedTaskTypes !== undefined
+      ? {
+          allowedTaskTypes: parseTaskTypeArray(
+            raw.allowedTaskTypes,
+            `${path}.allowedTaskTypes`,
+            DEFAULT_PROJECT_MANAGER_CONFIG.allowedTaskTypes,
+          ),
+        }
+      : {}),
+    ...(raw.maxGoalsPerRun !== undefined
+      ? {
+          maxGoalsPerRun: optionalPositiveInt(
+            raw.maxGoalsPerRun,
+            `${path}.maxGoalsPerRun`,
+            DEFAULT_PROJECT_MANAGER_CONFIG.maxGoalsPerRun,
+          ),
+        }
+      : {}),
+    ...(raw.maxTaskProposalsPerGoal !== undefined
+      ? {
+          maxTaskProposalsPerGoal: optionalPositiveInt(
+            raw.maxTaskProposalsPerGoal,
+            `${path}.maxTaskProposalsPerGoal`,
+            DEFAULT_PROJECT_MANAGER_CONFIG.maxTaskProposalsPerGoal,
+          ),
+        }
+      : {}),
   };
 };
 
@@ -1274,6 +1510,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   const memory = parseMemoryConfig(env);
   const observability = parseObservabilityConfig(env);
   const autonomy = parseAutonomyConfig(env);
+  const projectManager = parseProjectManagerConfig(env, undefined, taskTracker);
   const trackerImageContext = parseTrackerImageContextConfig(env);
 
   return {
@@ -1437,6 +1674,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     memory,
     observability,
     autonomy,
+    projectManager,
   };
 };
 
@@ -1695,6 +1933,7 @@ const buildSingleRepositoryFleetConfig = (
     memory: config.memory,
     observability: config.observability,
     ...(config.autonomy ? { autonomy: config.autonomy } : {}),
+    ...(config.projectManager ? { projectManager: config.projectManager } : {}),
   };
 };
 
@@ -1810,6 +2049,14 @@ const parseRepositoryProfile = (
           ),
         }
       : {}),
+    ...(parseRepositoryProjectManagerConfig(raw.projectManager, `${path}.projectManager`)
+      ? {
+          projectManager: parseRepositoryProjectManagerConfig(
+            raw.projectManager,
+            `${path}.projectManager`,
+          ),
+        }
+      : {}),
   };
 };
 
@@ -1865,6 +2112,7 @@ const loadFleetConfigFromFile = (
   const observability = optionalRecord(root.observability, "observability");
   const alerts = optionalRecord(root.alerts, "alerts");
   const autonomyRoot = optionalRecord(root.autonomy, "autonomy");
+  const projectManagerRoot = optionalRecord(root.projectManager, "projectManager");
   const trackerImageContext = optionalRecord(
     root.trackerImageContext,
     "trackerImageContext",
@@ -1875,6 +2123,11 @@ const loadFleetConfigFromFile = (
   const repositories = root.repositories.map(parseRepositoryProfile);
   validateRepositoryProfiles(repositories);
   const autonomy = parseAutonomyConfig(env, autonomyRoot, repositories);
+  const projectManager = parseProjectManagerConfig(
+    env,
+    projectManagerRoot,
+    taskTracker,
+  );
 
   const usesYandex = taskTrackerUsesYandex(taskTracker);
   const statusMapFile =
@@ -2162,6 +2415,7 @@ const loadFleetConfigFromFile = (
       ...(alerts ? { alerts } : {}),
     }),
     autonomy,
+    projectManager,
   };
 };
 
@@ -2287,4 +2541,5 @@ export const buildRepositoryRuntimeConfig = (
   memory: globalConfig.memory,
   observability: globalConfig.observability,
   ...(globalConfig.autonomy ? { autonomy: globalConfig.autonomy } : {}),
+  ...(globalConfig.projectManager ? { projectManager: globalConfig.projectManager } : {}),
 });

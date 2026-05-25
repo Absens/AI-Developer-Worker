@@ -137,6 +137,19 @@ describe("config", () => {
       autoExecuteLowRiskEnabled: false,
       defaultAllowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
     });
+    expect(config.projectManager).toEqual({
+      enabled: false,
+      runOnce: false,
+      intervalMinutes: 1440,
+      maxGoalsPerRun: 5,
+      maxTaskProposalsPerGoal: 5,
+      defaultAutonomyLevel: "proposal_only",
+      autoApproveLowRisk: false,
+      allowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
+      repositoryScanEnabled: false,
+      repositoryScanMaxFiles: 200,
+      requireHumanGoalApproval: true,
+    });
   });
 
   it("defaults task tracker provider to Yandex", () => {
@@ -250,6 +263,66 @@ describe("config", () => {
       defaultWindowSeconds: 600,
       repositories: {},
     });
+  });
+
+  it("parses project manager environment options for internal memory tracker", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      PROJECT_MANAGER_ENABLED: "true",
+      PROJECT_MANAGER_RUN_ONCE: "true",
+      PROJECT_MANAGER_INTERVAL_MINUTES: "60",
+      PROJECT_MANAGER_MAX_GOALS_PER_RUN: "2",
+      PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL: "3",
+      PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL: "auto_triage",
+      PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK: "true",
+      PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON: "[\"documentation\",\"tests_only\"]",
+      PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED: "true",
+      PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES: "50",
+      PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL: "false",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(config.taskTracker).toMatchObject({
+      provider: "internal",
+      internal: { storage: "memory" },
+    });
+    expect(config.projectManager).toEqual({
+      enabled: true,
+      runOnce: true,
+      intervalMinutes: 60,
+      maxGoalsPerRun: 2,
+      maxTaskProposalsPerGoal: 3,
+      defaultAutonomyLevel: "auto_triage",
+      autoApproveLowRisk: true,
+      allowedTaskTypes: ["documentation", "tests_only"],
+      repositoryScanEnabled: true,
+      repositoryScanMaxFiles: 50,
+      requireHumanGoalApproval: false,
+    });
+  });
+
+  it("rejects enabled project manager outside internal task tracker mode", () => {
+    const statusMapFile = createStatusMapFile();
+
+    expect(() =>
+      loadConfig({
+        PROJECT_MANAGER_ENABLED: "true",
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        TRACKER_STATUS_MAP_FILE: statusMapFile,
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      }),
+    ).toThrow(/PROJECT_MANAGER_ENABLED=true requires TASK_TRACKER_PROVIDER=internal/);
   });
 
   it("rejects invalid task tracker provider", () => {
@@ -820,6 +893,78 @@ describe("config", () => {
       queues: ["BACKEND"],
       baseBranch: "develop",
     });
+  });
+
+  it("parses fleet project manager config and repository overrides", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        taskTracker: { provider: "internal", storage: "memory" },
+        projectManager: {
+          enabled: true,
+          runOnce: true,
+          intervalMinutes: 120,
+          maxGoalsPerRun: 4,
+          maxTaskProposalsPerGoal: 6,
+          defaultAutonomyLevel: "auto_execute_low_risk",
+          autoApproveLowRisk: true,
+          allowedTaskTypes: ["documentation", "tests_only"],
+          repositoryScanEnabled: true,
+          repositoryScanMaxFiles: 75,
+          requireHumanGoalApproval: false,
+        },
+        repositories: [
+          {
+            name: "client-application",
+            repoPath: "/workspace/client-app",
+            gitlabProjectId: "42",
+            queues: ["FRONTEND"],
+            projectManager: {
+              enabled: false,
+              focusAreas: ["accessibility", "test coverage"],
+              allowedTaskTypes: ["tests_only"],
+              maxGoalsPerRun: 1,
+              maxTaskProposalsPerGoal: 2,
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      NODE_ENV: "test",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    });
+    const runtimeConfig = buildRepositoryRuntimeConfig(config, config.repositories[0]!);
+
+    expect(config.projectManager).toEqual({
+      enabled: true,
+      runOnce: true,
+      intervalMinutes: 120,
+      maxGoalsPerRun: 4,
+      maxTaskProposalsPerGoal: 6,
+      defaultAutonomyLevel: "auto_execute_low_risk",
+      autoApproveLowRisk: true,
+      allowedTaskTypes: ["documentation", "tests_only"],
+      repositoryScanEnabled: true,
+      repositoryScanMaxFiles: 75,
+      requireHumanGoalApproval: false,
+    });
+    expect(config.repositories[0]?.projectManager).toEqual({
+      enabled: false,
+      focusAreas: ["accessibility", "test coverage"],
+      allowedTaskTypes: ["tests_only"],
+      maxGoalsPerRun: 1,
+      maxTaskProposalsPerGoal: 2,
+    });
+    expect(runtimeConfig.projectManager).toEqual(config.projectManager);
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {
