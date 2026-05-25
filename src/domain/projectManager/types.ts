@@ -1,5 +1,5 @@
 import type { AutonomyLevel, TaskType } from "../../models/types.js";
-import type { EvidenceRef } from "../taskTracker/types.js";
+import type { EvidenceRef, TaskActor } from "../taskTracker/types.js";
 
 export const PROJECT_ANALYSIS_MARKER = "PROJECT_ANALYSIS:";
 
@@ -90,23 +90,32 @@ export interface ProjectGoalDraft {
 
 export interface ProjectGoal extends ProjectGoalDraft {
   id: string;
-  analysisId: string;
+  sourceAnalysisId: string;
+  sourceRunId?: string;
   repositoryName: string;
   status: ProjectGoalStatus;
   duplicateSignature: string;
-  approvedBy?: string;
+  approvedBy?: TaskActor;
   approvedAt?: string;
-  rejectedBy?: string;
+  activatedBy?: TaskActor;
+  activatedAt?: string;
+  completedBy?: TaskActor;
+  completedAt?: string;
+  rejectedBy?: TaskActor;
   rejectedAt?: string;
   rejectionReason?: string;
+  staleBy?: TaskActor;
   staleAt?: string;
   staleReason?: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 export const PROJECT_GOAL_AUDIT_EVENT_KINDS = [
   "project_goal_created",
   "project_goal_approved",
+  "project_goal_activated",
+  "project_goal_completed",
   "project_goal_rejected",
   "project_goal_stale",
 ] as const;
@@ -118,7 +127,7 @@ export interface ProjectGoalAuditEvent {
   id: string;
   goalId: string;
   kind: ProjectGoalAuditEventKind;
-  actor?: string;
+  actor?: TaskActor;
   message?: string;
   payload?: Record<string, unknown>;
   createdAt: string;
@@ -134,26 +143,36 @@ export interface ProjectGoalTaskLink {
 
 export interface ListProjectGoalsInput {
   repositoryName?: string;
-  analysisId?: string;
+  sourceAnalysisId?: string;
   status?: ProjectGoalStatus | ProjectGoalStatus[];
 }
 
 export interface CreateProjectGoalsFromAnalysisInput {
-  analysisId: string;
+  sourceAnalysisId: string;
+  sourceRunId?: string;
   repositoryName: string;
   goals: ProjectGoalDraft[];
 }
 
 export interface ApproveProjectGoalInput {
-  approvedBy: string;
+  actor: TaskActor;
+}
+
+export interface ActivateProjectGoalInput {
+  actor: TaskActor;
+}
+
+export interface CompleteProjectGoalInput {
+  actor: TaskActor;
 }
 
 export interface RejectProjectGoalInput {
-  rejectedBy: string;
+  actor: TaskActor;
   rejectionReason: string;
 }
 
 export interface MarkProjectGoalStaleInput {
+  actor?: TaskActor;
   staleReason: string;
 }
 

@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import { buildProjectGoalDuplicateSignature } from "./goalPolicy.js";
 import type {
+  ActivateProjectGoalInput,
   ApproveProjectGoalInput,
+  CompleteProjectGoalInput,
   CreateProjectGoalsFromAnalysisInput,
   LinkProjectGoalTaskInput,
   ListProjectGoalsInput,
@@ -51,6 +53,14 @@ export interface ProjectManagerStore {
   approveGoal(
     goalId: string,
     input: ApproveProjectGoalInput,
+  ): Promise<ProjectGoal>;
+  activateGoal(
+    goalId: string,
+    input: ActivateProjectGoalInput,
+  ): Promise<ProjectGoal>;
+  completeGoal(
+    goalId: string,
+    input: CompleteProjectGoalInput,
   ): Promise<ProjectGoal>;
   rejectGoal(
     goalId: string,
@@ -168,10 +178,12 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
       if (this.hasActiveDuplicate(input.repositoryName, duplicateSignature)) {
         continue;
       }
+      const createdAt = this.now().toISOString();
 
       const goal: ProjectGoal = {
         id: `pm_goal_${randomUUID()}`,
-        analysisId: input.analysisId,
+        sourceAnalysisId: input.sourceAnalysisId,
+        ...(input.sourceRunId ? { sourceRunId: input.sourceRunId } : {}),
         repositoryName: input.repositoryName,
         status: "proposed",
         title: draft.title,
@@ -183,13 +195,15 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
         riskLevel: draft.riskLevel,
         suggestedTaskProposals: structuredClone(draft.suggestedTaskProposals),
         duplicateSignature,
-        createdAt: this.now().toISOString(),
+        createdAt,
+        updatedAt: createdAt,
       };
       this.goals.set(goal.id, structuredClone(goal));
       this.appendGoalEvent(goal.id, {
         kind: "project_goal_created",
         payload: {
-          analysisId: input.analysisId,
+          sourceAnalysisId: input.sourceAnalysisId,
+          ...(input.sourceRunId ? { sourceRunId: input.sourceRunId } : {}),
           repositoryName: input.repositoryName,
         },
       });
@@ -210,7 +224,10 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
       if (input.repositoryName && goal.repositoryName !== input.repositoryName) {
         return false;
       }
-      if (input.analysisId && goal.analysisId !== input.analysisId) {
+      if (
+        input.sourceAnalysisId &&
+        goal.sourceAnalysisId !== input.sourceAnalysisId
+      ) {
         return false;
       }
       if (statuses && !statuses.has(goal.status)) {
@@ -232,19 +249,67 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
   ): Promise<ProjectGoal> {
     const existing = this.requireGoal(goalId);
     this.requireGoalStatus(existing, "proposed", "approve");
+    const updatedAt = this.now().toISOString();
 
     const approved: ProjectGoal = {
       ...existing,
       status: "approved",
-      approvedBy: input.approvedBy,
-      approvedAt: this.now().toISOString(),
+      approvedBy: structuredClone(input.actor),
+      approvedAt: updatedAt,
+      updatedAt,
     };
     this.goals.set(goalId, structuredClone(approved));
     this.appendGoalEvent(goalId, {
       kind: "project_goal_approved",
-      actor: input.approvedBy,
+      actor: input.actor,
     });
     return structuredClone(approved);
+  }
+
+  public async activateGoal(
+    goalId: string,
+    input: ActivateProjectGoalInput,
+  ): Promise<ProjectGoal> {
+    const existing = this.requireGoal(goalId);
+    this.requireGoalStatus(existing, "approved", "activate");
+    const updatedAt = this.now().toISOString();
+
+    const active: ProjectGoal = {
+      ...existing,
+      status: "active",
+      activatedBy: structuredClone(input.actor),
+      activatedAt: updatedAt,
+      updatedAt,
+    };
+    this.goals.set(goalId, structuredClone(active));
+    this.appendGoalEvent(goalId, {
+      kind: "project_goal_activated",
+      actor: input.actor,
+    });
+    return structuredClone(active);
+  }
+
+  public async completeGoal(
+    goalId: string,
+    input: CompleteProjectGoalInput,
+  ): Promise<ProjectGoal> {
+    const existing = this.requireGoal(goalId);
+    this.requireGoalStatus(existing, "active", "complete");
+    const updatedAt = this.now().toISOString();
+
+    const completed: ProjectGoal = {
+      ...existing,
+      status: "completed",
+      completedBy: structuredClone(input.actor),
+      completedAt: updatedAt,
+      updatedAt,
+    };
+    this.goals.set(goalId, structuredClone(completed));
+    this.appendGoalEvent(goalId, {
+      kind: "project_goal_completed",
+      actor: input.actor,
+    });
+    return structuredClone(completed);
   }
 
   public async rejectGoal(
@@ -253,18 +318,20 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
   ): Promise<ProjectGoal> {
     const existing = this.requireGoal(goalId);
     this.requireGoalStatus(existing, "proposed", "reject");
+    const updatedAt = this.now().toISOString();
 
     const rejected: ProjectGoal = {
       ...existing,
       status: "rejected",
-      rejectedBy: input.rejectedBy,
-      rejectedAt: this.now().toISOString(),
+      rejectedBy: structuredClone(input.actor),
+      rejectedAt: updatedAt,
       rejectionReason: input.rejectionReason,
+      updatedAt,
     };
     this.goals.set(goalId, structuredClone(rejected));
     this.appendGoalEvent(goalId, {
       kind: "project_goal_rejected",
-      actor: input.rejectedBy,
+      actor: input.actor,
       message: input.rejectionReason,
     });
     return structuredClone(rejected);
@@ -285,16 +352,20 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
         `Cannot mark project goal stale from status ${existing.status}`,
       );
     }
+    const updatedAt = this.now().toISOString();
 
     const stale: ProjectGoal = {
       ...existing,
       status: "stale",
-      staleAt: this.now().toISOString(),
+      ...(input.actor ? { staleBy: structuredClone(input.actor) } : {}),
+      staleAt: updatedAt,
       staleReason: input.staleReason,
+      updatedAt,
     };
     this.goals.set(goalId, structuredClone(stale));
     this.appendGoalEvent(goalId, {
       kind: "project_goal_stale",
+      ...(input.actor ? { actor: input.actor } : {}),
       message: input.staleReason,
     });
     return structuredClone(stale);
