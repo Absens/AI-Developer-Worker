@@ -344,6 +344,28 @@ const appendImageArgs = (args: string[], imagePaths: readonly string[]): void =>
   }
 };
 
+const isSandboxConfigOverride = (value: string): boolean => {
+  const separatorIndex = value.indexOf("=");
+  if (separatorIndex < 0) {
+    const normalizedValue = value.trim().replace(/^["']|["']$/g, "").toLowerCase();
+    return normalizedValue === "sandbox" || normalizedValue === "sandbox_mode";
+  }
+
+  const normalizedKey = value
+    .slice(0, separatorIndex)
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .toLowerCase();
+  return (
+    normalizedKey === "sandbox" ||
+    normalizedKey === "sandbox_mode" ||
+    normalizedKey === "sandbox-mode" ||
+    normalizedKey.endsWith(".sandbox") ||
+    normalizedKey.endsWith(".sandbox_mode") ||
+    normalizedKey.endsWith(".sandbox-mode")
+  );
+};
+
 const withoutSandboxArgs = (args: readonly string[]): string[] => {
   const filtered: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -357,14 +379,14 @@ const withoutSandboxArgs = (args: readonly string[]): string[] => {
     }
     if (
       arg.startsWith("--sandbox=") ||
-      (arg.startsWith("-s") && !arg.startsWith("--")) ||
+      arg.startsWith("-s=") ||
       arg === "--dangerously-bypass-approvals-and-sandbox"
     ) {
       continue;
     }
     if (arg === "--config" || arg === "-c") {
       const value = args[index + 1];
-      if (value?.toLowerCase().includes("sandbox")) {
+      if (value !== undefined && isSandboxConfigOverride(value)) {
         index += 1;
         continue;
       }
@@ -376,8 +398,14 @@ const withoutSandboxArgs = (args: readonly string[]): string[] => {
       continue;
     }
     if (
-      (arg.startsWith("--config=") || arg.startsWith("-c=")) &&
-      arg.toLowerCase().includes("sandbox")
+      arg.startsWith("--config=") &&
+      isSandboxConfigOverride(arg.slice("--config=".length))
+    ) {
+      continue;
+    }
+    if (
+      arg.startsWith("-c=") &&
+      isSandboxConfigOverride(arg.slice("-c=".length))
     ) {
       continue;
     }

@@ -201,6 +201,39 @@ const analysisResponseWithGoals = (proposedGoals: unknown[]): string =>
     staleGoalIds: [],
   })}`;
 
+const analysisResponse = (overrides: Record<string, unknown> = {}): string =>
+  `${PROJECT_ANALYSIS_MARKER} ${JSON.stringify({
+    summary: "Repository is healthy enough for a documentation follow-up.",
+    healthSignals: [],
+    proposedGoals: [validGoal()],
+    staleGoalIds: [],
+    ...overrides,
+  })}`;
+
+const validEvidenceRef = (ref = "docs/runbook.md"): Record<string, unknown> => ({
+  kind: "file",
+  ref,
+});
+
+const validProposal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  title: "Document project manager analysis mode",
+  description: "Add runbook notes for PM analysis-only behavior.",
+  taskType: "documentation",
+  acceptanceCriteria: ["Runbook documents analysis-only guardrails"],
+  expectedBlastRadius: "documentation only",
+  evidenceRefs: [validEvidenceRef()],
+  ...overrides,
+});
+
+const validHealthSignal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  kind: "documentation_gap",
+  severity: "medium",
+  title: "Documentation gap",
+  description: "Operators need clearer PM run guidance.",
+  evidenceRefs: [validEvidenceRef()],
+  ...overrides,
+});
+
 const validGoal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   title: "Improve operator documentation",
   problemStatement: "Operators need clearer project manager run guidance.",
@@ -214,21 +247,7 @@ const validGoal = (overrides: Record<string, unknown> = {}): Record<string, unkn
       ref: "docs/runbook.md",
     },
   ],
-  suggestedTaskProposals: [
-    {
-      title: "Document project manager analysis mode",
-      description: "Add runbook notes for PM analysis-only behavior.",
-      taskType: "documentation",
-      acceptanceCriteria: ["Runbook documents analysis-only guardrails"],
-      expectedBlastRadius: "documentation only",
-      evidenceRefs: [
-        {
-          kind: "file",
-          ref: "docs/runbook.md",
-        },
-      ],
-    },
-  ],
+  suggestedTaskProposals: [validProposal()],
   ...overrides,
 });
 
@@ -454,6 +473,77 @@ describe("ProjectManagerOrchestrator", () => {
         }),
       ]),
       /Task type refactor is not allowed/,
+    );
+  });
+
+  it("rejects project analysis with too many health signals", async () => {
+    await expectPolicyFailure(
+      analysisResponse({
+        healthSignals: Array.from({ length: 21 }, (_, index) =>
+          validHealthSignal({ title: `Signal ${index}` }),
+        ),
+      }),
+      /at most 20 health signals/,
+    );
+  });
+
+  it("rejects project analysis with too many stale goal ids", async () => {
+    await expectPolicyFailure(
+      analysisResponse({
+        staleGoalIds: Array.from({ length: 51 }, (_, index) => `goal-${index}`),
+      }),
+      /staleGoalIds must contain at most 50 entries/,
+    );
+  });
+
+  it("rejects project analysis with too many nested evidence refs", async () => {
+    await expectPolicyFailure(
+      analysisResponseWithGoals([
+        validGoal({
+          evidenceRefs: Array.from({ length: 11 }, (_, index) =>
+            validEvidenceRef(`docs/ref-${index}.md`),
+          ),
+        }),
+      ]),
+      /evidenceRefs must contain at most 10 entries/,
+    );
+  });
+
+  it("rejects project analysis with too many success metrics", async () => {
+    await expectPolicyFailure(
+      analysisResponseWithGoals([
+        validGoal({
+          successMetrics: Array.from({ length: 11 }, (_, index) => `metric-${index}`),
+        }),
+      ]),
+      /successMetrics must contain at most 10 entries/,
+    );
+  });
+
+  it("rejects project analysis with too many acceptance criteria", async () => {
+    await expectPolicyFailure(
+      analysisResponseWithGoals([
+        validGoal({
+          suggestedTaskProposals: [
+            validProposal({
+              acceptanceCriteria: Array.from(
+                { length: 11 },
+                (_, index) => `criterion-${index}`,
+              ),
+            }),
+          ],
+        }),
+      ]),
+      /acceptanceCriteria must contain at most 10 entries/,
+    );
+  });
+
+  it("rejects project analysis with oversized strings", async () => {
+    await expectPolicyFailure(
+      analysisResponse({
+        summary: "x".repeat(4001),
+      }),
+      /summary must be at most 4000 characters/,
     );
   });
 });
