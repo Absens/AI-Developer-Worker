@@ -3,7 +3,6 @@ import type {
   ClarificationQuestionRecord,
   MergeRequestRecord,
   QualityGateRun,
-  TaskLeaseRecord,
   TaskRecord,
   TaskTrackerClient,
 } from "../taskTracker/types.js";
@@ -52,14 +51,26 @@ const latestOpenQuestion = (
     (question) => question.createdAt,
   );
 
-const activeAt = (lease: TaskLeaseRecord, now: Date): boolean =>
-  lease.releasedAt === undefined && timeValue(lease.expiresAt) > now.getTime();
+const nonBlank = (value: string | undefined): string | undefined =>
+  value?.trim() ? value : undefined;
+
+const firstNonBlank = (
+  ...values: Array<string | undefined>
+): string | undefined => values.map(nonBlank).find((value) => value !== undefined);
 
 const toTaskSignal = (task: TaskRecord): ProjectTaskSignal => {
   const agentRun = latestAgentRun(task);
   const validation = latestValidation(task);
   const mergeRequest = latestMergeRequest(task);
   const openQuestion = latestOpenQuestion(task);
+  const latestAiSummary = firstNonBlank(
+    agentRun?.finalMessage,
+    agentRun?.diagnostic,
+  );
+  const latestValidationSummary = firstNonBlank(
+    validation?.summary,
+    validation?.diagnostic,
+  );
 
   return {
     id: task.id,
@@ -70,12 +81,8 @@ const toTaskSignal = (task: TaskRecord): ProjectTaskSignal => {
     ...(task.priority ? { priority: task.priority } : {}),
     ...(task.taskType ? { taskType: task.taskType } : {}),
     updatedAt: task.updatedAt,
-    ...(agentRun?.finalMessage || agentRun?.diagnostic
-      ? { latestAiSummary: agentRun.finalMessage ?? agentRun.diagnostic }
-      : {}),
-    ...(validation?.summary || validation?.diagnostic
-      ? { latestValidationSummary: validation.summary ?? validation.diagnostic }
-      : {}),
+    ...(latestAiSummary ? { latestAiSummary } : {}),
+    ...(latestValidationSummary ? { latestValidationSummary } : {}),
     ...(mergeRequest?.mergeRequest.url
       ? { mergeRequestUrl: mergeRequest.mergeRequest.url }
       : {}),
@@ -108,8 +115,7 @@ export const collectProjectSignals = async (
   ).filter((task) => task.repositoryName === input.repositoryName);
   const signals = tasks.map(toTaskSignal);
   const activeLeases = (await input.taskTracker.listActiveLeases()).filter(
-    (lease) =>
-      lease.repositoryName === input.repositoryName && activeAt(lease, now),
+    (lease) => lease.repositoryName === input.repositoryName,
   );
 
   return {

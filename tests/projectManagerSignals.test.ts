@@ -136,7 +136,8 @@ describe("project manager signal collector", () => {
           workerId: "worker-1",
           stage: "implementation",
           status: "failed",
-          finalMessage: "Second implementation failed.",
+          finalMessage: "   ",
+          diagnostic: "Second implementation failed.",
           startedAt: "2026-05-25T08:10:00.000Z",
           completedAt: "2026-05-25T08:11:00.000Z",
         },
@@ -172,7 +173,7 @@ describe("project manager signal collector", () => {
           lintPassed: true,
           gates: [],
           diagnostic: "Repeated validation failure.",
-          summary: "Unit test failed again.",
+          summary: "",
           createdAt: "2026-05-25T08:20:00.000Z",
           artifactRefs: [],
         },
@@ -272,7 +273,7 @@ describe("project manager signal collector", () => {
         review: 1,
         human_testing: 1,
       },
-      activeLeases: 1,
+      activeLeases: 2,
     });
     expect(snapshot.readyTasks).toEqual([
       expect.objectContaining({
@@ -286,7 +287,7 @@ describe("project manager signal collector", () => {
         id: "failed-task",
         priority: "high",
         taskType: "tests_only",
-        latestValidationSummary: "Unit test failed again.",
+        latestValidationSummary: "Repeated validation failure.",
         mergeRequestUrl: "https://gitlab.example/mr/10",
         failedValidations: 2,
       }),
