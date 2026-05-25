@@ -7,6 +7,7 @@ import type {
   CodexRunner,
   CodexRunObserver,
   CodexRunOptions,
+  CodexSandbox,
 } from "../../models/types.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -487,6 +488,7 @@ export class CliCodexRunner implements CodexRunner {
       mode: "new",
       observer,
       imagePaths: options.imagePaths ?? [],
+      sandbox: options.sandbox,
     });
   }
 
@@ -500,6 +502,7 @@ export class CliCodexRunner implements CodexRunner {
       mode: "new",
       observer,
       imagePaths: options.imagePaths ?? [],
+      sandbox: options.sandbox,
     });
   }
 
@@ -515,6 +518,7 @@ export class CliCodexRunner implements CodexRunner {
       threadId,
       observer,
       imagePaths: options.imagePaths ?? [],
+      sandbox: options.sandbox,
     });
   }
 
@@ -535,7 +539,10 @@ export class CliCodexRunner implements CodexRunner {
     });
   }
 
-  private buildBaseArgs(lastMessagePath: string): string[] {
+  private buildBaseArgs(
+    lastMessagePath: string,
+    sandbox: CodexSandbox = this.config.codexSandbox,
+  ): string[] {
     const args = [
       "exec",
       "--json",
@@ -545,7 +552,7 @@ export class CliCodexRunner implements CodexRunner {
       this.config.repoPath,
       "--skip-git-repo-check",
       "--sandbox",
-      this.config.codexSandbox,
+      sandbox,
     ];
 
     if (this.config.codexModel) {
@@ -591,6 +598,7 @@ export class CliCodexRunner implements CodexRunner {
     threadId?: string;
     observer?: CodexRunObserver;
     imagePaths: string[];
+    sandbox?: CodexSandbox;
     review?: { baseBranch: string; title?: string };
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
@@ -621,7 +629,7 @@ export class CliCodexRunner implements CodexRunner {
       const args =
         input.mode === "review" && input.review
           ? this.buildReviewArgs(lastMessagePath, input.review)
-          : this.buildBaseArgs(lastMessagePath);
+          : this.buildBaseArgs(lastMessagePath, input.sandbox);
       if (input.mode === "resume" && input.threadId) {
         args.push("resume");
         appendImageArgs(args, input.imagePaths);

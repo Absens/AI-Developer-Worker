@@ -71,7 +71,9 @@ export class ProjectManagerOrchestrator {
         allowedTaskTypes: this.config.allowedTaskTypes,
         focusAreas: this.focusAreas,
       });
-      const execution = await this.codex.runInitial(prompt);
+      const execution = await this.codex.runInitial(prompt, undefined, {
+        sandbox: "read-only",
+      });
       if (execution.process.exitCode !== 0) {
         throw new Error(
           `Codex project analysis failed with exit code ${execution.process.exitCode}.`,

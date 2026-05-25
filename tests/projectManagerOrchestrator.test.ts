@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { CodexExecution, CodexRunner } from "../src/models/types.js";
+import type {
+  CodexExecution,
+  CodexRunner,
+  CodexRunObserver,
+  CodexRunOptions,
+} from "../src/models/types.js";
 import {
   InMemoryProjectManagerStore,
   PROJECT_ANALYSIS_MARKER,
@@ -115,11 +120,17 @@ const readonlyTracker = (tasks: TaskRecord[]): TaskTrackerClient => {
 
 class FakeCodexRunner implements CodexRunner {
   public readonly prompts: string[] = [];
+  public readonly options: CodexRunOptions[] = [];
 
   public constructor(private readonly execution: CodexExecution) {}
 
-  async runInitial(prompt: string): Promise<CodexExecution> {
+  async runInitial(
+    prompt: string,
+    _observer?: CodexRunObserver,
+    options: CodexRunOptions = {},
+  ): Promise<CodexExecution> {
     this.prompts.push(prompt);
+    this.options.push(options);
     return this.execution;
   }
 
@@ -197,7 +208,7 @@ describe("ProjectManagerOrchestrator", () => {
       focusAreas: ["operator docs"],
     });
 
-    const initialTaskCount = (await tracker.listTasks()).length;
+    const initialTasks = structuredClone(await tracker.listTasks());
 
     await orchestrator.runAnalysisOnce({
       repositoryName: "developer",
@@ -233,7 +244,8 @@ describe("ProjectManagerOrchestrator", () => {
     expect(codex.prompts[0]).toContain("Do not create executable tasks directly");
     expect(codex.prompts[0]).toContain("Allowed task types: documentation, tests_only");
     expect(codex.prompts[0]).toContain("Focus areas: operator docs");
-    expect(await tracker.listTasks()).toHaveLength(initialTaskCount);
+    expect(codex.options).toEqual([expect.objectContaining({ sandbox: "read-only" })]);
+    expect(await tracker.listTasks()).toEqual(initialTasks);
     expect(tracker.createTask).not.toHaveBeenCalled();
     expect(tracker.proposeTask).not.toHaveBeenCalled();
     expect(tracker.markReady).not.toHaveBeenCalled();

@@ -236,6 +236,7 @@ export interface TrackerImageContextConfig {
 
 export interface CodexRunOptions {
   imagePaths?: string[];
+  sandbox?: CodexSandbox;
 }
 
 export interface CodexReviewRunOptions {
