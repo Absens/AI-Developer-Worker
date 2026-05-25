@@ -9,6 +9,7 @@ import { WorkerOrchestrator } from "./domain/orchestrator.js";
 import { PreflightService } from "./domain/preflight.js";
 import {
   InMemoryProjectManagerStore,
+  ProjectManagerOrchestrator,
   type ProjectManagerStore,
 } from "./domain/projectManager/index.js";
 import { buildRepositoryContext } from "./domain/repositoryContext.js";
@@ -73,6 +74,8 @@ interface ProjectManagerStoreController {
 
 const createProjectManagerStoreController = (
   fleetConfig: ReturnType<typeof loadFleetConfig>,
+  internalTaskTracker: ReturnType<typeof createInternalTaskTrackerClient>,
+  logger: Logger,
 ): ProjectManagerStoreController => {
   const projectManagerEnabled =
     fleetConfig.projectManager?.enabled === true ||
@@ -80,18 +83,51 @@ const createProjectManagerStoreController = (
       (repository) => repository.projectManager?.enabled === true,
     );
 
-  if (
-    !projectManagerEnabled ||
-    fleetConfig.taskTracker?.provider !== "internal"
-  ) {
+  if (!projectManagerEnabled || fleetConfig.taskTracker?.provider !== "internal") {
     return {
       async stop(): Promise<void> {},
     };
   }
 
+  if (!internalTaskTracker) {
+    return {
+      async stop(): Promise<void> {},
+    };
+  }
+
+  const buildDependencies = (store: ProjectManagerStore): ProjectManagerApiDependencies => ({
+    store,
+    runner: {
+      runAnalysisOnce: async (input) => {
+        const repository = fleetConfig.repositories.find(
+          (candidate) => candidate.name === input.repositoryName,
+        );
+        if (!repository) {
+          throw new Error(`Project manager repository not found: ${input.repositoryName}`);
+        }
+
+        const runtimeConfig = buildRepositoryRuntimeConfig(fleetConfig, repository);
+        if (!runtimeConfig.projectManager?.enabled) {
+          throw new Error(
+            `Project manager is not enabled for repository: ${input.repositoryName}`,
+          );
+        }
+
+        const codex = new CliCodexRunner(runtimeConfig, logger);
+        const orchestrator = new ProjectManagerOrchestrator({
+          taskTracker: internalTaskTracker,
+          codex,
+          store,
+          config: runtimeConfig.projectManager,
+        });
+        return orchestrator.runAnalysisOnce(input);
+      },
+    },
+  });
+
   if (fleetConfig.taskTracker.internal.storage === "memory") {
     return {
-      dependencies: { store: new InMemoryProjectManagerStore() },
+      dependencies: buildDependencies(new InMemoryProjectManagerStore()),
       async stop(): Promise<void> {},
     };
   }
@@ -101,7 +137,7 @@ const createProjectManagerStoreController = (
   });
   const store: ProjectManagerStore = new PostgresProjectManagerStore(pool);
   return {
-    dependencies: { store },
+    dependencies: buildDependencies(store),
     stop: () => pool.end(),
   };
 };
@@ -113,7 +149,11 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     fleetConfig.taskTracker,
     fleetConfig.autonomy,
   );
-  const projectManager = createProjectManagerStoreController(fleetConfig);
+  const projectManager = createProjectManagerStoreController(
+    fleetConfig,
+    internalTaskTracker,
+    logger,
+  );
   const observability = createObservabilityService(
     fleetConfig.observability,
     logger,

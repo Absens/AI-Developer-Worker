@@ -42,7 +42,7 @@ describe("application wiring", () => {
     expect(app.taskTracker).toBeDefined();
   });
 
-  it("wires project manager API store when only a repository enables project manager", () => {
+  it("wires project manager API dependencies when only a repository enables project manager", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ai-worker-app-config-"));
     cleanupPaths.push(directory);
     const configFile = join(directory, "worker.config.json");
@@ -58,6 +58,13 @@ describe("application wiring", () => {
             gitlabProjectId: "123",
             queues: ["DEV"],
             projectManager: { enabled: true },
+          },
+          {
+            name: "disabled",
+            repoPath: "/workspace/disabled",
+            gitlabProjectId: "456",
+            queues: ["DEV"],
+            projectManager: { enabled: false },
           },
         ],
       }),
@@ -78,5 +85,18 @@ describe("application wiring", () => {
     }
     expect(app.config.repositories[0]?.projectManager?.enabled).toBe(true);
     expect(app.projectManager?.store).toBeDefined();
+    expect(app.projectManager?.runner).toBeDefined();
+    await expect(
+      app.projectManager?.runner?.runAnalysisOnce({
+        repositoryName: "missing",
+        trigger: "manual",
+      }),
+    ).rejects.toThrow(/Project manager repository not found: missing/);
+    await expect(
+      app.projectManager?.runner?.runAnalysisOnce({
+        repositoryName: "disabled",
+        trigger: "manual",
+      }),
+    ).rejects.toThrow(/Project manager is not enabled for repository: disabled/);
   });
 });

@@ -669,7 +669,11 @@ export class TaskTrackerHumanApi {
     const goalRoute = this.parseProjectGoalRoute(route);
     if (goalRoute) {
       const { goalId, suffix } = goalRoute;
-      if (request.method === "GET" && suffix === "") {
+      if (suffix === "") {
+        if (request.method !== "GET") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
         this.requireAuth(request, "viewer");
         const store = this.requireProjectManagerStore();
         const [goal, auditEvents, taskLinks] = await Promise.all([
@@ -681,7 +685,11 @@ export class TaskTrackerHumanApi {
         return true;
       }
 
-      if (request.method === "POST" && suffix === "/commands/approve") {
+      if (suffix === "/commands/approve") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
         const auth = this.requireAuth(request, "developer");
         const goal = await this.requireProjectManagerStore().approveGoal(goalId, {
           actor: auth.actor,
@@ -690,7 +698,11 @@ export class TaskTrackerHumanApi {
         return true;
       }
 
-      if (request.method === "POST" && suffix === "/commands/reject") {
+      if (suffix === "/commands/reject") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
         const auth = this.requireAuth(request, "developer");
         const body = requireObject(await this.readJson(request), "request body");
         const goal = await this.requireProjectManagerStore().rejectGoal(goalId, {
@@ -703,13 +715,7 @@ export class TaskTrackerHumanApi {
         return true;
       }
 
-      text(
-        response,
-        request.method === "GET" || request.method === "POST" ? 404 : 405,
-        request.method === "GET" || request.method === "POST"
-          ? "not found"
-          : "method not allowed",
-      );
+      text(response, 404, "not found");
       return true;
     }
 
@@ -734,6 +740,8 @@ export class TaskTrackerHumanApi {
   private buildSession(auth: AuthContext): Record<string, unknown> {
     const canRole = (role: TaskTrackerHumanRole): boolean =>
       ROLE_RANK[auth.role] >= ROLE_RANK[role];
+    const hasProjectManagerStore = Boolean(this.input.projectManager);
+    const hasProjectManagerRunner = Boolean(this.input.projectManager?.runner);
 
     return {
       user: {
@@ -758,9 +766,9 @@ export class TaskTrackerHumanApi {
         canApproveDecomposition: canRole("developer"),
         canReadOperations: canRole("viewer"),
         canCreateSystemTask: auth.service === "system" && canRole("admin"),
-        canReadProjectGoals: canRole("viewer"),
-        canApproveProjectGoals: canRole("developer"),
-        canRunProjectManager: canRole("operator"),
+        canReadProjectGoals: canRole("viewer") && hasProjectManagerStore,
+        canApproveProjectGoals: canRole("developer") && hasProjectManagerStore,
+        canRunProjectManager: canRole("operator") && hasProjectManagerRunner,
       },
       apiPath: this.input.config.apiPath,
       uiPath: this.input.config.path,

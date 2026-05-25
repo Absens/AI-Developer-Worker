@@ -114,6 +114,15 @@ const requestJson = async (
   };
 };
 
+const requestStatus = async (
+  baseUrl: string,
+  path: string,
+  options: RequestInit = {},
+) => {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  return { status: response.status, body: await response.text() };
+};
+
 const createProjectGoal = async (
   store: InMemoryProjectManagerStore,
   overrides: { sourceAnalysisId?: string; repositoryName?: string; title?: string } = {},
@@ -199,6 +208,9 @@ describe("Phase 7F human task API", () => {
         canCreateTask: true,
         canHold: false,
         canCreateSystemTask: false,
+        canReadProjectGoals: false,
+        canApproveProjectGoals: false,
+        canRunProjectManager: false,
       },
     });
 
@@ -286,6 +298,45 @@ describe("Phase 7F human task API", () => {
     expect(detail.body.taskLinks).toEqual([
       expect.objectContaining({ taskId: "task-1", linkType: "suggested" }),
     ]);
+
+    const invalidStatus = await requestJson(
+      baseUrl,
+      "/api/project-goals?status=unsupported",
+      { headers: viewerHeaders },
+    );
+    expect(invalidStatus.status).toBe(400);
+    expect(invalidStatus.body.error).toContain("Unsupported project goal status");
+  });
+
+  it("reports dependency-aware project manager session capabilities", async () => {
+    const storeOnly = await createServer(null, {}, {
+      store: new InMemoryProjectManagerStore(),
+    });
+    const storeOnlySession = await requestJson(storeOnly.baseUrl, "/api/session", {
+      headers: operatorHeaders,
+    });
+    expect(storeOnlySession.body.capabilities).toMatchObject({
+      canReadProjectGoals: true,
+      canApproveProjectGoals: true,
+      canRunProjectManager: false,
+    });
+
+    const withRunner = await createServer(null, {}, {
+      store: new InMemoryProjectManagerStore(),
+      runner: {
+        runAnalysisOnce: async () => {
+          throw new Error("unused test runner");
+        },
+      },
+    });
+    const runnerSession = await requestJson(withRunner.baseUrl, "/api/session", {
+      headers: operatorHeaders,
+    });
+    expect(runnerSession.body.capabilities).toMatchObject({
+      canReadProjectGoals: true,
+      canApproveProjectGoals: true,
+      canRunProjectManager: true,
+    });
   });
 
   it("protects project goal approval and rejection by role", async () => {
@@ -386,6 +437,39 @@ describe("Phase 7F human task API", () => {
     );
     expect(missingReason.status).toBe(400);
     expect(missingReason.body.error).toContain("reason is required");
+  });
+
+  it("returns method-aware errors for project goal routes", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const goal = await createProjectGoal(projectManagerStore);
+    const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, {
+      store: projectManagerStore,
+    });
+
+    const getApprove = await requestStatus(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/approve`,
+      { headers: developerHeaders },
+    );
+    expect(getApprove.status).toBe(405);
+
+    const postGoal = await requestStatus(baseUrl, `/api/project-goals/${goal.id}`, {
+      method: "POST",
+      headers: developerHeaders,
+      body: JSON.stringify({}),
+    });
+    expect(postGoal.status).toBe(405);
+
+    const unknownSuffix = await requestStatus(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/archive`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+    expect(unknownSuffix.status).toBe(404);
   });
 
   it("allows operators to run the project manager without a task tracker", async () => {
