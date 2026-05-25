@@ -325,6 +325,40 @@ describe("config", () => {
     ).toThrow(/PROJECT_MANAGER_ENABLED=true requires TASK_TRACKER_PROVIDER=internal/);
   });
 
+  it("rejects repository-enabled project manager outside internal task tracker mode", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        tracker: { statusMapFile },
+        repositories: [
+          {
+            name: "client-application",
+            repoPath: "/workspace/client-app",
+            gitlabProjectId: "42",
+            queues: ["FRONTEND"],
+            projectManager: { enabled: true },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      loadFleetConfig({
+        WORKER_CONFIG_FILE: configFile,
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/PROJECT_MANAGER_ENABLED=true requires TASK_TRACKER_PROVIDER=internal/);
+  });
+
   it("rejects invalid task tracker provider", () => {
     expect(() =>
       loadConfig({
@@ -964,7 +998,20 @@ describe("config", () => {
       maxGoalsPerRun: 1,
       maxTaskProposalsPerGoal: 2,
     });
-    expect(runtimeConfig.projectManager).toEqual(config.projectManager);
+    expect(runtimeConfig.projectManager).toEqual({
+      enabled: false,
+      runOnce: true,
+      intervalMinutes: 120,
+      maxGoalsPerRun: 1,
+      maxTaskProposalsPerGoal: 2,
+      defaultAutonomyLevel: "auto_execute_low_risk",
+      autoApproveLowRisk: true,
+      allowedTaskTypes: ["tests_only"],
+      repositoryScanEnabled: true,
+      repositoryScanMaxFiles: 75,
+      requireHumanGoalApproval: false,
+    });
+    expect(runtimeConfig.projectManager).not.toHaveProperty("focusAreas");
   });
 
   it("accepts explicit CODEX_HOME and CODEX_CLI_COMMAND", () => {

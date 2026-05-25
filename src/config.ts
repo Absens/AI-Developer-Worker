@@ -1294,6 +1294,52 @@ const parseRepositoryProjectManagerConfig = (
   };
 };
 
+const assertProjectManagerProviderCompatibility = (
+  taskTracker: TaskTrackerConfig,
+  projectManager: ProjectManagerConfig,
+  repositories: RepositoryProfile[] = [],
+): void => {
+  const repositoryProjectManagerEnabled = repositories.some(
+    (repository) => repository.projectManager?.enabled === true,
+  );
+  if (
+    taskTracker.provider !== "internal" &&
+    (projectManager.enabled || repositoryProjectManagerEnabled)
+  ) {
+    throw new ConfigurationError(
+      "PROJECT_MANAGER_ENABLED=true requires TASK_TRACKER_PROVIDER=internal.",
+    );
+  }
+};
+
+const resolveRepositoryProjectManagerConfig = (
+  globalProjectManager: ProjectManagerConfig | undefined,
+  repositoryProjectManager: RepositoryProjectManagerConfig | undefined,
+): ProjectManagerConfig | undefined => {
+  if (!globalProjectManager) {
+    return undefined;
+  }
+
+  return {
+    ...globalProjectManager,
+    ...(repositoryProjectManager?.enabled !== undefined
+      ? { enabled: repositoryProjectManager.enabled }
+      : {}),
+    ...(repositoryProjectManager?.allowedTaskTypes !== undefined
+      ? { allowedTaskTypes: repositoryProjectManager.allowedTaskTypes }
+      : {}),
+    ...(repositoryProjectManager?.maxGoalsPerRun !== undefined
+      ? { maxGoalsPerRun: repositoryProjectManager.maxGoalsPerRun }
+      : {}),
+    ...(repositoryProjectManager?.maxTaskProposalsPerGoal !== undefined
+      ? {
+          maxTaskProposalsPerGoal:
+            repositoryProjectManager.maxTaskProposalsPerGoal,
+        }
+      : {}),
+  };
+};
+
 export const parseMemoryConfig = (
   env: NodeJS.ProcessEnv = process.env,
   rawValue?: Record<string, unknown>,
@@ -1511,6 +1557,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   const observability = parseObservabilityConfig(env);
   const autonomy = parseAutonomyConfig(env);
   const projectManager = parseProjectManagerConfig(env, undefined, taskTracker);
+  assertProjectManagerProviderCompatibility(taskTracker, projectManager);
   const trackerImageContext = parseTrackerImageContextConfig(env);
 
   return {
@@ -2128,6 +2175,7 @@ const loadFleetConfigFromFile = (
     projectManagerRoot,
     taskTracker,
   );
+  assertProjectManagerProviderCompatibility(taskTracker, projectManager, repositories);
 
   const usesYandex = taskTrackerUsesYandex(taskTracker);
   const statusMapFile =
@@ -2541,5 +2589,15 @@ export const buildRepositoryRuntimeConfig = (
   memory: globalConfig.memory,
   observability: globalConfig.observability,
   ...(globalConfig.autonomy ? { autonomy: globalConfig.autonomy } : {}),
-  ...(globalConfig.projectManager ? { projectManager: globalConfig.projectManager } : {}),
+  ...(resolveRepositoryProjectManagerConfig(
+    globalConfig.projectManager,
+    repository.projectManager,
+  )
+    ? {
+        projectManager: resolveRepositoryProjectManagerConfig(
+          globalConfig.projectManager,
+          repository.projectManager,
+        ),
+      }
+    : {}),
 });
