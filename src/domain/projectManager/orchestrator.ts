@@ -5,6 +5,7 @@ import { buildProjectAnalysisPrompt } from "./promptBuilder.js";
 import { collectProjectSignals } from "./signalCollector.js";
 import type { ProjectManagerStore } from "./store.js";
 import type {
+  ParsedProjectAnalysis,
   ProjectAnalysis,
   ProjectManagerConfig,
   ProjectManagerRun,
@@ -31,6 +32,40 @@ export interface RunProjectAnalysisOnceResult {
 
 const diagnosticFor = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const assertAnalysisWithinPolicy = (
+  analysis: ParsedProjectAnalysis,
+  config: ProjectManagerConfig,
+): void => {
+  const violations: string[] = [];
+  if (analysis.proposedGoals.length > config.maxGoalsPerRun) {
+    violations.push(
+      `Expected at most ${config.maxGoalsPerRun} proposed goals, received ${analysis.proposedGoals.length}.`,
+    );
+  }
+
+  const allowedTaskTypes = new Set(config.allowedTaskTypes);
+  for (const [goalIndex, goal] of analysis.proposedGoals.entries()) {
+    if (goal.suggestedTaskProposals.length > config.maxTaskProposalsPerGoal) {
+      violations.push(
+        `Expected at most ${config.maxTaskProposalsPerGoal} task proposals for proposedGoals[${goalIndex}], received ${goal.suggestedTaskProposals.length}.`,
+      );
+    }
+    for (const [proposalIndex, proposal] of goal.suggestedTaskProposals.entries()) {
+      if (!allowedTaskTypes.has(proposal.taskType)) {
+        violations.push(
+          `Task type ${proposal.taskType} is not allowed for proposedGoals[${goalIndex}].suggestedTaskProposals[${proposalIndex}]. Allowed task types: ${config.allowedTaskTypes.join(", ")}.`,
+        );
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    throw new Error(
+      `Codex PROJECT_ANALYSIS violates project manager policy: ${violations.join(" ")}`,
+    );
+  }
+};
 
 export class ProjectManagerOrchestrator {
   private readonly taskTracker: TaskTrackerClient;
@@ -84,6 +119,7 @@ export class ProjectManagerOrchestrator {
       if (!parsed) {
         throw new Error("Codex response must be valid PROJECT_ANALYSIS output.");
       }
+      assertAnalysisWithinPolicy(parsed, this.config);
 
       const analysis = await this.store.recordAnalysis({
         repositoryName: input.repositoryName,

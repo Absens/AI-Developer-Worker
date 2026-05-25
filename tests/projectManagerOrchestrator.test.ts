@@ -193,6 +193,78 @@ const validAnalysisResponse = `${PROJECT_ANALYSIS_MARKER} ${JSON.stringify({
   staleGoalIds: [],
 })}`;
 
+const analysisResponseWithGoals = (proposedGoals: unknown[]): string =>
+  `${PROJECT_ANALYSIS_MARKER} ${JSON.stringify({
+    summary: "Repository is healthy enough for a documentation follow-up.",
+    healthSignals: [],
+    proposedGoals,
+    staleGoalIds: [],
+  })}`;
+
+const validGoal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  title: "Improve operator documentation",
+  problemStatement: "Operators need clearer project manager run guidance.",
+  desiredOutcome: "Runbook covers project manager analysis mode.",
+  successMetrics: ["Operator docs explain analysis-only mode"],
+  priority: "normal",
+  riskLevel: "low",
+  evidenceRefs: [
+    {
+      kind: "file",
+      ref: "docs/runbook.md",
+    },
+  ],
+  suggestedTaskProposals: [
+    {
+      title: "Document project manager analysis mode",
+      description: "Add runbook notes for PM analysis-only behavior.",
+      taskType: "documentation",
+      acceptanceCriteria: ["Runbook documents analysis-only guardrails"],
+      expectedBlastRadius: "documentation only",
+      evidenceRefs: [
+        {
+          kind: "file",
+          ref: "docs/runbook.md",
+        },
+      ],
+    },
+  ],
+  ...overrides,
+});
+
+const expectPolicyFailure = async (
+  finalMessage: string,
+  expectedDiagnostic: RegExp,
+): Promise<void> => {
+  const tracker = readonlyTracker([baseTask()]);
+  const codex = new FakeCodexRunner(codexExecution(finalMessage));
+  const store = new InMemoryProjectManagerStore({
+    now: () => new Date(baseTime),
+  });
+  const orchestrator = new ProjectManagerOrchestrator({
+    taskTracker: tracker,
+    codex,
+    store,
+    config,
+  });
+
+  await expect(
+    orchestrator.runAnalysisOnce({
+      repositoryName: "developer",
+      trigger: "manual",
+    }),
+  ).rejects.toThrow(expectedDiagnostic);
+
+  expect(await store.listAnalyses()).toEqual([]);
+  expect(await store.listRuns()).toEqual([
+    expect.objectContaining({
+      repositoryName: "developer",
+      status: "failed",
+      diagnostic: expect.stringMatching(expectedDiagnostic),
+    }),
+  ]);
+};
+
 describe("ProjectManagerOrchestrator", () => {
   it("stores a completed analysis run without mutating tasks", async () => {
     const tracker = readonlyTracker([baseTask()]);
@@ -288,5 +360,76 @@ describe("ProjectManagerOrchestrator", () => {
         completedAt: baseTime,
       }),
     ]);
+  });
+
+  it("rejects project analysis with more proposed goals than configured", async () => {
+    await expectPolicyFailure(
+      analysisResponseWithGoals([
+        validGoal({ title: "Goal 1" }),
+        validGoal({ title: "Goal 2" }),
+        validGoal({ title: "Goal 3" }),
+      ]),
+      /at most 2 proposed goals/,
+    );
+  });
+
+  it("rejects project analysis with more task proposals than configured", async () => {
+    await expectPolicyFailure(
+      analysisResponseWithGoals([
+        validGoal({
+          suggestedTaskProposals: [
+            {
+              title: "Document project manager analysis mode",
+              description: "Add runbook notes for PM analysis-only behavior.",
+              taskType: "documentation",
+              acceptanceCriteria: ["Runbook documents analysis-only guardrails"],
+              evidenceRefs: [
+                {
+                  kind: "file",
+                  ref: "docs/runbook.md",
+                },
+              ],
+            },
+            {
+              title: "Add tests for project manager docs",
+              description: "Add test coverage for PM docs generation.",
+              taskType: "tests_only",
+              acceptanceCriteria: ["Docs tests cover PM analysis"],
+              evidenceRefs: [
+                {
+                  kind: "file",
+                  ref: "tests/docs.test.ts",
+                },
+              ],
+            },
+          ],
+        }),
+      ]),
+      /at most 1 task proposals/,
+    );
+  });
+
+  it("rejects project analysis with task types outside configured policy", async () => {
+    await expectPolicyFailure(
+      analysisResponseWithGoals([
+        validGoal({
+          suggestedTaskProposals: [
+            {
+              title: "Refactor project manager storage",
+              description: "Refactor PM store internals.",
+              taskType: "refactor",
+              acceptanceCriteria: ["Store internals are refactored"],
+              evidenceRefs: [
+                {
+                  kind: "file",
+                  ref: "src/domain/projectManager/store.ts",
+                },
+              ],
+            },
+          ],
+        }),
+      ]),
+      /Task type refactor is not allowed/,
+    );
   });
 });

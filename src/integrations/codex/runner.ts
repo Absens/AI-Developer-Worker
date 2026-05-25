@@ -347,14 +347,37 @@ const appendImageArgs = (args: string[], imagePaths: readonly string[]): void =>
 const withoutSandboxArgs = (args: readonly string[]): string[] => {
   const filtered: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === "--sandbox") {
+    const arg = args[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--sandbox" || arg === "-s") {
       index += 1;
       continue;
     }
-    const arg = args[index];
-    if (arg !== undefined) {
-      filtered.push(arg);
+    if (
+      arg.startsWith("--sandbox=") ||
+      (arg.startsWith("-s") && !arg.startsWith("--")) ||
+      arg === "--dangerously-bypass-approvals-and-sandbox"
+    ) {
+      continue;
     }
+    if (arg === "--config" || arg === "-c") {
+      const value = args[index + 1];
+      if (value?.toLowerCase().includes("sandbox")) {
+        index += 1;
+        continue;
+      }
+      filtered.push(arg);
+      continue;
+    }
+    if (
+      (arg.startsWith("--config=") || arg.startsWith("-c=")) &&
+      arg.toLowerCase().includes("sandbox")
+    ) {
+      continue;
+    }
+    filtered.push(arg);
   }
   return filtered;
 };
