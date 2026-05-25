@@ -101,8 +101,9 @@ Copy-Item .env.example .env
 | `PROJECT_MANAGER_ENABLED` | Нет | `false` | Включает Project Manager Agent. Требует `TASK_TRACKER_PROVIDER=internal`; PM-0/PM-1 выполняет только read-only project analysis foundation. |
 | `PROJECT_MANAGER_RUN_ONCE` | Нет | `false` | Зарезервировано для будущего PM entrypoint. В PM-0/PM-1 значение только парсится и не запускает analysis cycle само по себе. |
 | `PROJECT_MANAGER_INTERVAL_MINUTES` | Нет | `1440` | Зарезервировано для будущего scheduler. В PM-0/PM-1 periodic PM analysis еще не подключен. |
-| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | Нет | `5` | Максимальное количество goal candidates, которое prompt просит вернуть за один run. В PM-0/PM-1 goals не создаются автоматически. |
-| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | Нет | `5` | Максимальное количество task proposal candidates на goal в prompt. В PM-0/PM-1 proposals не создаются автоматически. |
+| `PROJECT_MANAGER_FOCUS_AREAS_JSON` | Нет | `[]` | JSON-массив focus areas для global PM prompt, например `["stability","test coverage"]`. |
+| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | Нет | `5` | Максимальное количество goal candidates, которое prompt просит вернуть за один run. Hard cap: `20`. В PM-0/PM-1 goals не создаются автоматически. |
+| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | Нет | `5` | Максимальное количество task proposal candidates на goal в prompt. Hard cap: `20`. В PM-0/PM-1 proposals не создаются автоматически. |
 | `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | Нет | `proposal_only` | Default autonomy level для будущих PM proposals. В текущей фазе используется только как configuration foundation. |
 | `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | Нет | `false` | Зарезервировано для будущего auto-approval low-risk proposals. В PM-0/PM-1 автоматического approval нет. |
 | `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | Нет | `["documentation","tests_only","dependency_update"]` | JSON-массив типов task proposals, разрешенных для PM prompt/policy. |
@@ -371,8 +372,9 @@ requests, or tracker comments.
 | `PROJECT_MANAGER_ENABLED` | `false` | Enables the Project Manager Agent. Must be used with `TASK_TRACKER_PROVIDER=internal`. |
 | `PROJECT_MANAGER_RUN_ONCE` | `false` | Reserved for a future PM entrypoint; PM-0/PM-1 only parses this value and does not run an analysis cycle automatically. |
 | `PROJECT_MANAGER_INTERVAL_MINUTES` | `1440` | Reserved for a future scheduler; periodic PM analysis is not wired in PM-0/PM-1. |
-| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | `5` | Maximum goal candidates requested from Codex per run; PM-0/PM-1 does not create goals. |
-| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | `5` | Maximum task proposal candidates requested per goal; PM-0/PM-1 does not create proposals. |
+| `PROJECT_MANAGER_FOCUS_AREAS_JSON` | `[]` | JSON array of global PM prompt focus areas, for example `["stability","test coverage"]`. |
+| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | `5` | Maximum goal candidates requested from Codex per run. Hard cap: `20`; PM-0/PM-1 does not create goals. |
+| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | `5` | Maximum task proposal candidates requested per goal. Hard cap: `20`; PM-0/PM-1 does not create proposals. |
 | `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | `proposal_only` | Default future autonomy level for PM-created planning output. |
 | `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | `false` | Reserved for future low-risk approval policy; no automatic approval happens in PM-0/PM-1. |
 | `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | `["documentation","tests_only","dependency_update"]` | JSON array of task types allowed by PM prompt/policy. |

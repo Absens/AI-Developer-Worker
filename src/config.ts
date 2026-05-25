@@ -113,6 +113,8 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
   maxBytes: 10 * 1024 * 1024,
 };
 const DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS = 1;
+const PROJECT_MANAGER_MAX_GOALS_PER_RUN_LIMIT = 20;
+const PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL_LIMIT = 20;
 const DEFAULT_PROJECT_MANAGER_CONFIG: ProjectManagerConfig = {
   enabled: false,
   runOnce: false,
@@ -142,6 +144,23 @@ const parsePositiveInt = (input: string, key: string): number => {
   }
   return value;
 };
+
+const assertPositiveIntAtMost = (
+  value: number,
+  key: string,
+  maxValue: number,
+): number => {
+  if (value > maxValue) {
+    throw new ConfigurationError(`${key} must be at most ${maxValue}.`);
+  }
+  return value;
+};
+
+const parsePositiveIntAtMost = (
+  input: string,
+  key: string,
+  maxValue: number,
+): number => assertPositiveIntAtMost(parsePositiveInt(input, key), key, maxValue);
 
 const parseOptionalPercent = (
   input: string | undefined,
@@ -985,6 +1004,14 @@ const optionalPercentIntValue = (
   return value;
 };
 
+const optionalPositiveIntAtMost = (
+  value: unknown,
+  key: string,
+  defaultValue: number,
+  maxValue: number,
+): number =>
+  assertPositiveIntAtMost(optionalPositiveInt(value, key, defaultValue), key, maxValue);
+
 const optionalAutonomyLevel = (
   value: unknown,
   key: string,
@@ -1015,6 +1042,25 @@ const optionalStringArrayValue = (
   }
 
   return value.map((entry) => entry.trim()).filter(Boolean);
+};
+
+const parseStringArrayEnv = (
+  input: string | undefined,
+  key: string,
+  defaultValue: string[],
+): string[] => {
+  if (!input?.trim()) {
+    return [...defaultValue];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch (error) {
+    throw new ConfigurationError(`${key} must be valid JSON. ${(error as Error).message}`);
+  }
+
+  return optionalStringArrayValue(parsed, key, defaultValue);
 };
 
 const optionalNumberRecord = (
@@ -1137,6 +1183,23 @@ const parseProjectManagerConfig = (
 
   return {
     enabled,
+    ...(env.PROJECT_MANAGER_FOCUS_AREAS_JSON?.trim()
+      ? {
+          focusAreas: parseStringArrayEnv(
+            env.PROJECT_MANAGER_FOCUS_AREAS_JSON,
+            "PROJECT_MANAGER_FOCUS_AREAS_JSON",
+            [],
+          ),
+        }
+      : rawValue?.focusAreas !== undefined
+        ? {
+            focusAreas: optionalStringArrayValue(
+              rawValue.focusAreas,
+              "projectManager.focusAreas",
+              [],
+            ),
+          }
+        : {}),
     runOnce: env.PROJECT_MANAGER_RUN_ONCE?.trim()
       ? parseBooleanFlag(
           env.PROJECT_MANAGER_RUN_ONCE,
@@ -1159,24 +1222,28 @@ const parseProjectManagerConfig = (
           DEFAULT_PROJECT_MANAGER_CONFIG.intervalMinutes,
         ),
     maxGoalsPerRun: env.PROJECT_MANAGER_MAX_GOALS_PER_RUN?.trim()
-      ? parsePositiveInt(
+      ? parsePositiveIntAtMost(
           env.PROJECT_MANAGER_MAX_GOALS_PER_RUN,
           "PROJECT_MANAGER_MAX_GOALS_PER_RUN",
+          PROJECT_MANAGER_MAX_GOALS_PER_RUN_LIMIT,
         )
-      : optionalPositiveInt(
+      : optionalPositiveIntAtMost(
           rawValue?.maxGoalsPerRun,
           "projectManager.maxGoalsPerRun",
           DEFAULT_PROJECT_MANAGER_CONFIG.maxGoalsPerRun,
+          PROJECT_MANAGER_MAX_GOALS_PER_RUN_LIMIT,
         ),
     maxTaskProposalsPerGoal: env.PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL?.trim()
-      ? parsePositiveInt(
+      ? parsePositiveIntAtMost(
           env.PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL,
           "PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL",
+          PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL_LIMIT,
         )
-      : optionalPositiveInt(
+      : optionalPositiveIntAtMost(
           rawValue?.maxTaskProposalsPerGoal,
           "projectManager.maxTaskProposalsPerGoal",
           DEFAULT_PROJECT_MANAGER_CONFIG.maxTaskProposalsPerGoal,
+          PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL_LIMIT,
         ),
     defaultAutonomyLevel: env.PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL?.trim()
       ? parseAutonomyLevel(
@@ -1275,19 +1342,21 @@ const parseRepositoryProjectManagerConfig = (
       : {}),
     ...(raw.maxGoalsPerRun !== undefined
       ? {
-          maxGoalsPerRun: optionalPositiveInt(
+          maxGoalsPerRun: optionalPositiveIntAtMost(
             raw.maxGoalsPerRun,
             `${path}.maxGoalsPerRun`,
             DEFAULT_PROJECT_MANAGER_CONFIG.maxGoalsPerRun,
+            PROJECT_MANAGER_MAX_GOALS_PER_RUN_LIMIT,
           ),
         }
       : {}),
     ...(raw.maxTaskProposalsPerGoal !== undefined
       ? {
-          maxTaskProposalsPerGoal: optionalPositiveInt(
+          maxTaskProposalsPerGoal: optionalPositiveIntAtMost(
             raw.maxTaskProposalsPerGoal,
             `${path}.maxTaskProposalsPerGoal`,
             DEFAULT_PROJECT_MANAGER_CONFIG.maxTaskProposalsPerGoal,
+            PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL_LIMIT,
           ),
         }
       : {}),

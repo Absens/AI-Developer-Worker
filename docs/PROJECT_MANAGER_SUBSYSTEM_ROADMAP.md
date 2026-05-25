@@ -188,6 +188,7 @@ project_goals -> project_goal_tasks -> tasks
 PROJECT_MANAGER_ENABLED=false
 PROJECT_MANAGER_RUN_ONCE=false
 PROJECT_MANAGER_INTERVAL_MINUTES=1440
+PROJECT_MANAGER_FOCUS_AREAS_JSON=[]
 PROJECT_MANAGER_MAX_GOALS_PER_RUN=5
 PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL=5
 PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL=proposal_only
@@ -228,6 +229,7 @@ repositories:
 - Добавить policy decisions: `goal_requires_approval`, `goal_auto_approved`, `task_proposal_allowed`, `task_proposal_blocked`, `duplicate_goal`.
 - Решить, какие signals доступны MVP: task tracker state, validation failures, review feedback, memory, repository file inventory.
 - Зафиксировать kill switch: `PROJECT_MANAGER_ENABLED=false` по умолчанию.
+- Зафиксировать runtime hard caps: `PROJECT_MANAGER_MAX_GOALS_PER_RUN<=20` и `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL<=20`.
 - Зафиксировать правило: PM-агент создает только goals/proposals, executable tasks появляются через existing approval/policy path.
 
 Acceptance criteria:
