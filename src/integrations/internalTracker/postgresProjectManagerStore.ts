@@ -609,6 +609,7 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
   ): Promise<ProjectGoalTaskLink> {
     return this.withTransaction(async (client) => {
       await this.requireGoal(client, input.goalId, true);
+      await this.requireLinkedTask(client, input.taskId);
       const result = await client.query<ProjectGoalTaskRow>(
         `
           INSERT INTO project_goal_tasks (
@@ -740,6 +741,23 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
       throw new Error(`Project manager goal not found: ${goalId}`);
     }
     return mapGoalRow(row);
+  }
+
+  private async requireLinkedTask(
+    client: PostgresQueryable,
+    taskId: string,
+  ): Promise<void> {
+    const result = await client.query(
+      `
+        SELECT 1
+        FROM tasks
+        WHERE id = $1
+      `,
+      [taskId],
+    );
+    if (!result.rows[0]) {
+      throw new Error(`Project manager linked task not found: ${taskId}`);
+    }
   }
 
   private requireGoalStatus(

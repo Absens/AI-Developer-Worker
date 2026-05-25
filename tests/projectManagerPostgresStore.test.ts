@@ -96,8 +96,13 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
   private readonly goals: ProjectGoalRow[] = [];
   private readonly events: QueryResultRow[] = [];
   private readonly links: QueryResultRow[] = [];
+  private readonly tasks = new Set<string>();
   public readonly projectGoalTaskDuplicateSelects: string[] = [];
   public projectGoalTaskUpdateQueries = 0;
+
+  public seedTask(taskId: string): void {
+    this.tasks.add(taskId);
+  }
 
   public async query<R extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -136,6 +141,14 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
           completed_at: values[2],
         });
       } else {
+        if (
+          values[1] &&
+          !this.analyses.some((analysis) => analysis.id === values[1])
+        ) {
+          throw new Error(
+            `violates foreign key constraint "project_manager_runs_analysis_id_fkey"`,
+          );
+        }
         Object.assign(row, {
           status: "completed",
           analysis_id: values[1],
@@ -168,7 +181,23 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
       return asQueryResult(queryResult([...this.analyses]));
     }
 
+    if (sql.startsWith("SELECT 1 FROM tasks")) {
+      return asQueryResult(
+        queryResult(this.tasks.has(String(values[0])) ? [{ "?column?": 1 }] : []),
+      );
+    }
+
     if (sql.startsWith("INSERT INTO project_goals")) {
+      if (!this.analyses.some((analysis) => analysis.id === values[1])) {
+        throw new Error(
+          `violates foreign key constraint "project_goals_source_analysis_id_fkey"`,
+        );
+      }
+      if (values[2] && !this.runs.some((run) => run.id === values[2])) {
+        throw new Error(
+          `violates foreign key constraint "project_goals_source_run_id_fkey"`,
+        );
+      }
       const duplicate = this.goals.find(
         (goal) =>
           goal.repository_name === values[3] &&
@@ -290,6 +319,11 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
         this.projectGoalTaskUpdateQueries += 1;
         throw new Error("project_goal_tasks duplicate handling must not use DO UPDATE");
       }
+      if (!this.tasks.has(String(values[2]))) {
+        throw new Error(
+          `violates foreign key constraint "project_goal_tasks_task_id_fkey"`,
+        );
+      }
       const existing = this.links.find(
         (link) =>
           link.goal_id === values[1] &&
@@ -348,6 +382,22 @@ const createStoreWithDb = (): {
 const createStore = (): PostgresProjectManagerStore =>
   new PostgresProjectManagerStore(new ProjectManagerMemoryDb(), {
     now: () => new Date(baseTime),
+  });
+
+const recordTestAnalysis = (
+  store: PostgresProjectManagerStore,
+  overrides: {
+    repositoryName?: string;
+    summary?: string;
+    proposedGoals?: ProjectGoalDraft[];
+  } = {},
+) =>
+  store.recordAnalysis({
+    repositoryName: overrides.repositoryName ?? "developer",
+    summary: overrides.summary ?? "Docs need attention.",
+    healthSignals: [],
+    proposedGoals: overrides.proposedGoals ?? [goalDraft()],
+    staleGoalIds: [],
   });
 
 describe("PostgresProjectManagerStore", () => {
@@ -421,15 +471,27 @@ describe("PostgresProjectManagerStore", () => {
 
   it("creates, lists, gets, skips active duplicates, and recreates terminal duplicates", async () => {
     const store = createStore();
+    const run = await store.startRun({
+      repositoryName: "developer",
+      trigger: "manual",
+    });
+    const analysis1 = await recordTestAnalysis(store);
+    const analysis2 = await recordTestAnalysis(store);
+    const otherRepositoryAnalysis = await recordTestAnalysis(store, {
+      repositoryName: "other-repo",
+    });
+    const analysis3 = await recordTestAnalysis(store);
+    const analysis4 = await recordTestAnalysis(store);
+    const analysis5 = await recordTestAnalysis(store);
 
     const created = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_1",
-      sourceRunId: "pm_run_1",
+      sourceAnalysisId: analysis1.id,
+      sourceRunId: run.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });
     const duplicate = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_2",
+      sourceAnalysisId: analysis2.id,
       repositoryName: "developer",
       goals: [
         goalDraft({
@@ -439,7 +501,7 @@ describe("PostgresProjectManagerStore", () => {
       ],
     });
     const otherRepository = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_2",
+      sourceAnalysisId: otherRepositoryAnalysis.id,
       repositoryName: "other-repo",
       goals: [goalDraft()],
     });
@@ -449,7 +511,7 @@ describe("PostgresProjectManagerStore", () => {
       rejectionReason: "Already handled.",
     });
     const recreated = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_3",
+      sourceAnalysisId: analysis3.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });
@@ -458,7 +520,7 @@ describe("PostgresProjectManagerStore", () => {
       staleReason: "Evidence aged out.",
     });
     const recreatedAfterStale = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_4",
+      sourceAnalysisId: analysis4.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });
@@ -466,7 +528,7 @@ describe("PostgresProjectManagerStore", () => {
     await store.activateGoal(recreatedAfterStale[0]!.id, { actor });
     await store.completeGoal(recreatedAfterStale[0]!.id, { actor });
     const recreatedAfterComplete = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_5",
+      sourceAnalysisId: analysis5.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });
@@ -474,8 +536,8 @@ describe("PostgresProjectManagerStore", () => {
     expect(created).toEqual([
       expect.objectContaining({
         id: expect.stringMatching(/^pm_goal_/),
-        sourceAnalysisId: "pm_analysis_1",
-        sourceRunId: "pm_run_1",
+        sourceAnalysisId: analysis1.id,
+        sourceRunId: run.id,
         repositoryName: "developer",
         status: "proposed",
         title: "Improve operator documentation",
@@ -506,8 +568,8 @@ describe("PostgresProjectManagerStore", () => {
       expect.objectContaining({
         kind: "project_goal_created",
         payload: {
-          sourceAnalysisId: "pm_analysis_1",
-          sourceRunId: "pm_run_1",
+          sourceAnalysisId: analysis1.id,
+          sourceRunId: run.id,
           repositoryName: "developer",
         },
       }),
@@ -521,13 +583,14 @@ describe("PostgresProjectManagerStore", () => {
 
   it("persists lifecycle transitions and reports invalid current statuses", async () => {
     const store = createStore();
+    const analysis = await recordTestAnalysis(store);
     const [goalToComplete] = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_1",
+      sourceAnalysisId: analysis.id,
       repositoryName: "developer",
       goals: [goalDraft({ title: "Complete docs goal" })],
     });
     const [goalToStale] = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_1",
+      sourceAnalysisId: analysis.id,
       repositoryName: "developer",
       goals: [goalDraft({ title: "Stale docs goal" })],
     });
@@ -575,8 +638,10 @@ describe("PostgresProjectManagerStore", () => {
 
   it("returns existing goal-task links for duplicate tuples and requires goals for reads", async () => {
     const { db, store } = createStoreWithDb();
+    db.seedTask("task-1");
+    const analysis = await recordTestAnalysis(store);
     const [goal] = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_1",
+      sourceAnalysisId: analysis.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });
@@ -602,6 +667,50 @@ describe("PostgresProjectManagerStore", () => {
     await expect(store.listGoalTaskLinks("pm_goal_missing")).rejects.toThrow(
       /Project manager goal not found/,
     );
+  });
+
+  it("rejects goals created for a missing source analysis", async () => {
+    const store = createStore();
+
+    await expect(
+      store.createGoalsFromAnalysis({
+        sourceAnalysisId: "pm_analysis_missing",
+        repositoryName: "developer",
+        goals: [goalDraft()],
+      }),
+    ).rejects.toThrow(/project_goals_source_analysis_id_fkey/);
+  });
+
+  it("rejects goals created for a missing source run", async () => {
+    const store = createStore();
+    const analysis = await recordTestAnalysis(store);
+
+    await expect(
+      store.createGoalsFromAnalysis({
+        sourceAnalysisId: analysis.id,
+        sourceRunId: "pm_run_missing",
+        repositoryName: "developer",
+        goals: [goalDraft()],
+      }),
+    ).rejects.toThrow(/project_goals_source_run_id_fkey/);
+  });
+
+  it("rejects goal-task links for missing tasks with a clear error", async () => {
+    const store = createStore();
+    const analysis = await recordTestAnalysis(store);
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: analysis.id,
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
+
+    await expect(
+      store.linkGoalTask({
+        goalId: goal!.id,
+        taskId: "task-missing",
+        linkType: "implements",
+      }),
+    ).rejects.toThrow("Project manager linked task not found: task-missing");
   });
 });
 
@@ -636,6 +745,18 @@ describe("project manager internal tracker migrations", () => {
     );
 
     expect(migration?.sql).toContain("CREATE TABLE IF NOT EXISTS project_goals");
+    expect(migration?.sql).toContain(
+      "CONSTRAINT project_manager_runs_analysis_id_fkey",
+    );
+    expect(migration?.sql).toContain(
+      "CONSTRAINT project_goals_source_analysis_id_fkey",
+    );
+    expect(migration?.sql).toContain(
+      "CONSTRAINT project_goals_source_run_id_fkey",
+    );
+    expect(migration?.sql).toContain(
+      "CONSTRAINT project_goal_tasks_task_id_fkey",
+    );
     expect(migration?.sql).toContain(
       "project_goals_active_duplicate_signature_unique_idx",
     );
@@ -675,14 +796,16 @@ describePostgres("PostgresProjectManagerStore with real PostgreSQL", () => {
     const store = new PostgresProjectManagerStore(pg, {
       now: () => new Date(baseTime),
     });
+    const analysis = await recordTestAnalysis(store);
+    const duplicateAnalysis = await recordTestAnalysis(store);
 
     const first = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_1",
+      sourceAnalysisId: analysis.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });
     const duplicate = await store.createGoalsFromAnalysis({
-      sourceAnalysisId: "pm_analysis_2",
+      sourceAnalysisId: duplicateAnalysis.id,
       repositoryName: "developer",
       goals: [goalDraft()],
     });

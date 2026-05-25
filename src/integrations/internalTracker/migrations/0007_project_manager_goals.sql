@@ -1,23 +1,5 @@
 -- Project manager goal storage.
 
-CREATE TABLE IF NOT EXISTS project_manager_runs (
-  id text PRIMARY KEY,
-  repository_name text NOT NULL,
-  trigger text NOT NULL,
-  status text NOT NULL,
-  analysis_id text,
-  proposed_goal_ids text[] NOT NULL DEFAULT '{}',
-  proposed_task_ids text[] NOT NULL DEFAULT '{}',
-  diagnostic text,
-  started_at timestamptz NOT NULL,
-  completed_at timestamptz,
-  CHECK (trigger IN ('manual', 'schedule', 'post_task_event')),
-  CHECK (status IN ('started', 'completed', 'failed'))
-);
-
-CREATE INDEX IF NOT EXISTS project_manager_runs_repository_time_idx
-  ON project_manager_runs(repository_name, started_at DESC, id);
-
 CREATE TABLE IF NOT EXISTS project_analyses (
   id text PRIMARY KEY,
   repository_name text NOT NULL,
@@ -32,9 +14,31 @@ CREATE TABLE IF NOT EXISTS project_analyses (
 CREATE INDEX IF NOT EXISTS project_analyses_repository_time_idx
   ON project_analyses(repository_name, created_at DESC, id);
 
+CREATE TABLE IF NOT EXISTS project_manager_runs (
+  id text PRIMARY KEY,
+  repository_name text NOT NULL,
+  trigger text NOT NULL,
+  status text NOT NULL,
+  analysis_id text,
+  proposed_goal_ids text[] NOT NULL DEFAULT '{}',
+  proposed_task_ids text[] NOT NULL DEFAULT '{}',
+  diagnostic text,
+  started_at timestamptz NOT NULL,
+  completed_at timestamptz,
+  CONSTRAINT project_manager_runs_analysis_id_fkey
+    FOREIGN KEY (analysis_id) REFERENCES project_analyses(id) ON DELETE SET NULL,
+  CHECK (trigger IN ('manual', 'schedule', 'post_task_event')),
+  CHECK (status IN ('started', 'completed', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS project_manager_runs_repository_time_idx
+  ON project_manager_runs(repository_name, started_at DESC, id);
+
 CREATE TABLE IF NOT EXISTS project_goals (
   id text PRIMARY KEY,
-  source_analysis_id text NOT NULL,
+  source_analysis_id text NOT NULL
+    CONSTRAINT project_goals_source_analysis_id_fkey
+    REFERENCES project_analyses(id) ON DELETE CASCADE,
   source_run_id text,
   repository_name text NOT NULL,
   status text NOT NULL,
@@ -61,6 +65,8 @@ CREATE TABLE IF NOT EXISTS project_goals (
   stale_reason text,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
+  CONSTRAINT project_goals_source_run_id_fkey
+    FOREIGN KEY (source_run_id) REFERENCES project_manager_runs(id) ON DELETE SET NULL,
   CHECK (status IN (
     'proposed',
     'approved',
@@ -107,7 +113,9 @@ CREATE INDEX IF NOT EXISTS project_goal_events_goal_time_idx
 CREATE TABLE IF NOT EXISTS project_goal_tasks (
   id text PRIMARY KEY,
   goal_id text NOT NULL REFERENCES project_goals(id) ON DELETE CASCADE,
-  task_id text NOT NULL,
+  task_id text NOT NULL
+    CONSTRAINT project_goal_tasks_task_id_fkey
+    REFERENCES tasks(id) ON DELETE CASCADE,
   link_type text NOT NULL,
   created_at timestamptz NOT NULL,
   UNIQUE (goal_id, task_id, link_type)
