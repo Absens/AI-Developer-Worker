@@ -260,6 +260,11 @@ Testing:
 
 **Цель:** сохранить цели как first-class objects, которые можно approve/reject и связывать с задачами.
 
+**Status:** implemented in `ai/project-manager-pm-2-subagent`. PM-2 stores
+validated goal candidates as `ProjectGoal` records, exposes read/approve/reject
+HTTP API routes, supports manual PM analysis runs, and keeps task proposal/task
+creation deferred to PM-3.
+
 Работы:
 
 - Добавить migrations: `project_goals`, `project_analyses`, `project_manager_runs`, `project_goal_tasks`.
@@ -276,8 +281,10 @@ Testing:
 Testing:
 
 - Unit tests на lifecycle transitions.
-- PostgreSQL migration test.
-- API role tests: viewer can read, developer/operator can approve depending on chosen policy, admin can force stale/cancel.
+- PostgreSQL migration/store tests, including duplicate handling and source/link
+  reference integrity.
+- API role tests: viewer can read, developer can approve/reject, operator can
+  start a manual PM run.
 
 ### Phase PM-3 - Goal-to-task proposals
 

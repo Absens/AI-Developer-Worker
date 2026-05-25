@@ -98,18 +98,18 @@ Copy-Item .env.example .env
 | `TASK_TRACKER_CLEANUP_INTERVAL_SECONDS` | Нет | `3600` | Интервал cleanup job. |
 | `TASK_TRACKER_METRICS_ENABLED` | Нет | `true` | Включает internal tracker metrics: queue depth, claim latency, sync, proposals и cleanup. |
 | `TASK_TRACKER_REDACTION_ENABLED` | Нет | `true` | Включает redaction перед записью task events/comments/diagnostics и digest export. |
-| `PROJECT_MANAGER_ENABLED` | Нет | `false` | Включает Project Manager Agent. Требует `TASK_TRACKER_PROVIDER=internal`; PM-0/PM-1 выполняет только read-only project analysis foundation. |
-| `PROJECT_MANAGER_RUN_ONCE` | Нет | `false` | Зарезервировано для будущего PM entrypoint. В PM-0/PM-1 значение только парсится и не запускает analysis cycle само по себе. |
-| `PROJECT_MANAGER_INTERVAL_MINUTES` | Нет | `1440` | Зарезервировано для будущего scheduler. В PM-0/PM-1 periodic PM analysis еще не подключен. |
+| `PROJECT_MANAGER_ENABLED` | Нет | `false` | Включает Project Manager Agent. Требует `TASK_TRACKER_PROVIDER=internal`; PM-2 хранит goal records и manual PM API, но не создает executable tasks/proposals. |
+| `PROJECT_MANAGER_RUN_ONCE` | Нет | `false` | Зарезервировано для будущего PM entrypoint/scheduler. В PM-2 manual run доступен через `POST /api/project-manager/runs`. |
+| `PROJECT_MANAGER_INTERVAL_MINUTES` | Нет | `1440` | Зарезервировано для будущего scheduler. В PM-2 periodic PM analysis еще не подключен. |
 | `PROJECT_MANAGER_FOCUS_AREAS_JSON` | Нет | `[]` | JSON-массив focus areas для global PM prompt, например `["stability","test coverage"]`. |
-| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | Нет | `5` | Максимальное количество goal candidates, которое prompt просит вернуть за один run. Hard cap: `20`. В PM-0/PM-1 goals не создаются автоматически. |
-| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | Нет | `5` | Максимальное количество task proposal candidates на goal в prompt. Hard cap: `20`. В PM-0/PM-1 proposals не создаются автоматически. |
-| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | Нет | `proposal_only` | Default autonomy level для будущих PM proposals. В текущей фазе используется только как configuration foundation. |
-| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | Нет | `false` | Зарезервировано для будущего auto-approval low-risk proposals. В PM-0/PM-1 автоматического approval нет. |
+| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | Нет | `5` | Максимальное количество goal candidates, которое prompt просит вернуть за один run. Hard cap: `20`. PM-2 сохраняет non-duplicate candidates как `ProjectGoal`. |
+| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | Нет | `5` | Максимальное количество task proposal candidates на goal в prompt. Hard cap: `20`. PM-2 хранит их как nested drafts, но не вызывает proposal pipeline. |
+| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | Нет | `proposal_only` | Default autonomy level для будущих PM proposals. PM-2 task proposals еще не создает. |
+| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | Нет | `false` | Зарезервировано для будущего auto-approval low-risk proposals. PM-2 не делает автоматического task approval. |
 | `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | Нет | `["documentation","tests_only","dependency_update"]` | JSON-массив типов task proposals, разрешенных для PM prompt/policy. |
-| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | Нет | `false` | Зарезервировано для repository scanning. PM-0/PM-1 не сканирует репозиторий для создания tasks автоматически. |
+| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | Нет | `false` | Зарезервировано для repository scanning. PM-2 анализирует internal task snapshot и не сканирует репозиторий для создания tasks. |
 | `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | Нет | `200` | Верхний предел файлов для будущего repository scan path. |
-| `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | Нет | `true` | Требует human approval для будущих PM goals. PM-0/PM-1 не создает goals автоматически. |
+| `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | Нет | `true` | Требует human approval для PM goals. В PM-2 approval меняет только goal state и не создает task proposals. |
 | `MEMORY_ENABLED` | Нет | `false` | Включает repository memory Phase 5. Оставьте выключенным, пока `npm run memory:validate` не проходит для `MEMORY_DIR`. |
 | `MEMORY_DIR` | Нет | `/workspace/ai-developer-memory` | Локальное хранилище memory вне целевого репозитория. Воркер пишет per-repository файлы в `repositories/<sanitized RepositoryProfile.name>/`. |
 | `MEMORY_MAX_CONTEXT_CHARS` | Нет | `6000` | Жесткий лимит символов для секции memory context, добавляемой в analysis и implementation prompts. |
@@ -359,28 +359,30 @@ Project Manager Agent is disabled by default with `PROJECT_MANAGER_ENABLED=false
 When enabled, it requires `TASK_TRACKER_PROVIDER=internal`; the direct Yandex
 provider remains unsupported for PM runs.
 
-PM-0/PM-1 is a read-only analysis foundation only. During a run the agent reads
-internal tracker state, builds a project signal snapshot, asks Codex for a
-single `PROJECT_ANALYSIS:` response, validates that response, and stores the
-analysis/run records in the in-memory PM store.
+PM-2 reads internal tracker state, builds a project signal snapshot, asks Codex
+for a single `PROJECT_ANALYSIS:` response, validates that response, stores the
+analysis/run records, and materializes non-duplicate goal candidates as
+`ProjectGoal` records. Goals can be read, approved, or rejected through the
+human API.
 
-This phase does not create goals, proposals, tasks, branches, commits, merge
-requests, or tracker comments.
+PM-2 does not create task proposals, executable tasks, branches, commits, merge
+requests, or tracker comments. Goal approval only changes goal state; PM-3 owns
+goal-to-task proposal generation.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `PROJECT_MANAGER_ENABLED` | `false` | Enables the Project Manager Agent. Must be used with `TASK_TRACKER_PROVIDER=internal`. |
-| `PROJECT_MANAGER_RUN_ONCE` | `false` | Reserved for a future PM entrypoint; PM-0/PM-1 only parses this value and does not run an analysis cycle automatically. |
-| `PROJECT_MANAGER_INTERVAL_MINUTES` | `1440` | Reserved for a future scheduler; periodic PM analysis is not wired in PM-0/PM-1. |
+| `PROJECT_MANAGER_RUN_ONCE` | `false` | Reserved for a future PM entrypoint/scheduler. In PM-2, manual runs are exposed through `POST /api/project-manager/runs`. |
+| `PROJECT_MANAGER_INTERVAL_MINUTES` | `1440` | Reserved for a future scheduler; periodic PM analysis is not wired in PM-2. |
 | `PROJECT_MANAGER_FOCUS_AREAS_JSON` | `[]` | JSON array of global PM prompt focus areas, for example `["stability","test coverage"]`. |
-| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | `5` | Maximum goal candidates requested from Codex per run. Hard cap: `20`; PM-0/PM-1 does not create goals. |
-| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | `5` | Maximum task proposal candidates requested per goal. Hard cap: `20`; PM-0/PM-1 does not create proposals. |
-| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | `proposal_only` | Default future autonomy level for PM-created planning output. |
-| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | `false` | Reserved for future low-risk approval policy; no automatic approval happens in PM-0/PM-1. |
+| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | `5` | Maximum goal candidates requested from Codex per run. Hard cap: `20`; PM-2 stores non-duplicate candidates as `ProjectGoal`. |
+| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | `5` | Maximum task proposal candidates requested per goal. Hard cap: `20`; PM-2 stores them as nested drafts, not task proposals. |
+| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | `proposal_only` | Default future autonomy level for PM-created task proposals. |
+| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | `false` | Reserved for future low-risk task proposal approval; PM-2 does not auto-create or auto-approve tasks. |
 | `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | `["documentation","tests_only","dependency_update"]` | JSON array of task types allowed by PM prompt/policy. |
-| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | `false` | Reserved for future repository scanning. |
+| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | `false` | Reserved for future repository scanning; PM-2 analyzes internal task snapshots. |
 | `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | `200` | Maximum files for the future repository scan path. |
-| `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | `true` | Keeps future goal creation behind human approval. |
+| `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | `true` | Keeps PM goals behind human approval. In PM-2, approval only changes goal state. |
 
 ## Режим fleet
 
