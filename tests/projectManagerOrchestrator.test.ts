@@ -118,6 +118,42 @@ const readonlyTracker = (tasks: TaskRecord[]): TaskTrackerClient => {
   } as unknown as TaskTrackerClient;
 };
 
+const expectTrackerMutationsUnused = (tracker: TaskTrackerClient): void => {
+  expect(tracker.createTask).not.toHaveBeenCalled();
+  expect(tracker.proposeTask).not.toHaveBeenCalled();
+  expect(tracker.approveProposal).not.toHaveBeenCalled();
+  expect(tracker.rejectProposal).not.toHaveBeenCalled();
+  expect(tracker.cleanupProposals).not.toHaveBeenCalled();
+  expect(tracker.updateTaskRevision).not.toHaveBeenCalled();
+  expect(tracker.updateExternalTaskFields).not.toHaveBeenCalled();
+  expect(tracker.attachExternalRef).not.toHaveBeenCalled();
+  expect(tracker.markReady).not.toHaveBeenCalled();
+  expect(tracker.getTask).not.toHaveBeenCalled();
+  expect(tracker.findTaskByExternalRef).not.toHaveBeenCalled();
+  expect(tracker.getAgentTaskContext).not.toHaveBeenCalled();
+  expect(tracker.appendEvent).not.toHaveBeenCalled();
+  expect(tracker.appendComment).not.toHaveBeenCalled();
+  expect(tracker.setStatus).not.toHaveBeenCalled();
+  expect(tracker.recordDecision).not.toHaveBeenCalled();
+  expect(tracker.recordAnalysis).not.toHaveBeenCalled();
+  expect(tracker.recordTaskStep).not.toHaveBeenCalled();
+  expect(tracker.askClarification).not.toHaveBeenCalled();
+  expect(tracker.recordHumanAnswer).not.toHaveBeenCalled();
+  expect(tracker.recordAgentRun).not.toHaveBeenCalled();
+  expect(tracker.recordValidation).not.toHaveBeenCalled();
+  expect(tracker.recordMergeRequest).not.toHaveBeenCalled();
+  expect(tracker.recordReviewMetadata).not.toHaveBeenCalled();
+  expect(tracker.recordDecomposition).not.toHaveBeenCalled();
+  expect(tracker.createChildTasks).not.toHaveBeenCalled();
+  expect(tracker.linkDependency).not.toHaveBeenCalled();
+  expect(tracker.recordMemoryContext).not.toHaveBeenCalled();
+  expect(tracker.addDependency).not.toHaveBeenCalled();
+  expect(tracker.claimNextTask).not.toHaveBeenCalled();
+  expect(tracker.claimReviewTask).not.toHaveBeenCalled();
+  expect(tracker.heartbeatLease).not.toHaveBeenCalled();
+  expect(tracker.releaseLease).not.toHaveBeenCalled();
+};
+
 class FakeCodexRunner implements CodexRunner {
   public readonly prompts: string[] = [];
   public readonly options: CodexRunOptions[] = [];
@@ -285,7 +321,7 @@ const expectPolicyFailure = async (
 };
 
 describe("ProjectManagerOrchestrator", () => {
-  it("stores a completed analysis run without mutating tasks", async () => {
+  it("stores a completed analysis run and materializes proposed goals without mutating tasks", async () => {
     const tracker = readonlyTracker([baseTask()]);
     const codex = new FakeCodexRunner(codexExecution(validAnalysisResponse));
     const store = new InMemoryProjectManagerStore({
@@ -301,20 +337,37 @@ describe("ProjectManagerOrchestrator", () => {
 
     const initialTasks = structuredClone(await tracker.listTasks());
 
-    await orchestrator.runAnalysisOnce({
+    const result = await orchestrator.runAnalysisOnce({
       repositoryName: "developer",
       trigger: "manual",
     });
 
     const runs = await store.listRuns();
     const analyses = await store.listAnalyses();
+    const goals = await store.listGoals();
+    expect(goals).toEqual([
+      expect.objectContaining({
+        id: expect.stringMatching(/^pm_goal_/),
+        repositoryName: "developer",
+        sourceAnalysisId: expect.stringMatching(/^pm_analysis_/),
+        sourceRunId: expect.stringMatching(/^pm_run_/),
+        title: "Improve operator documentation",
+        status: "proposed",
+        suggestedTaskProposals: [
+          expect.objectContaining({
+            title: "Document project manager analysis mode",
+            taskType: "documentation",
+          }),
+        ],
+      }),
+    ]);
     expect(runs).toEqual([
       expect.objectContaining({
         id: expect.stringMatching(/^pm_run_/),
         repositoryName: "developer",
         trigger: "manual",
         status: "completed",
-        proposedGoalIds: [],
+        proposedGoalIds: [goals[0]?.id],
         proposedTaskIds: [],
         analysisId: expect.stringMatching(/^pm_analysis_/),
         startedAt: baseTime,
@@ -330,6 +383,10 @@ describe("ProjectManagerOrchestrator", () => {
       }),
     ]);
     expect(runs[0]?.analysisId).toBe(analyses[0]?.id);
+    expect(goals[0]?.sourceAnalysisId).toBe(analyses[0]?.id);
+    expect(goals[0]?.sourceRunId).toBe(runs[0]?.id);
+    expect(result.run).toEqual(runs[0]);
+    expect(result.run.proposedGoalIds).toEqual([goals[0]?.id]);
     expect(codex.prompts).toHaveLength(1);
     expect(codex.prompts[0]).toContain("Mode: project-management-analysis-only");
     expect(codex.prompts[0]).toContain("Do not create executable tasks directly");
@@ -337,13 +394,54 @@ describe("ProjectManagerOrchestrator", () => {
     expect(codex.prompts[0]).toContain("Focus areas: operator docs");
     expect(codex.options).toEqual([expect.objectContaining({ sandbox: "read-only" })]);
     expect(await tracker.listTasks()).toEqual(initialTasks);
-    expect(tracker.createTask).not.toHaveBeenCalled();
-    expect(tracker.proposeTask).not.toHaveBeenCalled();
-    expect(tracker.markReady).not.toHaveBeenCalled();
-    expect(tracker.setStatus).not.toHaveBeenCalled();
-    expect(tracker.appendEvent).not.toHaveBeenCalled();
-    expect(tracker.appendComment).not.toHaveBeenCalled();
-    expect(tracker.recordAnalysis).not.toHaveBeenCalled();
+    expectTrackerMutationsUnused(tracker);
+  });
+
+  it("does not materialize duplicate non-terminal goals on repeated analysis", async () => {
+    const tracker = readonlyTracker([baseTask()]);
+    const codex = new FakeCodexRunner(codexExecution(validAnalysisResponse));
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config,
+    });
+
+    const first = await orchestrator.runAnalysisOnce({
+      repositoryName: "developer",
+      trigger: "manual",
+    });
+    const second = await orchestrator.runAnalysisOnce({
+      repositoryName: "developer",
+      trigger: "manual",
+    });
+
+    const goals = await store.listGoals({ repositoryName: "developer" });
+    const runs = await store.listRuns();
+    const analyses = await store.listAnalyses();
+    expect(goals).toHaveLength(1);
+    expect(analyses).toHaveLength(2);
+    expect(first.run.proposedGoalIds).toEqual([goals[0]?.id]);
+    expect(second.run.proposedGoalIds).toEqual([]);
+    expect(runs).toEqual([
+      expect.objectContaining({
+        id: first.run.id,
+        proposedGoalIds: [goals[0]?.id],
+        proposedTaskIds: [],
+      }),
+      expect.objectContaining({
+        id: second.run.id,
+        proposedGoalIds: [],
+        proposedTaskIds: [],
+      }),
+    ]);
+    expect(goals[0]?.sourceAnalysisId).toBe(first.analysis.id);
+    expect(goals[0]?.sourceRunId).toBe(first.run.id);
+    expect(codex.prompts).toHaveLength(2);
+    expectTrackerMutationsUnused(tracker);
   });
 
   it("uses focus areas from project manager config when explicit focus areas are not supplied", async () => {

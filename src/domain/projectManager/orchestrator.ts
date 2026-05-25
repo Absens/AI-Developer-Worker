@@ -91,9 +91,15 @@ export class ProjectManagerOrchestrator {
         repositoryName: input.repositoryName,
         ...parsed,
       });
+      const goals = await this.store.createGoalsFromAnalysis({
+        repositoryName: input.repositoryName,
+        sourceAnalysisId: analysis.id,
+        sourceRunId: run.id,
+        goals: analysis.proposedGoals,
+      });
       const completedRun = await this.store.completeRun(run.id, {
         analysisId: analysis.id,
-        proposedGoalIds: [],
+        proposedGoalIds: goals.map((goal) => goal.id),
         proposedTaskIds: [],
       });
 
