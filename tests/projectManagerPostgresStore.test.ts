@@ -96,6 +96,8 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
   private readonly goals: ProjectGoalRow[] = [];
   private readonly events: QueryResultRow[] = [];
   private readonly links: QueryResultRow[] = [];
+  public readonly projectGoalTaskDuplicateSelects: string[] = [];
+  public projectGoalTaskUpdateQueries = 0;
 
   public async query<R extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -284,6 +286,10 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
     }
 
     if (sql.startsWith("INSERT INTO project_goal_tasks")) {
+      if (sql.includes("DO UPDATE")) {
+        this.projectGoalTaskUpdateQueries += 1;
+        throw new Error("project_goal_tasks duplicate handling must not use DO UPDATE");
+      }
       const existing = this.links.find(
         (link) =>
           link.goal_id === values[1] &&
@@ -291,7 +297,7 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
           link.link_type === values[3],
       );
       if (existing) {
-        return asQueryResult(queryResult([existing]));
+        return asQueryResult(queryResult([]));
       }
       const row = {
         id: values[0],
@@ -304,6 +310,19 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
       return asQueryResult(queryResult([row]));
     }
     if (sql.includes("FROM project_goal_tasks")) {
+      if (sql.includes("task_id =") && sql.includes("link_type =")) {
+        this.projectGoalTaskDuplicateSelects.push(sql);
+        return asQueryResult(
+          queryResult(
+            this.links.filter(
+              (link) =>
+                link.goal_id === values[0] &&
+                link.task_id === values[1] &&
+                link.link_type === values[2],
+            ),
+          ),
+        );
+      }
       return asQueryResult(
         queryResult(this.links.filter((link) => link.goal_id === values[0])),
       );
@@ -312,6 +331,19 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
     throw new Error(`Unexpected SQL in project manager store test: ${sql}`);
   }
 }
+
+const createStoreWithDb = (): {
+  db: ProjectManagerMemoryDb;
+  store: PostgresProjectManagerStore;
+} => {
+  const db = new ProjectManagerMemoryDb();
+  return {
+    db,
+    store: new PostgresProjectManagerStore(db, {
+      now: () => new Date(baseTime),
+    }),
+  };
+};
 
 const createStore = (): PostgresProjectManagerStore =>
   new PostgresProjectManagerStore(new ProjectManagerMemoryDb(), {
@@ -421,6 +453,23 @@ describe("PostgresProjectManagerStore", () => {
       repositoryName: "developer",
       goals: [goalDraft()],
     });
+    await store.markGoalStale(recreated[0]!.id, {
+      actor,
+      staleReason: "Evidence aged out.",
+    });
+    const recreatedAfterStale = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: "pm_analysis_4",
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
+    await store.approveGoal(recreatedAfterStale[0]!.id, { actor });
+    await store.activateGoal(recreatedAfterStale[0]!.id, { actor });
+    await store.completeGoal(recreatedAfterStale[0]!.id, { actor });
+    const recreatedAfterComplete = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: "pm_analysis_5",
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
 
     expect(created).toEqual([
       expect.objectContaining({
@@ -439,6 +488,8 @@ describe("PostgresProjectManagerStore", () => {
     expect(duplicate).toEqual([]);
     expect(otherRepository).toHaveLength(1);
     expect(recreated).toHaveLength(1);
+    expect(recreatedAfterStale).toHaveLength(1);
+    expect(recreatedAfterComplete).toHaveLength(1);
     await expect(store.getGoal(created[0]!.id)).resolves.toEqual(
       expect.objectContaining({
         status: "rejected",
@@ -446,8 +497,11 @@ describe("PostgresProjectManagerStore", () => {
       }),
     );
     await expect(
-      store.listGoals({ repositoryName: "developer", status: ["rejected", "proposed"] }),
-    ).resolves.toHaveLength(2);
+      store.listGoals({
+        repositoryName: "developer",
+        status: ["rejected", "stale", "completed", "proposed"],
+      }),
+    ).resolves.toHaveLength(4);
     await expect(store.listGoalEvents(created[0]!.id)).resolves.toEqual([
       expect.objectContaining({
         kind: "project_goal_created",
@@ -520,7 +574,7 @@ describe("PostgresProjectManagerStore", () => {
   });
 
   it("returns existing goal-task links for duplicate tuples and requires goals for reads", async () => {
-    const store = createStore();
+    const { db, store } = createStoreWithDb();
     const [goal] = await store.createGoalsFromAnalysis({
       sourceAnalysisId: "pm_analysis_1",
       repositoryName: "developer",
@@ -539,6 +593,8 @@ describe("PostgresProjectManagerStore", () => {
     });
 
     expect(second).toEqual(first);
+    expect(db.projectGoalTaskUpdateQueries).toBe(0);
+    expect(db.projectGoalTaskDuplicateSelects).toHaveLength(1);
     await expect(store.listGoalTaskLinks(goal!.id)).resolves.toEqual([first]);
     await expect(store.listGoalEvents("pm_goal_missing")).rejects.toThrow(
       /Project manager goal not found/,

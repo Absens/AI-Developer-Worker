@@ -616,7 +616,7 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
           )
           VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (goal_id, task_id, link_type)
-          DO UPDATE SET link_type = project_goal_tasks.link_type
+          DO NOTHING
           RETURNING *
         `,
         [
@@ -627,7 +627,28 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
           this.nowIso(),
         ],
       );
-      return mapGoalTaskRow(result.rows[0]!);
+      const inserted = result.rows[0];
+      if (inserted) {
+        return mapGoalTaskRow(inserted);
+      }
+
+      const existing = await client.query<ProjectGoalTaskRow>(
+        `
+          SELECT *
+          FROM project_goal_tasks
+          WHERE goal_id = $1
+            AND task_id = $2
+            AND link_type = $3
+        `,
+        [input.goalId, input.taskId, input.linkType],
+      );
+      const existingRow = existing.rows[0];
+      if (!existingRow) {
+        throw new Error(
+          `Project manager goal task link conflict could not be loaded for goal ${input.goalId}, task ${input.taskId}, link type ${input.linkType}.`,
+        );
+      }
+      return mapGoalTaskRow(existingRow);
     });
   }
 
