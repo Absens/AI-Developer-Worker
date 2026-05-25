@@ -14,6 +14,20 @@ export const PROJECT_GOAL_STATUSES = [
 
 export type ProjectGoalStatus = (typeof PROJECT_GOAL_STATUSES)[number];
 
+export const PROJECT_GOAL_TERMINAL_STATUSES = [
+  "completed",
+  "rejected",
+  "stale",
+] as const satisfies readonly ProjectGoalStatus[];
+
+export type ProjectGoalTerminalStatus =
+  (typeof PROJECT_GOAL_TERMINAL_STATUSES)[number];
+
+export const isTerminalProjectGoalStatus = (
+  status: ProjectGoalStatus,
+): status is ProjectGoalTerminalStatus =>
+  PROJECT_GOAL_TERMINAL_STATUSES.includes(status as ProjectGoalTerminalStatus);
+
 export const PROJECT_GOAL_PRIORITIES = [
   "low",
   "normal",
@@ -72,6 +86,81 @@ export interface ProjectGoalDraft {
   priority: ProjectGoalPriority;
   riskLevel: ProjectGoalRiskLevel;
   suggestedTaskProposals: ProjectTaskProposalDraft[];
+}
+
+export interface ProjectGoal extends ProjectGoalDraft {
+  id: string;
+  analysisId: string;
+  repositoryName: string;
+  status: ProjectGoalStatus;
+  duplicateSignature: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  staleAt?: string;
+  staleReason?: string;
+  createdAt: string;
+}
+
+export const PROJECT_GOAL_AUDIT_EVENT_KINDS = [
+  "project_goal_created",
+  "project_goal_approved",
+  "project_goal_rejected",
+  "project_goal_stale",
+] as const;
+
+export type ProjectGoalAuditEventKind =
+  (typeof PROJECT_GOAL_AUDIT_EVENT_KINDS)[number];
+
+export interface ProjectGoalAuditEvent {
+  id: string;
+  goalId: string;
+  kind: ProjectGoalAuditEventKind;
+  actor?: string;
+  message?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ProjectGoalTaskLink {
+  id: string;
+  goalId: string;
+  taskId: string;
+  linkType: string;
+  createdAt: string;
+}
+
+export interface ListProjectGoalsInput {
+  repositoryName?: string;
+  analysisId?: string;
+  status?: ProjectGoalStatus | ProjectGoalStatus[];
+}
+
+export interface CreateProjectGoalsFromAnalysisInput {
+  analysisId: string;
+  repositoryName: string;
+  goals: ProjectGoalDraft[];
+}
+
+export interface ApproveProjectGoalInput {
+  approvedBy: string;
+}
+
+export interface RejectProjectGoalInput {
+  rejectedBy: string;
+  rejectionReason: string;
+}
+
+export interface MarkProjectGoalStaleInput {
+  staleReason: string;
+}
+
+export interface LinkProjectGoalTaskInput {
+  goalId: string;
+  taskId: string;
+  linkType: string;
 }
 
 export interface ProjectAnalysis {
