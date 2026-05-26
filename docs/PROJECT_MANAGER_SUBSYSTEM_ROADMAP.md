@@ -339,6 +339,32 @@ Testing:
 
 **Цель:** сделать цикл "анализировать проект заново" управляемым и полезным.
 
+Status на 2026-05-26: реализован минимальный manual/event-ready loop без scheduler.
+
+Implemented MVP:
+
+- `POST /api/project-manager/runs` принимает `mode: "replan"` и обязательный `replanReason`.
+- Replan run собирает snapshot целей, linked tasks, audit events и предыдущий analysis.
+- Prompt/contract ожидает `PROJECT_REPLAN` с классификациями goal-level решений:
+  - continue;
+  - split;
+  - pause;
+  - mark completed;
+  - create follow-up;
+  - ask human.
+- Runtime сохраняет `previousAnalysisId`, `replanReason`, `goalReplans` и audit event `project_goal_replan_classified`.
+- Follow-up goals materialize как proposed goals; executable tasks не создаются напрямую.
+- `mark_completed` применяется только безопасно: active goal, есть linked tasks, все linked tasks найдены и имеют `done`.
+- Angular goal detail получил operator-only manual replan action и timeline rendering для replan decisions.
+- Playwright critical flow покрывает manual replan and verifies no direct `POST /api/tasks`.
+- Metrics добавлены для PM runs and replans.
+
+Deferred beyond MVP:
+
+- Scheduler для daily/weekly runs.
+- Automatic event triggers for failed tasks, repeated validation failures, review feedback and stale goals.
+- Manager digest alerts.
+
 Triggers:
 
 - Scheduled daily/weekly run.
