@@ -12,6 +12,7 @@ import { TextareaModule } from 'primeng/textarea';
 import { Observable } from 'rxjs';
 
 import {
+  ProjectGoalAuditEventDto,
   ProjectGoalCommandResponseDto,
   ProjectGoalDetailResponseDto,
   ProjectGoalDto,
@@ -119,6 +120,16 @@ type ReasonAction = 'reject' | 'stale';
                 severity="secondary"
                 [disabled]="submitting()"
                 (click)="runAnalysis()"
+              ></button>
+              <button
+                pButton
+                type="button"
+                data-testid="goal-run-replan"
+                icon="pi pi-refresh"
+                label="Перепланировать"
+                severity="secondary"
+                [disabled]="submitting()"
+                (click)="openReplanDialog()"
               ></button>
             }
           </div>
@@ -275,6 +286,10 @@ type ReasonAction = 'reject' | 'stale';
                       @if (event.message) {
                         <p>{{ event.message }}</p>
                       }
+                      @if (isReplanClassified(event)) {
+                        <p>Decision: {{ auditPayloadValue(event, 'decision') }}</p>
+                        <p>Rationale: {{ auditPayloadValue(event, 'rationale') }}</p>
+                      }
                       <span class="field-label">
                         {{ formatDate(event.createdAt) }}
                         @if (event.actor) {
@@ -332,6 +347,46 @@ type ReasonAction = 'reject' | 'stale';
         </div>
       </div>
     </p-dialog>
+
+    <p-dialog
+      header="Перепланировать цель"
+      [visible]="replanDialogVisible()"
+      (visibleChange)="replanDialogVisible.set($event)"
+      [modal]="true"
+      [style]="{ width: 'min(560px, 94vw)' }"
+    >
+      <div class="stack" data-testid="goal-replan-dialog">
+        <label class="field">
+          <span>Причина <strong aria-label="обязательно">*</strong></span>
+          <textarea
+            pTextarea
+            data-testid="goal-replan-reason"
+            rows="4"
+            [formControl]="replanReasonControl"
+            placeholder="Укажите причину перепланирования"
+          ></textarea>
+        </label>
+        <div class="action-bar action-bar--end">
+          <button
+            pButton
+            type="button"
+            data-testid="goal-replan-cancel"
+            label="Отмена"
+            severity="secondary"
+            (click)="closeReplanDialog()"
+          ></button>
+          <button
+            pButton
+            type="button"
+            data-testid="goal-replan-confirm"
+            icon="pi pi-check"
+            label="Подтвердить"
+            [disabled]="submitting()"
+            (click)="submitReplan()"
+          ></button>
+        </div>
+      </div>
+    </p-dialog>
   `,
 })
 export class GoalDetailPageComponent implements OnInit {
@@ -344,12 +399,17 @@ export class GoalDetailPageComponent implements OnInit {
     nonNullable: true,
     validators: [Validators.required],
   });
+  protected readonly replanReasonControl = new FormControl<string>('', {
+    nonNullable: true,
+    validators: [Validators.required],
+  });
   protected readonly detail = signal<ProjectGoalDetailResponseDto | undefined>(undefined);
   protected readonly loading = signal(false);
   protected readonly submitting = signal(false);
   protected readonly error = signal<string | undefined>(undefined);
   protected readonly notice = signal<string | undefined>(undefined);
   protected readonly reasonDialogVisible = signal(false);
+  protected readonly replanDialogVisible = signal(false);
   protected readonly pendingReasonAction = signal<ReasonAction | undefined>(undefined);
 
   private readonly goalId = this.route.snapshot.paramMap.get('goalId') ?? '';
@@ -399,6 +459,32 @@ export class GoalDetailPageComponent implements OnInit {
       return;
     }
     this.runCommand('Анализ Project Manager запущен.', this.goalsApi.runAnalysis(repositoryName));
+  }
+
+  protected openReplanDialog(): void {
+    this.replanReasonControl.reset('');
+    this.replanDialogVisible.set(true);
+    setTimeout(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-testid="goal-replan-reason"]')?.focus();
+    });
+  }
+
+  protected submitReplan(): void {
+    const repositoryName = this.goal()?.repositoryName;
+    const reason = this.replanReasonControl.value.trim();
+    if (!repositoryName || !reason) {
+      this.replanReasonControl.markAsTouched();
+      return;
+    }
+
+    this.runCommand('Перепланирование Project Manager запущено.', this.goalsApi.runReplan(repositoryName, reason), () => {
+      this.closeReplanDialog();
+    });
+  }
+
+  protected closeReplanDialog(): void {
+    this.replanDialogVisible.set(false);
+    this.replanReasonControl.reset('');
   }
 
   protected openReasonDialog(action: ReasonAction): void {
@@ -525,6 +611,15 @@ export class GoalDetailPageComponent implements OnInit {
 
   protected truncate(value: string | undefined, max?: number): string {
     return truncate(value, max);
+  }
+
+  protected isReplanClassified(event: ProjectGoalAuditEventDto): boolean {
+    return event.kind === 'project_goal_replan_classified';
+  }
+
+  protected auditPayloadValue(event: ProjectGoalAuditEventDto, key: 'decision' | 'rationale'): string {
+    const value = event.payload?.[key];
+    return typeof value === 'string' ? value : '';
   }
 
   private runCommand(

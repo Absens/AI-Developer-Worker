@@ -563,6 +563,60 @@ describe('GoalDetailPageComponent', () => {
     expect(text).toContain('Project goal proposed.');
   });
 
+  it('renders replan audit details and lets operators run a goal replan with a required reason', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider()]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush({
+      ...projectGoalDetail,
+      auditEvents: [
+        ...projectGoalDetail.auditEvents,
+        {
+          id: 'goal-event-replan-1',
+          goalId: projectGoal.id,
+          kind: 'project_goal_replan_classified',
+          actor: { owner: 'agent', id: 'pm-agent', displayName: 'Project Manager' },
+          message: 'Replan classified.',
+          payload: {
+            decision: 'create_follow_up',
+            rationale: 'Linked task failed.',
+          },
+          createdAt: '2026-04-29T08:02:00.000Z',
+        },
+      ],
+    });
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    const text = element.textContent ?? '';
+    expect(text).toContain('create_follow_up');
+    expect(text).toContain('Linked task failed.');
+
+    element.querySelector<HTMLButtonElement>('[data-testid="goal-run-replan"]')?.click();
+    fixture.detectChanges();
+
+    element.querySelector<HTMLButtonElement>('[data-testid="goal-replan-confirm"]')?.click();
+    http.expectNone('/api/project-manager/runs');
+
+    const reason = element.querySelector<HTMLTextAreaElement>('[data-testid="goal-replan-reason"]');
+    expect(reason).not.toBeNull();
+    reason!.value = 'manual: failed linked task';
+    reason!.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    element.querySelector<HTMLButtonElement>('[data-testid="goal-replan-confirm"]')?.click();
+    const run = http.expectOne('/api/project-manager/runs');
+    expect(run.request.body).toEqual({
+      repositoryName: 'developer',
+      mode: 'replan',
+      replanReason: 'manual: failed linked task',
+    });
+    run.flush({ runId: 'run-replan-1', accepted: true });
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(projectGoalDetail);
+  });
+
   it('approves proposed goals and refreshes the detail', async () => {
     const http = await configure([GoalDetailPageComponent], [routeProvider()]);
     loadSession(http, pmDeveloperSession);
@@ -686,6 +740,7 @@ describe('GoalDetailPageComponent', () => {
     expect(element.querySelector('[data-testid="goal-complete"]')).toBeNull();
     expect(element.querySelector('[data-testid="goal-stale"]')).toBeNull();
     expect(element.querySelector('[data-testid="goal-run-analysis"]')).toBeNull();
+    expect(element.querySelector('[data-testid="goal-run-replan"]')).toBeNull();
   });
 });
 

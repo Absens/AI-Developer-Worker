@@ -87,4 +87,15 @@ export class ProjectGoalService {
       repositoryName,
     });
   }
+
+  runReplan(repositoryName: string, replanReason: string): Observable<unknown> {
+    return this.api.post<{ repositoryName: string; mode: 'replan'; replanReason: string }, unknown>(
+      '/project-manager/runs',
+      {
+        repositoryName,
+        mode: 'replan',
+        replanReason,
+      },
+    );
+  }
 }

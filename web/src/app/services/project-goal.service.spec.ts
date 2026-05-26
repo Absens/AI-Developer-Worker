@@ -152,4 +152,21 @@ describe('ProjectGoalService', () => {
     expect(request.request.body).toEqual({ repositoryName: 'developer' });
     request.flush(runResponse);
   });
+
+  it('runs project manager replan for a repository with a reason', () => {
+    const runResponse = { runId: 'pm-run-replan-1', accepted: true };
+
+    service.runReplan('developer', 'manual: failed linked task').subscribe((response) => {
+      expect(response).toEqual(runResponse);
+    });
+
+    const request = http.expectOne('/api/project-manager/runs');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({
+      repositoryName: 'developer',
+      mode: 'replan',
+      replanReason: 'manual: failed linked task',
+    });
+    request.flush(runResponse);
+  });
 });
