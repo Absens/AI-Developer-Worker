@@ -215,7 +215,15 @@ export class ProjectManagerOrchestrator {
 
       const analysis = await this.store.recordAnalysis({
         repositoryName: input.repositoryName,
-        ...parsed,
+        summary: parsed.summary,
+        healthSignals: parsed.healthSignals,
+        proposedGoals: parsed.proposedGoals,
+        staleGoalIds: parsed.staleGoalIds,
+        goalReplans: parsed.goalReplans,
+        replanReason,
+        ...(snapshot.previousAnalysisId
+          ? { previousAnalysisId: snapshot.previousAnalysisId }
+          : {}),
       });
       const materializableGoals = [
         ...analysis.proposedGoals,

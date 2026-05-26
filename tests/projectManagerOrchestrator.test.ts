@@ -550,6 +550,13 @@ describe("ProjectManagerOrchestrator", () => {
     const store = new InMemoryProjectManagerStore({
       now: () => new Date(baseTime),
     });
+    const previousAnalysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      summary: "Previous project analysis.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+    });
     const activeGoal = await createActiveGoal(store);
     await store.linkGoalTask({
       goalId: activeGoal.id,
@@ -559,7 +566,8 @@ describe("ProjectManagerOrchestrator", () => {
     const codex = new FakeCodexRunner(
       codexExecution(
         replanResponse({
-          replanReason: "task-failed failed validation",
+          previousAnalysisId: "pm_analysis_model_wrong",
+          replanReason: "model supplied a different reason",
           proposedGoals: [],
           goalReplans: [
             {
@@ -614,10 +622,14 @@ describe("ProjectManagerOrchestrator", () => {
         proposedTaskIds: [],
       }),
     ]);
-    expect(analyses).toEqual([
+    const replanAnalysis = analyses.find(
+      (analysis) => analysis.id === result.analysis.id,
+    );
+    expect(replanAnalysis).toEqual(
       expect.objectContaining({
         id: result.analysis.id,
         repositoryName: "developer",
+        previousAnalysisId: previousAnalysis.id,
         replanReason: "task-failed failed validation",
         goalReplans: [
           expect.objectContaining({
@@ -626,7 +638,7 @@ describe("ProjectManagerOrchestrator", () => {
           }),
         ],
       }),
-    ]);
+    );
     expect(followUpGoal).toEqual(
       expect.objectContaining({
         id: expect.stringMatching(/^pm_goal_/),

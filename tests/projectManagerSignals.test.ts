@@ -6,6 +6,7 @@ import {
   InMemoryProjectManagerStore,
   type ProjectGoalDraft,
 } from "../src/domain/projectManager/index.js";
+import { TaskNotFoundError } from "../src/domain/taskTracker/index.js";
 import type {
   TaskLeaseRecord,
   TaskRecord,
@@ -97,7 +98,7 @@ const readonlyTracker = (
     getTask: vi.fn(async (taskId: string) => {
       const task = tasksById.get(taskId);
       if (!task) {
-        throw new Error(`Task not found: ${taskId}`);
+        throw new TaskNotFoundError(taskId);
       }
       return task;
     }),
@@ -667,5 +668,41 @@ describe("project manager replan snapshot collector", () => {
     expect(tracker.getTask).toHaveBeenCalledWith("linked-repo-task");
     expect(tracker.getTask).toHaveBeenCalledWith("missing-task");
     expectTrackerMutationsUnused(tracker);
+  });
+
+  it("fails replan snapshot collection when linked task lookup has a non-not-found error", async () => {
+    const tracker = readonlyTracker([]);
+    vi.mocked(tracker.getTask).mockRejectedValueOnce(
+      new Error("database temporarily unavailable"),
+    );
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date("2026-05-25T10:00:00.000Z"),
+    });
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: "pm_analysis_seed",
+      repositoryName: "developer",
+      goals: [createGoalDraft("Linked task lookup failure")],
+    });
+    await store.approveGoal(goal!.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    await store.activateGoal(goal!.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "linked-task",
+      linkType: "implements",
+    });
+
+    await expect(
+      collectProjectReplanSnapshot({
+        taskTracker: tracker,
+        store,
+        repositoryName: "developer",
+        replanReason: "manual replan",
+        now: () => new Date("2026-05-25T10:00:00.000Z"),
+      }),
+    ).rejects.toThrow("database temporarily unavailable");
   });
 });

@@ -6,6 +6,7 @@ import type {
   TaskRecord,
   TaskTrackerClient,
 } from "../taskTracker/types.js";
+import { TaskNotFoundError } from "../taskTracker/errors.js";
 import { collectProjectSignals } from "./signalCollector.js";
 import type { ProjectManagerStore } from "./store.js";
 import type {
@@ -178,8 +179,11 @@ const getLinkedTask = async (
 ): Promise<TaskRecord | undefined> => {
   try {
     return await taskTracker.getTask(taskId);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof TaskNotFoundError) {
+      return undefined;
+    }
+    throw error;
   }
 };
 
