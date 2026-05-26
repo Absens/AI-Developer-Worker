@@ -311,6 +311,11 @@ Testing:
 
 **Цель:** дать человеку рабочий экран управления целями, а не только список AI proposals.
 
+**Preparation:** PM-4 implementation scope is detailed in
+`docs/superpowers/specs/2026-05-26-project-manager-pm-4-human-ui-design.md`
+and
+`docs/superpowers/plans/2026-05-26-project-manager-pm-4-human-ui.md`.
+
 Работы:
 
 - Добавить Angular route `/goals`.
