@@ -918,6 +918,13 @@ describe("project manager internal tracker migrations", () => {
     expect(migration?.sql).toContain("previous_analysis_id text NULL");
     expect(migration?.sql).toContain("goal_replans jsonb NOT NULL DEFAULT");
     expect(migration?.sql).toContain("project_analyses_previous_analysis_idx");
+    expect(migration?.sql).toContain(
+      "DROP CONSTRAINT IF EXISTS project_goal_events_kind_check",
+    );
+    expect(migration?.sql).toContain(
+      "ADD CONSTRAINT project_goal_events_kind_check",
+    );
+    expect(migration?.sql).toContain("'project_goal_replan_classified'");
   });
 });
 
