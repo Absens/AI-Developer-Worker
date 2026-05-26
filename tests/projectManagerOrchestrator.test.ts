@@ -9,9 +9,12 @@ import type {
 import {
   InMemoryProjectManagerStore,
   PROJECT_ANALYSIS_MARKER,
+  PROJECT_REPLAN_MARKER,
   ProjectManagerOrchestrator,
   type ProjectManagerConfig,
+  type ProjectGoalDraft,
 } from "../src/domain/projectManager/index.js";
+import { InMemoryMetricsRegistry } from "../src/observability/metrics.js";
 import type {
   TaskLeaseRecord,
   TaskRecord,
@@ -91,7 +94,7 @@ const readonlyTracker = (tasks: TaskRecord[]): TaskTrackerClient => {
     updateExternalTaskFields: mutatingMethod,
     attachExternalRef: mutatingMethod,
     markReady: mutatingMethod,
-    getTask: mutatingMethod,
+    getTask: vi.fn(async (taskId: string) => tasks.find((task) => task.id === taskId)),
     findTaskByExternalRef: mutatingMethod,
     getAgentTaskContext: mutatingMethod,
     appendEvent: mutatingMethod,
@@ -128,7 +131,6 @@ const expectTrackerMutationsUnused = (tracker: TaskTrackerClient): void => {
   expect(tracker.updateExternalTaskFields).not.toHaveBeenCalled();
   expect(tracker.attachExternalRef).not.toHaveBeenCalled();
   expect(tracker.markReady).not.toHaveBeenCalled();
-  expect(tracker.getTask).not.toHaveBeenCalled();
   expect(tracker.findTaskByExternalRef).not.toHaveBeenCalled();
   expect(tracker.getAgentTaskContext).not.toHaveBeenCalled();
   expect(tracker.appendEvent).not.toHaveBeenCalled();
@@ -152,6 +154,11 @@ const expectTrackerMutationsUnused = (tracker: TaskTrackerClient): void => {
   expect(tracker.claimReviewTask).not.toHaveBeenCalled();
   expect(tracker.heartbeatLease).not.toHaveBeenCalled();
   expect(tracker.releaseLease).not.toHaveBeenCalled();
+};
+
+const expectTrackerStrictReadOnly = (tracker: TaskTrackerClient): void => {
+  expectTrackerMutationsUnused(tracker);
+  expect(tracker.getTask).not.toHaveBeenCalled();
 };
 
 class FakeCodexRunner implements CodexRunner {
@@ -246,6 +253,17 @@ const analysisResponse = (overrides: Record<string, unknown> = {}): string =>
     ...overrides,
   })}`;
 
+const replanResponse = (overrides: Record<string, unknown> = {}): string =>
+  `${PROJECT_REPLAN_MARKER} ${JSON.stringify({
+    summary: "Replanned active project goals after task feedback.",
+    healthSignals: [],
+    proposedGoals: [],
+    staleGoalIds: [],
+    replanReason: "task failed validation",
+    goalReplans: [],
+    ...overrides,
+  })}`;
+
 const validEvidenceRef = (ref = "docs/runbook.md"): Record<string, unknown> => ({
   kind: "file",
   ref,
@@ -286,6 +304,24 @@ const validGoal = (overrides: Record<string, unknown> = {}): Record<string, unkn
   suggestedTaskProposals: [validProposal()],
   ...overrides,
 });
+
+const validGoalDraft = (
+  overrides: Record<string, unknown> = {},
+): ProjectGoalDraft => validGoal(overrides) as unknown as ProjectGoalDraft;
+
+const createActiveGoal = async (
+  store: InMemoryProjectManagerStore,
+  goalOverrides: Record<string, unknown> = {},
+) => {
+  const [goal] = await store.createGoalsFromAnalysis({
+    sourceAnalysisId: "pm_analysis_seed",
+    repositoryName: "developer",
+    goals: [validGoalDraft(goalOverrides)],
+  });
+  const actor = { owner: "human" as const, id: "user-1" };
+  await store.approveGoal(goal!.id, { actor });
+  return store.activateGoal(goal!.id, { actor });
+};
 
 const expectPolicyFailure = async (
   finalMessage: string,
@@ -394,7 +430,7 @@ describe("ProjectManagerOrchestrator", () => {
     expect(codex.prompts[0]).toContain("Focus areas: operator docs");
     expect(codex.options).toEqual([expect.objectContaining({ sandbox: "read-only" })]);
     expect(await tracker.listTasks()).toEqual(initialTasks);
-    expectTrackerMutationsUnused(tracker);
+    expectTrackerStrictReadOnly(tracker);
   });
 
   it("does not materialize duplicate non-terminal goals on repeated analysis", async () => {
@@ -441,7 +477,7 @@ describe("ProjectManagerOrchestrator", () => {
     expect(goals[0]?.sourceAnalysisId).toBe(first.analysis.id);
     expect(goals[0]?.sourceRunId).toBe(first.run.id);
     expect(codex.prompts).toHaveLength(2);
-    expectTrackerMutationsUnused(tracker);
+    expectTrackerStrictReadOnly(tracker);
   });
 
   it("uses focus areas from project manager config when explicit focus areas are not supplied", async () => {
@@ -501,6 +537,336 @@ describe("ProjectManagerOrchestrator", () => {
         completedAt: baseTime,
       }),
     ]);
+  });
+
+  it("stores a completed replan run, records classifications, and creates proposed follow-up goals without mutating tasks", async () => {
+    const failedTask = baseTask({
+      id: "task-failed",
+      status: "failed",
+      repositoryName: "developer",
+      updatedAt: baseTime,
+    });
+    const tracker = readonlyTracker([failedTask]);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    const activeGoal = await createActiveGoal(store);
+    await store.linkGoalTask({
+      goalId: activeGoal.id,
+      taskId: failedTask.id,
+      linkType: "implements",
+    });
+    const codex = new FakeCodexRunner(
+      codexExecution(
+        replanResponse({
+          replanReason: "task-failed failed validation",
+          proposedGoals: [
+            validGoal({
+              title: "Document failed validation recovery",
+              problemStatement: "Operators need recovery steps after validation fails.",
+              desiredOutcome: "Recovery steps are documented.",
+              successMetrics: ["Runbook covers failed validation recovery"],
+              evidenceRefs: [{ kind: "validation_failure", ref: "task-failed" }],
+            }),
+          ],
+          goalReplans: [
+            {
+              goalId: activeGoal.id,
+              decision: "create_follow_up",
+              rationale: "The failed task exposed a separate operator docs gap.",
+              evidenceRefs: [{ kind: "validation_failure", ref: "task-failed" }],
+              followUpGoals: [
+                validGoal({
+                  title: "Document failed validation recovery",
+                  problemStatement: "Operators need recovery steps after validation fails.",
+                  desiredOutcome: "Recovery steps are documented.",
+                  successMetrics: ["Runbook covers failed validation recovery"],
+                  evidenceRefs: [{ kind: "validation_failure", ref: "task-failed" }],
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config,
+      focusAreas: ["operator docs"],
+    });
+
+    const result = await orchestrator.runReplanOnce({
+      repositoryName: "developer",
+      replanReason: " task-failed failed validation ",
+      trigger: "post_task_event",
+    });
+
+    const runs = await store.listRuns();
+    const analyses = await store.listAnalyses();
+    const goals = await store.listGoals({ repositoryName: "developer" });
+    const replanEvents = await store.listGoalEvents(activeGoal.id);
+    const followUpGoal = goals.find(
+      (goal) => goal.title === "Document failed validation recovery",
+    );
+
+    expect(runs).toEqual([
+      expect.objectContaining({
+        id: result.run.id,
+        repositoryName: "developer",
+        trigger: "post_task_event",
+        status: "completed",
+        analysisId: result.analysis.id,
+        proposedGoalIds: [followUpGoal?.id],
+        proposedTaskIds: [],
+      }),
+    ]);
+    expect(analyses).toEqual([
+      expect.objectContaining({
+        id: result.analysis.id,
+        repositoryName: "developer",
+        replanReason: "task-failed failed validation",
+        goalReplans: [
+          expect.objectContaining({
+            goalId: activeGoal.id,
+            decision: "create_follow_up",
+          }),
+        ],
+      }),
+    ]);
+    expect(followUpGoal).toEqual(
+      expect.objectContaining({
+        id: expect.stringMatching(/^pm_goal_/),
+        status: "proposed",
+        sourceAnalysisId: result.analysis.id,
+        sourceRunId: result.run.id,
+      }),
+    );
+    expect(replanEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "project_goal_replan_classified",
+          payload: expect.objectContaining({
+            analysisId: result.analysis.id,
+            decision: "create_follow_up",
+          }),
+        }),
+      ]),
+    );
+    expect(codex.prompts[0]).toContain("Mode: project-management-replan-only");
+    expect(codex.prompts[0]).toContain("PROJECT_REPLAN:");
+    expect(codex.prompts[0]).toContain("Replan reason: task-failed failed validation");
+    expect(codex.options).toEqual([expect.objectContaining({ sandbox: "read-only" })]);
+    expect(await tracker.listTasks()).toEqual([failedTask]);
+    expectTrackerMutationsUnused(tracker);
+  });
+
+  it("stores a failed replan run when Codex output is invalid", async () => {
+    const tracker = readonlyTracker([baseTask({ repositoryName: "developer" })]);
+    const codex = new FakeCodexRunner(codexExecution("not project replan"));
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    await createActiveGoal(store);
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config,
+    });
+
+    await expect(
+      orchestrator.runReplanOnce({
+        repositoryName: "developer",
+        replanReason: "manual replan",
+      }),
+    ).rejects.toThrow(/valid PROJECT_REPLAN/);
+
+    expect(await store.listRuns()).toEqual([
+      expect.objectContaining({
+        repositoryName: "developer",
+        status: "failed",
+        diagnostic: expect.stringMatching(/valid PROJECT_REPLAN/),
+      }),
+    ]);
+    expect(await store.listAnalyses()).toEqual([]);
+  });
+
+  it("auto-completes only safe mark_completed goals", async () => {
+    const doneTask = baseTask({
+      id: "task-done",
+      status: "done",
+      repositoryName: "developer",
+    });
+    const failedTask = baseTask({
+      id: "task-still-failed",
+      status: "failed",
+      repositoryName: "developer",
+    });
+    const tracker = readonlyTracker([doneTask, failedTask]);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    const safeGoal = await createActiveGoal(store, { title: "Safe complete goal" });
+    const unsafeGoal = await createActiveGoal(store, { title: "Unsafe complete goal" });
+    await store.linkGoalTask({
+      goalId: safeGoal.id,
+      taskId: doneTask.id,
+      linkType: "implements",
+    });
+    await store.linkGoalTask({
+      goalId: unsafeGoal.id,
+      taskId: failedTask.id,
+      linkType: "implements",
+    });
+    const codex = new FakeCodexRunner(
+      codexExecution(
+        replanResponse({
+          replanReason: "completion sweep",
+          goalReplans: [safeGoal, unsafeGoal].map((goal) => ({
+            goalId: goal.id,
+            decision: "mark_completed",
+            rationale: "Codex believes the linked work is finished.",
+            evidenceRefs: [{ kind: "metric", ref: goal.id }],
+            followUpGoals: [],
+          })),
+        }),
+      ),
+    );
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config,
+    });
+
+    await orchestrator.runReplanOnce({
+      repositoryName: "developer",
+      replanReason: "completion sweep",
+    });
+
+    await expect(store.getGoal(safeGoal.id)).resolves.toEqual(
+      expect.objectContaining({
+        status: "completed",
+        completedBy: expect.objectContaining({
+          owner: "policy_admin",
+          id: "project-manager-replan",
+        }),
+      }),
+    );
+    await expect(store.getGoal(unsafeGoal.id)).resolves.toEqual(
+      expect.objectContaining({ status: "active" }),
+    );
+    await expect(store.listGoalEvents(unsafeGoal.id)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "project_goal_replan_classified" }),
+      ]),
+    );
+  });
+
+  it("rejects replan classifications for unknown goals", async () => {
+    const tracker = readonlyTracker([baseTask({ repositoryName: "developer" })]);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    await createActiveGoal(store);
+    const codex = new FakeCodexRunner(
+      codexExecution(
+        replanResponse({
+          goalReplans: [
+            {
+              goalId: "pm_goal_unknown",
+              decision: "continue",
+              rationale: "Unknown goal should be rejected.",
+              evidenceRefs: [],
+              followUpGoals: [],
+            },
+          ],
+        }),
+      ),
+    );
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config,
+    });
+
+    await expect(
+      orchestrator.runReplanOnce({
+        repositoryName: "developer",
+        replanReason: "manual replan",
+      }),
+    ).rejects.toThrow(/unknown or inactive/);
+
+    expect(await store.listRuns()).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        diagnostic: expect.stringMatching(/unknown or inactive/),
+      }),
+    ]);
+  });
+
+  it("records project manager run and replan metrics", async () => {
+    const tracker = readonlyTracker([baseTask({ repositoryName: "developer" })]);
+    const metrics = new InMemoryMetricsRegistry();
+    const analysisCodex = new FakeCodexRunner(codexExecution(validAnalysisResponse));
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date(baseTime),
+    });
+    const analysisOrchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex: analysisCodex,
+      store,
+      config,
+      metrics,
+    });
+    await analysisOrchestrator.runAnalysisOnce({
+      repositoryName: "developer",
+      trigger: "manual",
+    });
+    const activeGoal = await createActiveGoal(store, { title: "Metric replan goal" });
+    const replanCodex = new FakeCodexRunner(
+      codexExecution(
+        replanResponse({
+          replanReason: "metric replan",
+          goalReplans: [
+            {
+              goalId: activeGoal.id,
+              decision: "continue",
+              rationale: "Keep current scope.",
+              evidenceRefs: [],
+              followUpGoals: [],
+            },
+          ],
+        }),
+      ),
+    );
+    const replanOrchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex: replanCodex,
+      store,
+      config,
+      metrics,
+    });
+
+    await replanOrchestrator.runReplanOnce({
+      repositoryName: "developer",
+      replanReason: "metric replan",
+      trigger: "post_task_event",
+    });
+
+    const rendered = metrics.renderPrometheus();
+    expect(rendered).toContain(
+      'ai_developer_project_manager_runs_total{mode="analysis",repository="developer",status="success",trigger="manual"} 1',
+    );
+    expect(rendered).toContain(
+      'ai_developer_project_manager_runs_total{mode="replan",repository="developer",status="success",trigger="post_task_event"} 1',
+    );
+    expect(rendered).toContain(
+      'ai_developer_project_replans_total{decision="continue",repository="developer"} 1',
+    );
   });
 
   it("rejects project analysis with more proposed goals than configured", async () => {
