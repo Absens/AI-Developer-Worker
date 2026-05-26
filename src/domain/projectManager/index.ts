@@ -3,6 +3,7 @@ export * from "./analysisPolicy.js";
 export * from "./goalPolicy.js";
 export * from "./orchestrator.js";
 export * from "./promptBuilder.js";
+export * from "./replanSnapshot.js";
 export * from "./signalCollector.js";
 export * from "./store.js";
 export * from "./taskProposalBuilder.js";

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { collectProjectSignals } from "../src/domain/projectManager/index.js";
+import {
+  collectProjectReplanSnapshot,
+  collectProjectSignals,
+  InMemoryProjectManagerStore,
+  type ProjectGoalDraft,
+} from "../src/domain/projectManager/index.js";
 import type {
   TaskLeaseRecord,
   TaskRecord,
@@ -69,7 +74,7 @@ const lease = (
 
 const readonlyTracker = (
   tasks: TaskRecord[],
-  leases: TaskLeaseRecord[],
+  leases: TaskLeaseRecord[] = [],
 ): TaskTrackerClient => {
   const mutatingMethod = vi.fn(() => {
     throw new Error("collector must be read-only");
@@ -111,6 +116,60 @@ const readonlyTracker = (
     heartbeatLease: mutatingMethod,
     releaseLease: mutatingMethod,
   } as unknown as TaskTrackerClient;
+};
+
+const expectTrackerMutationsUnused = (tracker: TaskTrackerClient): void => {
+  expect(tracker.createTask).not.toHaveBeenCalled();
+  expect(tracker.proposeTask).not.toHaveBeenCalled();
+  expect(tracker.approveProposal).not.toHaveBeenCalled();
+  expect(tracker.rejectProposal).not.toHaveBeenCalled();
+  expect(tracker.cleanupProposals).not.toHaveBeenCalled();
+  expect(tracker.updateTaskRevision).not.toHaveBeenCalled();
+  expect(tracker.updateExternalTaskFields).not.toHaveBeenCalled();
+  expect(tracker.attachExternalRef).not.toHaveBeenCalled();
+  expect(tracker.markReady).not.toHaveBeenCalled();
+  expect(tracker.getTask).not.toHaveBeenCalled();
+  expect(tracker.findTaskByExternalRef).not.toHaveBeenCalled();
+  expect(tracker.getAgentTaskContext).not.toHaveBeenCalled();
+  expect(tracker.appendEvent).not.toHaveBeenCalled();
+  expect(tracker.appendComment).not.toHaveBeenCalled();
+  expect(tracker.setStatus).not.toHaveBeenCalled();
+  expect(tracker.recordDecision).not.toHaveBeenCalled();
+  expect(tracker.recordAnalysis).not.toHaveBeenCalled();
+  expect(tracker.recordTaskStep).not.toHaveBeenCalled();
+  expect(tracker.askClarification).not.toHaveBeenCalled();
+  expect(tracker.recordHumanAnswer).not.toHaveBeenCalled();
+  expect(tracker.recordAgentRun).not.toHaveBeenCalled();
+  expect(tracker.recordValidation).not.toHaveBeenCalled();
+  expect(tracker.recordMergeRequest).not.toHaveBeenCalled();
+  expect(tracker.recordReviewMetadata).not.toHaveBeenCalled();
+  expect(tracker.recordDecomposition).not.toHaveBeenCalled();
+  expect(tracker.createChildTasks).not.toHaveBeenCalled();
+  expect(tracker.linkDependency).not.toHaveBeenCalled();
+  expect(tracker.recordMemoryContext).not.toHaveBeenCalled();
+  expect(tracker.addDependency).not.toHaveBeenCalled();
+  expect(tracker.claimNextTask).not.toHaveBeenCalled();
+  expect(tracker.claimReviewTask).not.toHaveBeenCalled();
+  expect(tracker.heartbeatLease).not.toHaveBeenCalled();
+  expect(tracker.releaseLease).not.toHaveBeenCalled();
+};
+
+const createGoalDraft = (title: string): ProjectGoalDraft => ({
+  title,
+  problemStatement: `${title} problem`,
+  desiredOutcome: `${title} outcome`,
+  successMetrics: [`${title} metric`],
+  evidenceRefs: [{ kind: "metric", ref: "TASK-1", summary: "Task evidence" }],
+  priority: "normal" as const,
+  riskLevel: "medium" as const,
+  suggestedTaskProposals: [],
+});
+
+const requireValue = <T>(value: T | undefined, label: string): T => {
+  if (!value) {
+    throw new Error(`Missing test fixture value: ${label}`);
+  }
+  return value;
 };
 
 describe("project manager signal collector", () => {
@@ -315,5 +374,269 @@ describe("project manager signal collector", () => {
         ...snapshot.recentReviewTasks,
       ].some((task) => task.id === "other-repository-task"),
     ).toBe(false);
+  });
+});
+
+describe("project manager replan snapshot collector", () => {
+  it("collects active/approved goals with linked task summaries for replanning", async () => {
+    const failedTask = baseTask({
+      id: "failed-task",
+      title: "Fix repeated validation failure",
+      status: "failed",
+      agentRuns: [
+        {
+          id: "run-1",
+          taskId: "failed-task",
+          workerId: "worker-1",
+          stage: "implementation",
+          status: "failed",
+          diagnostic: "Implementation failed.",
+          startedAt: "2026-05-25T08:10:00.000Z",
+          completedAt: "2026-05-25T08:11:00.000Z",
+        },
+      ],
+      qualityGateRuns: [
+        {
+          id: "validation-1",
+          taskId: "failed-task",
+          workerId: "worker-1",
+          status: "failed",
+          changed: true,
+          testsPassed: false,
+          lintPassed: true,
+          gates: [],
+          diagnostic: "Validation failed.",
+          createdAt: "2026-05-25T08:20:00.000Z",
+          artifactRefs: [],
+        },
+        {
+          id: "validation-2",
+          taskId: "failed-task",
+          workerId: "worker-1",
+          status: "failed",
+          changed: true,
+          testsPassed: false,
+          lintPassed: true,
+          gates: [],
+          diagnostic: "Repeated validation failure.",
+          summary: "Repeated validation failure.",
+          createdAt: "2026-05-25T08:30:00.000Z",
+          artifactRefs: [],
+        },
+      ],
+      mergeRequests: [
+        {
+          id: "mr-1",
+          taskId: "failed-task",
+          workerId: "worker-1",
+          branch: "feature/failed-task",
+          outcome: "created",
+          mergeRequest: {
+            id: 10,
+            iid: 10,
+            url: "https://gitlab.example/mr/10",
+            title: "Fix repeated validation failure",
+            sourceBranch: "feature/failed-task",
+            targetBranch: "main",
+          },
+          createdAt: "2026-05-25T08:40:00.000Z",
+        },
+      ],
+    });
+    const otherRepositoryTask = baseTask({
+      id: "other-task",
+      repositoryName: "other",
+      status: "failed",
+    });
+    const tracker = readonlyTracker([failedTask, otherRepositoryTask]);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date("2026-05-25T09:00:00.000Z"),
+    });
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      summary: "Prior PM analysis.",
+      healthSignals: [],
+      proposedGoals: [createGoalDraft("Stabilize validation")],
+      staleGoalIds: [],
+    });
+    const createdGoals = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: analysis.id,
+      repositoryName: "developer",
+      goals: [createGoalDraft("Stabilize validation")],
+    });
+    const proposedGoal = requireValue(createdGoals[0], "proposed goal");
+    const approvedGoal = await store.approveGoal(proposedGoal.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    const activeGoal = await store.activateGoal(approvedGoal.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    const link = await store.linkGoalTask({
+      goalId: activeGoal.id,
+      taskId: "failed-task",
+      linkType: "implements",
+    });
+
+    const snapshot = await collectProjectReplanSnapshot({
+      taskTracker: tracker,
+      store,
+      repositoryName: "developer",
+      replanReason: "failed task needs replanning",
+      now: () => new Date("2026-05-25T10:00:00.000Z"),
+      limit: 25,
+    });
+
+    expect(tracker.listTasks).toHaveBeenCalledWith({
+      repositoryName: "developer",
+      limit: 25,
+    });
+    expect(snapshot.repositoryName).toBe("developer");
+    expect(snapshot.generatedAt).toBe("2026-05-25T10:00:00.000Z");
+    expect(snapshot.replanReason).toBe("failed task needs replanning");
+    expect(snapshot.previousAnalysisId).toBe(analysis.id);
+    expect(snapshot.previousAnalysisSummary).toBe("Prior PM analysis.");
+    expect(snapshot.projectSignals).toMatchObject({
+      repositoryName: "developer",
+      generatedAt: "2026-05-25T10:00:00.000Z",
+      totalTasks: 1,
+      failedTasks: [expect.objectContaining({ id: "failed-task" })],
+    });
+    expect(snapshot.goals).toHaveLength(1);
+    expect(snapshot.goals[0]?.goal).toMatchObject({
+      id: activeGoal.id,
+      title: "Stabilize validation",
+      status: "active",
+    });
+    expect(snapshot.goals[0]?.linkedTasks).toEqual([
+      expect.objectContaining({
+        id: "failed-task",
+        title: "Fix repeated validation failure",
+        status: "failed",
+        failedAgentRuns: 1,
+        failedValidations: 2,
+        latestAiSummary: "Implementation failed.",
+        latestValidationSummary: "Repeated validation failure.",
+        mergeRequestUrl: "https://gitlab.example/mr/10",
+      }),
+    ]);
+    expect(snapshot.goals[0]?.taskLinks).toEqual([link]);
+    expect(snapshot.goals[0]?.auditEvents.map((event) => event.kind)).toEqual([
+      "project_goal_created",
+      "project_goal_approved",
+      "project_goal_activated",
+    ]);
+    expectTrackerMutationsUnused(tracker);
+  });
+
+  it("omits terminal goals and linked tasks from other repositories", async () => {
+    const sameRepositoryTask = baseTask({
+      id: "same-repo-task",
+      title: "Same repo task",
+      status: "ready",
+    });
+    const otherRepositoryTask = baseTask({
+      id: "other-repo-task",
+      title: "Other repo task",
+      repositoryName: "other",
+      status: "failed",
+    });
+    const tracker = readonlyTracker([sameRepositoryTask, otherRepositoryTask]);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date("2026-05-25T09:00:00.000Z"),
+    });
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      summary: "Prior analysis.",
+      healthSignals: [],
+      proposedGoals: [
+        createGoalDraft("Approved goal"),
+        createGoalDraft("Active goal"),
+        createGoalDraft("Completed goal"),
+        createGoalDraft("Rejected goal"),
+        createGoalDraft("Stale goal"),
+      ],
+      staleGoalIds: [],
+    });
+    const goalCandidates = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: analysis.id,
+      repositoryName: "developer",
+      goals: [
+        createGoalDraft("Approved goal"),
+        createGoalDraft("Active goal"),
+        createGoalDraft("Completed goal"),
+        createGoalDraft("Rejected goal"),
+        createGoalDraft("Stale goal"),
+      ],
+    });
+    const approvedCandidate = requireValue(goalCandidates[0], "approved goal");
+    const activeCandidate = requireValue(goalCandidates[1], "active goal");
+    const completedCandidate = requireValue(goalCandidates[2], "completed goal");
+    const rejectedCandidate = requireValue(goalCandidates[3], "rejected goal");
+    const staleCandidate = requireValue(goalCandidates[4], "stale goal");
+    const approvedGoal = await store.approveGoal(approvedCandidate.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    const activeApprovedGoal = await store.approveGoal(activeCandidate.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    const activeGoal = await store.activateGoal(activeApprovedGoal.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    const completedApprovedGoal = await store.approveGoal(completedCandidate.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    const completedActiveGoal = await store.activateGoal(completedApprovedGoal.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    await store.completeGoal(completedActiveGoal.id, {
+      actor: { owner: "human", id: "pm-1" },
+    });
+    await store.rejectGoal(rejectedCandidate.id, {
+      actor: { owner: "human", id: "pm-1" },
+      rejectionReason: "Not needed.",
+    });
+    await store.markGoalStale(staleCandidate.id, {
+      actor: { owner: "human", id: "pm-1" },
+      staleReason: "Outdated.",
+    });
+    await store.linkGoalTask({
+      goalId: approvedGoal.id,
+      taskId: "other-repo-task",
+      linkType: "related",
+    });
+    await store.linkGoalTask({
+      goalId: approvedGoal.id,
+      taskId: "same-repo-task",
+      linkType: "implements",
+    });
+    await store.linkGoalTask({
+      goalId: activeGoal.id,
+      taskId: "same-repo-task",
+      linkType: "implements",
+    });
+
+    const snapshot = await collectProjectReplanSnapshot({
+      taskTracker: tracker,
+      store,
+      repositoryName: "developer",
+      replanReason: "manual replan",
+      now: () => new Date("2026-05-25T10:00:00.000Z"),
+    });
+
+    expect(snapshot.goals.map((entry) => entry.goal.id)).toEqual([
+      approvedGoal.id,
+      activeGoal.id,
+    ]);
+    expect(snapshot.goals[0]?.taskLinks.map((link) => link.taskId)).toEqual([
+      "other-repo-task",
+      "same-repo-task",
+    ]);
+    expect(snapshot.goals[0]?.linkedTasks.map((task) => task.id)).toEqual([
+      "same-repo-task",
+    ]);
+    expect(snapshot.goals[1]?.linkedTasks.map((task) => task.id)).toEqual([
+      "same-repo-task",
+    ]);
+    expectTrackerMutationsUnused(tracker);
   });
 });

@@ -1,4 +1,5 @@
 import type { TaskType } from "../../models/types.js";
+import type { ProjectReplanSnapshot } from "./replanSnapshot.js";
 import type { ProjectSignalSnapshot } from "./types.js";
 import {
   PROJECT_GOAL_REPLAN_DECISIONS,
@@ -14,48 +15,26 @@ export interface BuildProjectAnalysisPromptInput {
   maxSnapshotChars?: number;
 }
 
-export interface ProjectReplanTaskSnapshot {
-  id: string;
-  title: string;
-  status: string;
-  repositoryName?: string;
-  queue?: string;
-  priority?: string;
-  taskType?: string;
-  updatedAt?: string;
-  latestAiSummary?: string;
-  latestValidationSummary?: string;
-  mergeRequestUrl?: string;
-  blockerReason?: string;
-  failedAgentRuns?: number;
-  failedValidations?: number;
-}
-
-export interface ProjectReplanGoalSnapshot {
-  id: string;
-  title: string;
-  status: string;
-  problemStatement?: string;
-  desiredOutcome?: string;
-  successMetrics?: string[];
-  linkedTasks: ProjectReplanTaskSnapshot[];
-}
-
-export interface ProjectReplanSnapshot {
-  repositoryName: string;
-  generatedAt: string;
-  replanReason: string;
-  previousAnalysisId?: string;
-  activeGoals: ProjectReplanGoalSnapshot[];
-}
-
 export interface BuildProjectReplanPromptInput {
-  snapshot: ProjectReplanSnapshot;
+  snapshot: ProjectReplanSnapshot | LegacyProjectReplanPromptSnapshot;
   maxGoalsPerRun?: number;
   maxTaskProposalsPerGoal?: number;
   allowedTaskTypes?: TaskType[];
   focusAreas?: string[];
   maxSnapshotChars?: number;
+}
+
+interface LegacyProjectReplanPromptGoalSnapshot {
+  id: string;
+  [key: string]: unknown;
+}
+
+interface LegacyProjectReplanPromptSnapshot {
+  repositoryName: string;
+  generatedAt: string;
+  replanReason: string;
+  previousAnalysisId?: string;
+  activeGoals: LegacyProjectReplanPromptGoalSnapshot[];
 }
 
 const DEFAULT_MAX_GOALS_PER_RUN = 5;
@@ -193,7 +172,10 @@ export const buildProjectReplanPrompt = (
     input.focusAreas && input.focusAreas.length > 0
       ? input.focusAreas.join(", ")
       : "none";
-  const activeGoalIds = input.snapshot.activeGoals.map((goal) => goal.id);
+  const activeGoalIds =
+    "goals" in input.snapshot
+      ? input.snapshot.goals.map((entry) => entry.goal.id)
+      : input.snapshot.activeGoals.map((goal) => goal.id);
 
   return [
     "Mode: project-management-replan-only",
