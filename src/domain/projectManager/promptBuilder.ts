@@ -16,25 +16,12 @@ export interface BuildProjectAnalysisPromptInput {
 }
 
 export interface BuildProjectReplanPromptInput {
-  snapshot: ProjectReplanSnapshot | LegacyProjectReplanPromptSnapshot;
+  snapshot: ProjectReplanSnapshot;
   maxGoalsPerRun?: number;
   maxTaskProposalsPerGoal?: number;
   allowedTaskTypes?: TaskType[];
   focusAreas?: string[];
   maxSnapshotChars?: number;
-}
-
-interface LegacyProjectReplanPromptGoalSnapshot {
-  id: string;
-  [key: string]: unknown;
-}
-
-interface LegacyProjectReplanPromptSnapshot {
-  repositoryName: string;
-  generatedAt: string;
-  replanReason: string;
-  previousAnalysisId?: string;
-  activeGoals: LegacyProjectReplanPromptGoalSnapshot[];
 }
 
 const DEFAULT_MAX_GOALS_PER_RUN = 5;
@@ -172,10 +159,7 @@ export const buildProjectReplanPrompt = (
     input.focusAreas && input.focusAreas.length > 0
       ? input.focusAreas.join(", ")
       : "none";
-  const activeGoalIds =
-    "goals" in input.snapshot
-      ? input.snapshot.goals.map((entry) => entry.goal.id)
-      : input.snapshot.activeGoals.map((goal) => goal.id);
+  const activeGoalIds = input.snapshot.goals.map((entry) => entry.goal.id);
 
   return [
     "Mode: project-management-replan-only",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildProjectAnalysisPrompt,
   buildProjectReplanPrompt,
+  type ProjectReplanSnapshot,
   type ProjectSignalSnapshot,
 } from "../src/domain/projectManager/index.js";
 
@@ -32,6 +33,72 @@ const buildSnapshot = (
   waitingForHuman: [],
   repeatedFailures: [],
   recentReviewTasks: [],
+  ...overrides,
+});
+
+const buildReplanSnapshot = (
+  overrides: Partial<ProjectReplanSnapshot> = {},
+): ProjectReplanSnapshot => ({
+  repositoryName: "worker-repo",
+  generatedAt: "2026-05-25T12:00:00.000Z",
+  replanReason: "TASK-42 is blocked after repeated validation failures.",
+  projectSignals: buildSnapshot(),
+  goals: [
+    {
+      goal: {
+        id: "goal-active",
+        sourceAnalysisId: "analysis-1",
+        repositoryName: "worker-repo",
+        status: "active",
+        title: "Stabilize validation",
+        problemStatement: "Validation is unstable.",
+        desiredOutcome: "Validation failures are resolved.",
+        successMetrics: ["TASK-42 passes validation"],
+        evidenceRefs: [
+          {
+            kind: "validation_failure",
+            ref: "TASK-42",
+            summary: "quality gate failed twice",
+          },
+        ],
+        priority: "normal",
+        riskLevel: "medium",
+        suggestedTaskProposals: [],
+        duplicateSignature: "goal-active-signature",
+        createdAt: "2026-05-25T10:00:00.000Z",
+        updatedAt: "2026-05-25T11:00:00.000Z",
+      },
+      linkedTasks: [
+        {
+          id: "TASK-42",
+          title: "Fix repeated validation failure",
+          status: "blocked",
+          repositoryName: "worker-repo",
+          updatedAt: "2026-05-25T11:00:00.000Z",
+          latestValidationSummary: "quality gate failed twice",
+          failedAgentRuns: 0,
+          failedValidations: 2,
+        },
+      ],
+      taskLinks: [
+        {
+          id: "link-1",
+          goalId: "goal-active",
+          taskId: "TASK-42",
+          linkType: "implements",
+          createdAt: "2026-05-25T10:30:00.000Z",
+        },
+      ],
+      auditEvents: [
+        {
+          id: "event-1",
+          goalId: "goal-active",
+          kind: "project_goal_activated",
+          createdAt: "2026-05-25T11:00:00.000Z",
+        },
+      ],
+    },
+  ],
   ...overrides,
 });
 
@@ -124,26 +191,7 @@ describe("project manager prompt builder", () => {
 describe("project manager replan prompt builder", () => {
   it("includes required replan guardrails and snapshot context", () => {
     const prompt = buildProjectReplanPrompt({
-      snapshot: {
-        repositoryName: "worker-repo",
-        generatedAt: "2026-05-25T12:00:00.000Z",
-        replanReason: "TASK-42 is blocked after repeated validation failures.",
-        activeGoals: [
-          {
-            id: "goal-active",
-            title: "Stabilize validation",
-            status: "active",
-            linkedTasks: [
-              {
-                id: "TASK-42",
-                title: "Fix repeated validation failure",
-                status: "blocked",
-                latestValidationSummary: "quality gate failed twice",
-              },
-            ],
-          },
-        ],
-      },
+      snapshot: buildReplanSnapshot(),
       allowedTaskTypes: ["documentation", "tests_only"],
       focusAreas: ["validation stability"],
     });
