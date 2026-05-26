@@ -4,4 +4,5 @@ export * from "./orchestrator.js";
 export * from "./promptBuilder.js";
 export * from "./signalCollector.js";
 export * from "./store.js";
+export * from "./taskProposalBuilder.js";
 export * from "./types.js";

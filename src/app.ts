@@ -97,6 +97,22 @@ const createProjectManagerStoreController = (
 
   const buildDependencies = (store: ProjectManagerStore): ProjectManagerApiDependencies => ({
     store,
+    configForRepository: (repositoryName) => {
+      const repository = fleetConfig.repositories.find(
+        (candidate) => candidate.name === repositoryName,
+      );
+      if (!repository) {
+        throw new Error(`Project manager repository not found: ${repositoryName}`);
+      }
+
+      const runtimeConfig = buildRepositoryRuntimeConfig(fleetConfig, repository);
+      if (!runtimeConfig.projectManager?.enabled) {
+        throw new Error(
+          `Project manager is not enabled for repository: ${repositoryName}`,
+        );
+      }
+      return runtimeConfig.projectManager;
+    },
     runner: {
       runAnalysisOnce: async (input) => {
         const repository = fleetConfig.repositories.find(

@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   InMemoryProjectManagerStore,
+  type ProjectGoal,
+  type ProjectManagerConfig,
   type ProjectManagerOrchestrator,
+  type ProjectTaskProposalDraft,
 } from "../src/domain/projectManager/index.js";
 import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
 import type { CreateTaskInput, TaskActor } from "../src/domain/taskTracker/index.js";
@@ -125,10 +128,18 @@ const requestStatus = async (
 
 const createProjectGoal = async (
   store: InMemoryProjectManagerStore,
-  overrides: { sourceAnalysisId?: string; repositoryName?: string; title?: string } = {},
-) => {
+  overrides: {
+    sourceAnalysisId?: string;
+    sourceRunId?: string;
+    repositoryName?: string;
+    title?: string;
+    riskLevel?: ProjectGoal["riskLevel"];
+    suggestedTaskProposals?: ProjectTaskProposalDraft[];
+  } = {},
+): Promise<ProjectGoal> => {
   const [goal] = await store.createGoalsFromAnalysis({
     sourceAnalysisId: overrides.sourceAnalysisId ?? "analysis-1",
+    ...(overrides.sourceRunId ? { sourceRunId: overrides.sourceRunId } : {}),
     repositoryName: overrides.repositoryName ?? "developer",
     goals: [
       {
@@ -144,13 +155,50 @@ const createProjectGoal = async (
           },
         ],
         priority: "normal",
-        riskLevel: "low",
-        suggestedTaskProposals: [],
+        riskLevel: overrides.riskLevel ?? "low",
+        suggestedTaskProposals: overrides.suggestedTaskProposals ?? [],
       },
     ],
   });
   return goal!;
 };
+
+const projectManagerConfig = (
+  overrides: Partial<ProjectManagerConfig> = {},
+): ProjectManagerConfig => ({
+  enabled: true,
+  runOnce: false,
+  intervalMinutes: 1440,
+  maxGoalsPerRun: 5,
+  maxTaskProposalsPerGoal: 5,
+  defaultAutonomyLevel: "proposal_only",
+  autoApproveLowRisk: false,
+  allowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
+  repositoryScanEnabled: false,
+  repositoryScanMaxFiles: 200,
+  requireHumanGoalApproval: true,
+  ...overrides,
+});
+
+const projectGoalTaskProposalDraft = (
+  overrides: Partial<ProjectTaskProposalDraft> = {},
+): ProjectTaskProposalDraft => ({
+  title: "Add PM proposal regression coverage",
+  description: "Add coverage for PM goal-to-task proposal idempotency.",
+  taskType: "tests_only",
+  acceptanceCriteria: [
+    "Repeated PM proposal command returns the same task.",
+    "Repeated PM proposal command returns the same goal-task link.",
+  ],
+  expectedBlastRadius: "tests only",
+  evidenceRefs: [
+    {
+      kind: "file",
+      ref: "tests/humanTaskApi.test.ts",
+    },
+  ],
+  ...overrides,
+});
 
 describe("Phase 7F human task API", () => {
   afterEach(async () => {
@@ -439,6 +487,262 @@ describe("Phase 7F human task API", () => {
     expect(missingReason.body.error).toContain("reason is required");
   });
 
+  it("allows operators to create project goal task proposals and links idempotently", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const goal = await createProjectGoal(projectManagerStore, {
+      sourceRunId: "pm-run-1",
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    await projectManagerStore.approveGoal(goal.id, { actor: human });
+    const { baseUrl } = await createServer(tracker, {}, {
+      store: projectManagerStore,
+      configForRepository: () =>
+        projectManagerConfig({
+          maxTaskProposalsPerGoal: 1,
+          defaultAutonomyLevel: "proposal_only",
+        }),
+    });
+
+    const developerAttempt = await requestJson(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: developerHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+    expect(developerAttempt.status).toBe(403);
+
+    const first = await requestJson(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+    const repeated = await requestJson(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+
+    expect(first.status).toBe(200);
+    expect(repeated.status).toBe(200);
+    expect(first.body.tasks).toHaveLength(1);
+    expect(repeated.body.tasks[0].id).toBe(first.body.tasks[0].id);
+    expect(repeated.body.taskLinks[0].id).toBe(first.body.taskLinks[0].id);
+    expect(first.body.taskLinks).toEqual([
+      expect.objectContaining({
+        goalId: goal.id,
+        taskId: first.body.tasks[0].id,
+        linkType: "proposed_task",
+      }),
+    ]);
+    expect(first.body.tasks[0]).toMatchObject({
+      title: "Add PM proposal regression coverage",
+      status: "triage",
+      source: { kind: "ai_proposal" },
+      proposal: {
+        supervisorStatus: "proposed",
+        autonomyLevel: "proposal_only",
+        evidenceRefs: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "external_url",
+            ref: `urn:project-manager:goal:${goal.id}`,
+          }),
+          expect.objectContaining({
+            kind: "external_url",
+            ref: "urn:project-manager:run:pm-run-1",
+          }),
+        ]),
+      },
+    });
+    await expect(projectManagerStore.listGoalTaskLinks(goal.id)).resolves.toHaveLength(1);
+    await expect(tracker.listTasks({ repositoryName: "developer" })).resolves.toHaveLength(
+      1,
+    );
+
+    const proposals = await requestJson(baseUrl, "/api/proposals", {
+      headers: viewerHeaders,
+    });
+    expect(proposals.body.proposals[0]).toMatchObject({
+      id: first.body.tasks[0].id,
+      proposal: {
+        supervisorStatus: "proposed",
+        suggestedAcceptanceCriteria: [
+          "Repeated PM proposal command returns the same task.",
+          "Repeated PM proposal command returns the same goal-task link.",
+        ],
+      },
+    });
+  });
+
+  it("rejects project goal task proposal command for non-approved goal statuses", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const proposed = await createProjectGoal(projectManagerStore, {
+      title: "Proposed goal",
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    const rejected = await createProjectGoal(projectManagerStore, {
+      title: "Rejected goal",
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    const completed = await createProjectGoal(projectManagerStore, {
+      title: "Completed goal",
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    const stale = await createProjectGoal(projectManagerStore, {
+      title: "Stale goal",
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    await projectManagerStore.rejectGoal(rejected.id, {
+      actor: human,
+      rejectionReason: "Out of scope.",
+    });
+    await projectManagerStore.approveGoal(completed.id, { actor: human });
+    await projectManagerStore.activateGoal(completed.id, { actor: human });
+    await projectManagerStore.completeGoal(completed.id, { actor: human });
+    await projectManagerStore.markGoalStale(stale.id, {
+      actor: human,
+      staleReason: "Evidence aged out.",
+    });
+    const { baseUrl, tracker } = await createServer(new InMemoryTaskTrackerClient(), {}, {
+      store: projectManagerStore,
+      configForRepository: () => projectManagerConfig(),
+    });
+
+    for (const goal of [proposed, rejected, completed, stale]) {
+      const response = await requestJson(
+        baseUrl,
+        `/api/project-goals/${goal.id}/commands/propose-tasks`,
+        {
+          method: "POST",
+          headers: operatorHeaders,
+          body: JSON.stringify({}),
+        },
+      );
+      expect(response.status).toBe(409);
+      expect(response.body.error).toContain("Cannot propose tasks");
+    }
+    await expect(tracker?.listTasks({ repositoryName: "developer" })).resolves.toEqual(
+      [],
+    );
+  });
+
+  it("creates task proposals for active goals with bounded fan-out", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const goal = await createProjectGoal(projectManagerStore, {
+      suggestedTaskProposals: [
+        projectGoalTaskProposalDraft({
+          title: "Add active goal proposal coverage",
+          evidenceRefs: [{ kind: "file", ref: "tests/humanTaskApi.test.ts" }],
+        }),
+        projectGoalTaskProposalDraft({
+          title: "Document active goal proposal command",
+          taskType: "documentation",
+          acceptanceCriteria: ["Active goal command behavior is documented."],
+          evidenceRefs: [{ kind: "file", ref: "docs/ENV_CONFIGURATION.md" }],
+        }),
+        projectGoalTaskProposalDraft({
+          title: "Skipped by PM fan-out limit",
+          evidenceRefs: [{ kind: "metric", ref: "pm-fanout-limit" }],
+        }),
+      ],
+    });
+    await projectManagerStore.approveGoal(goal.id, { actor: human });
+    await projectManagerStore.activateGoal(goal.id, { actor: human });
+    const { baseUrl } = await createServer(tracker, {}, {
+      store: projectManagerStore,
+      configForRepository: () =>
+        projectManagerConfig({
+          maxTaskProposalsPerGoal: 2,
+          defaultAutonomyLevel: "proposal_only",
+        }),
+    });
+
+    const response = await requestJson(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.map((task: { title: string }) => task.title)).toEqual([
+      "Add active goal proposal coverage",
+      "Document active goal proposal command",
+    ]);
+    expect(response.body.taskLinks).toHaveLength(2);
+    await expect(projectManagerStore.listGoalTaskLinks(goal.id)).resolves.toEqual([
+      expect.objectContaining({
+        taskId: response.body.tasks[0].id,
+        linkType: "proposed_task",
+      }),
+      expect.objectContaining({
+        taskId: response.body.tasks[1].id,
+        linkType: "proposed_task",
+      }),
+    ]);
+  });
+
+  it("keeps high-risk project goal task proposals out of the executable queue", async () => {
+    const tracker = new InMemoryTaskTrackerClient({
+      autonomyPolicy: {
+        autoExecuteLowRiskEnabled: true,
+        repositories: {
+          developer: {
+            autoExecuteLowRiskEnabled: true,
+            allowedTaskTypes: ["documentation", "tests_only"],
+            dailyProposalLimit: 10,
+            windowProposalLimit: 10,
+          },
+        },
+      },
+    });
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const goal = await createProjectGoal(projectManagerStore, {
+      riskLevel: "high",
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    await projectManagerStore.approveGoal(goal.id, { actor: human });
+    const { baseUrl } = await createServer(tracker, {}, {
+      store: projectManagerStore,
+      configForRepository: () =>
+        projectManagerConfig({ defaultAutonomyLevel: "auto_execute_low_risk" }),
+    });
+
+    const response = await requestJson(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks[0]).toMatchObject({
+      status: "triage",
+      proposal: {
+        supervisorStatus: "proposed",
+        autonomyLevel: "proposal_only",
+      },
+    });
+  });
+
   it("returns method-aware errors for project goal routes", async () => {
     const projectManagerStore = new InMemoryProjectManagerStore();
     const goal = await createProjectGoal(projectManagerStore);
@@ -452,6 +756,27 @@ describe("Phase 7F human task API", () => {
       { headers: developerHeaders },
     );
     expect(getApprove.status).toBe(405);
+
+    const getProposeTasks = await requestStatus(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      { headers: operatorHeaders },
+    );
+    expect(getProposeTasks.status).toBe(405);
+
+    const malformedProposeTasks = await requestJson(
+      baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: "{",
+      },
+    );
+    expect(malformedProposeTasks.status).toBe(400);
+    expect(malformedProposeTasks.body.error).toContain(
+      "request body must be valid JSON",
+    );
 
     const postGoal = await requestStatus(baseUrl, `/api/project-goals/${goal.id}`, {
       method: "POST",
@@ -546,6 +871,44 @@ describe("Phase 7F human task API", () => {
     );
     expect(runResponse.status).toBe(503);
     expect(runResponse.body.error).toContain("Project manager runner is not configured");
+
+    const missingProjectManagerPropose = await createServer(new InMemoryTaskTrackerClient());
+    const missingProjectManagerProposeResponse = await requestJson(
+      missingProjectManagerPropose.baseUrl,
+      "/api/project-goals/pm_goal_missing/commands/propose-tasks",
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+    expect(missingProjectManagerProposeResponse.status).toBe(503);
+    expect(missingProjectManagerProposeResponse.body.error).toContain(
+      "Project manager API is not configured",
+    );
+
+    const storeWithoutTracker = new InMemoryProjectManagerStore();
+    const goal = await createProjectGoal(storeWithoutTracker, {
+      suggestedTaskProposals: [projectGoalTaskProposalDraft()],
+    });
+    await storeWithoutTracker.approveGoal(goal.id, { actor: human });
+    const missingTracker = await createServer(null, {}, {
+      store: storeWithoutTracker,
+      configForRepository: () => projectManagerConfig(),
+    });
+    const missingTrackerResponse = await requestJson(
+      missingTracker.baseUrl,
+      `/api/project-goals/${goal.id}/commands/propose-tasks`,
+      {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({}),
+      },
+    );
+    expect(missingTrackerResponse.status).toBe(503);
+    expect(missingTrackerResponse.body.error).toContain(
+      "Internal task tracker is not configured",
+    );
   });
 
   it("creates a human task, previews agent context, and marks it ready", async () => {

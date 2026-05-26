@@ -1,9 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
+  buildProjectGoalTaskProposalInputs,
+  PROJECT_MANAGER_PROPOSED_TASK_LINK_TYPE,
   PROJECT_GOAL_STATUSES,
   type ListProjectGoalsInput,
   type ProjectGoalStatus,
+  type ProjectManagerConfig,
   type ProjectManagerOrchestrator,
   type ProjectManagerStore,
 } from "../domain/projectManager/index.js";
@@ -48,6 +51,7 @@ interface TaskTrackerHumanApiInput {
 export interface ProjectManagerApiDependencies {
   store: ProjectManagerStore;
   runner?: Pick<ProjectManagerOrchestrator, "runAnalysisOnce">;
+  configForRepository?: (repositoryName: string) => ProjectManagerConfig | undefined;
 }
 
 interface AuthContext {
@@ -715,6 +719,48 @@ export class TaskTrackerHumanApi {
         return true;
       }
 
+      if (suffix === "/commands/propose-tasks") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        this.requireAuth(request, "operator");
+        await this.readOptionalJson(request);
+        const store = this.requireProjectManagerStore();
+        const tracker = this.requireTracker();
+        const goal = await store.getGoal(goalId);
+        if (goal.status !== "approved" && goal.status !== "active") {
+          throw new Error(
+            `Cannot propose tasks for project goal from status ${goal.status}.`,
+          );
+        }
+        const tasks = [];
+        const taskLinks = [];
+        for (const proposalInput of buildProjectGoalTaskProposalInputs({
+          goal,
+          config: this.input.projectManager?.configForRepository?.(
+            goal.repositoryName,
+          ),
+        })) {
+          const task = await tracker.proposeTask(proposalInput);
+          tasks.push(task);
+          taskLinks.push(
+            await store.linkGoalTask({
+              goalId: goal.id,
+              taskId: task.id,
+              linkType: PROJECT_MANAGER_PROPOSED_TASK_LINK_TYPE,
+            }),
+          );
+        }
+        json(response, 200, {
+          goal,
+          tasks,
+          proposals: tasks.map((task) => task.proposal).filter(Boolean),
+          taskLinks,
+        });
+        return true;
+      }
+
       text(response, 404, "not found");
       return true;
     }
@@ -898,10 +944,20 @@ export class TaskTrackerHumanApi {
     if (chunks.length === 0) {
       return {};
     }
-    return requireObject(
-      JSON.parse(Buffer.concat(chunks).toString("utf8")),
-      "request body",
-    );
+    try {
+      return requireObject(
+        JSON.parse(Buffer.concat(chunks).toString("utf8")),
+        "request body",
+      );
+    } catch (error) {
+      if (error instanceof HttpApiError) {
+        throw error;
+      }
+      throw new HttpApiError(
+        400,
+        `request body must be valid JSON. ${(error as Error).message}`,
+      );
+    }
   }
 
   private parseListFilters(url: URL): ListTasksInput {
