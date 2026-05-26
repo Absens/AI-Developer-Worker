@@ -981,6 +981,89 @@ describePostgres("PostgresProjectManagerStore with real PostgreSQL", () => {
     ]);
   });
 
+  it("persists replan analyses and classified events through PostgreSQL constraints", async () => {
+    const store = new PostgresProjectManagerStore(pg, {
+      now: () => new Date(baseTime),
+    });
+    const previousAnalysis = await recordTestAnalysis(store);
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: previousAnalysis.id,
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
+    const classification = replanClassification(goal!.id);
+
+    const replanAnalysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      summary: "Docs need replan.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      previousAnalysisId: previousAnalysis.id,
+      replanReason: "Operator flow changed.",
+      goalReplans: [classification],
+    });
+    const event = await store.recordGoalReplanClassification({
+      goalId: goal!.id,
+      analysisId: replanAnalysis.id,
+      classification,
+    });
+
+    await expect(store.listAnalyses()).resolves.toEqual([
+      expect.objectContaining({
+        id: previousAnalysis.id,
+        goalReplans: [],
+      }),
+      expect.objectContaining({
+        id: replanAnalysis.id,
+        previousAnalysisId: previousAnalysis.id,
+        goalReplans: [
+          expect.objectContaining({
+            goalId: goal!.id,
+            decision: "create_follow_up",
+            rationale:
+              "The original docs goal needs a follow-up for Windows operators.",
+            evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+            followUpGoals: [
+              expect.objectContaining({
+                title: "Document Windows operator flow",
+              }),
+            ],
+            humanQuestion: "Should the Windows guide live in the main runbook?",
+          }),
+        ],
+      }),
+    ]);
+    expect(event).toEqual(
+      expect.objectContaining({
+        kind: "project_goal_replan_classified",
+        message: "The original docs goal needs a follow-up for Windows operators.",
+        payload: expect.objectContaining({
+          analysisId: replanAnalysis.id,
+          decision: "create_follow_up",
+          evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+          followUpGoals: [
+            expect.objectContaining({
+              title: "Document Windows operator flow",
+            }),
+          ],
+        }),
+      }),
+    );
+    await expect(store.listGoalEvents(goal!.id)).resolves.toEqual([
+      expect.objectContaining({ kind: "project_goal_created" }),
+      expect.objectContaining({
+        kind: "project_goal_replan_classified",
+        payload: expect.objectContaining({
+          analysisId: replanAnalysis.id,
+          rationale:
+            "The original docs goal needs a follow-up for Windows operators.",
+          humanQuestion: "Should the Windows guide live in the main runbook?",
+        }),
+      }),
+    ]);
+  });
+
   it("lists goal task links by task ids", async () => {
     const store = new PostgresProjectManagerStore(pg, {
       now: () => new Date(baseTime),
