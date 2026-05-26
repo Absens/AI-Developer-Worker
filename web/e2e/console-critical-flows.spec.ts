@@ -90,6 +90,7 @@ test.describe.serial('task tracker console production flows', () => {
     await page.getByTestId('goal-replan-confirm').click();
 
     await expect(page.getByTestId('goal-detail-page')).toContainText('create_follow_up');
+    await expect(page.getByTestId('goal-detail-page')).toContainText('manual: linked task failed');
     await expect(page.getByTestId('goal-detail-page')).toContainText(
       'Mock replan found a smaller follow-up after linked task status changed.',
     );

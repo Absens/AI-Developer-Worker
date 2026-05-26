@@ -625,6 +625,11 @@ const handleApi = async (request, response, url) => {
     }
     const body = await readBody(request);
     if (body.mode === 'replan') {
+      const replanReason = typeof body.replanReason === 'string' ? body.replanReason.trim() : '';
+      if (!replanReason) {
+        json(response, 400, { status: 'error', error: 'replanReason is required' });
+        return;
+      }
       const run = {
         id: `pm-run-replan-${Date.now()}`,
         repositoryName: body.repositoryName || 'developer',
@@ -652,7 +657,7 @@ const handleApi = async (request, response, url) => {
       appendGoalEvent(
         'pm-goal-low-risk',
         'project_goal_replan_classified',
-        body.replanReason || 'Replan requested after linked task status changed.',
+        replanReason,
         { owner: 'human', id: 'operator-1', displayName: 'operator-1' },
         {
           decision: 'create_follow_up',
