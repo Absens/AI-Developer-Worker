@@ -710,6 +710,9 @@ describe("ProjectManagerOrchestrator", () => {
     });
     const safeGoal = await createActiveGoal(store, { title: "Safe complete goal" });
     const unsafeGoal = await createActiveGoal(store, { title: "Unsafe complete goal" });
+    const unresolvedGoal = await createActiveGoal(store, {
+      title: "Unresolved linked task goal",
+    });
     await store.linkGoalTask({
       goalId: safeGoal.id,
       taskId: doneTask.id,
@@ -720,11 +723,21 @@ describe("ProjectManagerOrchestrator", () => {
       taskId: failedTask.id,
       linkType: "implements",
     });
+    await store.linkGoalTask({
+      goalId: unresolvedGoal.id,
+      taskId: doneTask.id,
+      linkType: "implements",
+    });
+    await store.linkGoalTask({
+      goalId: unresolvedGoal.id,
+      taskId: "task-missing",
+      linkType: "implements",
+    });
     const codex = new FakeCodexRunner(
       codexExecution(
         replanResponse({
           replanReason: "completion sweep",
-          goalReplans: [safeGoal, unsafeGoal].map((goal) => ({
+          goalReplans: [safeGoal, unsafeGoal, unresolvedGoal].map((goal) => ({
             goalId: goal.id,
             decision: "mark_completed",
             rationale: "Codex believes the linked work is finished.",
@@ -756,6 +769,9 @@ describe("ProjectManagerOrchestrator", () => {
       }),
     );
     await expect(store.getGoal(unsafeGoal.id)).resolves.toEqual(
+      expect.objectContaining({ status: "active" }),
+    );
+    await expect(store.getGoal(unresolvedGoal.id)).resolves.toEqual(
       expect.objectContaining({ status: "active" }),
     );
     await expect(store.listGoalEvents(unsafeGoal.id)).resolves.toEqual(
@@ -859,10 +875,10 @@ describe("ProjectManagerOrchestrator", () => {
 
     const rendered = metrics.renderPrometheus();
     expect(rendered).toContain(
-      'ai_developer_project_manager_runs_total{mode="analysis",repository="developer",status="success",trigger="manual"} 1',
+      'ai_developer_project_manager_runs_total{mode="analysis",repository="developer",status="completed",trigger="manual"} 1',
     );
     expect(rendered).toContain(
-      'ai_developer_project_manager_runs_total{mode="replan",repository="developer",status="success",trigger="post_task_event"} 1',
+      'ai_developer_project_manager_runs_total{mode="replan",repository="developer",status="completed",trigger="post_task_event"} 1',
     );
     expect(rendered).toContain(
       'ai_developer_project_replans_total{decision="continue",repository="developer"} 1',

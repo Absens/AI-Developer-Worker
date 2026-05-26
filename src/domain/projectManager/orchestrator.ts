@@ -143,7 +143,7 @@ export class ProjectManagerOrchestrator {
         input.repositoryName,
         "analysis",
         trigger,
-        "success",
+        "completed",
       );
 
       return {
@@ -156,7 +156,7 @@ export class ProjectManagerOrchestrator {
         input.repositoryName,
         "analysis",
         trigger,
-        "failure",
+        "failed",
       );
       throw error;
     }
@@ -253,7 +253,7 @@ export class ProjectManagerOrchestrator {
         input.repositoryName,
         "replan",
         trigger,
-        "success",
+        "completed",
       );
 
       return {
@@ -266,7 +266,7 @@ export class ProjectManagerOrchestrator {
         input.repositoryName,
         "replan",
         trigger,
-        "failure",
+        "failed",
       );
       throw error;
     }
@@ -276,7 +276,7 @@ export class ProjectManagerOrchestrator {
     repositoryName: string,
     mode: "analysis" | "replan",
     trigger: ProjectManagerTrigger,
-    status: "success" | "failure",
+    status: "completed" | "failed",
   ): void {
     this.metrics.incrementCounter("ai_developer_project_manager_runs_total", {
       repository: repositoryName,
@@ -296,10 +296,13 @@ export class ProjectManagerOrchestrator {
     const entry = snapshot.goals.find(
       (candidate) => candidate.goal.id === classification.goalId,
     );
+    const linkedTasksById = new Map(
+      entry?.linkedTasks.map((task) => [task.id, task]) ?? [],
+    );
     if (
       entry?.goal.status !== "active" ||
-      entry.linkedTasks.length === 0 ||
-      entry.linkedTasks.some((task) => task.status !== "done")
+      entry.taskLinks.length === 0 ||
+      entry.taskLinks.some((link) => linkedTasksById.get(link.taskId)?.status !== "done")
     ) {
       return;
     }
