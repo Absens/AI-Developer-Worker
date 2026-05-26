@@ -560,15 +560,7 @@ describe("ProjectManagerOrchestrator", () => {
       codexExecution(
         replanResponse({
           replanReason: "task-failed failed validation",
-          proposedGoals: [
-            validGoal({
-              title: "Document failed validation recovery",
-              problemStatement: "Operators need recovery steps after validation fails.",
-              desiredOutcome: "Recovery steps are documented.",
-              successMetrics: ["Runbook covers failed validation recovery"],
-              evidenceRefs: [{ kind: "validation_failure", ref: "task-failed" }],
-            }),
-          ],
+          proposedGoals: [],
           goalReplans: [
             {
               goalId: activeGoal.id,

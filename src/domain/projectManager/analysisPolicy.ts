@@ -329,6 +329,19 @@ export const assertProjectReplanWithinPolicy = (
     input.parsed.goalReplans.length,
     PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS.maxGoalReplans,
   );
+  const materializableGoalCount =
+    input.parsed.proposedGoals.length +
+    input.parsed.goalReplans.reduce(
+      (count, replan) => count + replan.followUpGoals.length,
+      0,
+    );
+  pushMaxCountViolation(
+    violations,
+    "materializableGoals",
+    materializableGoalCount,
+    input.config.maxGoalsPerRun,
+    "materializable goals",
+  );
 
   const activeGoalIds = new Set(input.activeGoalIds);
   for (const [replanIndex, replan] of input.parsed.goalReplans.entries()) {

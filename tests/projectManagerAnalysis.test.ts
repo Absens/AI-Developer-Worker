@@ -26,6 +26,35 @@ const buildProjectManagerConfig = (
   ...overrides,
 });
 
+const validReplanGoal = (title: string): Record<string, unknown> => ({
+  title,
+  problemStatement: `${title} problem statement.`,
+  desiredOutcome: `${title} desired outcome.`,
+  successMetrics: [`${title} metric`],
+  priority: "normal",
+  riskLevel: "low",
+  evidenceRefs: [
+    {
+      kind: "file",
+      ref: "docs/runbook.md",
+    },
+  ],
+  suggestedTaskProposals: [
+    {
+      title: `${title} task`,
+      description: `${title} task description.`,
+      taskType: "documentation",
+      acceptanceCriteria: [`${title} criterion`],
+      evidenceRefs: [
+        {
+          kind: "file",
+          ref: "docs/runbook.md",
+        },
+      ],
+    },
+  ],
+});
+
 describe("project manager analysis parser", () => {
   it("parses a valid PROJECT_ANALYSIS response", () => {
     const parsed = parseProjectAnalysisResponse(
@@ -482,5 +511,42 @@ describe("project manager replan parser", () => {
         activeGoalIds: ["goal-active"],
       }),
     ).toThrow(/humanQuestion/);
+  });
+
+  it("rejects replans with more aggregate materializable goals than configured", () => {
+    const parsed = parseProjectReplanResponse(
+      `${PROJECT_REPLAN_MARKER} ${JSON.stringify({
+        summary: "Too many follow-up goals.",
+        healthSignals: [],
+        proposedGoals: [validReplanGoal("Top-level follow-up")],
+        staleGoalIds: [],
+        replanReason: "Testing aggregate follow-up goal limits.",
+        goalReplans: [
+          {
+            goalId: "goal-active",
+            decision: "create_follow_up",
+            rationale: "Create the first nested follow-up.",
+            evidenceRefs: [],
+            followUpGoals: [validReplanGoal("Nested follow-up one")],
+          },
+          {
+            goalId: "goal-approved",
+            decision: "create_follow_up",
+            rationale: "Create the second nested follow-up.",
+            evidenceRefs: [],
+            followUpGoals: [validReplanGoal("Nested follow-up two")],
+          },
+        ],
+      })}`,
+    );
+
+    expect(parsed).toBeDefined();
+    expect(() =>
+      assertProjectReplanWithinPolicy({
+        parsed: parsed!,
+        config: buildProjectManagerConfig({ maxGoalsPerRun: 2 }),
+        activeGoalIds: ["goal-active", "goal-approved"],
+      }),
+    ).toThrow(/at most 2 materializable goals/);
   });
 });

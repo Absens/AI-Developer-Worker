@@ -217,11 +217,17 @@ export class ProjectManagerOrchestrator {
         repositoryName: input.repositoryName,
         ...parsed,
       });
+      const materializableGoals = [
+        ...analysis.proposedGoals,
+        ...analysis.goalReplans.flatMap(
+          (classification) => classification.followUpGoals,
+        ),
+      ];
       const goals = await this.store.createGoalsFromAnalysis({
         repositoryName: input.repositoryName,
         sourceAnalysisId: analysis.id,
         sourceRunId: run.id,
-        goals: analysis.proposedGoals,
+        goals: materializableGoals,
       });
       for (const goal of goals) {
         this.metrics.incrementCounter("ai_developer_project_goals_total", {
