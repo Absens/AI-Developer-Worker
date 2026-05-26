@@ -159,18 +159,18 @@ export const buildProjectReplanPrompt = (
     input.focusAreas && input.focusAreas.length > 0
       ? input.focusAreas.join(", ")
       : "none";
-  const activeGoalIds = input.snapshot.goals.map((entry) => entry.goal.id);
+  const goalIds = input.snapshot.goals.map((entry) => entry.goal.id);
 
   return [
     "Mode: project-management-replan-only",
     "",
-    "Replan active repository project goals from the provided snapshot.",
+    "Replan approved or active repository project goals from the provided snapshot.",
     "Guardrails:",
     "- Analyze only the provided snapshot.",
     "- Do not modify files.",
     "- Do not create executable tasks directly.",
     "- Do not call external services.",
-    "- Classify only active goals listed in the snapshot.",
+    "- Classify only approved or active goals listed in the snapshot.",
     "- Use linked task data as evidence for each classification.",
     "- Obey limits.",
     "- follow-up task proposals must use allowed task types.",
@@ -179,7 +179,7 @@ export const buildProjectReplanPrompt = (
     `Allowed task types: ${allowedTaskTypes.join(", ")}`,
     `Focus areas: ${focusAreas}`,
     `Replan reason: ${input.snapshot.replanReason}`,
-    `Active goal ids: ${activeGoalIds.join(", ") || "none"}`,
+    `Goal ids: ${goalIds.join(", ") || "none"}`,
     "",
     "Required output:",
     `Reply with exactly one line starting with ${PROJECT_REPLAN_MARKER} followed by compact JSON matching this schema.`,

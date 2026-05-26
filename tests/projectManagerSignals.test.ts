@@ -75,6 +75,9 @@ const lease = (
 const readonlyTracker = (
   tasks: TaskRecord[],
   leases: TaskLeaseRecord[] = [],
+  tasksById: Map<string, TaskRecord> = new Map(
+    tasks.map((task) => [task.id, task]),
+  ),
 ): TaskTrackerClient => {
   const mutatingMethod = vi.fn(() => {
     throw new Error("collector must be read-only");
@@ -91,7 +94,13 @@ const readonlyTracker = (
     updateExternalTaskFields: mutatingMethod,
     attachExternalRef: mutatingMethod,
     markReady: mutatingMethod,
-    getTask: mutatingMethod,
+    getTask: vi.fn(async (taskId: string) => {
+      const task = tasksById.get(taskId);
+      if (!task) {
+        throw new Error(`Task not found: ${taskId}`);
+      }
+      return task;
+    }),
     findTaskByExternalRef: mutatingMethod,
     getAgentTaskContext: mutatingMethod,
     appendEvent: mutatingMethod,
@@ -128,7 +137,6 @@ const expectTrackerMutationsUnused = (tracker: TaskTrackerClient): void => {
   expect(tracker.updateExternalTaskFields).not.toHaveBeenCalled();
   expect(tracker.attachExternalRef).not.toHaveBeenCalled();
   expect(tracker.markReady).not.toHaveBeenCalled();
-  expect(tracker.getTask).not.toHaveBeenCalled();
   expect(tracker.findTaskByExternalRef).not.toHaveBeenCalled();
   expect(tracker.getAgentTaskContext).not.toHaveBeenCalled();
   expect(tracker.appendEvent).not.toHaveBeenCalled();
@@ -529,10 +537,15 @@ describe("project manager replan snapshot collector", () => {
   });
 
   it("omits terminal goals and linked tasks from other repositories", async () => {
-    const sameRepositoryTask = baseTask({
-      id: "same-repo-task",
-      title: "Same repo task",
+    const listedRepositoryTask = baseTask({
+      id: "listed-repo-task",
+      title: "Listed repo task",
       status: "ready",
+    });
+    const linkedRepositoryTask = baseTask({
+      id: "linked-repo-task",
+      title: "Linked repo task",
+      status: "failed",
     });
     const otherRepositoryTask = baseTask({
       id: "other-repo-task",
@@ -540,7 +553,15 @@ describe("project manager replan snapshot collector", () => {
       repositoryName: "other",
       status: "failed",
     });
-    const tracker = readonlyTracker([sameRepositoryTask, otherRepositoryTask]);
+    const tracker = readonlyTracker(
+      [listedRepositoryTask],
+      [],
+      new Map([
+        [listedRepositoryTask.id, listedRepositoryTask],
+        [linkedRepositoryTask.id, linkedRepositoryTask],
+        [otherRepositoryTask.id, otherRepositoryTask],
+      ]),
+    );
     const store = new InMemoryProjectManagerStore({
       now: () => new Date("2026-05-25T09:00:00.000Z"),
     });
@@ -606,13 +627,18 @@ describe("project manager replan snapshot collector", () => {
     });
     await store.linkGoalTask({
       goalId: approvedGoal.id,
-      taskId: "same-repo-task",
+      taskId: "linked-repo-task",
       linkType: "implements",
     });
     await store.linkGoalTask({
       goalId: activeGoal.id,
-      taskId: "same-repo-task",
+      taskId: "linked-repo-task",
       linkType: "implements",
+    });
+    await store.linkGoalTask({
+      goalId: activeGoal.id,
+      taskId: "missing-task",
+      linkType: "related",
     });
 
     const snapshot = await collectProjectReplanSnapshot({
@@ -629,14 +655,17 @@ describe("project manager replan snapshot collector", () => {
     ]);
     expect(snapshot.goals[0]?.taskLinks.map((link) => link.taskId)).toEqual([
       "other-repo-task",
-      "same-repo-task",
+      "linked-repo-task",
     ]);
     expect(snapshot.goals[0]?.linkedTasks.map((task) => task.id)).toEqual([
-      "same-repo-task",
+      "linked-repo-task",
     ]);
     expect(snapshot.goals[1]?.linkedTasks.map((task) => task.id)).toEqual([
-      "same-repo-task",
+      "linked-repo-task",
     ]);
+    expect(tracker.getTask).toHaveBeenCalledWith("other-repo-task");
+    expect(tracker.getTask).toHaveBeenCalledWith("linked-repo-task");
+    expect(tracker.getTask).toHaveBeenCalledWith("missing-task");
     expectTrackerMutationsUnused(tracker);
   });
 });

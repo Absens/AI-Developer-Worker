@@ -156,6 +156,33 @@ const latestAnalysisForRepository = (
         : latest;
     }, undefined);
 
+const taskIdsFromLinks = (
+  linksByGoalId: ReadonlyMap<string, ProjectGoalTaskLink[]>,
+): string[] => {
+  const seen = new Set<string>();
+  const taskIds: string[] = [];
+  for (const links of linksByGoalId.values()) {
+    for (const link of links) {
+      if (!seen.has(link.taskId)) {
+        seen.add(link.taskId);
+        taskIds.push(link.taskId);
+      }
+    }
+  }
+  return taskIds;
+};
+
+const getLinkedTask = async (
+  taskTracker: TaskTrackerClient,
+  taskId: string,
+): Promise<TaskRecord | undefined> => {
+  try {
+    return await taskTracker.getTask(taskId);
+  } catch {
+    return undefined;
+  }
+};
+
 export const collectProjectReplanSnapshot = async (
   input: CollectProjectReplanSnapshotInput,
 ): Promise<ProjectReplanSnapshot> => {
@@ -171,6 +198,12 @@ export const collectProjectReplanSnapshot = async (
     repositoryName: input.repositoryName,
     status: ["approved", "active"],
   });
+  const linksByGoalId = new Map<string, ProjectGoalTaskLink[]>();
+  const eventsByGoalId = new Map<string, ProjectGoalAuditEvent[]>();
+  for (const goal of goals) {
+    linksByGoalId.set(goal.id, await input.store.listGoalTaskLinks(goal.id));
+    eventsByGoalId.set(goal.id, await input.store.listGoalEvents(goal.id));
+  }
   const tasks = (
     await input.taskTracker.listTasks({
       repositoryName: input.repositoryName,
@@ -180,6 +213,15 @@ export const collectProjectReplanSnapshot = async (
   const linkedTasksById = new Map(
     tasks.map((task) => [task.id, toLinkedTaskSnapshot(task)]),
   );
+  for (const taskId of taskIdsFromLinks(linksByGoalId)) {
+    if (linkedTasksById.has(taskId)) {
+      continue;
+    }
+    const task = await getLinkedTask(input.taskTracker, taskId);
+    if (task?.repositoryName === input.repositoryName) {
+      linkedTasksById.set(task.id, toLinkedTaskSnapshot(task));
+    }
+  }
   const analyses = await input.store.listAnalyses();
   const previousAnalysis = latestAnalysisForRepository(
     analyses,
@@ -197,24 +239,21 @@ export const collectProjectReplanSnapshot = async (
         }
       : {}),
     projectSignals,
-    goals: await Promise.all(
-      goals.map(async (goal) => {
-        const taskLinks = await input.store.listGoalTaskLinks(goal.id);
-        const auditEvents = await input.store.listGoalEvents(goal.id);
-        const linkedTasks = taskLinks
-          .map((link) => linkedTasksById.get(link.taskId))
-          .filter(
-            (task): task is ProjectReplanLinkedTaskSnapshot =>
-              task !== undefined,
-          );
+    goals: goals.map((goal) => {
+      const taskLinks = linksByGoalId.get(goal.id) ?? [];
+      const auditEvents = eventsByGoalId.get(goal.id) ?? [];
+      const linkedTasks = taskLinks
+        .map((link) => linkedTasksById.get(link.taskId))
+        .filter(
+          (task): task is ProjectReplanLinkedTaskSnapshot => task !== undefined,
+        );
 
-        return {
-          goal,
-          linkedTasks,
-          taskLinks,
-          auditEvents,
-        };
-      }),
-    ),
+      return {
+        goal,
+        linkedTasks,
+        taskLinks,
+        auditEvents,
+      };
+    }),
   };
 };

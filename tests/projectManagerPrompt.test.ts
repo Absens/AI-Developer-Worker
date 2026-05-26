@@ -102,6 +102,35 @@ const buildReplanSnapshot = (
   ...overrides,
 });
 
+const buildApprovedGoalEntry = (): ProjectReplanSnapshot["goals"][number] => ({
+  goal: {
+    id: "goal-approved",
+    sourceAnalysisId: "analysis-1",
+    repositoryName: "worker-repo",
+    status: "approved",
+    title: "Prepare validation cleanup",
+    problemStatement: "Validation cleanup is approved but not active yet.",
+    desiredOutcome: "Approved work is considered during replanning.",
+    successMetrics: ["approved goal is classified"],
+    evidenceRefs: [
+      {
+        kind: "metric",
+        ref: "approved-goal",
+        summary: "approved goal evidence",
+      },
+    ],
+    priority: "normal",
+    riskLevel: "medium",
+    suggestedTaskProposals: [],
+    duplicateSignature: "goal-approved-signature",
+    createdAt: "2026-05-25T10:00:00.000Z",
+    updatedAt: "2026-05-25T11:00:00.000Z",
+  },
+  linkedTasks: [],
+  taskLinks: [],
+  auditEvents: [],
+});
+
 describe("project manager prompt builder", () => {
   it("includes analysis-only guardrails", () => {
     const prompt = buildProjectAnalysisPrompt({ snapshot: buildSnapshot() });
@@ -200,10 +229,28 @@ describe("project manager replan prompt builder", () => {
     expect(prompt).toContain("PROJECT_REPLAN:");
     expect(prompt).toContain("Do not create executable tasks directly");
     expect(prompt).toContain("TASK-42 is blocked after repeated validation failures.");
-    expect(prompt).toContain("Active goal ids: goal-active");
+    expect(prompt).toContain("Goal ids: goal-active");
     expect(prompt).toContain("Linked task data");
     expect(prompt).toContain('"id":"TASK-42"');
     expect(prompt).toContain("Allowed task types: documentation, tests_only");
     expect(prompt).toContain("Focus areas: validation stability");
+  });
+
+  it("classifies approved and active goals listed in the replan snapshot", () => {
+    const prompt = buildProjectReplanPrompt({
+      snapshot: buildReplanSnapshot({
+        goals: [
+          buildApprovedGoalEntry(),
+          ...buildReplanSnapshot().goals,
+        ],
+      }),
+    });
+
+    expect(prompt).toContain(
+      "Classify only approved or active goals listed in the snapshot.",
+    );
+    expect(prompt).toContain("Goal ids: goal-approved, goal-active");
+    expect(prompt).not.toContain("Classify only active goals");
+    expect(prompt).not.toContain("Active goal ids:");
   });
 });
