@@ -69,6 +69,35 @@ test.describe.serial('task tracker console production flows', () => {
     await operator.close();
   });
 
+  test('records a project manager replan without creating tasks directly', async ({ browser }) => {
+    const operator = await newRolePage(browser, 'operator');
+    const page = operator.page;
+    const createTaskCalls: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (request.method() === 'POST' && url.pathname === '/api/tasks') {
+        createTaskCalls.push(request.url());
+      }
+    });
+
+    await page.goto('/tasks/goals/pm-goal-low-risk');
+    await expect(page.getByTestId('goal-detail-page')).toBeVisible();
+    await expect(page.getByTestId('goal-run-replan')).toBeVisible();
+
+    await page.getByTestId('goal-run-replan').click();
+    await expect(page.getByTestId('goal-replan-reason')).toBeFocused();
+    await page.getByTestId('goal-replan-reason').fill('manual: linked task failed');
+    await page.getByTestId('goal-replan-confirm').click();
+
+    await expect(page.getByTestId('goal-detail-page')).toContainText('create_follow_up');
+    await expect(page.getByTestId('goal-detail-page')).toContainText(
+      'Mock replan found a smaller follow-up after linked task status changed.',
+    );
+    expect(createTaskCalls).toEqual([]);
+
+    await operator.close();
+  });
+
   test('runs developer and operator critical workflows', async ({ browser }) => {
     const developer = await newRolePage(browser, 'developer');
     const page = developer.page;
@@ -168,6 +197,7 @@ test.describe.serial('task tracker console production flows', () => {
     await expect(page.getByTestId('goal-complete')).toHaveCount(0);
     await expect(page.getByTestId('goal-stale')).toHaveCount(0);
     await expect(page.getByTestId('goal-run-analysis')).toHaveCount(0);
+    await expect(page.getByTestId('goal-run-replan')).toHaveCount(0);
 
     await viewer.close();
   });

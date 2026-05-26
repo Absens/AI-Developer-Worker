@@ -347,7 +347,13 @@ const projectGoalDetail = (goal) => ({
   linkedTasks: linkedTasksForGoal(goal.id),
 });
 
-const appendGoalEvent = (goalId, kind, message, actor = { owner: 'human', id: 'operator-1', displayName: 'operator-1' }) => {
+const appendGoalEvent = (
+  goalId,
+  kind,
+  message,
+  actor = { owner: 'human', id: 'operator-1', displayName: 'operator-1' },
+  payload,
+) => {
   const events = state.goalEvents.get(goalId) || [];
   events.push({
     id: `goal-event-${goalId}-${events.length + 1}`,
@@ -355,6 +361,7 @@ const appendGoalEvent = (goalId, kind, message, actor = { owner: 'human', id: 'o
     kind,
     actor,
     message,
+    payload,
     createdAt: now(),
   });
   state.goalEvents.set(goalId, events);
@@ -617,6 +624,49 @@ const handleApi = async (request, response, url) => {
       return;
     }
     const body = await readBody(request);
+    if (body.mode === 'replan') {
+      const run = {
+        id: `pm-run-replan-${Date.now()}`,
+        repositoryName: body.repositoryName || 'developer',
+        mode: 'replan',
+        status: 'completed',
+        createdAt: now(),
+        completedAt: now(),
+      };
+      const analysis = {
+        id: `analysis-replan-${Date.now()}`,
+        runId: run.id,
+        repositoryName: run.repositoryName,
+        status: 'classified',
+        projectGoalId: 'pm-goal-low-risk',
+        decision: 'create_follow_up',
+        rationale: 'Mock replan found a smaller follow-up after linked task status changed.',
+        createdAt: now(),
+      };
+      const goal = state.projectGoals.get('pm-goal-low-risk');
+      if (goal) {
+        goal.sourceRunId = run.id;
+        goal.sourceAnalysisId = analysis.id;
+        goal.updatedAt = now();
+      }
+      appendGoalEvent(
+        'pm-goal-low-risk',
+        'project_goal_replan_classified',
+        body.replanReason || 'Replan requested after linked task status changed.',
+        { owner: 'human', id: 'operator-1', displayName: 'operator-1' },
+        {
+          decision: 'create_follow_up',
+          rationale: 'Mock replan found a smaller follow-up after linked task status changed.',
+        },
+      );
+      json(response, 202, {
+        result: {
+          run,
+          analysis,
+        },
+      });
+      return;
+    }
     json(response, 202, {
       run: {
         id: `pm-run-${Date.now()}`,
