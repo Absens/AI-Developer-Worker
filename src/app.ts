@@ -7,11 +7,19 @@ import { InternalWorkerOrchestrator } from "./domain/internalWorkerOrchestrator.
 import { NoopLockBackend, TrackerCommentLockBackend } from "./domain/lockBackend.js";
 import { WorkerOrchestrator } from "./domain/orchestrator.js";
 import { PreflightService } from "./domain/preflight.js";
+import {
+  InMemoryProjectManagerStore,
+  ProjectManagerOrchestrator,
+  type ProjectManagerStore,
+} from "./domain/projectManager/index.js";
 import { buildRepositoryContext } from "./domain/repositoryContext.js";
 import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
-import { createInternalTaskTrackerClient } from "./integrations/internalTracker/index.js";
+import {
+  createInternalTaskTrackerClient,
+  PostgresProjectManagerStore,
+} from "./integrations/internalTracker/index.js";
 import {
   InternalTrackerCleanupRunner,
   InternalTrackerCleanupScheduler,
@@ -27,6 +35,7 @@ import {
   type YandexBridgeStore,
 } from "./integrations/yandexBridge/index.js";
 import { createObservabilityService } from "./observability/service.js";
+import type { ProjectManagerApiDependencies } from "./observability/taskTrackerHumanApi.js";
 import { Logger } from "./utils/logger.js";
 
 interface CleanupController {
@@ -58,6 +67,97 @@ const createYandexBridgeStore = (
   );
 };
 
+interface ProjectManagerStoreController {
+  dependencies?: ProjectManagerApiDependencies;
+  stop(): Promise<void>;
+}
+
+const createProjectManagerStoreController = (
+  fleetConfig: ReturnType<typeof loadFleetConfig>,
+  internalTaskTracker: ReturnType<typeof createInternalTaskTrackerClient>,
+  logger: Logger,
+): ProjectManagerStoreController => {
+  const projectManagerEnabled =
+    fleetConfig.projectManager?.enabled === true ||
+    fleetConfig.repositories.some(
+      (repository) => repository.projectManager?.enabled === true,
+    );
+
+  if (!projectManagerEnabled || fleetConfig.taskTracker?.provider !== "internal") {
+    return {
+      async stop(): Promise<void> {},
+    };
+  }
+
+  if (!internalTaskTracker) {
+    return {
+      async stop(): Promise<void> {},
+    };
+  }
+
+  const buildDependencies = (store: ProjectManagerStore): ProjectManagerApiDependencies => ({
+    store,
+    configForRepository: (repositoryName) => {
+      const repository = fleetConfig.repositories.find(
+        (candidate) => candidate.name === repositoryName,
+      );
+      if (!repository) {
+        throw new Error(`Project manager repository not found: ${repositoryName}`);
+      }
+
+      const runtimeConfig = buildRepositoryRuntimeConfig(fleetConfig, repository);
+      if (!runtimeConfig.projectManager?.enabled) {
+        throw new Error(
+          `Project manager is not enabled for repository: ${repositoryName}`,
+        );
+      }
+      return runtimeConfig.projectManager;
+    },
+    runner: {
+      runAnalysisOnce: async (input) => {
+        const repository = fleetConfig.repositories.find(
+          (candidate) => candidate.name === input.repositoryName,
+        );
+        if (!repository) {
+          throw new Error(`Project manager repository not found: ${input.repositoryName}`);
+        }
+
+        const runtimeConfig = buildRepositoryRuntimeConfig(fleetConfig, repository);
+        if (!runtimeConfig.projectManager?.enabled) {
+          throw new Error(
+            `Project manager is not enabled for repository: ${input.repositoryName}`,
+          );
+        }
+
+        const codex = new CliCodexRunner(runtimeConfig, logger);
+        const orchestrator = new ProjectManagerOrchestrator({
+          taskTracker: internalTaskTracker,
+          codex,
+          store,
+          config: runtimeConfig.projectManager,
+        });
+        return orchestrator.runAnalysisOnce(input);
+      },
+    },
+  });
+
+  if (fleetConfig.taskTracker.internal.storage === "memory") {
+    return {
+      dependencies: buildDependencies(new InMemoryProjectManagerStore()),
+      async stop(): Promise<void> {},
+    };
+  }
+
+  const pool = new Pool({
+    connectionString: fleetConfig.taskTracker.internal.databaseUrl,
+  });
+  const store: ProjectManagerStore = new PostgresProjectManagerStore(pool);
+  return {
+    dependencies: buildDependencies(store),
+    stop: () => pool.end(),
+  };
+};
+
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
   const fleetConfig = loadFleetConfig(env);
@@ -65,13 +165,19 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     fleetConfig.taskTracker,
     fleetConfig.autonomy,
   );
+  const projectManager = createProjectManagerStoreController(
+    fleetConfig,
+    internalTaskTracker,
+    logger,
+  );
   const observability = createObservabilityService(
     fleetConfig.observability,
     logger,
     fleetConfig.repositories,
     internalTaskTracker,
+    projectManager.dependencies,
   );
-  const cleanup =
+  const internalCleanup =
     fleetConfig.taskTracker?.provider === "internal" &&
     fleetConfig.taskTracker.internal.storage === "postgres" &&
     internalTaskTracker
@@ -102,6 +208,17 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
           } satisfies CleanupController;
         })()
       : noopCleanupController;
+  const cleanup: CleanupController = {
+    start: () => internalCleanup.start(),
+    runOnce: () => internalCleanup.runOnce(),
+    stop: async () => {
+      try {
+        await internalCleanup.stop();
+      } finally {
+        await projectManager.stop();
+      }
+    },
+  };
   const primaryRepository = fleetConfig.repositories[0];
   if (!primaryRepository) {
     throw new Error("No repository profiles configured.");
@@ -207,6 +324,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       preflight,
       observability,
       cleanup,
+      projectManager: projectManager.dependencies,
       taskTracker: internalTaskTracker,
       yandexBridges,
       assertRepositoryReady: async () => {
@@ -274,6 +392,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     preflight,
     observability,
     cleanup,
+    projectManager: projectManager.dependencies,
     taskTracker: internalTaskTracker,
     yandexBridges,
     assertRepositoryReady: () => git.assertRepositoryReady(),

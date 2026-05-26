@@ -68,8 +68,8 @@ const main = async (): Promise<void> => {
   } finally {
     process.off("SIGINT", markStopping);
     process.off("SIGTERM", markStopping);
-    await cleanup.stop();
     await observability.stop();
+    await cleanup.stop();
   }
 };
 

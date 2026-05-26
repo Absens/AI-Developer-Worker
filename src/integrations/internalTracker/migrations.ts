@@ -63,6 +63,11 @@ export const REQUIRED_INTERNAL_TRACKER_TABLES = [
   "proposal_rate_limit_windows",
   "proposal_cleanup_metadata",
   "internal_tracker_cleanup_runs",
+  "project_manager_runs",
+  "project_analyses",
+  "project_goals",
+  "project_goal_events",
+  "project_goal_tasks",
 ] as const;
 
 export const REQUIRED_INTERNAL_TRACKER_INDEXES = [
@@ -91,6 +96,14 @@ export const REQUIRED_INTERNAL_TRACKER_INDEXES = [
   "artifacts_cleanup_idx",
   "task_leases_released_cleanup_idx",
   "agent_runs_cleanup_idx",
+  "project_manager_runs_repository_time_idx",
+  "project_analyses_repository_time_idx",
+  "project_goals_repository_status_idx",
+  "project_goals_duplicate_signature_idx",
+  "project_goals_active_duplicate_signature_unique_idx",
+  "project_goal_events_goal_time_idx",
+  "project_goal_tasks_goal_idx",
+  "project_goal_tasks_task_idx",
 ] as const;
 
 const isPoolLike = (value: PostgresQueryable): value is PostgresPoolLike =>

@@ -7,6 +7,7 @@ import type {
   CodexRunner,
   CodexRunObserver,
   CodexRunOptions,
+  CodexSandbox,
 } from "../../models/types.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -343,6 +344,76 @@ const appendImageArgs = (args: string[], imagePaths: readonly string[]): void =>
   }
 };
 
+const isSandboxConfigOverride = (value: string): boolean => {
+  const separatorIndex = value.indexOf("=");
+  if (separatorIndex < 0) {
+    const normalizedValue = value.trim().replace(/^["']|["']$/g, "").toLowerCase();
+    return normalizedValue === "sandbox" || normalizedValue === "sandbox_mode";
+  }
+
+  const normalizedKey = value
+    .slice(0, separatorIndex)
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .toLowerCase();
+  return (
+    normalizedKey === "sandbox" ||
+    normalizedKey === "sandbox_mode" ||
+    normalizedKey === "sandbox-mode" ||
+    normalizedKey.endsWith(".sandbox") ||
+    normalizedKey.endsWith(".sandbox_mode") ||
+    normalizedKey.endsWith(".sandbox-mode")
+  );
+};
+
+const withoutSandboxArgs = (args: readonly string[]): string[] => {
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--sandbox" || arg === "-s") {
+      index += 1;
+      continue;
+    }
+    if (
+      arg.startsWith("--sandbox=") ||
+      arg.startsWith("-s=") ||
+      arg === "--dangerously-bypass-approvals-and-sandbox"
+    ) {
+      continue;
+    }
+    if (arg === "--config" || arg === "-c") {
+      const value = args[index + 1];
+      if (value !== undefined && isSandboxConfigOverride(value)) {
+        index += 1;
+        continue;
+      }
+      filtered.push(arg);
+      if (value !== undefined) {
+        filtered.push(value);
+        index += 1;
+      }
+      continue;
+    }
+    if (
+      arg.startsWith("--config=") &&
+      isSandboxConfigOverride(arg.slice("--config=".length))
+    ) {
+      continue;
+    }
+    if (
+      arg.startsWith("-c=") &&
+      isSandboxConfigOverride(arg.slice("-c=".length))
+    ) {
+      continue;
+    }
+    filtered.push(arg);
+  }
+  return filtered;
+};
+
 const summarizeEvent = (
   mode: CodexRunnerMode,
   event: CodexEvent,
@@ -487,6 +558,7 @@ export class CliCodexRunner implements CodexRunner {
       mode: "new",
       observer,
       imagePaths: options.imagePaths ?? [],
+      sandbox: options.sandbox,
     });
   }
 
@@ -500,6 +572,7 @@ export class CliCodexRunner implements CodexRunner {
       mode: "new",
       observer,
       imagePaths: options.imagePaths ?? [],
+      sandbox: options.sandbox,
     });
   }
 
@@ -515,6 +588,7 @@ export class CliCodexRunner implements CodexRunner {
       threadId,
       observer,
       imagePaths: options.imagePaths ?? [],
+      sandbox: options.sandbox,
     });
   }
 
@@ -535,7 +609,10 @@ export class CliCodexRunner implements CodexRunner {
     });
   }
 
-  private buildBaseArgs(lastMessagePath: string): string[] {
+  private buildBaseArgs(
+    lastMessagePath: string,
+    sandboxOverride?: CodexSandbox,
+  ): string[] {
     const args = [
       "exec",
       "--json",
@@ -555,6 +632,9 @@ export class CliCodexRunner implements CodexRunner {
       args.push("--profile", this.config.codexProfile);
     }
     args.push(...this.config.codexExecArgs);
+    if (sandboxOverride) {
+      return [...withoutSandboxArgs(args), "--sandbox", sandboxOverride];
+    }
     return args;
   }
 
@@ -591,6 +671,7 @@ export class CliCodexRunner implements CodexRunner {
     threadId?: string;
     observer?: CodexRunObserver;
     imagePaths: string[];
+    sandbox?: CodexSandbox;
     review?: { baseBranch: string; title?: string };
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
@@ -621,7 +702,10 @@ export class CliCodexRunner implements CodexRunner {
       const args =
         input.mode === "review" && input.review
           ? this.buildReviewArgs(lastMessagePath, input.review)
-          : this.buildBaseArgs(lastMessagePath);
+          : this.buildBaseArgs(lastMessagePath, input.sandbox);
+      const codexCliArgs = input.sandbox
+        ? withoutSandboxArgs(this.config.codexCliArgs)
+        : this.config.codexCliArgs;
       if (input.mode === "resume" && input.threadId) {
         args.push("resume");
         appendImageArgs(args, input.imagePaths);
@@ -631,13 +715,13 @@ export class CliCodexRunner implements CodexRunner {
       }
       this.logger.info("Running Codex command.", {
         command: this.config.codexCliCommand,
-        args: [...this.config.codexCliArgs, ...args],
+        args: [...codexCliArgs, ...args],
         mode: input.mode,
       });
 
       const process = await runCommand({
         command: this.config.codexCliCommand,
-        args: [...this.config.codexCliArgs, ...args],
+        args: [...codexCliArgs, ...args],
         cwd: this.config.repoPath,
         stdin: input.prompt,
         env: getCodexShellEnv(this.config),

@@ -1,5 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import {
+  buildProjectGoalTaskProposalInputs,
+  PROJECT_MANAGER_PROPOSED_TASK_LINK_TYPE,
+  PROJECT_GOAL_STATUSES,
+  type ListProjectGoalsInput,
+  type ProjectGoalStatus,
+  type ProjectManagerConfig,
+  type ProjectManagerOrchestrator,
+  type ProjectManagerStore,
+} from "../domain/projectManager/index.js";
 import type {
   AgentRun,
   CreateTaskInput,
@@ -33,8 +43,15 @@ import type { WorkerStateRegistry } from "./state.js";
 interface TaskTrackerHumanApiInput {
   config: TaskTrackerUiConfig;
   taskTracker?: TaskTrackerClient;
+  projectManager?: ProjectManagerApiDependencies;
   state: WorkerStateRegistry;
   repositories: () => string[];
+}
+
+export interface ProjectManagerApiDependencies {
+  store: ProjectManagerStore;
+  runner?: Pick<ProjectManagerOrchestrator, "runAnalysisOnce">;
+  configForRepository?: (repositoryName: string) => ProjectManagerConfig | undefined;
 }
 
 interface AuthContext {
@@ -314,6 +331,15 @@ const responseForError = (error: unknown): { statusCode: number; message: string
   if (error instanceof TaskProposalStateError) {
     return { statusCode: 409, message: error.message };
   }
+  if (
+    error instanceof Error &&
+    error.message.startsWith("Project manager goal not found:")
+  ) {
+    return { statusCode: 404, message: error.message };
+  }
+  if (error instanceof Error && /^Cannot .*project goal/.test(error.message)) {
+    return { statusCode: 409, message: error.message };
+  }
   return {
     statusCode: 500,
     message: error instanceof Error ? error.message : String(error),
@@ -334,6 +360,9 @@ export class TaskTrackerHumanApi {
       path === `${apiPath}/tasks:bulk-create` ||
       path === `${apiPath}/proposals` ||
       path === `${apiPath}/operations` ||
+      path === `${apiPath}/project-goals` ||
+      path.startsWith(`${apiPath}/project-goals/`) ||
+      path === `${apiPath}/project-manager/runs` ||
       path.startsWith(`${apiPath}/tasks/`)
     );
   }
@@ -350,6 +379,10 @@ export class TaskTrackerHumanApi {
       if (request.method === "GET" && route === "/session") {
         const auth = this.requireAuth(request, "viewer");
         json(response, 200, this.buildSession(auth));
+        return;
+      }
+
+      if (await this.handleProjectManagerRoute(request, route, url, response)) {
         return;
       }
 
@@ -594,9 +627,167 @@ export class TaskTrackerHumanApi {
     return this.input.taskTracker;
   }
 
+  private requireProjectManagerStore(): ProjectManagerStore {
+    if (!this.input.projectManager) {
+      throw new HttpApiError(503, "Project manager API is not configured.");
+    }
+    return this.input.projectManager.store;
+  }
+
+  private requireProjectManagerRunner(): Pick<
+    ProjectManagerOrchestrator,
+    "runAnalysisOnce"
+  > {
+    if (!this.input.projectManager) {
+      throw new HttpApiError(503, "Project manager API is not configured.");
+    }
+    if (!this.input.projectManager.runner) {
+      throw new HttpApiError(503, "Project manager runner is not configured.");
+    }
+    return this.input.projectManager.runner;
+  }
+
+  private async handleProjectManagerRoute(
+    request: IncomingMessage,
+    route: string,
+    url: URL,
+    response: ServerResponse,
+  ): Promise<boolean> {
+    if (route === "/project-goals") {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return true;
+      }
+      const auth = this.requireAuth(request, "viewer");
+      const goals = await this.requireProjectManagerStore().listGoals(
+        this.parseProjectGoalFilters(url),
+      );
+      json(response, 200, {
+        goals,
+        role: auth.role,
+        generatedAt: new Date().toISOString(),
+      });
+      return true;
+    }
+
+    const goalRoute = this.parseProjectGoalRoute(route);
+    if (goalRoute) {
+      const { goalId, suffix } = goalRoute;
+      if (suffix === "") {
+        if (request.method !== "GET") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        this.requireAuth(request, "viewer");
+        const store = this.requireProjectManagerStore();
+        const [goal, auditEvents, taskLinks] = await Promise.all([
+          store.getGoal(goalId),
+          store.listGoalEvents(goalId),
+          store.listGoalTaskLinks(goalId),
+        ]);
+        json(response, 200, { goal, auditEvents, taskLinks });
+        return true;
+      }
+
+      if (suffix === "/commands/approve") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        const auth = this.requireAuth(request, "developer");
+        const goal = await this.requireProjectManagerStore().approveGoal(goalId, {
+          actor: auth.actor,
+        });
+        json(response, 200, { goal });
+        return true;
+      }
+
+      if (suffix === "/commands/reject") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        const auth = this.requireAuth(request, "developer");
+        const body = requireObject(await this.readJson(request), "request body");
+        const goal = await this.requireProjectManagerStore().rejectGoal(goalId, {
+          actor: auth.actor,
+          rejectionReason:
+            optionalString(body.rejectionReason) ??
+            requiredString(body.reason, "reason"),
+        });
+        json(response, 200, { goal });
+        return true;
+      }
+
+      if (suffix === "/commands/propose-tasks") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        this.requireAuth(request, "operator");
+        await this.readOptionalJson(request);
+        const store = this.requireProjectManagerStore();
+        const tracker = this.requireTracker();
+        const goal = await store.getGoal(goalId);
+        if (goal.status !== "approved" && goal.status !== "active") {
+          throw new Error(
+            `Cannot propose tasks for project goal from status ${goal.status}.`,
+          );
+        }
+        const tasks = [];
+        const taskLinks = [];
+        for (const proposalInput of buildProjectGoalTaskProposalInputs({
+          goal,
+          config: this.input.projectManager?.configForRepository?.(
+            goal.repositoryName,
+          ),
+        })) {
+          const task = await tracker.proposeTask(proposalInput);
+          tasks.push(task);
+          taskLinks.push(
+            await store.linkGoalTask({
+              goalId: goal.id,
+              taskId: task.id,
+              linkType: PROJECT_MANAGER_PROPOSED_TASK_LINK_TYPE,
+            }),
+          );
+        }
+        json(response, 200, {
+          goal,
+          tasks,
+          proposals: tasks.map((task) => task.proposal).filter(Boolean),
+          taskLinks,
+        });
+        return true;
+      }
+
+      text(response, 404, "not found");
+      return true;
+    }
+
+    if (route === "/project-manager/runs") {
+      if (request.method !== "POST") {
+        text(response, 405, "method not allowed");
+        return true;
+      }
+      this.requireAuth(request, "operator");
+      const body = requireObject(await this.readJson(request), "request body");
+      const result = await this.requireProjectManagerRunner().runAnalysisOnce({
+        repositoryName: requiredString(body.repositoryName, "repositoryName"),
+        trigger: "manual",
+      });
+      json(response, 200, { result });
+      return true;
+    }
+
+    return false;
+  }
+
   private buildSession(auth: AuthContext): Record<string, unknown> {
     const canRole = (role: TaskTrackerHumanRole): boolean =>
       ROLE_RANK[auth.role] >= ROLE_RANK[role];
+    const hasProjectManagerStore = Boolean(this.input.projectManager);
+    const hasProjectManagerRunner = Boolean(this.input.projectManager?.runner);
 
     return {
       user: {
@@ -621,6 +812,9 @@ export class TaskTrackerHumanApi {
         canApproveDecomposition: canRole("developer"),
         canReadOperations: canRole("viewer"),
         canCreateSystemTask: auth.service === "system" && canRole("admin"),
+        canReadProjectGoals: canRole("viewer") && hasProjectManagerStore,
+        canApproveProjectGoals: canRole("developer") && hasProjectManagerStore,
+        canRunProjectManager: canRole("operator") && hasProjectManagerRunner,
       },
       apiPath: this.input.config.apiPath,
       uiPath: this.input.config.path,
@@ -750,10 +944,20 @@ export class TaskTrackerHumanApi {
     if (chunks.length === 0) {
       return {};
     }
-    return requireObject(
-      JSON.parse(Buffer.concat(chunks).toString("utf8")),
-      "request body",
-    );
+    try {
+      return requireObject(
+        JSON.parse(Buffer.concat(chunks).toString("utf8")),
+        "request body",
+      );
+    } catch (error) {
+      if (error instanceof HttpApiError) {
+        throw error;
+      }
+      throw new HttpApiError(
+        400,
+        `request body must be valid JSON. ${(error as Error).message}`,
+      );
+    }
   }
 
   private parseListFilters(url: URL): ListTasksInput {
@@ -781,6 +985,28 @@ export class TaskTrackerHumanApi {
     };
   }
 
+  private parseProjectGoalFilters(url: URL): ListProjectGoalsInput {
+    const statuses = url.searchParams.getAll("status").filter(Boolean).map((status) => {
+      if (!PROJECT_GOAL_STATUSES.includes(status as ProjectGoalStatus)) {
+        throw new HttpApiError(400, `Unsupported project goal status: ${status}`);
+      }
+      return status as ProjectGoalStatus;
+    });
+    return {
+      ...(url.searchParams.get("repositoryName")
+        ? { repositoryName: url.searchParams.get("repositoryName") ?? undefined }
+        : {}),
+      ...(url.searchParams.get("sourceAnalysisId")
+        ? { sourceAnalysisId: url.searchParams.get("sourceAnalysisId") ?? undefined }
+        : {}),
+      ...(statuses.length === 1
+        ? { status: statuses[0] }
+        : statuses.length > 1
+          ? { status: statuses }
+          : {}),
+    };
+  }
+
   private parseTaskRoute(route: string): { taskId: string; suffix: string } | null {
     if (!route.startsWith("/tasks/")) {
       return null;
@@ -792,6 +1018,21 @@ export class TaskTrackerHumanApi {
     }
     return {
       taskId: decodeURIComponent(rest.slice(0, separator)),
+      suffix: rest.slice(separator),
+    };
+  }
+
+  private parseProjectGoalRoute(route: string): { goalId: string; suffix: string } | null {
+    if (!route.startsWith("/project-goals/")) {
+      return null;
+    }
+    const rest = route.slice("/project-goals/".length);
+    const separator = rest.indexOf("/");
+    if (separator === -1) {
+      return { goalId: decodeURIComponent(rest), suffix: "" };
+    }
+    return {
+      goalId: decodeURIComponent(rest.slice(0, separator)),
       suffix: rest.slice(separator),
     };
   }

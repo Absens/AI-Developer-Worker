@@ -195,6 +195,232 @@ describe("CliCodexRunner", () => {
     expect(args).not.toContain("resume");
   });
 
+  it("overrides configured sandbox for initial codex exec runs", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-sandbox' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexSandbox: "workspace-write",
+      },
+      new Logger(),
+    );
+
+    await runner.runInitial("Analyze this change.", undefined, {
+      sandbox: "read-only",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args.slice(args.indexOf("--sandbox"), args.indexOf("--sandbox") + 2)).toEqual([
+      "--sandbox",
+      "read-only",
+    ]);
+    expect(args).not.toContain("workspace-write");
+  });
+
+  it("keeps sandbox override authoritative over configured exec args", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-sandbox-exec-args' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexSandbox: "workspace-write",
+        codexExecArgs: ["--sandbox", "danger-full-access"],
+      },
+      new Logger(),
+    );
+
+    await runner.runInitial("Analyze this change.", undefined, {
+      sandbox: "read-only",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const sandboxIndexes = args
+      .map((arg, index) => (arg === "--sandbox" ? index : -1))
+      .filter((index) => index >= 0);
+    const lastSandboxIndex = sandboxIndexes.at(-1);
+
+    if (lastSandboxIndex === undefined) {
+      throw new Error("Expected sandbox argument to be present.");
+    }
+    expect(args.slice(lastSandboxIndex, lastSandboxIndex + 2)).toEqual([
+      "--sandbox",
+      "read-only",
+    ]);
+    expect(args.slice(lastSandboxIndex + 2)).not.toContain("--sandbox");
+    expect(args).not.toContain("danger-full-access");
+  });
+
+  it("strips sandbox-affecting exec args when sandbox is overridden", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-sandbox-variants' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [scriptPath]),
+        codexSandbox: "workspace-write",
+        codexExecArgs: [
+          "--sandbox=danger-full-access",
+          "-s",
+          "workspace-write",
+          "-s=danger-full-access",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--config",
+          "sandbox_mode=\"danger-full-access\"",
+          "-c=sandbox_mode=\"workspace-write\"",
+          "--search",
+        ],
+      },
+      new Logger(),
+    );
+
+    await runner.runInitial("Analyze this change.", undefined, {
+      sandbox: "read-only",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const sandboxIndexes = args
+      .map((arg, index) => (arg === "--sandbox" ? index : -1))
+      .filter((index) => index >= 0);
+
+    expect(sandboxIndexes).toHaveLength(1);
+    const sandboxIndex = sandboxIndexes[0];
+    if (sandboxIndex === undefined) {
+      throw new Error("Expected sandbox argument to be present.");
+    }
+    expect(args.slice(sandboxIndex, sandboxIndex + 2)).toEqual(["--sandbox", "read-only"]);
+    expect(args).toContain("--search");
+    expect(args.join(" ")).not.toContain("danger-full-access");
+    expect(args).not.toContain("-s");
+    expect(args.some((arg) => arg.startsWith("-s="))).toBe(false);
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(args).not.toContain("sandbox_mode=\"danger-full-access\"");
+    expect(args.some((arg) => arg.includes("sandbox_mode"))).toBe(false);
+  });
+
+  it("strips sandbox-affecting global cli args and preserves ordinary config args", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Implementation complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-global-sandbox-args' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      {
+        ...createConfig(tempDir, "node", [
+          scriptPath,
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--config",
+          "sandbox_mode=\"danger-full-access\"",
+          "--config",
+          "model_provider=\"local\"",
+          "--config",
+          "model_provider=\"sandboxed-local\"",
+        ]),
+        codexSandbox: "workspace-write",
+        codexExecArgs: [
+          "--config",
+          "model_reasoning_effort=\"low\"",
+          "--config",
+          "profile_name=\"sandbox-analysis\"",
+          "--sandbox",
+          "danger-full-access",
+        ],
+      },
+      new Logger(),
+    );
+
+    await runner.runInitial("Analyze this change.", undefined, {
+      sandbox: "read-only",
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(args.join(" ")).not.toContain("danger-full-access");
+    expect(args.some((arg) => arg.includes("sandbox_mode"))).toBe(false);
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "--config",
+        "model_provider=\"local\"",
+        "--config",
+        "model_provider=\"sandboxed-local\"",
+        "--config",
+        "model_reasoning_effort=\"low\"",
+        "--config",
+        "profile_name=\"sandbox-analysis\"",
+        "--sandbox",
+        "read-only",
+      ]),
+    );
+  });
+
   it("passes image paths to resume codex exec runs", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

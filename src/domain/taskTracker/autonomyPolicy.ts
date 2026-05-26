@@ -108,6 +108,32 @@ export const normalizeProposalTitle = (title: string): string => normalize(title
 export const evidenceKey = (evidence: EvidenceRef): string =>
   `${evidence.kind}:${normalize(evidence.ref)}`;
 
+const PM_GOAL_TASK_IDEMPOTENCY_PATTERN =
+  /^pm-goal-task:(?<goalId>[^:]+):\d+:[a-f0-9]+$/;
+
+export const projectGoalIdFromProposalIdempotencyKey = (
+  value: string | undefined,
+): string | undefined => {
+  const match = value?.match(PM_GOAL_TASK_IDEMPOTENCY_PATTERN);
+  return match?.groups?.goalId;
+};
+
+export const shouldIgnoreProjectManagerProposalEvidenceOverlap = (
+  inputIdempotencyKey: string | undefined,
+  existingIdempotencyKey: string | undefined,
+): boolean => {
+  if (!inputIdempotencyKey || !existingIdempotencyKey) {
+    return false;
+  }
+  if (inputIdempotencyKey === existingIdempotencyKey) {
+    return false;
+  }
+  const inputGoalId = projectGoalIdFromProposalIdempotencyKey(inputIdempotencyKey);
+  const existingGoalId =
+    projectGoalIdFromProposalIdempotencyKey(existingIdempotencyKey);
+  return Boolean(inputGoalId && existingGoalId && inputGoalId === existingGoalId);
+};
+
 const dependencyTarget = (input: ProposeTaskInput): string | undefined => {
   if (input.taskType !== "dependency_update") {
     return undefined;

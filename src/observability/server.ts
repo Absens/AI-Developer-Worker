@@ -7,7 +7,10 @@ import type { ObservabilityConfig, TaskTrackerClient } from "../models/types.js"
 import type { MetricsRegistry } from "./metrics.js";
 import type { WorkerStateRegistry } from "./state.js";
 import { redactSecrets } from "./redaction.js";
-import { TaskTrackerHumanApi } from "./taskTrackerHumanApi.js";
+import {
+  TaskTrackerHumanApi,
+  type ProjectManagerApiDependencies,
+} from "./taskTrackerHumanApi.js";
 
 export interface ReadinessState {
   ready: boolean;
@@ -21,6 +24,7 @@ interface ObservabilityServerInput {
   readiness: () => ReadinessState;
   repositories: () => string[];
   taskTracker?: TaskTrackerClient;
+  projectManager?: ProjectManagerApiDependencies;
 }
 
 const json = (response: ServerResponse, statusCode: number, body: unknown): void => {
@@ -133,6 +137,7 @@ export class ObservabilityHttpServer {
     this.taskTrackerHumanApi = new TaskTrackerHumanApi({
       config: input.config.taskTrackerUi,
       taskTracker: input.taskTracker,
+      projectManager: input.projectManager,
       state: input.state,
       repositories: input.repositories,
     });

@@ -5,6 +5,9 @@ export {
   PostgresTaskTrackerClient,
 } from "./postgresTaskTracker.js";
 export {
+  PostgresProjectManagerStore,
+} from "./postgresProjectManagerStore.js";
+export {
   InternalTrackerRuntimeGuardClient,
 } from "./runtimeGuardTrackerClient.js";
 export {
@@ -12,6 +15,8 @@ export {
   calculateMigrationChecksum,
   getInternalTrackerMigrationStatus,
   listInternalTrackerMigrations,
+  REQUIRED_INTERNAL_TRACKER_INDEXES,
+  REQUIRED_INTERNAL_TRACKER_TABLES,
   runInternalTrackerMigrations,
 } from "./migrations.js";
 export type {

@@ -12,6 +12,7 @@ import {
   normalizeAutonomyPolicyConfig,
   normalizeProposalTitle,
   repositoryPolicyFor,
+  shouldIgnoreProjectManagerProposalEvidenceOverlap,
 } from "../../domain/taskTracker/autonomyPolicy.js";
 import {
   FIELD_OWNERSHIP_RULES,
@@ -252,6 +253,15 @@ type TaskProposalRow = QueryResultRow & {
   updated_at: Date | string;
 };
 
+type ProposalDuplicateCandidateRow = QueryResultRow & {
+  task_id: string;
+  title: string;
+  status: string;
+  source: unknown;
+  duplicate_signature: string | null;
+  evidence_overlap: boolean;
+};
+
 type ProposalEvidenceRow = QueryResultRow & {
   id: string;
   task_id: string;
@@ -404,6 +414,14 @@ const createInitialRevision = (
   ...(input.externalRevisionId ? { externalRevisionId: input.externalRevisionId } : {}),
   createdAt,
 });
+
+const taskSourceExternalKey = (source: unknown): string | undefined => {
+  if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    return undefined;
+  }
+  const value = (source as { externalKey?: unknown }).externalKey;
+  return typeof value === "string" ? value : undefined;
+};
 
 const mapLeaseRow = (row: TaskLeaseRow): TaskLeaseRecord => ({
   leaseId: row.lease_id,
@@ -3381,9 +3399,21 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
   ): Promise<string | null> {
     const evidenceRefs = input.evidenceRefs.map((ref) => ref.ref.toLowerCase());
     const evidenceKinds = input.evidenceRefs.map((ref) => ref.kind);
-    const result = await client.query<{ task_id: string; title: string; status: string }>(
+    const result = await client.query<ProposalDuplicateCandidateRow>(
       `
-        SELECT t.id AS task_id, t.title, t.status
+        SELECT
+          t.id AS task_id,
+          t.title,
+          t.status,
+          t.source,
+          p.duplicate_signature,
+          EXISTS (
+            SELECT 1
+            FROM task_proposal_evidence evidence
+            WHERE evidence.task_id = t.id
+              AND evidence.kind = ANY($3::text[])
+              AND lower(evidence.ref) = ANY($4::text[])
+          ) AS evidence_overlap
         FROM tasks t
         LEFT JOIN task_proposals p ON p.task_id = t.id
         WHERE t.repository_name = $1
@@ -3400,12 +3430,23 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
             )
           )
         ORDER BY t.created_at, t.id
-        LIMIT 1
+        LIMIT 50
       `,
       [input.repositoryName, duplicateSignature, evidenceKinds, evidenceRefs],
     );
-    if (result.rows[0]?.task_id) {
-      return result.rows[0].task_id;
+    for (const row of result.rows) {
+      if (row.duplicate_signature === duplicateSignature) {
+        return row.task_id;
+      }
+      if (
+        row.evidence_overlap &&
+        !shouldIgnoreProjectManagerProposalEvidenceOverlap(
+          input.idempotencyKey,
+          taskSourceExternalKey(row.source),
+        )
+      ) {
+        return row.task_id;
+      }
     }
 
     const normalizedTitle = normalizeProposalTitle(input.title);

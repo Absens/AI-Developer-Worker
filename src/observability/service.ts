@@ -23,6 +23,7 @@ import {
   type MetricsRegistry,
 } from "./metrics.js";
 import { ObservabilityHttpServer } from "./server.js";
+import type { ProjectManagerApiDependencies } from "./taskTrackerHumanApi.js";
 import {
   InMemoryWorkerStateRegistry,
   NoopWorkerStateRegistry,
@@ -131,6 +132,7 @@ class RuntimeObservabilityService implements ObservabilityService {
     private readonly logger: Logger,
     private readonly repositories: RepositoryProfile[],
     taskTracker?: TaskTrackerClient,
+    projectManager?: ProjectManagerApiDependencies,
   ) {
     this.metrics = new InMemoryMetricsRegistry();
     this.events = new InMemoryEventStore(config, this.metrics, logger);
@@ -146,6 +148,7 @@ class RuntimeObservabilityService implements ObservabilityService {
       }),
       repositories: () => this.repositories.map((repository) => repository.name),
       taskTracker,
+      projectManager,
     });
     this.metrics.setGauge("ai_developer_build_info", {
       version: process.env.npm_package_version ?? "unknown",
@@ -454,10 +457,17 @@ export const createObservabilityService = (
   logger: Logger,
   repositories: RepositoryProfile[],
   taskTracker?: TaskTrackerClient,
+  projectManager?: ProjectManagerApiDependencies,
 ): ObservabilityService => {
   const resolved = config ?? defaultObservabilityConfig();
   if (!resolved.enabled && !resolved.taskTrackerUi.enabled) {
     return noopObservability;
   }
-  return new RuntimeObservabilityService(resolved, logger, repositories, taskTracker);
+  return new RuntimeObservabilityService(
+    resolved,
+    logger,
+    repositories,
+    taskTracker,
+    projectManager,
+  );
 };

@@ -1,3 +1,8 @@
+import type {
+  ProjectManagerConfig,
+  RepositoryProjectManagerConfig,
+} from "../domain/projectManager/types.js";
+
 export type LogicalStatus =
   | "open"
   | "in_progress"
@@ -236,6 +241,7 @@ export interface TrackerImageContextConfig {
 
 export interface CodexRunOptions {
   imagePaths?: string[];
+  sandbox?: CodexSandbox;
 }
 
 export interface CodexReviewRunOptions {
@@ -466,6 +472,7 @@ export interface AppConfig {
   memory?: MemoryConfig;
   observability?: ObservabilityConfig;
   autonomy?: AutonomyPolicyConfig;
+  projectManager?: ProjectManagerConfig;
 }
 
 export type LockBackendKind = "none" | "tracker" | "redis" | "postgres";
@@ -543,6 +550,7 @@ export interface RepositoryProfile {
   promptProfiles?: PromptProfileOverrideMap;
   decomposition?: RepositoryDecompositionConfig;
   autonomy?: RepositoryAutonomyPolicyConfig;
+  projectManager?: RepositoryProjectManagerConfig;
 }
 
 export interface GlobalWorkerConfig {
@@ -585,6 +593,7 @@ export interface GlobalWorkerConfig {
   memory?: MemoryConfig;
   observability?: ObservabilityConfig;
   autonomy?: AutonomyPolicyConfig;
+  projectManager?: ProjectManagerConfig;
 }
 
 export interface RepositoryRuntimeConfig extends AppConfig {
@@ -954,6 +963,8 @@ export interface TaskAnalysisResult {
   clarification?: ClarificationQuestion;
   decision?: TaskAnalysisDecision;
 }
+
+export type { ProjectManagerConfig, RepositoryProjectManagerConfig };
 
 export type {
   AgentTaskContext,

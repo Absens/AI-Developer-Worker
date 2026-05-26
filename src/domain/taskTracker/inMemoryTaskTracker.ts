@@ -11,6 +11,7 @@ import {
   normalizeAutonomyPolicyConfig,
   normalizeProposalTitle,
   repositoryPolicyFor,
+  shouldIgnoreProjectManagerProposalEvidenceOverlap,
 } from "./autonomyPolicy.js";
 import {
   FIELD_OWNERSHIP_RULES,
@@ -1636,8 +1637,14 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       if (normalizeProposalTitle(task.title) === normalizedTitle) {
         return true;
       }
+      const existingIdempotencyKey =
+        task.source.kind === "ai_proposal" ? task.source.externalKey : undefined;
       return Boolean(
         task.proposal &&
+          !shouldIgnoreProjectManagerProposalEvidenceOverlap(
+            input.idempotencyKey,
+            existingIdempotencyKey,
+          ) &&
           hasOverlappingEvidence(task.proposal.evidenceRefs, input.evidenceRefs),
       );
     });
