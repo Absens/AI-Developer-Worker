@@ -52,7 +52,7 @@ interface TaskTrackerHumanApiInput {
 
 export interface ProjectManagerApiDependencies {
   store: ProjectManagerStore;
-  runner?: Pick<ProjectManagerOrchestrator, "runAnalysisOnce">;
+  runner?: Pick<ProjectManagerOrchestrator, "runAnalysisOnce" | "runReplanOnce">;
   configForRepository?: (repositoryName: string) => ProjectManagerConfig | undefined;
 }
 
@@ -649,7 +649,7 @@ export class TaskTrackerHumanApi {
 
   private requireProjectManagerRunner(): Pick<
     ProjectManagerOrchestrator,
-    "runAnalysisOnce"
+    "runAnalysisOnce" | "runReplanOnce"
   > {
     if (!this.input.projectManager) {
       throw new HttpApiError(503, "Project manager API is not configured.");
@@ -831,10 +831,24 @@ export class TaskTrackerHumanApi {
       }
       this.requireAuth(request, "operator");
       const body = requireObject(await this.readJson(request), "request body");
-      const result = await this.requireProjectManagerRunner().runAnalysisOnce({
-        repositoryName: requiredString(body.repositoryName, "repositoryName"),
-        trigger: "manual",
-      });
+      const repositoryName = requiredString(body.repositoryName, "repositoryName");
+      const mode = body.mode === undefined ? "analysis" : optionalString(body.mode);
+      const runner = this.requireProjectManagerRunner();
+      let result;
+      if (mode === "analysis") {
+        result = await runner.runAnalysisOnce({
+          repositoryName,
+          trigger: "manual",
+        });
+      } else if (mode === "replan") {
+        result = await runner.runReplanOnce({
+          repositoryName,
+          trigger: "manual",
+          replanReason: requiredString(body.replanReason, "replanReason"),
+        });
+      } else {
+        throw new HttpApiError(400, "mode must be one of: analysis, replan.");
+      }
       json(response, 200, { result });
       return true;
     }

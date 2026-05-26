@@ -397,6 +397,9 @@ describe("Phase 7F human task API", () => {
         runAnalysisOnce: async () => {
           throw new Error("unused test runner");
         },
+        runReplanOnce: async () => {
+          throw new Error("unused test runner");
+        },
       },
     });
     const runnerSession = await requestJson(withRunner.baseUrl, "/api/session", {
@@ -1006,7 +1009,10 @@ describe("Phase 7F human task API", () => {
   it("allows operators to run the project manager without a task tracker", async () => {
     const projectManagerStore = new InMemoryProjectManagerStore();
     const calls: Array<{ repositoryName: string; trigger?: string }> = [];
-    const runner: Pick<ProjectManagerOrchestrator, "runAnalysisOnce"> = {
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce"
+    > = {
       runAnalysisOnce: async (input) => {
         calls.push(input);
         return {
@@ -1033,6 +1039,9 @@ describe("Phase 7F human task API", () => {
           },
         };
       },
+      runReplanOnce: async () => {
+        throw new Error("unexpected replan run");
+      },
     };
     const { baseUrl } = await createServer(null, {}, {
       store: projectManagerStore,
@@ -1052,6 +1061,187 @@ describe("Phase 7F human task API", () => {
       trigger: "manual",
       status: "completed",
     });
+  });
+
+  it("allows operators to run project manager replans", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const calls: Array<{
+      repositoryName: string;
+      trigger?: string;
+      replanReason: string;
+    }> = [];
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce"
+    > = {
+      runAnalysisOnce: async () => {
+        throw new Error("unexpected analysis run");
+      },
+      runReplanOnce: async (input) => {
+        calls.push(input);
+        return {
+          run: {
+            id: "pm-run-replan-1",
+            repositoryName: input.repositoryName,
+            trigger: input.trigger ?? "manual",
+            status: "completed",
+            analysisId: "analysis-replan-1",
+            proposedGoalIds: ["goal-replan-1"],
+            proposedTaskIds: [],
+            startedAt: "2026-05-25T00:00:00.000Z",
+            completedAt: "2026-05-25T00:01:00.000Z",
+          },
+          analysis: {
+            id: "analysis-replan-1",
+            repositoryName: input.repositoryName,
+            summary: "Manual replan completed.",
+            healthSignals: [],
+            proposedGoals: [],
+            staleGoalIds: [],
+            goalReplans: [],
+            createdAt: "2026-05-25T00:01:00.000Z",
+          },
+        };
+      },
+    };
+    const { baseUrl } = await createServer(null, {}, {
+      store: projectManagerStore,
+      runner,
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({
+        repositoryName: "developer",
+        mode: "replan",
+        replanReason: "manual: failed linked task",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([
+      {
+        repositoryName: "developer",
+        trigger: "manual",
+        replanReason: "manual: failed linked task",
+      },
+    ]);
+    expect(response.body.result.run).toMatchObject({
+      id: "pm-run-replan-1",
+      trigger: "manual",
+      status: "completed",
+    });
+  });
+
+  it("rejects project manager replans without a replan reason", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const calls: string[] = [];
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce"
+    > = {
+      runAnalysisOnce: async () => {
+        calls.push("analysis");
+        throw new Error("unexpected analysis run");
+      },
+      runReplanOnce: async () => {
+        calls.push("replan");
+        throw new Error("unexpected replan run");
+      },
+    };
+    const { baseUrl } = await createServer(null, {}, {
+      store: projectManagerStore,
+      runner,
+    });
+
+    const missing = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({ repositoryName: "developer", mode: "replan" }),
+    });
+    const blank = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({
+        repositoryName: "developer",
+        mode: "replan",
+        replanReason: "   ",
+      }),
+    });
+
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toContain("replanReason is required");
+    expect(blank.status).toBe(400);
+    expect(blank.body.error).toContain("replanReason is required");
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects unsupported project manager run modes", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const calls: string[] = [];
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce"
+    > = {
+      runAnalysisOnce: async () => {
+        calls.push("analysis");
+        throw new Error("unexpected analysis run");
+      },
+      runReplanOnce: async () => {
+        calls.push("replan");
+        throw new Error("unexpected replan run");
+      },
+    };
+    const { baseUrl } = await createServer(null, {}, {
+      store: projectManagerStore,
+      runner,
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({ repositoryName: "developer", mode: "unsupported" }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("mode must be one of: analysis, replan");
+    expect(calls).toEqual([]);
+  });
+
+  it("prevents viewers from running project manager replans", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const calls: string[] = [];
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce"
+    > = {
+      runAnalysisOnce: async () => {
+        calls.push("analysis");
+        throw new Error("unexpected analysis run");
+      },
+      runReplanOnce: async () => {
+        calls.push("replan");
+        throw new Error("unexpected replan run");
+      },
+    };
+    const { baseUrl } = await createServer(null, {}, {
+      store: projectManagerStore,
+      runner,
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: viewerHeaders,
+      body: JSON.stringify({
+        repositoryName: "developer",
+        mode: "replan",
+        replanReason: "manual: failed linked task",
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(calls).toEqual([]);
   });
 
   it("returns 503 for project manager routes when dependencies are absent", async () => {
