@@ -98,6 +98,7 @@ export const REQUIRED_INTERNAL_TRACKER_INDEXES = [
   "agent_runs_cleanup_idx",
   "project_manager_runs_repository_time_idx",
   "project_analyses_repository_time_idx",
+  "project_analyses_previous_analysis_idx",
   "project_goals_repository_status_idx",
   "project_goals_duplicate_signature_idx",
   "project_goals_active_duplicate_signature_unique_idx",

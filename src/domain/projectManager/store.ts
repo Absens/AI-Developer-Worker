@@ -38,6 +38,12 @@ export interface RecordProjectAnalysisInput
   goalReplans?: ProjectGoalReplanClassification[];
 }
 
+export interface RecordGoalReplanClassificationInput {
+  goalId: string;
+  analysisId: string;
+  classification: ProjectGoalReplanClassification;
+}
+
 export interface ProjectManagerStore {
   startRun(input: StartProjectManagerRunInput): Promise<ProjectManagerRun>;
   completeRun(
@@ -74,6 +80,9 @@ export interface ProjectManagerStore {
     input: MarkProjectGoalStaleInput,
   ): Promise<ProjectGoal>;
   listGoalEvents(goalId: string): Promise<ProjectGoalAuditEvent[]>;
+  recordGoalReplanClassification(
+    input: RecordGoalReplanClassificationInput,
+  ): Promise<ProjectGoalAuditEvent>;
   linkGoalTask(input: LinkProjectGoalTaskInput): Promise<ProjectGoalTaskLink>;
   listGoalTaskLinks(goalId: string): Promise<ProjectGoalTaskLink[]>;
   listGoalTaskLinksForTaskIds(taskIds: string[]): Promise<ProjectGoalTaskLink[]>;
@@ -153,8 +162,11 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
       healthSignals: input.healthSignals,
       proposedGoals: input.proposedGoals,
       staleGoalIds: input.staleGoalIds,
+      ...(input.previousAnalysisId
+        ? { previousAnalysisId: input.previousAnalysisId }
+        : {}),
       ...(input.replanReason ? { replanReason: input.replanReason } : {}),
-      goalReplans: input.goalReplans ?? [],
+      goalReplans: structuredClone(input.goalReplans ?? []),
       createdAt: this.now().toISOString(),
     };
     this.analyses.set(analysis.id, structuredClone(analysis));
@@ -383,6 +395,27 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     return structuredClone(this.goalEvents.get(goalId) ?? []);
   }
 
+  public async recordGoalReplanClassification(
+    input: RecordGoalReplanClassificationInput,
+  ): Promise<ProjectGoalAuditEvent> {
+    this.requireGoal(input.goalId);
+    const { classification } = input;
+    return this.appendGoalEvent(input.goalId, {
+      kind: "project_goal_replan_classified",
+      message: classification.rationale,
+      payload: {
+        analysisId: input.analysisId,
+        decision: classification.decision,
+        rationale: classification.rationale,
+        evidenceRefs: structuredClone(classification.evidenceRefs),
+        followUpGoals: structuredClone(classification.followUpGoals),
+        ...(classification.humanQuestion
+          ? { humanQuestion: classification.humanQuestion }
+          : {}),
+      },
+    });
+  }
+
   public async linkGoalTask(
     input: LinkProjectGoalTaskInput,
   ): Promise<ProjectGoalTaskLink> {
@@ -473,7 +506,7 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     goalId: string,
     input: Pick<ProjectGoalAuditEvent, "kind"> &
       Partial<Pick<ProjectGoalAuditEvent, "actor" | "message" | "payload">>,
-  ): void {
+  ): ProjectGoalAuditEvent {
     const event: ProjectGoalAuditEvent = {
       id: `pm_goal_event_${randomUUID()}`,
       goalId,
@@ -485,5 +518,6 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     };
     const existingEvents = this.goalEvents.get(goalId) ?? [];
     this.goalEvents.set(goalId, [...existingEvents, structuredClone(event)]);
+    return structuredClone(event);
   }
 }

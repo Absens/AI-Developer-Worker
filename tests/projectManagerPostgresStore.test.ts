@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   type ProjectGoalDraft,
+  type ProjectGoalReplanClassification,
   type ProjectGoalStatus,
 } from "../src/domain/projectManager/index.js";
 import type { TaskActor } from "../src/domain/taskTracker/index.js";
@@ -42,6 +43,22 @@ const goalDraft = (overrides: Partial<ProjectGoalDraft> = {}): ProjectGoalDraft 
     },
   ],
   ...overrides,
+});
+
+const replanClassification = (
+  goalId: string,
+): ProjectGoalReplanClassification => ({
+  goalId,
+  decision: "create_follow_up",
+  rationale: "The original docs goal needs a follow-up for Windows operators.",
+  evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+  followUpGoals: [
+    goalDraft({
+      title: "Document Windows operator flow",
+      evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+    }),
+  ],
+  humanQuestion: "Should the Windows guide live in the main runbook?",
 });
 
 const queryResult = <T extends QueryResultRow>(
@@ -172,7 +189,9 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
         proposed_goals: JSON.parse(String(values[4])),
         stale_goal_ids: values[5],
         replan_reason: values[6],
-        created_at: values[7],
+        previous_analysis_id: values[7],
+        goal_replans: JSON.parse(String(values[8])),
+        created_at: values[9],
       };
       this.analyses.push(row);
       return asQueryResult(queryResult([row]));
@@ -642,6 +661,101 @@ describe("PostgresProjectManagerStore", () => {
     ]);
   });
 
+  it("persists replan analysis fields and goal replan audit events", async () => {
+    const store = createStore();
+    const analysis1 = await recordTestAnalysis(store);
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: analysis1.id,
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
+    const classification = replanClassification(goal!.id);
+
+    const analysis2 = await store.recordAnalysis({
+      repositoryName: "developer",
+      summary: "Docs need replan.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      previousAnalysisId: analysis1.id,
+      replanReason: "Operator flow changed.",
+      goalReplans: [classification],
+    });
+    classification.evidenceRefs[0]!.ref = "mutated.md";
+    classification.followUpGoals[0]!.title = "Mutated title";
+
+    await expect(store.listAnalyses()).resolves.toEqual([
+      expect.objectContaining({
+        id: analysis1.id,
+        goalReplans: [],
+      }),
+      expect.objectContaining({
+        id: analysis2.id,
+        previousAnalysisId: analysis1.id,
+        replanReason: "Operator flow changed.",
+        goalReplans: [
+          expect.objectContaining({
+            goalId: goal!.id,
+            decision: "create_follow_up",
+            rationale:
+              "The original docs goal needs a follow-up for Windows operators.",
+            evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+            followUpGoals: [
+              expect.objectContaining({
+                title: "Document Windows operator flow",
+              }),
+            ],
+            humanQuestion: "Should the Windows guide live in the main runbook?",
+          }),
+        ],
+      }),
+    ]);
+
+    const event = await store.recordGoalReplanClassification({
+      goalId: goal!.id,
+      analysisId: analysis2.id,
+      classification: replanClassification(goal!.id),
+    });
+
+    expect(event).toEqual(
+      expect.objectContaining({
+        goalId: goal!.id,
+        kind: "project_goal_replan_classified",
+        message: "The original docs goal needs a follow-up for Windows operators.",
+        payload: expect.objectContaining({
+          analysisId: analysis2.id,
+          decision: "create_follow_up",
+          rationale:
+            "The original docs goal needs a follow-up for Windows operators.",
+          evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+          followUpGoals: [
+            expect.objectContaining({
+              title: "Document Windows operator flow",
+            }),
+          ],
+          humanQuestion: "Should the Windows guide live in the main runbook?",
+        }),
+        createdAt: baseTime,
+      }),
+    );
+    event.payload = { mutated: true };
+    await expect(store.listGoalEvents(goal!.id)).resolves.toEqual([
+      expect.objectContaining({ kind: "project_goal_created" }),
+      expect.objectContaining({
+        kind: "project_goal_replan_classified",
+        payload: expect.objectContaining({
+          analysisId: analysis2.id,
+          evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+          followUpGoals: [
+            expect.objectContaining({
+              title: "Document Windows operator flow",
+            }),
+          ],
+        }),
+      }),
+    ]);
+  });
+
   it("returns existing goal-task links for duplicate tuples and requires goals for reads", async () => {
     const { db, store } = createStoreWithDb();
     db.seedTask("task-1");
@@ -761,6 +875,7 @@ describe("project manager internal tracker migrations", () => {
       expect.arrayContaining([
         "project_manager_runs_repository_time_idx",
         "project_analyses_repository_time_idx",
+        "project_analyses_previous_analysis_idx",
         "project_goals_repository_status_idx",
         "project_goals_duplicate_signature_idx",
         "project_goals_active_duplicate_signature_unique_idx",
@@ -793,6 +908,16 @@ describe("project manager internal tracker migrations", () => {
       "project_goals_active_duplicate_signature_unique_idx",
     );
     expect(migration?.sql).toContain("WHERE status NOT IN");
+  });
+
+  it("includes a migration for project manager replan persistence", () => {
+    const migration = listInternalTrackerMigrations().find(
+      (candidate) => candidate.filename === "0008_project_manager_replans.sql",
+    );
+
+    expect(migration?.sql).toContain("previous_analysis_id text NULL");
+    expect(migration?.sql).toContain("goal_replans jsonb NOT NULL DEFAULT");
+    expect(migration?.sql).toContain("project_analyses_previous_analysis_idx");
   });
 });
 

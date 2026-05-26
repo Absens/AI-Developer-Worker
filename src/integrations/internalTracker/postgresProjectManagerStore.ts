@@ -6,6 +6,7 @@ import { buildProjectGoalDuplicateSignature } from "../../domain/projectManager/
 import type {
   CompleteProjectManagerRunInput,
   ProjectManagerStore,
+  RecordGoalReplanClassificationInput,
   RecordProjectAnalysisInput,
   StartProjectManagerRunInput,
 } from "../../domain/projectManager/store.js";
@@ -54,7 +55,9 @@ type ProjectAnalysisRow = QueryResultRow & {
   health_signals: unknown;
   proposed_goals: unknown;
   stale_goal_ids: string[];
+  previous_analysis_id?: string | null;
   replan_reason: string | null;
+  goal_replans?: unknown | null;
   created_at: Date | string;
 };
 
@@ -158,8 +161,11 @@ const mapAnalysisRow = (row: ProjectAnalysisRow): ProjectAnalysis => ({
   healthSignals: jsonValue(row.health_signals, []),
   proposedGoals: jsonValue(row.proposed_goals, []),
   staleGoalIds: [...row.stale_goal_ids],
+  ...(row.previous_analysis_id
+    ? { previousAnalysisId: row.previous_analysis_id }
+    : {}),
   ...(row.replan_reason ? { replanReason: row.replan_reason } : {}),
-  goalReplans: [],
+  goalReplans: jsonValue(row.goal_replans, []),
   createdAt: toIso(row.created_at),
 });
 
@@ -315,9 +321,10 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
       `
         INSERT INTO project_analyses (
           id, repository_name, summary, health_signals, proposed_goals,
-          stale_goal_ids, replan_reason, created_at
+          stale_goal_ids, replan_reason, previous_analysis_id, goal_replans,
+          created_at
         )
-        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)
+        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10)
         RETURNING *
       `,
       [
@@ -328,6 +335,8 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
         JSON.stringify(input.proposedGoals),
         input.staleGoalIds,
         input.replanReason ?? null,
+        input.previousAnalysisId ?? null,
+        JSON.stringify(input.goalReplans ?? []),
         this.nowIso(),
       ],
     );
@@ -605,6 +614,28 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
     return result.rows.map(mapGoalEventRow);
   }
 
+  public async recordGoalReplanClassification(
+    input: RecordGoalReplanClassificationInput,
+  ): Promise<ProjectGoalAuditEvent> {
+    await this.requireGoal(this.db, input.goalId);
+    const { classification } = input;
+    return this.insertGoalEvent(this.db, {
+      goalId: input.goalId,
+      kind: "project_goal_replan_classified",
+      message: classification.rationale,
+      payload: {
+        analysisId: input.analysisId,
+        decision: classification.decision,
+        rationale: classification.rationale,
+        evidenceRefs: clone(classification.evidenceRefs),
+        followUpGoals: clone(classification.followUpGoals),
+        ...(classification.humanQuestion
+          ? { humanQuestion: classification.humanQuestion }
+          : {}),
+      },
+    });
+  }
+
   public async linkGoalTask(
     input: LinkProjectGoalTaskInput,
   ): Promise<ProjectGoalTaskLink> {
@@ -795,13 +826,14 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
     client: PostgresQueryable,
     input: Pick<ProjectGoalAuditEvent, "goalId" | "kind"> &
       Partial<Pick<ProjectGoalAuditEvent, "actor" | "message" | "payload">>,
-  ): Promise<void> {
-    await client.query(
+  ): Promise<ProjectGoalAuditEvent> {
+    const result = await client.query<ProjectGoalEventRow>(
       `
         INSERT INTO project_goal_events (
           id, goal_id, kind, actor, message, payload, created_at
         )
         VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7)
+        RETURNING *
       `,
       [
         `pm_goal_event_${randomUUID()}`,
@@ -813,6 +845,7 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
         this.nowIso(),
       ],
     );
+    return mapGoalEventRow(result.rows[0]!);
   }
 
   private async withTransaction<T>(

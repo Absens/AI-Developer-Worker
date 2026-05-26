@@ -6,6 +6,7 @@ import {
   normalizeProjectGoalTitle,
   PROJECT_GOAL_TERMINAL_STATUSES,
   type ProjectGoalDraft,
+  type ProjectGoalReplanClassification,
 } from "../src/domain/projectManager/index.js";
 import type { TaskActor } from "../src/domain/taskTracker/index.js";
 
@@ -31,6 +32,22 @@ const goalDraft = (overrides: Partial<ProjectGoalDraft> = {}): ProjectGoalDraft 
   riskLevel: "low",
   suggestedTaskProposals: [],
   ...overrides,
+});
+
+const replanClassification = (
+  goalId: string,
+): ProjectGoalReplanClassification => ({
+  goalId,
+  decision: "create_follow_up",
+  rationale: "The original docs goal needs a follow-up for Windows operators.",
+  evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+  followUpGoals: [
+    goalDraft({
+      title: "Document Windows operator flow",
+      evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+    }),
+  ],
+  humanQuestion: "Should the Windows guide live in the main runbook?",
 });
 
 const createStore = (): InMemoryProjectManagerStore =>
@@ -355,6 +372,96 @@ describe("InMemoryProjectManagerStore goals", () => {
 
     expect(second).toEqual(first);
     await expect(store.listGoalTaskLinks(goal!.id)).resolves.toEqual([first]);
+  });
+
+  it("records replan analysis fields and goal replan audit events", async () => {
+    const store = createStore();
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: "pm_analysis_1",
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
+    const classification = replanClassification(goal!.id);
+
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      summary: "Docs need replan.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      previousAnalysisId: "pm_analysis_previous",
+      replanReason: "Operator flow changed.",
+      goalReplans: [classification],
+    });
+    classification.evidenceRefs[0]!.ref = "mutated.md";
+    classification.followUpGoals[0]!.title = "Mutated title";
+
+    expect(analysis).toEqual(
+      expect.objectContaining({
+        previousAnalysisId: "pm_analysis_previous",
+        replanReason: "Operator flow changed.",
+        goalReplans: [
+          expect.objectContaining({
+            goalId: goal!.id,
+            decision: "create_follow_up",
+            rationale:
+              "The original docs goal needs a follow-up for Windows operators.",
+            evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+            followUpGoals: [
+              expect.objectContaining({
+                title: "Document Windows operator flow",
+              }),
+            ],
+            humanQuestion: "Should the Windows guide live in the main runbook?",
+          }),
+        ],
+      }),
+    );
+    await expect(store.listAnalyses()).resolves.toEqual([analysis]);
+
+    const event = await store.recordGoalReplanClassification({
+      goalId: goal!.id,
+      analysisId: analysis.id,
+      classification: replanClassification(goal!.id),
+    });
+
+    expect(event).toEqual(
+      expect.objectContaining({
+        goalId: goal!.id,
+        kind: "project_goal_replan_classified",
+        message: "The original docs goal needs a follow-up for Windows operators.",
+        payload: {
+          analysisId: analysis.id,
+          decision: "create_follow_up",
+          rationale:
+            "The original docs goal needs a follow-up for Windows operators.",
+          evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+          followUpGoals: [
+            expect.objectContaining({
+              title: "Document Windows operator flow",
+            }),
+          ],
+          humanQuestion: "Should the Windows guide live in the main runbook?",
+        },
+        createdAt: baseTime,
+      }),
+    );
+    event.payload = { mutated: true };
+    await expect(store.listGoalEvents(goal!.id)).resolves.toEqual([
+      expect.objectContaining({ kind: "project_goal_created" }),
+      expect.objectContaining({
+        kind: "project_goal_replan_classified",
+        payload: expect.objectContaining({
+          analysisId: analysis.id,
+          evidenceRefs: [{ kind: "file", ref: "docs/windows.md" }],
+          followUpGoals: [
+            expect.objectContaining({
+              title: "Document Windows operator flow",
+            }),
+          ],
+        }),
+      }),
+    ]);
   });
 
   it("lists project goal task links by task ids", async () => {
