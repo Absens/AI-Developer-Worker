@@ -214,7 +214,7 @@ export interface ProjectAnalysis {
   staleGoalIds: string[];
   previousAnalysisId?: string;
   replanReason?: string;
-  goalReplans?: ProjectGoalReplanClassification[];
+  goalReplans: ProjectGoalReplanClassification[];
   createdAt: string;
 }
 
@@ -225,7 +225,7 @@ export interface ParsedProjectAnalysis {
   staleGoalIds: string[];
   previousAnalysisId?: string;
   replanReason?: string;
-  goalReplans?: ProjectGoalReplanClassification[];
+  goalReplans: ProjectGoalReplanClassification[];
 }
 
 export interface ProjectManagerRun {

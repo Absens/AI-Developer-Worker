@@ -159,6 +159,7 @@ const mapAnalysisRow = (row: ProjectAnalysisRow): ProjectAnalysis => ({
   proposedGoals: jsonValue(row.proposed_goals, []),
   staleGoalIds: [...row.stale_goal_ids],
   ...(row.replan_reason ? { replanReason: row.replan_reason } : {}),
+  goalReplans: [],
   createdAt: toIso(row.created_at),
 });
 

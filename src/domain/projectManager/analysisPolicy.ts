@@ -326,14 +326,12 @@ export const assertProjectReplanWithinPolicy = (
   pushMaxCountViolation(
     violations,
     "goalReplans",
-    input.parsed.goalReplans?.length ?? 0,
+    input.parsed.goalReplans.length,
     PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS.maxGoalReplans,
   );
 
   const activeGoalIds = new Set(input.activeGoalIds);
-  for (const [replanIndex, replan] of (
-    input.parsed.goalReplans ?? []
-  ).entries()) {
+  for (const [replanIndex, replan] of input.parsed.goalReplans.entries()) {
     validateGoalReplan(
       replan,
       `goalReplans[${replanIndex}]`,

@@ -1028,6 +1028,7 @@ describe("Phase 7F human task API", () => {
             healthSignals: [],
             proposedGoals: [],
             staleGoalIds: [],
+            goalReplans: [],
             createdAt: "2026-05-25T00:01:00.000Z",
           },
         };

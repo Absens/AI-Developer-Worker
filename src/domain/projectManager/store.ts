@@ -13,6 +13,7 @@ import type {
   ProjectAnalysis,
   ProjectGoal,
   ProjectGoalAuditEvent,
+  ProjectGoalReplanClassification,
   ProjectGoalTaskLink,
   ProjectManagerRun,
   ProjectManagerTrigger,
@@ -31,8 +32,10 @@ export interface CompleteProjectManagerRunInput {
   proposedTaskIds?: string[];
 }
 
-export interface RecordProjectAnalysisInput extends ParsedProjectAnalysis {
+export interface RecordProjectAnalysisInput
+  extends Omit<ParsedProjectAnalysis, "goalReplans"> {
   repositoryName: string;
+  goalReplans?: ProjectGoalReplanClassification[];
 }
 
 export interface ProjectManagerStore {
@@ -151,6 +154,7 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
       proposedGoals: input.proposedGoals,
       staleGoalIds: input.staleGoalIds,
       ...(input.replanReason ? { replanReason: input.replanReason } : {}),
+      goalReplans: input.goalReplans ?? [],
       createdAt: this.now().toISOString(),
     };
     this.analyses.set(analysis.id, structuredClone(analysis));
