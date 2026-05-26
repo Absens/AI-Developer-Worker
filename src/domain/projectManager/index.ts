@@ -1,4 +1,5 @@
 export * from "./analysisParser.js";
+export * from "./analysisPolicy.js";
 export * from "./goalPolicy.js";
 export * from "./orchestrator.js";
 export * from "./promptBuilder.js";

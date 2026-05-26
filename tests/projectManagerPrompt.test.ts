@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildProjectAnalysisPrompt,
+  buildProjectReplanPrompt,
   type ProjectSignalSnapshot,
 } from "../src/domain/projectManager/index.js";
 
@@ -117,5 +118,44 @@ describe("project manager prompt builder", () => {
     expect(firstPrompt).toBe(secondPrompt);
     expect(firstPrompt).toContain("[snapshot truncated at 120 chars]");
     expect(firstPrompt).not.toContain("A".repeat(200));
+  });
+});
+
+describe("project manager replan prompt builder", () => {
+  it("includes required replan guardrails and snapshot context", () => {
+    const prompt = buildProjectReplanPrompt({
+      snapshot: {
+        repositoryName: "worker-repo",
+        generatedAt: "2026-05-25T12:00:00.000Z",
+        replanReason: "TASK-42 is blocked after repeated validation failures.",
+        activeGoals: [
+          {
+            id: "goal-active",
+            title: "Stabilize validation",
+            status: "active",
+            linkedTasks: [
+              {
+                id: "TASK-42",
+                title: "Fix repeated validation failure",
+                status: "blocked",
+                latestValidationSummary: "quality gate failed twice",
+              },
+            ],
+          },
+        ],
+      },
+      allowedTaskTypes: ["documentation", "tests_only"],
+      focusAreas: ["validation stability"],
+    });
+
+    expect(prompt).toContain("Mode: project-management-replan-only");
+    expect(prompt).toContain("PROJECT_REPLAN:");
+    expect(prompt).toContain("Do not create executable tasks directly");
+    expect(prompt).toContain("TASK-42 is blocked after repeated validation failures.");
+    expect(prompt).toContain("Active goal ids: goal-active");
+    expect(prompt).toContain("Linked task data");
+    expect(prompt).toContain('"id":"TASK-42"');
+    expect(prompt).toContain("Allowed task types: documentation, tests_only");
+    expect(prompt).toContain("Focus areas: validation stability");
   });
 });

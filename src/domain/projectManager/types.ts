@@ -2,6 +2,19 @@ import type { AutonomyLevel, TaskType } from "../../models/types.js";
 import type { EvidenceRef, TaskActor } from "../taskTracker/types.js";
 
 export const PROJECT_ANALYSIS_MARKER = "PROJECT_ANALYSIS:";
+export const PROJECT_REPLAN_MARKER = "PROJECT_REPLAN:";
+
+export const PROJECT_GOAL_REPLAN_DECISIONS = [
+  "continue",
+  "split",
+  "pause",
+  "mark_completed",
+  "create_follow_up",
+  "ask_human",
+] as const;
+
+export type ProjectGoalReplanDecision =
+  (typeof PROJECT_GOAL_REPLAN_DECISIONS)[number];
 
 export const PROJECT_GOAL_STATUSES = [
   "proposed",
@@ -88,6 +101,15 @@ export interface ProjectGoalDraft {
   suggestedTaskProposals: ProjectTaskProposalDraft[];
 }
 
+export interface ProjectGoalReplanClassification {
+  goalId: string;
+  decision: ProjectGoalReplanDecision;
+  rationale: string;
+  evidenceRefs: EvidenceRef[];
+  followUpGoals: ProjectGoalDraft[];
+  humanQuestion?: string;
+}
+
 export interface ProjectGoal extends ProjectGoalDraft {
   id: string;
   sourceAnalysisId: string;
@@ -118,6 +140,7 @@ export const PROJECT_GOAL_AUDIT_EVENT_KINDS = [
   "project_goal_completed",
   "project_goal_rejected",
   "project_goal_stale",
+  "project_goal_replan_classified",
 ] as const;
 
 export type ProjectGoalAuditEventKind =
@@ -189,7 +212,9 @@ export interface ProjectAnalysis {
   healthSignals: ProjectHealthSignal[];
   proposedGoals: ProjectGoalDraft[];
   staleGoalIds: string[];
+  previousAnalysisId?: string;
   replanReason?: string;
+  goalReplans?: ProjectGoalReplanClassification[];
   createdAt: string;
 }
 
@@ -198,7 +223,9 @@ export interface ParsedProjectAnalysis {
   healthSignals: ProjectHealthSignal[];
   proposedGoals: ProjectGoalDraft[];
   staleGoalIds: string[];
+  previousAnalysisId?: string;
   replanReason?: string;
+  goalReplans?: ProjectGoalReplanClassification[];
 }
 
 export interface ProjectManagerRun {

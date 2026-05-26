@@ -5,12 +5,16 @@ import {
 } from "../taskTracker/types.js";
 import {
   PROJECT_ANALYSIS_MARKER,
+  PROJECT_GOAL_REPLAN_DECISIONS,
   PROJECT_GOAL_PRIORITIES,
   PROJECT_GOAL_RISK_LEVELS,
   PROJECT_HEALTH_SIGNAL_SEVERITIES,
+  PROJECT_REPLAN_MARKER,
   type ParsedProjectAnalysis,
   type ProjectGoalDraft,
   type ProjectGoalPriority,
+  type ProjectGoalReplanClassification,
+  type ProjectGoalReplanDecision,
   type ProjectGoalRiskLevel,
   type ProjectHealthSignal,
   type ProjectHealthSignalSeverity,
@@ -217,6 +221,51 @@ const parseProposedGoals = (value: unknown): ProjectGoalDraft[] | undefined => {
   return proposedGoals;
 };
 
+const parseGoalReplans = (
+  value: unknown,
+): ProjectGoalReplanClassification[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const goalReplans: ProjectGoalReplanClassification[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return undefined;
+    }
+    const replan = entry as Record<string, unknown>;
+    const goalId = nonEmptyString(replan.goalId);
+    const decision = replan.decision;
+    const rationale = nonEmptyString(replan.rationale);
+    const evidenceRefs = parseEvidenceRefs(replan.evidenceRefs);
+    const followUpGoals =
+      replan.followUpGoals === undefined
+        ? undefined
+        : parseProposedGoals(replan.followUpGoals);
+    const humanQuestion = nonEmptyString(replan.humanQuestion);
+    if (
+      !goalId ||
+      !includesValue<ProjectGoalReplanDecision>(
+        PROJECT_GOAL_REPLAN_DECISIONS,
+        decision,
+      ) ||
+      !rationale ||
+      !evidenceRefs ||
+      !followUpGoals
+    ) {
+      return undefined;
+    }
+    goalReplans.push({
+      goalId,
+      decision,
+      rationale,
+      evidenceRefs,
+      followUpGoals,
+      ...(humanQuestion ? { humanQuestion } : {}),
+    });
+  }
+  return goalReplans;
+};
+
 export const parseProjectAnalysisResponse = (
   message: string | undefined,
 ): ParsedProjectAnalysis | undefined => {
@@ -244,6 +293,7 @@ export const parseProjectAnalysisResponse = (
   const healthSignals = parseHealthSignals(raw.healthSignals);
   const proposedGoals = parseProposedGoals(raw.proposedGoals);
   const staleGoalIds = parseOptionalStringArray(raw.staleGoalIds);
+  const previousAnalysisId = nonEmptyString(raw.previousAnalysisId);
   const replanReason = nonEmptyString(raw.replanReason);
   if (!summary || !healthSignals || !proposedGoals || !staleGoalIds) {
     return undefined;
@@ -254,6 +304,69 @@ export const parseProjectAnalysisResponse = (
     healthSignals,
     proposedGoals,
     staleGoalIds,
+    ...(previousAnalysisId ? { previousAnalysisId } : {}),
     ...(replanReason ? { replanReason } : {}),
+    goalReplans: [],
+  };
+};
+
+export const parseProjectReplanResponse = (
+  message: string | undefined,
+): ParsedProjectAnalysis | undefined => {
+  if (!message?.startsWith(PROJECT_REPLAN_MARKER)) {
+    return undefined;
+  }
+
+  const payload = message.slice(PROJECT_REPLAN_MARKER.length).trim();
+  if (!payload.startsWith("{")) {
+    return undefined;
+  }
+
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(payload);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return undefined;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+
+  const summary = nonEmptyString(raw.summary);
+  const healthSignals =
+    raw.healthSignals === undefined
+      ? undefined
+      : parseHealthSignals(raw.healthSignals);
+  const proposedGoals =
+    raw.proposedGoals === undefined
+      ? undefined
+      : parseProposedGoals(raw.proposedGoals);
+  const staleGoalIds =
+    raw.staleGoalIds === undefined
+      ? undefined
+      : parseStringArray(raw.staleGoalIds);
+  const previousAnalysisId = nonEmptyString(raw.previousAnalysisId);
+  const replanReason = nonEmptyString(raw.replanReason);
+  const goalReplans = parseGoalReplans(raw.goalReplans);
+  if (
+    !summary ||
+    !healthSignals ||
+    !proposedGoals ||
+    !staleGoalIds ||
+    !replanReason ||
+    !goalReplans
+  ) {
+    return undefined;
+  }
+
+  return {
+    summary,
+    healthSignals,
+    proposedGoals,
+    staleGoalIds,
+    ...(previousAnalysisId ? { previousAnalysisId } : {}),
+    replanReason,
+    goalReplans,
   };
 };

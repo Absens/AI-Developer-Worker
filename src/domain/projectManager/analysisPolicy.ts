@@ -1,6 +1,7 @@
 import type { EvidenceRef } from "../taskTracker/types.js";
 import type {
   ParsedProjectAnalysis,
+  ProjectGoalReplanClassification,
   ProjectGoalDraft,
   ProjectHealthSignal,
   ProjectManagerConfig,
@@ -20,6 +21,7 @@ export const PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS = {
   maxEvidenceRefChars: 500,
   maxEvidenceSummaryChars: 1000,
   maxIdChars: 200,
+  maxGoalReplans: 20,
 } as const;
 
 const pushMaxCountViolation = (
@@ -261,6 +263,89 @@ export const assertProjectAnalysisWithinPolicy = (
   if (violations.length > 0) {
     throw new Error(
       `Codex PROJECT_ANALYSIS violates project manager policy: ${violations.join(" ")}`,
+    );
+  }
+};
+
+export interface AssertProjectReplanWithinPolicyInput {
+  parsed: ParsedProjectAnalysis;
+  config: ProjectManagerConfig;
+  activeGoalIds: string[];
+}
+
+const validateGoalReplan = (
+  replan: ProjectGoalReplanClassification,
+  path: string,
+  config: ProjectManagerConfig,
+  activeGoalIds: Set<string>,
+  violations: string[],
+): void => {
+  pushMaxStringViolation(
+    violations,
+    `${path}.goalId`,
+    replan.goalId,
+    PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS.maxIdChars,
+  );
+  if (!activeGoalIds.has(replan.goalId)) {
+    violations.push(`${path}.goalId is unknown or inactive: ${replan.goalId}.`);
+  }
+  pushMaxStringViolation(
+    violations,
+    `${path}.rationale`,
+    replan.rationale,
+    PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS.maxTextChars,
+  );
+  validateEvidenceRefs(replan.evidenceRefs, `${path}.evidenceRefs`, violations);
+  pushMaxCountViolation(
+    violations,
+    `${path}.followUpGoals`,
+    replan.followUpGoals.length,
+    config.maxGoalsPerRun,
+    "follow-up goals",
+  );
+  for (const [goalIndex, goal] of replan.followUpGoals.entries()) {
+    validateGoal(goal, `${path}.followUpGoals[${goalIndex}]`, config, violations);
+  }
+  pushMaxStringViolation(
+    violations,
+    `${path}.humanQuestion`,
+    replan.humanQuestion,
+    PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS.maxTextChars,
+  );
+  if (replan.decision === "ask_human" && !replan.humanQuestion) {
+    violations.push(`${path}.humanQuestion is required for ask_human decisions.`);
+  }
+};
+
+export const assertProjectReplanWithinPolicy = (
+  input: AssertProjectReplanWithinPolicyInput,
+): void => {
+  assertProjectAnalysisWithinPolicy(input.parsed, input.config);
+
+  const violations: string[] = [];
+  pushMaxCountViolation(
+    violations,
+    "goalReplans",
+    input.parsed.goalReplans?.length ?? 0,
+    PROJECT_MANAGER_ANALYSIS_POLICY_LIMITS.maxGoalReplans,
+  );
+
+  const activeGoalIds = new Set(input.activeGoalIds);
+  for (const [replanIndex, replan] of (
+    input.parsed.goalReplans ?? []
+  ).entries()) {
+    validateGoalReplan(
+      replan,
+      `goalReplans[${replanIndex}]`,
+      input.config,
+      activeGoalIds,
+      violations,
+    );
+  }
+
+  if (violations.length > 0) {
+    throw new Error(
+      `Codex PROJECT_REPLAN violates project manager policy: ${violations.join(" ")}`,
     );
   }
 };
