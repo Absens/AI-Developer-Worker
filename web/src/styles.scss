@@ -372,6 +372,70 @@ select {
   min-width: 120px;
 }
 
+.goal-list,
+.draft-list,
+.linked-list,
+.goal-badge-list {
+  display: grid;
+  gap: 10px;
+}
+
+.goal-row {
+  display: grid;
+  gap: 12px;
+}
+
+.goal-row__main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.goal-badge,
+.linked-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-panel-muted);
+  color: var(--console-text);
+  text-decoration: none;
+}
+
+.goal-badge:hover,
+.linked-row:hover {
+  border-color: var(--console-focus);
+  background: #f2fbf9;
+}
+
+.goal-badge__title {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.tag-row--compact {
+  gap: 4px;
+}
+
+.muted-link {
+  color: var(--console-muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.detail-section {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-section h2 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
 .evidence-list {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }

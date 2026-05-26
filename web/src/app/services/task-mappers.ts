@@ -15,6 +15,18 @@ import {
   OperationsSnapshotDto,
   ProposalListResponseDto,
   ProposalSummaryDto,
+  ProjectGoalAuditEventDto,
+  ProjectGoalCommandResponseDto,
+  ProjectGoalDetailResponseDto,
+  ProjectGoalDto,
+  ProjectGoalListResponseDto,
+  ProjectGoalPriorityDto,
+  ProjectGoalProposeTasksResponseDto,
+  ProjectGoalRiskLevelDto,
+  ProjectGoalStatusDto,
+  ProjectGoalSummaryDto,
+  ProjectGoalTaskLinkDto,
+  ProjectTaskProposalDraftDto,
   QueueDepthDto,
   TaskCommentDto,
   TaskConversationResponseDto,
@@ -50,6 +62,15 @@ const stringArray = (value: unknown): string[] =>
 
 const records = (value: unknown): RawRecord[] =>
   Array.isArray(value) ? value.map(record) : [];
+
+const mapEvidenceRef = (value: unknown) => {
+  const raw = record(value);
+  return {
+    kind: stringValue(raw['kind']),
+    ref: stringValue(raw['ref']),
+    ...(optionalString(raw['summary']) ? { summary: optionalString(raw['summary']) } : {}),
+  };
+};
 
 export const mapActor = (value: unknown): ActorDto | undefined => {
   const raw = record(value);
@@ -270,6 +291,9 @@ export const mapTaskDetailResponse = (value: unknown): TaskDetailResponseDto => 
       ? { latestMergeRequest: mapMergeRequest(raw['latestMergeRequest']) }
       : {}),
     diagnostics: mapDiagnostics(raw['diagnostics']),
+    ...(Array.isArray(raw['projectGoals'])
+      ? { projectGoals: records(raw['projectGoals']).map(mapProjectGoalSummary) }
+      : {}),
   };
 };
 
@@ -340,17 +364,140 @@ export const mapProposalSummary = (value: unknown): ProposalSummaryDto => {
         ? { policyReason: optionalString(proposal['policyReason']) }
         : {}),
       ...(Array.isArray(proposal['evidenceRefs'])
-        ? { evidenceRefs: records(proposal['evidenceRefs']).map((entry) => ({
-            kind: stringValue(entry['kind']),
-            ref: stringValue(entry['ref']),
-            ...(optionalString(entry['summary']) ? { summary: optionalString(entry['summary']) } : {}),
-          })) }
+        ? { evidenceRefs: records(proposal['evidenceRefs']).map(mapEvidenceRef) }
         : {}),
       ...(Array.isArray(proposal['suggestedAcceptanceCriteria'])
         ? { suggestedAcceptanceCriteria: stringArray(proposal['suggestedAcceptanceCriteria']) }
         : {}),
       createdAt: stringValue(proposal['createdAt']),
     },
+    ...(Array.isArray(raw['projectGoals'])
+      ? { projectGoals: records(raw['projectGoals']).map(mapProjectGoalSummary) }
+      : {}),
+  };
+};
+
+export const mapProjectTaskProposalDraft = (value: unknown): ProjectTaskProposalDraftDto => {
+  const raw = record(value);
+  return {
+    title: stringValue(raw['title']),
+    description: stringValue(raw['description']),
+    taskType: stringValue(raw['taskType']),
+    acceptanceCriteria: stringArray(raw['acceptanceCriteria']),
+    ...(optionalString(raw['expectedBlastRadius'])
+      ? { expectedBlastRadius: optionalString(raw['expectedBlastRadius']) }
+      : {}),
+    evidenceRefs: records(raw['evidenceRefs']).map(mapEvidenceRef),
+  };
+};
+
+export const mapProjectGoal = (value: unknown): ProjectGoalDto => {
+  const raw = record(value);
+  return {
+    id: stringValue(raw['id']),
+    sourceAnalysisId: stringValue(raw['sourceAnalysisId']),
+    ...(optionalString(raw['sourceRunId']) ? { sourceRunId: optionalString(raw['sourceRunId']) } : {}),
+    repositoryName: stringValue(raw['repositoryName']),
+    title: stringValue(raw['title']),
+    problemStatement: stringValue(raw['problemStatement']),
+    desiredOutcome: stringValue(raw['desiredOutcome']),
+    successMetrics: stringArray(raw['successMetrics']),
+    evidenceRefs: records(raw['evidenceRefs']).map(mapEvidenceRef),
+    status: stringValue(raw['status'], 'proposed') as ProjectGoalStatusDto,
+    priority: stringValue(raw['priority'], 'normal') as ProjectGoalPriorityDto,
+    riskLevel: stringValue(raw['riskLevel'], 'medium') as ProjectGoalRiskLevelDto,
+    suggestedTaskProposals: records(raw['suggestedTaskProposals']).map(mapProjectTaskProposalDraft),
+    ...(optionalString(raw['approvedAt']) ? { approvedAt: optionalString(raw['approvedAt']) } : {}),
+    ...(optionalString(raw['activatedAt']) ? { activatedAt: optionalString(raw['activatedAt']) } : {}),
+    ...(optionalString(raw['completedAt']) ? { completedAt: optionalString(raw['completedAt']) } : {}),
+    ...(optionalString(raw['rejectedAt']) ? { rejectedAt: optionalString(raw['rejectedAt']) } : {}),
+    ...(optionalString(raw['rejectionReason'])
+      ? { rejectionReason: optionalString(raw['rejectionReason']) }
+      : {}),
+    ...(optionalString(raw['staleAt']) ? { staleAt: optionalString(raw['staleAt']) } : {}),
+    ...(optionalString(raw['staleReason']) ? { staleReason: optionalString(raw['staleReason']) } : {}),
+    createdAt: stringValue(raw['createdAt']),
+    updatedAt: stringValue(raw['updatedAt']),
+  };
+};
+
+export const mapProjectGoalSummary = (value: unknown): ProjectGoalSummaryDto => {
+  const raw = record(value);
+  return {
+    id: stringValue(raw['id']),
+    title: stringValue(raw['title']),
+    status: stringValue(raw['status'], 'proposed') as ProjectGoalStatusDto,
+    priority: stringValue(raw['priority'], 'normal') as ProjectGoalPriorityDto,
+    riskLevel: stringValue(raw['riskLevel'], 'medium') as ProjectGoalRiskLevelDto,
+    repositoryName: stringValue(raw['repositoryName']),
+  };
+};
+
+export const mapProjectGoalAuditEvent = (value: unknown): ProjectGoalAuditEventDto => {
+  const raw = record(value);
+  return {
+    id: stringValue(raw['id']),
+    goalId: stringValue(raw['goalId']),
+    kind: stringValue(raw['kind']),
+    ...(mapActor(raw['actor']) ? { actor: mapActor(raw['actor']) } : {}),
+    ...(optionalString(raw['message']) ? { message: optionalString(raw['message']) } : {}),
+    ...(typeof raw['payload'] === 'object' && raw['payload'] !== null
+      ? { payload: raw['payload'] as Record<string, unknown> }
+      : {}),
+    createdAt: stringValue(raw['createdAt']),
+  };
+};
+
+export const mapProjectGoalTaskLink = (value: unknown): ProjectGoalTaskLinkDto => {
+  const raw = record(value);
+  return {
+    id: stringValue(raw['id']),
+    goalId: stringValue(raw['goalId']),
+    taskId: stringValue(raw['taskId']),
+    linkType: stringValue(raw['linkType']),
+    createdAt: stringValue(raw['createdAt']),
+  };
+};
+
+export const mapProjectGoalListResponse = (value: unknown): ProjectGoalListResponseDto => {
+  const raw = record(value);
+  const linkedTaskCounts = record(raw['linkedTaskCounts']);
+  return {
+    goals: records(raw['goals']).map(mapProjectGoal),
+    linkedTaskCounts: Object.fromEntries(
+      Object.entries(linkedTaskCounts).filter((entry): entry is [string, number] => typeof entry[1] === 'number'),
+    ),
+    role: stringValue(raw['role'], 'viewer') as ProjectGoalListResponseDto['role'],
+    generatedAt: stringValue(raw['generatedAt']),
+  };
+};
+
+export const mapProjectGoalDetailResponse = (value: unknown): ProjectGoalDetailResponseDto => {
+  const raw = record(value);
+  return {
+    goal: mapProjectGoal(raw['goal']),
+    auditEvents: records(raw['auditEvents']).map(mapProjectGoalAuditEvent),
+    taskLinks: records(raw['taskLinks']).map(mapProjectGoalTaskLink),
+    linkedTasks: records(raw['linkedTasks']).map(mapTaskSummary),
+  };
+};
+
+export const mapProjectGoalCommandResponse = (value: unknown): ProjectGoalCommandResponseDto => {
+  const raw = record(value);
+  return {
+    goal: mapProjectGoal(raw['goal']),
+  };
+};
+
+export const mapProjectGoalProposeTasksResponse = (
+  value: unknown,
+): ProjectGoalProposeTasksResponseDto => {
+  const raw = record(value);
+  return {
+    goal: mapProjectGoal(raw['goal']),
+    tasks: records(raw['tasks']).map((task) => mapTaskDetail(task)),
+    proposals: Array.isArray(raw['proposals']) ? raw['proposals'] : [],
+    taskLinks: records(raw['taskLinks']).map(mapProjectGoalTaskLink),
   };
 };
 

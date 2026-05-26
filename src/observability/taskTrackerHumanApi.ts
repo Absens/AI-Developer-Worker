@@ -5,6 +5,8 @@ import {
   PROJECT_MANAGER_PROPOSED_TASK_LINK_TYPE,
   PROJECT_GOAL_STATUSES,
   type ListProjectGoalsInput,
+  type ProjectGoal,
+  type ProjectGoalTaskLink,
   type ProjectGoalStatus,
   type ProjectManagerConfig,
   type ProjectManagerOrchestrator,
@@ -428,8 +430,13 @@ export class TaskTrackerHumanApi {
             (!supervisorStatus ||
               task.proposal.supervisorStatus === supervisorStatus),
         );
+        const projectGoalsByTaskId = await this.projectGoalSummariesByTaskId(
+          tasks.map((task) => task.id),
+        );
         json(response, 200, {
-          proposals: tasks.map((task) => this.summarizeProposal(task)),
+          proposals: tasks.map((task) =>
+            this.summarizeProposal(task, projectGoalsByTaskId.get(task.id) ?? []),
+          ),
           role: auth.role,
           generatedAt: new Date().toISOString(),
         });
@@ -487,7 +494,13 @@ export class TaskTrackerHumanApi {
           tracker.listActiveLeases(),
           tracker.listTasks({ limit: 500 }),
         ]);
-        json(response, 200, this.buildTaskDetail(task, leases, allTasks));
+        const projectGoalsByTaskId = await this.projectGoalSummariesByTaskId([taskId]);
+        json(response, 200, {
+          ...this.buildTaskDetail(task, leases, allTasks),
+          ...((projectGoalsByTaskId.get(taskId)?.length ?? 0) > 0
+            ? { projectGoals: projectGoalsByTaskId.get(taskId) }
+            : {}),
+        });
         return;
       }
 
@@ -659,11 +672,19 @@ export class TaskTrackerHumanApi {
         return true;
       }
       const auth = this.requireAuth(request, "viewer");
-      const goals = await this.requireProjectManagerStore().listGoals(
-        this.parseProjectGoalFilters(url),
+      const store = this.requireProjectManagerStore();
+      const goals = await store.listGoals(this.parseProjectGoalFilters(url));
+      const linkedTaskCounts = Object.fromEntries(
+        await Promise.all(
+          goals.map(async (goal) => [
+            goal.id,
+            (await store.listGoalTaskLinks(goal.id)).length,
+          ]),
+        ),
       );
       json(response, 200, {
         goals,
+        linkedTaskCounts,
         role: auth.role,
         generatedAt: new Date().toISOString(),
       });
@@ -685,7 +706,13 @@ export class TaskTrackerHumanApi {
           store.listGoalEvents(goalId),
           store.listGoalTaskLinks(goalId),
         ]);
-        json(response, 200, { goal, auditEvents, taskLinks });
+        const linkedTasks = await this.linkedTaskSummaries(taskLinks);
+        json(response, 200, {
+          goal,
+          auditEvents,
+          taskLinks,
+          ...(linkedTasks ? { linkedTasks } : {}),
+        });
         return true;
       }
 
@@ -719,6 +746,35 @@ export class TaskTrackerHumanApi {
         return true;
       }
 
+      if (suffix === "/commands/complete") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        const auth = this.requireAuth(request, "developer");
+        await this.readOptionalJson(request);
+        const goal = await this.requireProjectManagerStore().completeGoal(goalId, {
+          actor: auth.actor,
+        });
+        json(response, 200, { goal });
+        return true;
+      }
+
+      if (suffix === "/commands/stale") {
+        if (request.method !== "POST") {
+          text(response, 405, "method not allowed");
+          return true;
+        }
+        const auth = this.requireAuth(request, "developer");
+        const body = requireObject(await this.readJson(request), "request body");
+        const goal = await this.requireProjectManagerStore().markGoalStale(goalId, {
+          actor: auth.actor,
+          staleReason: requiredString(body.reason, "reason"),
+        });
+        json(response, 200, { goal });
+        return true;
+      }
+
       if (suffix === "/commands/propose-tasks") {
         if (request.method !== "POST") {
           text(response, 405, "method not allowed");
@@ -742,7 +798,10 @@ export class TaskTrackerHumanApi {
             goal.repositoryName,
           ),
         })) {
-          const task = await tracker.proposeTask(proposalInput);
+          const task = await tracker.proposeTask({
+            ...proposalInput,
+            autonomyLevel: "proposal_only",
+          });
           tasks.push(task);
           taskLinks.push(
             await store.linkGoalTask({
@@ -788,6 +847,7 @@ export class TaskTrackerHumanApi {
       ROLE_RANK[auth.role] >= ROLE_RANK[role];
     const hasProjectManagerStore = Boolean(this.input.projectManager);
     const hasProjectManagerRunner = Boolean(this.input.projectManager?.runner);
+    const hasTaskTracker = Boolean(this.input.taskTracker);
 
     return {
       user: {
@@ -814,6 +874,10 @@ export class TaskTrackerHumanApi {
         canCreateSystemTask: auth.service === "system" && canRole("admin"),
         canReadProjectGoals: canRole("viewer") && hasProjectManagerStore,
         canApproveProjectGoals: canRole("developer") && hasProjectManagerStore,
+        canProposeProjectGoalTasks:
+          canRole("operator") && hasProjectManagerStore && hasTaskTracker,
+        canCompleteProjectGoals: canRole("developer") && hasProjectManagerStore,
+        canMarkProjectGoalsStale: canRole("developer") && hasProjectManagerStore,
         canRunProjectManager: canRole("operator") && hasProjectManagerRunner,
       },
       apiPath: this.input.config.apiPath,
@@ -1322,10 +1386,76 @@ export class TaskTrackerHumanApi {
     }
   }
 
-  private summarizeProposal(task: TaskRecord): Record<string, unknown> {
+  private summarizeProjectGoal(goal: ProjectGoal): Record<string, unknown> {
+    return {
+      id: goal.id,
+      title: goal.title,
+      status: goal.status,
+      priority: goal.priority,
+      riskLevel: goal.riskLevel,
+      repositoryName: goal.repositoryName,
+    };
+  }
+
+  private async projectGoalSummariesByTaskId(
+    taskIds: string[],
+  ): Promise<Map<string, Record<string, unknown>[]>> {
+    if (!this.input.projectManager || taskIds.length === 0) {
+      return new Map();
+    }
+    const links =
+      await this.input.projectManager.store.listGoalTaskLinksForTaskIds(taskIds);
+    const goalsById = new Map(
+      await Promise.all(
+        [...new Set(links.map((link) => link.goalId))].map(async (goalId) => {
+          const goal = await this.input.projectManager!.store.getGoal(goalId);
+          return [goalId, this.summarizeProjectGoal(goal)] as const;
+        }),
+      ),
+    );
+    const summariesByTaskId = new Map<string, Record<string, unknown>[]>();
+    for (const link of links) {
+      const summary = goalsById.get(link.goalId);
+      if (!summary) {
+        continue;
+      }
+      const summaries = summariesByTaskId.get(link.taskId) ?? [];
+      if (!summaries.some((existing) => existing["id"] === summary["id"])) {
+        summaries.push(summary);
+      }
+      summariesByTaskId.set(link.taskId, summaries);
+    }
+    return summariesByTaskId;
+  }
+
+  private async linkedTaskSummaries(
+    taskLinks: ProjectGoalTaskLink[],
+  ): Promise<Record<string, unknown>[] | undefined> {
+    if (!this.input.taskTracker) {
+      return undefined;
+    }
+    const linkedTasks = [];
+    for (const link of taskLinks) {
+      try {
+        linkedTasks.push(summarizeTask(await this.input.taskTracker.getTask(link.taskId)));
+      } catch (error) {
+        if (error instanceof TaskNotFoundError) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    return linkedTasks;
+  }
+
+  private summarizeProposal(
+    task: TaskRecord,
+    projectGoals: Record<string, unknown>[] = [],
+  ): Record<string, unknown> {
     const proposal = task.proposal;
     return {
       ...summarizeTask(task),
+      ...(projectGoals.length > 0 ? { projectGoals } : {}),
       proposal: proposal
         ? {
             supervisorStatus: proposal.supervisorStatus,

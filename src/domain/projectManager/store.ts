@@ -73,6 +73,7 @@ export interface ProjectManagerStore {
   listGoalEvents(goalId: string): Promise<ProjectGoalAuditEvent[]>;
   linkGoalTask(input: LinkProjectGoalTaskInput): Promise<ProjectGoalTaskLink>;
   listGoalTaskLinks(goalId: string): Promise<ProjectGoalTaskLink[]>;
+  listGoalTaskLinksForTaskIds(taskIds: string[]): Promise<ProjectGoalTaskLink[]>;
 }
 
 export interface InMemoryProjectManagerStoreInput {
@@ -409,6 +410,18 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     this.requireGoal(goalId);
     return structuredClone(
       [...this.goalTaskLinks.values()].filter((link) => link.goalId === goalId),
+    );
+  }
+
+  public async listGoalTaskLinksForTaskIds(
+    taskIds: string[],
+  ): Promise<ProjectGoalTaskLink[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const taskIdSet = new Set(taskIds);
+    return structuredClone(
+      [...this.goalTaskLinks.values()].filter((link) => taskIdSet.has(link.taskId)),
     );
   }
 

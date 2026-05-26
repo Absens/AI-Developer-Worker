@@ -344,6 +344,12 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
       return asQueryResult(queryResult([row]));
     }
     if (sql.includes("FROM project_goal_tasks")) {
+      if (sql.includes("task_id = ANY")) {
+        const taskIds = values[0] as string[];
+        return asQueryResult(
+          queryResult(this.links.filter((link) => taskIds.includes(String(link.task_id)))),
+        );
+      }
       if (sql.includes("task_id =") && sql.includes("link_type =")) {
         this.projectGoalTaskDuplicateSelects.push(sql);
         return asQueryResult(
@@ -669,6 +675,32 @@ describe("PostgresProjectManagerStore", () => {
     );
   });
 
+  it("lists goal task links by task ids", async () => {
+    const { db, store } = createStoreWithDb();
+    db.seedTask("task-pg-1");
+    db.seedTask("task-pg-2");
+    const analysis = await recordTestAnalysis(store);
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: analysis.id,
+      repositoryName: "developer",
+      goals: [goalDraft({ title: "Link lookup goal" })],
+    });
+    const first = await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "task-pg-1",
+      linkType: "proposed_task",
+    });
+    await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "task-pg-2",
+      linkType: "proposed_task",
+    });
+
+    await expect(
+      store.listGoalTaskLinksForTaskIds(["task-pg-1", "missing"]),
+    ).resolves.toEqual([first]);
+  });
+
   it("rejects goals created for a missing source analysis", async () => {
     const store = createStore();
 
@@ -815,5 +847,49 @@ describePostgres("PostgresProjectManagerStore with real PostgreSQL", () => {
     await expect(store.listGoalEvents(first[0]!.id)).resolves.toEqual([
       expect.objectContaining({ kind: "project_goal_created" }),
     ]);
+  });
+
+  it("lists goal task links by task ids", async () => {
+    const store = new PostgresProjectManagerStore(pg, {
+      now: () => new Date(baseTime),
+    });
+    const analysis = await recordTestAnalysis(store);
+    await pg.query(
+      `
+        INSERT INTO tasks (
+          id, title, description, source, created_by, status, task_type,
+          created_at, updated_at
+        )
+        VALUES
+          (
+            'task-pg-1', 'Task 1', 'Description 1', '{"kind":"native"}'::jsonb,
+            '{"owner":"human","id":"dev-1"}'::jsonb, 'new', 'documentation', $1, $1
+          ),
+          (
+            'task-pg-2', 'Task 2', 'Description 2', '{"kind":"native"}'::jsonb,
+            '{"owner":"human","id":"dev-1"}'::jsonb, 'new', 'documentation', $1, $1
+          )
+      `,
+      [baseTime],
+    );
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: analysis.id,
+      repositoryName: "developer",
+      goals: [goalDraft({ title: "Link lookup goal" })],
+    });
+    const first = await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "task-pg-1",
+      linkType: "proposed_task",
+    });
+    await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "task-pg-2",
+      linkType: "proposed_task",
+    });
+
+    await expect(
+      store.listGoalTaskLinksForTaskIds(["task-pg-1", "missing"]),
+    ).resolves.toEqual([first]);
   });
 });

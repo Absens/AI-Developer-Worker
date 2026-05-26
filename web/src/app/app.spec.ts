@@ -7,6 +7,7 @@ import { ConfirmationService, MessageService } from 'primeng/api';
 import { providePrimeNG } from 'primeng/config';
 
 import { App } from './app';
+import { viewerSession } from './testing/human-api.fixtures';
 
 describe('App', () => {
   beforeEach(async () => {
@@ -56,6 +57,38 @@ describe('App', () => {
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('.console-title')?.textContent).toContain('Консоль задач');
     expect(compiled.textContent).toContain('Viewer One');
+    http.verify();
+  });
+
+  it('shows the goals nav item only when the session can read project goals', () => {
+    const fixture = TestBed.createComponent(App);
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/session').flush({
+      ...viewerSession,
+      capabilities: {
+        ...viewerSession.capabilities,
+        canReadProjectGoals: true,
+      },
+    });
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="nav-goals"]')?.textContent).toContain('Цели');
+    http.verify();
+  });
+
+  it('hides the goals nav item when the session cannot read project goals', () => {
+    const fixture = TestBed.createComponent(App);
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/session').flush({
+      ...viewerSession,
+      capabilities: {
+        ...viewerSession.capabilities,
+        canReadProjectGoals: false,
+      },
+    });
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="nav-goals"]')).toBeNull();
     http.verify();
   });
 });

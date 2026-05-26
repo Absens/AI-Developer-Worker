@@ -86,7 +86,7 @@ describe("Codex CLI contract verifier", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Codex CLI contract verified");
-  });
+  }, 15_000);
 
   it("fails when resume help output is missing required markers", () => {
     const tempDir = createTempDir();

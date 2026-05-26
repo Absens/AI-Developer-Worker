@@ -100,6 +100,22 @@ interface PendingProposalAction {
                     <p-tag [value]="proposal.proposal.autonomyLevel" severity="secondary" />
                   }
                 </div>
+                @if (proposal.projectGoals?.length) {
+                  <div class="summary-block proposal-goals" data-testid="proposal-project-goals">
+                    <h3>Цели проекта</h3>
+                    <div class="goal-badge-list">
+                      @for (goal of proposal.projectGoals; track goal.id) {
+                        <a class="goal-badge" [routerLink]="['/goals', goal.id]">
+                          <span class="goal-badge__title">{{ goal.title }}</span>
+                          <span class="tag-row tag-row--compact">
+                            <p-tag [value]="goalStatusLabel(goal.status)" [severity]="goalStatusSeverity(goal.status)" />
+                            <p-tag [value]="'Риск: ' + goal.riskLevel" [severity]="riskSeverity(goal.riskLevel)" />
+                          </span>
+                        </a>
+                      }
+                    </div>
+                  </div>
+                }
                 @if (proposal.proposal.proposalReason) {
                   <p>{{ truncate(proposal.proposal.proposalReason, 420) }}</p>
                 }
@@ -339,6 +355,44 @@ export class ProposalsPageComponent implements OnInit {
 
   protected statusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' | 'contrast' {
     return statusSeverity(status);
+  }
+
+  protected goalStatusLabel(status: string): string {
+    const labels: Record<string, string> = {
+      proposed: 'Предложено',
+      approved: 'Одобрено',
+      active: 'Активно',
+      completed: 'Завершено',
+      rejected: 'Отклонено',
+      stale: 'Устарело',
+    };
+    return labels[status] ?? status;
+  }
+
+  protected goalStatusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
+    if (status === 'completed') {
+      return 'success';
+    }
+    if (status === 'active' || status === 'approved') {
+      return 'info';
+    }
+    if (status === 'proposed') {
+      return 'warn';
+    }
+    if (status === 'rejected' || status === 'stale') {
+      return 'danger';
+    }
+    return 'secondary';
+  }
+
+  protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
+    if (riskLevel === 'high') {
+      return 'danger';
+    }
+    if (riskLevel === 'medium') {
+      return 'warn';
+    }
+    return 'success';
   }
 
   protected formatDate(value: string): string {

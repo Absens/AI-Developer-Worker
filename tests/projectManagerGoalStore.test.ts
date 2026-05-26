@@ -357,6 +357,30 @@ describe("InMemoryProjectManagerStore goals", () => {
     await expect(store.listGoalTaskLinks(goal!.id)).resolves.toEqual([first]);
   });
 
+  it("lists project goal task links by task ids", async () => {
+    const store = createStore();
+    const [goal] = await store.createGoalsFromAnalysis({
+      sourceAnalysisId: "pm_analysis_1",
+      repositoryName: "developer",
+      goals: [goalDraft()],
+    });
+    const first = await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "task-1",
+      linkType: "proposed_task",
+    });
+    await store.linkGoalTask({
+      goalId: goal!.id,
+      taskId: "task-2",
+      linkType: "proposed_task",
+    });
+
+    await expect(
+      store.listGoalTaskLinksForTaskIds(["task-1", "missing"]),
+    ).resolves.toEqual([first]);
+    await expect(store.listGoalTaskLinksForTaskIds([])).resolves.toEqual([]);
+  });
+
   it("protects stored goals, events, and links from caller mutations", async () => {
     const store = createStore();
     const [goal] = await store.createGoalsFromAnalysis({

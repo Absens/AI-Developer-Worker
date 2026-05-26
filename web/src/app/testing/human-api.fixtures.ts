@@ -1,6 +1,9 @@
 import {
   OperationsSnapshotDto,
   ProposalSummaryDto,
+  ProjectGoalDetailResponseDto,
+  ProjectGoalDto,
+  ProjectGoalListResponseDto,
   SessionDto,
   TaskDetailDto,
   TaskDetailResponseDto,
@@ -255,6 +258,87 @@ export const proposedTask: ProposalSummaryDto = {
     suggestedAcceptanceCriteria: ['Runbook explains the flaky test flow.'],
     createdAt: now,
   },
+};
+
+export const projectGoal: ProjectGoalDto = {
+  id: 'pm_goal_1',
+  sourceAnalysisId: 'analysis-1',
+  sourceRunId: 'run-1',
+  repositoryName: 'developer',
+  title: 'Stabilize proposal workflow',
+  problemStatement: 'Proposal review lacks goal traceability for project manager work.',
+  desiredOutcome: 'Reviewers can see the project goal behind every generated proposal.',
+  successMetrics: ['Goal context appears on proposal and task detail views.'],
+  evidenceRefs: [
+    {
+      kind: 'analysis',
+      ref: 'analysis-1',
+      summary: 'PM analysis found missing traceability.',
+    },
+  ],
+  status: 'proposed',
+  priority: 'high',
+  riskLevel: 'medium',
+  suggestedTaskProposals: [
+    {
+      title: 'Show project goal context in proposals',
+      description: 'Render parent project goal summaries in proposal review surfaces.',
+      taskType: 'frontend_ui_fix',
+      acceptanceCriteria: ['Proposal review shows the goal context.'],
+      expectedBlastRadius: 'Angular console only.',
+      evidenceRefs: [
+        {
+          kind: 'analysis',
+          ref: 'analysis-1',
+          summary: 'Proposal review needs goal context.',
+        },
+      ],
+    },
+  ],
+  createdAt: now,
+  updatedAt: now,
+};
+
+export const approvedProjectGoal: ProjectGoalDto = {
+  ...projectGoal,
+  id: 'pm_goal_approved',
+  status: 'approved',
+  approvedAt: '2026-04-29T08:03:00.000Z',
+};
+
+export const projectGoalList: ProjectGoalListResponseDto = {
+  goals: [projectGoal, approvedProjectGoal],
+  linkedTaskCounts: {
+    [projectGoal.id]: 1,
+    [approvedProjectGoal.id]: 0,
+  },
+  role: 'operator',
+  generatedAt: now,
+};
+
+export const projectGoalDetail: ProjectGoalDetailResponseDto = {
+  goal: projectGoal,
+  auditEvents: [
+    {
+      id: 'goal-event-1',
+      goalId: projectGoal.id,
+      kind: 'goal_proposed',
+      actor: { owner: 'agent', id: 'pm-agent', displayName: 'Project Manager' },
+      message: 'Project goal proposed.',
+      payload: { sourceAnalysisId: projectGoal.sourceAnalysisId },
+      createdAt: now,
+    },
+  ],
+  taskLinks: [
+    {
+      id: 'goal-task-link-1',
+      goalId: projectGoal.id,
+      taskId: readyTask.id,
+      linkType: 'proposed_task',
+      createdAt: now,
+    },
+  ],
+  linkedTasks: [readyTask],
 };
 
 export const operationsSnapshot: OperationsSnapshotDto = {

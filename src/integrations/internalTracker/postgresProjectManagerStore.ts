@@ -669,6 +669,24 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
     return result.rows.map(mapGoalTaskRow);
   }
 
+  public async listGoalTaskLinksForTaskIds(
+    taskIds: string[],
+  ): Promise<ProjectGoalTaskLink[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const result = await this.db.query<ProjectGoalTaskRow>(
+      `
+        SELECT *
+        FROM project_goal_tasks
+        WHERE task_id = ANY($1::text[])
+        ORDER BY created_at, id
+      `,
+      [taskIds],
+    );
+    return result.rows.map(mapGoalTaskRow);
+  }
+
   private async updateGoalLifecycle(
     goalId: string,
     input: {

@@ -1,6 +1,6 @@
 # Project Manager Subsystem Roadmap
 
-_Актуально на 2026-05-25._
+_Актуально на 2026-05-26._
 
 ## Краткое решение
 
@@ -310,6 +310,11 @@ Testing:
 ### Phase PM-4 - Human UI for goals and roadmap
 
 **Цель:** дать человеку рабочий экран управления целями, а не только список AI proposals.
+
+**Status:** implemented in `ai/project-manager-pm-4-prep`. PM-4 adds
+dedicated goals list/detail UI, role-aware goal actions, linked goal context on
+proposal and task detail views, backend response enrichments, and a Playwright
+critical flow that keeps goal-derived work inside the proposal approval path.
 
 **Preparation:** PM-4 implementation scope is detailed in
 `docs/superpowers/specs/2026-05-26-project-manager-pm-4-human-ui-design.md`

@@ -1,16 +1,20 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Provider } from '@angular/core';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
-import { Router, provideRouter } from '@angular/router';
+import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { TestBed } from '@angular/core/testing';
 import Aura from '@primeuix/themes/aura';
 import { MessageService } from 'primeng/api';
 import { providePrimeNG } from 'primeng/config';
 
 import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
+import { ProjectGoalDto } from '../models/human-api.dto';
 import { SessionService } from '../services/session.service';
 import { TASK_COMMAND_POLICIES, TASK_STATUSES, statusLabel } from '../utils/task-ui';
 import { CreateTaskPageComponent } from './create-task-page.component';
+import { GoalDetailPageComponent } from './goal-detail-page.component';
+import { GoalsPageComponent } from './goals-page.component';
 import {
   OperationsPageComponent,
   classifyHeartbeat,
@@ -24,16 +28,20 @@ import {
   developerSession,
   draftTask,
   failedTask,
+  approvedProjectGoal,
   mrValidationTaskDetail,
   operationsSnapshot,
   operatorSession,
+  projectGoal,
+  projectGoalDetail,
+  projectGoalList,
   proposedTask,
   readyTask,
   readyTaskDetail,
   viewerSession,
 } from '../testing/human-api.fixtures';
 
-const configure = async (imports: unknown[]): Promise<HttpTestingController> => {
+const configure = async (imports: unknown[], providers: Provider[] = []): Promise<HttpTestingController> => {
   await TestBed.configureTestingModule({
     imports,
     providers: [
@@ -43,6 +51,7 @@ const configure = async (imports: unknown[]): Promise<HttpTestingController> => 
       provideAnimationsAsync(),
       providePrimeNG({ theme: { preset: Aura } }),
       MessageService,
+      ...providers,
     ],
   }).compileComponents();
   return TestBed.inject(HttpTestingController);
@@ -52,6 +61,52 @@ const loadSession = (http: HttpTestingController, session = developerSession): v
   TestBed.inject(SessionService).load();
   http.expectOne('/api/session').flush(session);
 };
+
+const pmViewerSession = {
+  ...viewerSession,
+  capabilities: {
+    ...viewerSession.capabilities,
+    canReadProjectGoals: true,
+  },
+};
+
+const pmDeveloperSession = {
+  ...developerSession,
+  capabilities: {
+    ...developerSession.capabilities,
+    canReadProjectGoals: true,
+    canApproveProjectGoals: true,
+    canCompleteProjectGoals: true,
+    canMarkProjectGoalsStale: true,
+  },
+};
+
+const pmOperatorSession = {
+  ...operatorSession,
+  capabilities: {
+    ...operatorSession.capabilities,
+    canReadProjectGoals: true,
+    canApproveProjectGoals: true,
+    canProposeProjectGoalTasks: true,
+    canCompleteProjectGoals: true,
+    canMarkProjectGoalsStale: true,
+    canRunProjectManager: true,
+  },
+};
+
+const routeProvider = (goalId = projectGoal.id): Provider => ({
+  provide: ActivatedRoute,
+  useValue: {
+    snapshot: {
+      paramMap: convertToParamMap({ goalId }),
+    },
+  },
+});
+
+const goalDetailWith = (goal: ProjectGoalDto) => ({
+  ...projectGoalDetail,
+  goal,
+});
 
 describe('task UI labels', () => {
   it('renders Russian task status and command labels', () => {
@@ -154,6 +209,25 @@ describe('TaskDetailPanelComponent', () => {
     expect(text).toContain('Предпросмотр контекста');
     expect(text).not.toContain('Отменить');
     expect(text).not.toContain('Поставить на паузу');
+  });
+
+  it('renders linked parent project goals in task details', async () => {
+    const http = await configure([TaskDetailPanelComponent]);
+    loadSession(http, viewerSession);
+
+    const fixture = TestBed.createComponent(TaskDetailPanelComponent);
+    fixture.componentRef.setInput('taskId', 'ready-task');
+    http.expectOne('/api/tasks/ready-task').flush({
+      ...readyTaskDetail,
+      projectGoals: [projectGoal],
+    });
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    const text = element.textContent ?? '';
+    expect(text).toContain('Цели проекта');
+    expect(text).toContain(projectGoal.title);
+    expect(element.querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
   });
 
   it('renders allowlisted agent context preview fields', async () => {
@@ -381,6 +455,237 @@ describe('ProposalsPageComponent', () => {
       role: 'developer',
       generatedAt: '2026-04-29T08:01:00.000Z',
     });
+  });
+
+  it('renders linked parent project goals for proposal responses', async () => {
+    const http = await configure([ProposalsPageComponent]);
+    loadSession(http, viewerSession);
+
+    const fixture = TestBed.createComponent(ProposalsPageComponent);
+    fixture.detectChanges();
+    http.expectOne((entry) => entry.url === '/api/proposals' && entry.params.get('supervisorStatus') === 'proposed').flush({
+      proposals: [
+        {
+          ...proposedTask,
+          projectGoals: [projectGoal],
+        },
+      ],
+      role: 'viewer',
+      generatedAt: '2026-04-29T08:00:00.000Z',
+    });
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    expect(element.textContent).toContain(projectGoal.title);
+    expect(element.querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
+  });
+});
+
+describe('GoalsPageComponent', () => {
+  afterEach(() => TestBed.inject(HttpTestingController).verify());
+
+  it('renders project goals with the default proposed filter and linked task counts', async () => {
+    const http = await configure([GoalsPageComponent]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalsPageComponent);
+    fixture.detectChanges();
+    const request = http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed');
+    expect(request.request.params.has('repositoryName')).toBeFalse();
+    request.flush(projectGoalList);
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('Цели проекта');
+    expect(text).toContain(projectGoal.title);
+    expect(text).toContain(projectGoal.id);
+    expect(text).toContain('developer');
+    expect(text).toContain('Связанные задачи');
+    expect(text).toContain('Черновики задач');
+    expect(text).toContain('1');
+    expect(text).toContain('run-1');
+    expect(text).toContain('PM analysis found missing traceability.');
+    expect((fixture.nativeElement as HTMLElement).querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
+  });
+
+  it('requests goals with repository and status filters and can run analysis for operators', async () => {
+    const http = await configure([GoalsPageComponent]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalsPageComponent);
+    fixture.detectChanges();
+    http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed').flush(projectGoalList);
+
+    const component = fixture.componentInstance as unknown as {
+      repositoryFilter: { setValue: (value: string) => void };
+      statusFilter: { setValue: (value: string) => void };
+      load: () => void;
+      runAnalysis: () => void;
+    };
+    component.repositoryFilter.setValue('developer');
+    component.statusFilter.setValue('approved');
+    component.load();
+    const filtered = http.expectOne((entry) => entry.url === '/api/project-goals');
+    expect(filtered.request.params.get('repositoryName')).toBe('developer');
+    expect(filtered.request.params.get('status')).toBe('approved');
+    filtered.flush({ ...projectGoalList, goals: [approvedProjectGoal] });
+
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="goals-run-analysis"]')).not.toBeNull();
+    component.runAnalysis();
+    const run = http.expectOne('/api/project-manager/runs');
+    expect(run.request.body).toEqual({ repositoryName: 'developer' });
+    run.flush({ runId: 'run-2' });
+    http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('repositoryName') === 'developer').flush(projectGoalList);
+  });
+});
+
+describe('GoalDetailPageComponent', () => {
+  afterEach(() => TestBed.inject(HttpTestingController).verify());
+
+  it('loads and renders project goal detail traceability sections', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider()]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(projectGoalDetail);
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain(projectGoal.title);
+    expect(text).toContain('Proposal review lacks goal traceability');
+    expect(text).toContain('Reviewers can see the project goal');
+    expect(text).toContain('Goal context appears on proposal');
+    expect(text).toContain('PM analysis found missing traceability.');
+    expect(text).toContain('Show project goal context in proposals');
+    expect(text).toContain(readyTask.title);
+    expect(text).toContain('Project goal proposed.');
+  });
+
+  it('approves proposed goals and refreshes the detail', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider()]);
+    loadSession(http, pmDeveloperSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(projectGoalDetail);
+    fixture.detectChanges();
+
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('[data-testid="goal-approve"]')?.click();
+    const approve = http.expectOne(`/api/project-goals/${projectGoal.id}/commands/approve`);
+    expect(approve.request.body).toEqual({});
+    approve.flush({ goal: approvedProjectGoal });
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(goalDetailWith(approvedProjectGoal));
+  });
+
+  it('requires a reject reason before posting and submits non-empty reasons', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider()]);
+    loadSession(http, pmDeveloperSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(projectGoalDetail);
+    fixture.detectChanges();
+
+    const component = fixture.componentInstance as unknown as {
+      reasonControl: { setValue: (value: string) => void };
+      openReasonDialog: (action: 'reject' | 'stale') => void;
+      submitReasonAction: () => void;
+    };
+    component.openReasonDialog('reject');
+    component.submitReasonAction();
+    http.expectNone(`/api/project-goals/${projectGoal.id}/commands/reject`);
+
+    component.reasonControl.setValue('No longer matches roadmap.');
+    component.submitReasonAction();
+    const reject = http.expectOne(`/api/project-goals/${projectGoal.id}/commands/reject`);
+    expect(reject.request.body).toEqual({ reason: 'No longer matches roadmap.' });
+    reject.flush({ goal: { ...projectGoal, status: 'rejected', rejectionReason: 'No longer matches roadmap.' } });
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(
+      goalDetailWith({ ...projectGoal, status: 'rejected', rejectionReason: 'No longer matches roadmap.' }),
+    );
+  });
+
+  it('lets operators propose tasks for approved goals', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider(approvedProjectGoal.id)]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${approvedProjectGoal.id}`).flush(goalDetailWith(approvedProjectGoal));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="goal-propose-tasks"]')).not.toBeNull();
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('[data-testid="goal-propose-tasks"]')?.click();
+    const propose = http.expectOne(`/api/project-goals/${approvedProjectGoal.id}/commands/propose-tasks`);
+    expect(propose.request.body).toEqual({});
+    propose.flush({ goal: approvedProjectGoal, tasks: [], proposals: [], taskLinks: [] });
+    http.expectOne(`/api/project-goals/${approvedProjectGoal.id}`).flush(goalDetailWith(approvedProjectGoal));
+  });
+
+  it('lets developers complete active goals', async () => {
+    const activeGoal: ProjectGoalDto = { ...projectGoal, status: 'active', activatedAt: '2026-04-29T08:05:00.000Z' };
+    const completedGoal: ProjectGoalDto = { ...activeGoal, status: 'completed', completedAt: '2026-04-29T08:10:00.000Z' };
+    const http = await configure([GoalDetailPageComponent], [routeProvider(activeGoal.id)]);
+    loadSession(http, pmDeveloperSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${activeGoal.id}`).flush(goalDetailWith(activeGoal));
+    fixture.detectChanges();
+
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('[data-testid="goal-complete"]')?.click();
+    const complete = http.expectOne(`/api/project-goals/${activeGoal.id}/commands/complete`);
+    expect(complete.request.body).toEqual({});
+    complete.flush({ goal: completedGoal });
+    http.expectOne(`/api/project-goals/${activeGoal.id}`).flush(goalDetailWith(completedGoal));
+  });
+
+  it('requires a stale reason before posting and submits non-empty reasons', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider()]);
+    loadSession(http, pmDeveloperSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(projectGoalDetail);
+    fixture.detectChanges();
+
+    const component = fixture.componentInstance as unknown as {
+      reasonControl: { setValue: (value: string) => void };
+      openReasonDialog: (action: 'reject' | 'stale') => void;
+      submitReasonAction: () => void;
+    };
+    component.openReasonDialog('stale');
+    component.submitReasonAction();
+    http.expectNone(`/api/project-goals/${projectGoal.id}/commands/stale`);
+
+    component.reasonControl.setValue('Superseded by newer analysis.');
+    component.submitReasonAction();
+    const stale = http.expectOne(`/api/project-goals/${projectGoal.id}/commands/stale`);
+    expect(stale.request.body).toEqual({ reason: 'Superseded by newer analysis.' });
+    stale.flush({ goal: { ...projectGoal, status: 'stale', staleReason: 'Superseded by newer analysis.' } });
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(
+      goalDetailWith({ ...projectGoal, status: 'stale', staleReason: 'Superseded by newer analysis.' }),
+    );
+  });
+
+  it('hides goal mutation actions for viewer sessions', async () => {
+    const http = await configure([GoalDetailPageComponent], [routeProvider()]);
+    loadSession(http, pmViewerSession);
+
+    const fixture = TestBed.createComponent(GoalDetailPageComponent);
+    fixture.detectChanges();
+    http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(projectGoalDetail);
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    expect(element.querySelector('[data-testid="goal-approve"]')).toBeNull();
+    expect(element.querySelector('[data-testid="goal-reject"]')).toBeNull();
+    expect(element.querySelector('[data-testid="goal-propose-tasks"]')).toBeNull();
+    expect(element.querySelector('[data-testid="goal-complete"]')).toBeNull();
+    expect(element.querySelector('[data-testid="goal-stale"]')).toBeNull();
+    expect(element.querySelector('[data-testid="goal-run-analysis"]')).toBeNull();
   });
 });
 

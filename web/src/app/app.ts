@@ -55,6 +55,13 @@ export class App {
       capability: 'canReadTasks',
     },
     {
+      label: 'Цели',
+      icon: 'pi pi-sitemap',
+      route: '/goals',
+      testId: 'nav-goals',
+      capability: 'canReadProjectGoals',
+    },
+    {
       label: 'Операции',
       icon: 'pi pi-server',
       route: '/operations',

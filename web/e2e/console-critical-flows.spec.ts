@@ -22,6 +22,53 @@ const fillCreateForm = async (page: Page, title: string): Promise<void> => {
 };
 
 test.describe.serial('task tracker console production flows', () => {
+  test('reviews a project goal and promotes generated work through proposal approval', async ({
+    browser,
+  }) => {
+    const operator = await newRolePage(browser, 'operator');
+    const page = operator.page;
+    const createTaskCalls: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (request.method() === 'POST' && url.pathname === '/api/tasks') {
+        createTaskCalls.push(request.url());
+      }
+    });
+
+    await page.goto('/tasks/goals');
+    await expect(page.getByTestId('goals-page')).toBeVisible();
+    await expect(page.getByTestId('goal-row-pm-goal-low-risk')).toContainText('Stabilize task intake');
+
+    await page.getByTestId('goal-row-pm-goal-low-risk').getByRole('link').click();
+    await expect(page).toHaveURL(/\/tasks\/goals\/pm-goal-low-risk/);
+    await expect(page.getByTestId('goal-detail-page')).toContainText('Stabilize task intake');
+    await expect(page.getByTestId('goal-approve')).toBeVisible();
+    await page.getByTestId('goal-approve').click();
+    await expect(page.getByTestId('goal-propose-tasks')).toBeVisible();
+
+    await page.getByTestId('goal-propose-tasks').click();
+    await expect(page.getByTestId('goal-detail-page')).toContainText('Goal-derived intake guardrails task');
+    expect(createTaskCalls).toEqual([]);
+
+    await page.goto('/tasks/proposals');
+    await expect(page.getByTestId('proposals-page')).toBeVisible();
+    await expect(page.getByTestId('proposal-row-pm-goal-task-pm-goal-low-risk-1')).toBeVisible();
+    await expect(page.getByTestId('proposal-project-goals')).toContainText('Stabilize task intake');
+    await page.getByTestId('proposal-approve-pm-goal-task-pm-goal-low-risk-1').click();
+    await expect(page.getByTestId('proposal-reason')).toBeFocused();
+    await page.getByTestId('proposal-reason').fill('Goal work is scoped and low risk.');
+    await page.getByTestId('proposal-confirm').click();
+    await expect(page.getByTestId('proposal-row-pm-goal-task-pm-goal-low-risk-1')).toBeHidden();
+
+    await page.goto('/tasks');
+    await expect(page.getByTestId('task-row-pm-goal-task-pm-goal-low-risk-1')).toBeVisible();
+    await page.getByTestId('task-row-pm-goal-task-pm-goal-low-risk-1').click();
+    await expect(page.getByTestId('task-detail')).toContainText('Goal-derived intake guardrails task');
+    await expect(page.getByTestId('task-project-goals')).toContainText('Stabilize task intake');
+
+    await operator.close();
+  });
+
   test('runs developer and operator critical workflows', async ({ browser }) => {
     const developer = await newRolePage(browser, 'developer');
     const page = developer.page;
@@ -111,7 +158,29 @@ test.describe.serial('task tracker console production flows', () => {
     await expect(page.getByTestId('operation-retry-failed-task')).toHaveCount(0);
     await expect(page.getByTestId('operation-hold-awaiting-task')).toHaveCount(0);
 
+    await page.goto('/tasks/goals');
+    await expect(page.getByTestId('goals-page')).toBeVisible();
+    await page.goto('/tasks/goals/pm-goal-low-risk');
+    await expect(page.getByTestId('goal-detail-page')).toBeVisible();
+    await expect(page.getByTestId('goal-approve')).toHaveCount(0);
+    await expect(page.getByTestId('goal-reject')).toHaveCount(0);
+    await expect(page.getByTestId('goal-propose-tasks')).toHaveCount(0);
+    await expect(page.getByTestId('goal-complete')).toHaveCount(0);
+    await expect(page.getByTestId('goal-stale')).toHaveCount(0);
+    await expect(page.getByTestId('goal-run-analysis')).toHaveCount(0);
+
     await viewer.close();
+  });
+
+  test('keeps developer sessions from fanning out project goal tasks', async ({ browser }) => {
+    const developer = await newRolePage(browser, 'developer');
+    const page = developer.page;
+
+    await page.goto('/tasks/goals/pm-goal-low-risk');
+    await expect(page.getByTestId('goal-detail-page')).toBeVisible();
+    await expect(page.getByTestId('goal-propose-tasks')).toHaveCount(0);
+
+    await developer.close();
   });
 
   test('covers accessibility, responsive, and visual smoke baselines', async ({

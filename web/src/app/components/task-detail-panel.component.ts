@@ -207,6 +207,23 @@ const arrayText = (value: unknown): string | undefined =>
                     }
                   </div>
                 }
+
+                @if (response.projectGoals?.length) {
+                  <div class="summary-block task-project-goals" data-testid="task-project-goals">
+                    <h4>Цели проекта</h4>
+                    <div class="goal-badge-list">
+                      @for (goal of response.projectGoals; track goal.id) {
+                        <a class="goal-badge" [routerLink]="['/goals', goal.id]">
+                          <span class="goal-badge__title">{{ goal.title }}</span>
+                          <span class="tag-row tag-row--compact">
+                            <p-tag [value]="goalStatusLabel(goal.status)" [severity]="goalStatusSeverity(goal.status)" />
+                            <p-tag [value]="'Риск: ' + goal.riskLevel" [severity]="riskSeverity(goal.riskLevel)" />
+                          </span>
+                        </a>
+                      }
+                    </div>
+                  </div>
+                }
               </section>
 
               <section class="surface stack">
@@ -603,6 +620,44 @@ export class TaskDetailPanelComponent {
 
   protected statusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' | 'contrast' {
     return statusSeverity(status);
+  }
+
+  protected goalStatusLabel(status: string): string {
+    const labels: Record<string, string> = {
+      proposed: 'Предложено',
+      approved: 'Одобрено',
+      active: 'Активно',
+      completed: 'Завершено',
+      rejected: 'Отклонено',
+      stale: 'Устарело',
+    };
+    return labels[status] ?? status;
+  }
+
+  protected goalStatusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
+    if (status === 'completed') {
+      return 'success';
+    }
+    if (status === 'active' || status === 'approved') {
+      return 'info';
+    }
+    if (status === 'proposed') {
+      return 'warn';
+    }
+    if (status === 'rejected' || status === 'stale') {
+      return 'danger';
+    }
+    return 'secondary';
+  }
+
+  protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
+    if (riskLevel === 'high') {
+      return 'danger';
+    }
+    if (riskLevel === 'medium') {
+      return 'warn';
+    }
+    return 'success';
   }
 
   protected formatDate(value: string | undefined): string {

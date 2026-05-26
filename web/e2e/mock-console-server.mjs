@@ -28,6 +28,13 @@ const capabilitiesFor = (role, service = 'human') => ({
   canApproveDecomposition: canRole(role, 'developer'),
   canReadOperations: canRole(role, 'viewer'),
   canCreateSystemTask: service === 'system' && canRole(role, 'admin'),
+  canReadProjectGoals: canRole(role, 'viewer'),
+  canApproveProjectGoals: canRole(role, 'developer'),
+  canRejectProjectGoals: canRole(role, 'developer'),
+  canProposeProjectGoalTasks: canRole(role, 'operator'),
+  canCompleteProjectGoals: canRole(role, 'developer'),
+  canMarkProjectGoalsStale: canRole(role, 'developer'),
+  canRunProjectManager: canRole(role, 'operator') || (service === 'system' && canRole(role, 'admin')),
 });
 
 const detailTask = (summary, overrides = {}) => ({
@@ -67,10 +74,18 @@ const baseSummary = {
 
 const createInitialState = () => {
   const tasks = new Map();
+  const projectGoals = new Map();
+  const goalEvents = new Map();
+  const goalTaskLinks = new Map();
   const put = (summary, overrides = {}) => {
     const task = detailTask({ ...baseSummary, ...summary }, overrides);
     tasks.set(task.id, task);
     return task;
+  };
+  const putGoal = (goal, events = []) => {
+    projectGoals.set(goal.id, goal);
+    goalEvents.set(goal.id, events);
+    return goal;
   };
 
   put({ id: 'ready-task', title: 'Implement ready queue item', status: 'ready' });
@@ -159,10 +174,64 @@ const createInitialState = () => {
   });
   put({ id: 'parent-task', title: 'Parent task', status: 'ready' });
   put({ id: 'child-task', title: 'Child task', status: 'ready' });
+  putGoal(
+    {
+      id: 'pm-goal-low-risk',
+      sourceAnalysisId: 'analysis-pm-1',
+      sourceRunId: 'pm-run-1',
+      repositoryName: 'developer',
+      title: 'Stabilize task intake',
+      problemStatement: 'Incoming tasks need clearer triage guardrails before implementation work starts.',
+      desiredOutcome: 'Low-risk intake checks are documented and visible to developers before queue execution.',
+      successMetrics: [
+        'New task proposals include explicit acceptance criteria.',
+        'Operators can trace generated work back to the project goal.',
+      ],
+      evidenceRefs: [
+        {
+          kind: 'task',
+          ref: 'ready-task',
+          summary: 'Existing ready queue item shows the repository and queue conventions used by intake.',
+        },
+      ],
+      status: 'proposed',
+      priority: 'normal',
+      riskLevel: 'low',
+      suggestedTaskProposals: [
+        {
+          title: 'Goal-derived intake guardrails task',
+          description: 'Document and validate low-risk task intake guardrails for the developer queue.',
+          taskType: 'documentation',
+          acceptanceCriteria: [
+            'The guardrail checklist is available from the task description.',
+            'The proposal remains in triage until a human approves it.',
+          ],
+          expectedBlastRadius: 'docs and queue metadata only',
+          evidenceRefs: [{ kind: 'project_goal', ref: 'pm-goal-low-risk' }],
+        },
+      ],
+      createdAt: fixedNow,
+      updatedAt: fixedNow,
+    },
+    [
+      {
+        id: 'goal-event-pm-goal-low-risk-1',
+        goalId: 'pm-goal-low-risk',
+        kind: 'goal_proposed',
+        actor: { owner: 'agent', id: 'project-manager', displayName: 'Project Manager' },
+        message: 'Project Manager proposed a low-risk intake goal.',
+        createdAt: fixedNow,
+      },
+    ],
+  );
 
   return {
     tasks,
+    projectGoals,
+    goalEvents,
+    goalTaskLinks,
     createdCount: 0,
+    goalProposalCount: 0,
     failNextOperations: false,
   };
 };
@@ -241,6 +310,56 @@ const summarize = (task) => ({
   updatedAt: task.updatedAt,
 });
 
+const summarizeProjectGoal = (goal) => ({
+  id: goal.id,
+  title: goal.title,
+  status: goal.status,
+  priority: goal.priority,
+  riskLevel: goal.riskLevel,
+  repositoryName: goal.repositoryName,
+});
+
+const projectGoalsForTask = (taskId) =>
+  [...state.goalTaskLinks.values()]
+    .filter((link) => link.taskId === taskId)
+    .map((link) => state.projectGoals.get(link.goalId))
+    .filter(Boolean)
+    .map(summarizeProjectGoal);
+
+const taskLinksForGoal = (goalId) =>
+  [...state.goalTaskLinks.values()].filter((link) => link.goalId === goalId);
+
+const linkedTasksForGoal = (goalId) =>
+  taskLinksForGoal(goalId)
+    .map((link) => state.tasks.get(link.taskId))
+    .filter(Boolean)
+    .map(summarize);
+
+const linkedTaskCounts = () =>
+  Object.fromEntries(
+    [...state.projectGoals.keys()].map((goalId) => [goalId, taskLinksForGoal(goalId).length]),
+  );
+
+const projectGoalDetail = (goal) => ({
+  goal,
+  auditEvents: state.goalEvents.get(goal.id) || [],
+  taskLinks: taskLinksForGoal(goal.id),
+  linkedTasks: linkedTasksForGoal(goal.id),
+});
+
+const appendGoalEvent = (goalId, kind, message, actor = { owner: 'human', id: 'operator-1', displayName: 'operator-1' }) => {
+  const events = state.goalEvents.get(goalId) || [];
+  events.push({
+    id: `goal-event-${goalId}-${events.length + 1}`,
+    goalId,
+    kind,
+    actor,
+    message,
+    createdAt: now(),
+  });
+  state.goalEvents.set(goalId, events);
+};
+
 const taskDetail = (task) => ({
   task,
   summary: summarize(task),
@@ -290,6 +409,7 @@ const taskDetail = (task) => ({
         }
       : undefined,
   diagnostics: { repeatedValidationFailures: task.id === 'failed-task' ? 2 : 0 },
+  projectGoals: projectGoalsForTask(task.id),
 });
 
 const queueDepth = () => {
@@ -465,11 +585,45 @@ const handleApi = async (request, response, url) => {
     const proposals = [...state.tasks.values()]
       .filter((task) => task.proposal)
       .filter((task) => !supervisorStatus || task.proposal.supervisorStatus === supervisorStatus)
-      .map((task) => ({ ...summarize(task), proposal: task.proposal }));
+      .map((task) => ({
+        ...summarize(task),
+        proposal: task.proposal,
+        projectGoals: projectGoalsForTask(task.id),
+      }));
     json(response, 200, {
       proposals,
       role: sessionFor(request).role,
       generatedAt: now(),
+    });
+    return;
+  }
+  if (path === '/api/project-goals' && request.method === 'GET') {
+    const statuses = url.searchParams.getAll('status');
+    const repositoryName = url.searchParams.get('repositoryName');
+    const goals = [...state.projectGoals.values()]
+      .filter((goal) => !statuses.length || statuses.includes(goal.status))
+      .filter((goal) => !repositoryName || goal.repositoryName === repositoryName);
+    json(response, 200, {
+      goals,
+      linkedTaskCounts: linkedTaskCounts(),
+      role: sessionFor(request).role,
+      generatedAt: now(),
+    });
+    return;
+  }
+  if (path === '/api/project-manager/runs' && request.method === 'POST') {
+    if (!hasRequiredRole(request, 'operator')) {
+      json(response, 403, { status: 'error', error: 'forbidden' });
+      return;
+    }
+    const body = await readBody(request);
+    json(response, 202, {
+      run: {
+        id: `pm-run-${Date.now()}`,
+        repositoryName: body.repositoryName || 'developer',
+        status: 'queued',
+        createdAt: now(),
+      },
     });
     return;
   }
@@ -480,6 +634,132 @@ const handleApi = async (request, response, url) => {
       return;
     }
     json(response, 200, operationsSnapshot());
+    return;
+  }
+
+  const goalMatch = path.match(/^\/api\/project-goals\/([^/]+)(.*)$/);
+  if (goalMatch) {
+    const goalId = decodeURIComponent(goalMatch[1]);
+    const suffix = goalMatch[2] || '';
+    const goal = state.projectGoals.get(goalId);
+    if (!goal) {
+      json(response, 404, { status: 'error', error: 'project goal not found' });
+      return;
+    }
+    if (request.method === 'GET' && suffix === '') {
+      json(response, 200, projectGoalDetail(goal));
+      return;
+    }
+    const commandMatch = suffix.match(/^\/commands\/([^/]+)$/);
+    if (request.method === 'POST' && commandMatch) {
+      const command = commandMatch[1];
+      const minimum = command === 'propose-tasks' ? 'operator' : 'developer';
+      if (!hasRequiredRole(request, minimum)) {
+        json(response, 403, { status: 'error', error: 'forbidden' });
+        return;
+      }
+      const body = await readBody(request);
+      if (command === 'approve') {
+        goal.status = 'approved';
+        goal.approvedAt = now();
+        goal.updatedAt = goal.approvedAt;
+        appendGoalEvent(goal.id, 'goal_approved', 'Project goal approved.');
+        json(response, 200, { goal });
+        return;
+      }
+      if (command === 'reject') {
+        goal.status = 'rejected';
+        goal.rejectedAt = now();
+        goal.rejectionReason = body.reason || 'Rejected during e2e review.';
+        goal.updatedAt = goal.rejectedAt;
+        appendGoalEvent(goal.id, 'goal_rejected', goal.rejectionReason);
+        json(response, 200, { goal });
+        return;
+      }
+      if (command === 'propose-tasks') {
+        state.goalProposalCount += 1;
+        const taskId = `pm-goal-task-${goal.id}-${state.goalProposalCount}`;
+        let task = state.tasks.get(taskId);
+        if (!task) {
+          const draft = goal.suggestedTaskProposals[0] || {
+            title: `Task for ${goal.title}`,
+            description: goal.desiredOutcome,
+            taskType: 'documentation',
+            acceptanceCriteria: goal.successMetrics,
+            evidenceRefs: goal.evidenceRefs,
+          };
+          task = detailTask({
+            ...baseSummary,
+            id: taskId,
+            title: draft.title,
+            description: draft.description,
+            humanSummary: `Project goal work for ${goal.title}.`,
+            status: 'triage',
+            repositoryName: goal.repositoryName,
+            repoPathKey: goal.repositoryName,
+            queue: 'DEV',
+            priority: goal.priority,
+            tags: ['ai_dev', 'project_goal'],
+            acceptanceCriteria: draft.acceptanceCriteria,
+            updatedAt: now(),
+            proposal: {
+              supervisorStatus: 'proposed',
+              approvalPolicy: 'manual',
+              autonomyLevel: 'proposal_only',
+              proposedBy: 'project-manager',
+              proposalReason: `Project goal "${goal.title}" recommends this low-risk follow-up.`,
+              policyDecision: 'requires_approval',
+              policyReason: 'Goal-derived work must remain a proposal until a human approves it.',
+              evidenceRefs: draft.evidenceRefs,
+              suggestedAcceptanceCriteria: draft.acceptanceCriteria,
+              createdAt: now(),
+            },
+          });
+          state.tasks.set(task.id, task);
+        }
+        if (!taskLinksForGoal(goal.id).some((link) => link.taskId === task.id)) {
+          const link = {
+            id: `goal-link-${goal.id}-${task.id}`,
+            goalId: goal.id,
+            taskId: task.id,
+            linkType: 'proposed_task',
+            createdAt: now(),
+          };
+          state.goalTaskLinks.set(link.id, link);
+        }
+        goal.status = 'active';
+        goal.activatedAt ||= now();
+        goal.updatedAt = now();
+        appendGoalEvent(goal.id, 'tasks_proposed', `Proposed task ${task.id} from project goal.`);
+        json(response, 200, {
+          goal,
+          tasks: [],
+          proposals: [{ ...summarize(task), proposal: task.proposal, projectGoals: projectGoalsForTask(task.id) }],
+          taskLinks: taskLinksForGoal(goal.id),
+        });
+        return;
+      }
+      if (command === 'complete') {
+        goal.status = 'completed';
+        goal.completedAt = now();
+        goal.updatedAt = goal.completedAt;
+        appendGoalEvent(goal.id, 'goal_completed', 'Project goal completed.');
+        json(response, 200, { goal });
+        return;
+      }
+      if (command === 'stale') {
+        goal.status = 'stale';
+        goal.staleAt = now();
+        goal.staleReason = body.reason || 'Marked stale during e2e review.';
+        goal.updatedAt = goal.staleAt;
+        appendGoalEvent(goal.id, 'goal_marked_stale', goal.staleReason);
+        json(response, 200, { goal });
+        return;
+      }
+      json(response, 404, { status: 'error', error: 'unknown project goal command' });
+      return;
+    }
+    text(response, 404, 'not found');
     return;
   }
 

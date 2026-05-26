@@ -104,6 +104,7 @@ export interface TaskDetailResponseDto {
   latestValidation?: ValidationSummaryDto;
   latestMergeRequest?: MergeRequestSummaryDto;
   diagnostics: TaskDiagnosticsDto;
+  projectGoals?: ProjectGoalSummaryDto[];
 }
 
 export interface TaskDetailDto extends TaskSummaryDto {
@@ -244,12 +245,109 @@ export interface ProposalSummaryDto extends TaskSummaryDto {
     suggestedAcceptanceCriteria?: string[];
     createdAt: string;
   };
+  projectGoals?: ProjectGoalSummaryDto[];
 }
 
 export interface EvidenceRefDto {
   kind: string;
   ref: string;
   summary?: string;
+}
+
+export type ProjectGoalStatusDto =
+  | 'proposed'
+  | 'approved'
+  | 'active'
+  | 'completed'
+  | 'rejected'
+  | 'stale';
+export type ProjectGoalPriorityDto = 'low' | 'normal' | 'high' | 'critical';
+export type ProjectGoalRiskLevelDto = 'low' | 'medium' | 'high';
+
+export interface ProjectGoalDto {
+  id: string;
+  sourceAnalysisId: string;
+  sourceRunId?: string;
+  repositoryName: string;
+  title: string;
+  problemStatement: string;
+  desiredOutcome: string;
+  successMetrics: string[];
+  evidenceRefs: EvidenceRefDto[];
+  status: ProjectGoalStatusDto;
+  priority: ProjectGoalPriorityDto;
+  riskLevel: ProjectGoalRiskLevelDto;
+  suggestedTaskProposals: ProjectTaskProposalDraftDto[];
+  approvedAt?: string;
+  activatedAt?: string;
+  completedAt?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  staleAt?: string;
+  staleReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectTaskProposalDraftDto {
+  title: string;
+  description: string;
+  taskType: string;
+  acceptanceCriteria: string[];
+  expectedBlastRadius?: string;
+  evidenceRefs: EvidenceRefDto[];
+}
+
+export interface ProjectGoalSummaryDto {
+  id: string;
+  title: string;
+  status: ProjectGoalStatusDto;
+  priority: ProjectGoalPriorityDto;
+  riskLevel: ProjectGoalRiskLevelDto;
+  repositoryName: string;
+}
+
+export interface ProjectGoalAuditEventDto {
+  id: string;
+  goalId: string;
+  kind: string;
+  actor?: ActorDto;
+  message?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ProjectGoalTaskLinkDto {
+  id: string;
+  goalId: string;
+  taskId: string;
+  linkType: string;
+  createdAt: string;
+}
+
+export interface ProjectGoalListResponseDto {
+  goals: ProjectGoalDto[];
+  linkedTaskCounts: Record<string, number>;
+  role: SessionRoleDto;
+  generatedAt: string;
+}
+
+export interface ProjectGoalDetailResponseDto {
+  goal: ProjectGoalDto;
+  auditEvents: ProjectGoalAuditEventDto[];
+  taskLinks: ProjectGoalTaskLinkDto[];
+  linkedTasks: TaskSummaryDto[];
+}
+
+export interface ProjectGoalCommandResponseDto {
+  goal: ProjectGoalDto;
+}
+
+export interface ProjectGoalProposeTasksResponseDto {
+  goal: ProjectGoalDto;
+  tasks: TaskDetailDto[];
+  proposals: unknown[];
+  taskLinks: ProjectGoalTaskLinkDto[];
 }
 
 export interface OperationsSnapshotDto {
