@@ -1063,6 +1063,63 @@ describe("Phase 7F human task API", () => {
     });
   });
 
+  it("allows operators to run explicit project manager analysis mode", async () => {
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const calls: Array<{ repositoryName: string; trigger?: string }> = [];
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce"
+    > = {
+      runAnalysisOnce: async (input) => {
+        calls.push(input);
+        return {
+          run: {
+            id: "pm-run-analysis-1",
+            repositoryName: input.repositoryName,
+            trigger: input.trigger ?? "manual",
+            status: "completed",
+            analysisId: "analysis-explicit-1",
+            proposedGoalIds: ["goal-analysis-1"],
+            proposedTaskIds: [],
+            startedAt: "2026-05-25T00:00:00.000Z",
+            completedAt: "2026-05-25T00:01:00.000Z",
+          },
+          analysis: {
+            id: "analysis-explicit-1",
+            repositoryName: input.repositoryName,
+            summary: "Explicit analysis completed.",
+            healthSignals: [],
+            proposedGoals: [],
+            staleGoalIds: [],
+            goalReplans: [],
+            createdAt: "2026-05-25T00:01:00.000Z",
+          },
+        };
+      },
+      runReplanOnce: async () => {
+        throw new Error("unexpected replan run");
+      },
+    };
+    const { baseUrl } = await createServer(null, {}, {
+      store: projectManagerStore,
+      runner,
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({ repositoryName: "developer", mode: "analysis" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{ repositoryName: "developer", trigger: "manual" }]);
+    expect(response.body.result.run).toMatchObject({
+      id: "pm-run-analysis-1",
+      trigger: "manual",
+      status: "completed",
+    });
+  });
+
   it("allows operators to run project manager replans", async () => {
     const projectManagerStore = new InMemoryProjectManagerStore();
     const calls: Array<{
@@ -1203,13 +1260,20 @@ describe("Phase 7F human task API", () => {
       headers: operatorHeaders,
       body: JSON.stringify({ repositoryName: "developer", mode: "unsupported" }),
     });
+    const blank = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({ repositoryName: "developer", mode: "   " }),
+    });
 
     expect(response.status).toBe(400);
     expect(response.body.error).toContain("mode must be one of: analysis, replan");
+    expect(blank.status).toBe(400);
+    expect(blank.body.error).toContain("mode must be one of: analysis, replan");
     expect(calls).toEqual([]);
   });
 
-  it("prevents viewers from running project manager replans", async () => {
+  it("prevents viewers and developers from running project manager replans", async () => {
     const projectManagerStore = new InMemoryProjectManagerStore();
     const calls: string[] = [];
     const runner: Pick<
@@ -1239,8 +1303,18 @@ describe("Phase 7F human task API", () => {
         replanReason: "manual: failed linked task",
       }),
     });
+    const developer = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: developerHeaders,
+      body: JSON.stringify({
+        repositoryName: "developer",
+        mode: "replan",
+        replanReason: "manual: failed linked task",
+      }),
+    });
 
     expect(response.status).toBe(403);
+    expect(developer.status).toBe(403);
     expect(calls).toEqual([]);
   });
 
