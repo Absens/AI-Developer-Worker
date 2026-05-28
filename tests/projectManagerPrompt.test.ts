@@ -169,6 +169,14 @@ describe("project manager prompt builder", () => {
     expect(prompt).toContain("task proposals must use allowed task types");
   });
 
+  it("lists allowed evidence ref kinds for analysis output", () => {
+    const prompt = buildProjectAnalysisPrompt({ snapshot: buildSnapshot() });
+
+    expect(prompt).toContain("evidenceRefs.kind must be one of:");
+    expect(prompt).toContain("task");
+    expect(prompt).toContain("snapshot");
+  });
+
   it("includes compact JSON snapshot with repository name and failed task id", () => {
     const prompt = buildProjectAnalysisPrompt({ snapshot: buildSnapshot() });
     const compactSnapshot = JSON.stringify(buildSnapshot());
@@ -234,6 +242,7 @@ describe("project manager replan prompt builder", () => {
     expect(prompt).toContain('"id":"TASK-42"');
     expect(prompt).toContain("Allowed task types: documentation, tests_only");
     expect(prompt).toContain("Focus areas: validation stability");
+    expect(prompt).toContain("evidenceRefs.kind must be one of:");
   });
 
   it("classifies approved and active goals listed in the replan snapshot", () => {

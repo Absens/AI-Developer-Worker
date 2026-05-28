@@ -144,6 +144,67 @@ describe("project manager analysis parser", () => {
     });
   });
 
+  it("accepts task and snapshot evidence refs from project analysis", () => {
+    const parsed = parseProjectAnalysisResponse(
+      `${PROJECT_ANALYSIS_MARKER} ${JSON.stringify({
+        summary: "Repository snapshot has actionable project signals.",
+        healthSignals: [
+          {
+            kind: "operations",
+            severity: "low",
+            title: "No blocked queue",
+            description: "Snapshot reports no failed or waiting tasks.",
+            evidenceRefs: [
+              {
+                kind: "snapshot",
+                ref: "statusCounts",
+                summary: "failed=0, waiting=0",
+              },
+            ],
+          },
+        ],
+        proposedGoals: [
+          {
+            title: "Improve task metadata quality",
+            problemStatement: "Recent tasks lack useful classification metadata.",
+            desiredOutcome: "Task metadata is more useful for project analysis.",
+            successMetrics: ["Future tasks avoid unknown task type when evidence exists"],
+            priority: "low",
+            riskLevel: "low",
+            evidenceRefs: [
+              {
+                kind: "task",
+                ref: "yt_FRONTEND-2027.taskType",
+                summary: "taskType=unknown",
+              },
+            ],
+            suggestedTaskProposals: [
+              {
+                title: "Document task classification guidance",
+                description: "Add lightweight guidance for frontend task classification.",
+                taskType: "documentation",
+                acceptanceCriteria: ["Guidance covers frontend UI behavior changes"],
+                evidenceRefs: [
+                  {
+                    kind: "task",
+                    ref: "yt_FRONTEND-2027",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        staleGoalIds: [],
+      })}`,
+    );
+
+    expect(parsed?.healthSignals[0]?.evidenceRefs[0]?.kind).toBe("snapshot");
+    expect(parsed?.proposedGoals[0]?.evidenceRefs[0]?.kind).toBe("task");
+    expect(
+      parsed?.proposedGoals[0]?.suggestedTaskProposals[0]?.evidenceRefs[0]?.kind,
+    ).toBe("task");
+  });
+
   it("rejects responses without the marker", () => {
     expect(parseProjectAnalysisResponse("summary only")).toBeUndefined();
   });

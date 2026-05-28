@@ -1,4 +1,5 @@
 import type { TaskType } from "../../models/types.js";
+import { EVIDENCE_REF_KINDS } from "../taskTracker/types.js";
 import type { ProjectReplanSnapshot } from "./replanSnapshot.js";
 import type { ProjectSignalSnapshot } from "./types.js";
 import {
@@ -32,6 +33,7 @@ const DEFAULT_ALLOWED_TASK_TYPES: TaskType[] = [
   "dependency_update",
 ];
 const DEFAULT_MAX_SNAPSHOT_CHARS = 12000;
+const ALLOWED_EVIDENCE_REF_KINDS = EVIDENCE_REF_KINDS.join("|");
 
 const RESPONSE_SCHEMA = {
   summary: "string",
@@ -41,7 +43,9 @@ const RESPONSE_SCHEMA = {
       severity: "low|medium|high|critical",
       title: "string",
       description: "string",
-      evidenceRefs: [{ kind: "string", ref: "string", summary: "string" }],
+      evidenceRefs: [
+        { kind: ALLOWED_EVIDENCE_REF_KINDS, ref: "string", summary: "string" },
+      ],
       recommendation: "string",
     },
   ],
@@ -51,7 +55,9 @@ const RESPONSE_SCHEMA = {
       problemStatement: "string",
       desiredOutcome: "string",
       successMetrics: ["string"],
-      evidenceRefs: [{ kind: "string", ref: "string", summary: "string" }],
+      evidenceRefs: [
+        { kind: ALLOWED_EVIDENCE_REF_KINDS, ref: "string", summary: "string" },
+      ],
       priority: "low|normal|high|critical",
       riskLevel: "low|medium|high",
       suggestedTaskProposals: [
@@ -61,7 +67,9 @@ const RESPONSE_SCHEMA = {
           taskType: "allowed task type",
           acceptanceCriteria: ["string"],
           expectedBlastRadius: "string",
-          evidenceRefs: [{ kind: "string", ref: "string", summary: "string" }],
+          evidenceRefs: [
+            { kind: ALLOWED_EVIDENCE_REF_KINDS, ref: "string", summary: "string" },
+          ],
         },
       ],
     },
@@ -82,7 +90,9 @@ const REPLAN_RESPONSE_SCHEMA = {
       goalId: "string",
       decision: PROJECT_GOAL_REPLAN_DECISIONS.join("|"),
       rationale: "string",
-      evidenceRefs: [{ kind: "string", ref: "string", summary: "string" }],
+      evidenceRefs: [
+        { kind: ALLOWED_EVIDENCE_REF_KINDS, ref: "string", summary: "string" },
+      ],
       followUpGoals: RESPONSE_SCHEMA.proposedGoals,
       humanQuestion: "string required when decision is ask_human",
     },
@@ -127,6 +137,7 @@ export const buildProjectAnalysisPrompt = (
     "- Evidence-backed goals only.",
     "- Obey limits.",
     "- task proposals must use allowed task types.",
+    `- evidenceRefs.kind must be one of: ${EVIDENCE_REF_KINDS.join(", ")}.`,
     "",
     `Limits: maxGoalsPerRun=${maxGoalsPerRun}, maxTaskProposalsPerGoal=${maxTaskProposalsPerGoal}.`,
     `Allowed task types: ${allowedTaskTypes.join(", ")}`,
@@ -174,6 +185,7 @@ export const buildProjectReplanPrompt = (
     "- Use linked task data as evidence for each classification.",
     "- Obey limits.",
     "- follow-up task proposals must use allowed task types.",
+    `- evidenceRefs.kind must be one of: ${EVIDENCE_REF_KINDS.join(", ")}.`,
     "",
     `Limits: maxGoalsPerRun=${maxGoalsPerRun}, maxTaskProposalsPerGoal=${maxTaskProposalsPerGoal}.`,
     `Allowed task types: ${allowedTaskTypes.join(", ")}`,

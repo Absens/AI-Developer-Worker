@@ -494,6 +494,8 @@ export interface MemoryContextRecordInput {
 }
 
 export const EVIDENCE_REF_KINDS = [
+  "task",
+  "snapshot",
   "validation_failure",
   "review_comment",
   "ci_run",
