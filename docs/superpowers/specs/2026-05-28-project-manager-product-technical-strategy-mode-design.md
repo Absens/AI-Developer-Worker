@@ -81,6 +81,102 @@ Reasoning: this gives useful PM guidance quickly while preserving the existing
 approval path. Product ideas become visible, but work still enters the system
 through goals and task proposals.
 
+## Cognitive Lens Architecture
+
+Strategy mode should use cognitive modes as an internal prompt architecture, not
+as a large user-facing mode library. The Project Manager should run a fixed
+multi-lens analysis pipeline and then return a compact, policy-checkable JSON
+result.
+
+The first version should use these lenses:
+
+- `strategic`: baseline framing for direction, leverage, cost of delay, and
+  second-order effects.
+- `defamiliarizing`: challenge the current framing and identify hidden
+  assumptions in product, process, and architecture.
+- `empathic`: examine user, operator, reviewer, and developer impact.
+- `executive`: convert broad opportunities into small, reviewable goals and
+  task proposal outlines.
+- `red_team`: attack opportunities for weak evidence, edge cases, hidden cost,
+  implementation risk, and likely misunderstanding.
+- `sober_architect`: final feasibility, support cost, and trade-off filter.
+- `synthetic`: assemble the final answer into the required schema without
+  carrying speculative intermediate ideas forward.
+
+`associative` can be used only as a bounded expansion step inside
+`defamiliarizing`, for example to look for non-obvious product or technical
+angles. It should never be the final decision lens.
+
+`alien` should not be part of the default Project Manager loop. It is useful as
+a power-user research prompt, but it is too unconstrained for recurring PM
+analysis. If added later, it should be an explicit manual research mode that
+cannot materialize goals.
+
+The recommended internal sequence is:
+
+```text
+1. Strategic framing
+2. Product and technical opportunity discovery
+3. Defamiliarizing reframing
+4. Empathic impact check
+5. Executive conversion to actionable goals
+6. Red Team rejection and risk reduction
+7. Sober Architect final decision
+8. Synthetic JSON output
+```
+
+This sequence is intentionally asymmetric. Creative lenses expand the search
+space, but `red_team` and `sober_architect` are mandatory gates before any
+`proposedGoals` are emitted.
+
+The prompt should not expose chain-of-thought. Instead, it should return short
+audit summaries that explain which evaluation lenses affected the final answer.
+This gives humans useful review context without storing hidden reasoning.
+
+Suggested run-level field:
+
+```json
+{
+  "analysisLenses": [
+    {
+      "lens": "strategy|reframing|empathy|execution|risk|architecture|synthesis",
+      "summary": "string"
+    }
+  ]
+}
+```
+
+Suggested opportunity-level fields:
+
+```json
+{
+  "redTeamNotes": ["string"],
+  "architectVerdict": "pursue|research_first|defer|reject"
+}
+```
+
+`architectVerdict` should drive goal materialization:
+
+- `pursue`: can become a proposed goal if evidence and policy checks pass.
+- `research_first`: should become a human question or research opportunity, not
+  executable work.
+- `defer`: keep visible as context, but do not create a goal.
+- `reject`: include only when useful to explain why an attractive idea was not
+  pursued.
+
+The UI should not initially present all cognitive modes as choices. A future
+power-user UI can expose a small set of action labels mapped to internal lenses:
+
+- "Find opportunities" -> `strategic` + `defamiliarizing` +
+  `sober_architect`.
+- "Reframe product" -> `defamiliarizing` + bounded `associative` +
+  `synthetic`.
+- "Review risks" -> `red_team` + `sober_architect`.
+- "Build action plan" -> `executive` + `synthetic`.
+
+For the first implementation, prefer a single fixed strategy pipeline. This
+keeps the operator experience simple and makes outputs easier to test.
+
 ## Alternatives Considered
 
 ### Alternative A: Strengthen Existing `analysis` Prompt Only
@@ -168,6 +264,12 @@ Suggested JSON schema:
 ```json
 {
   "summary": "string",
+  "analysisLenses": [
+    {
+      "lens": "strategy|reframing|empathy|execution|risk|architecture|synthesis",
+      "summary": "string"
+    }
+  ],
   "opportunities": [
     {
       "dimension": "product|technical|product_technical",
@@ -182,7 +284,9 @@ Suggested JSON schema:
       "priority": "low|normal|high|critical",
       "riskLevel": "low|medium|high",
       "recommendedNextStep": "create_goal|research|ask_human|defer",
-      "rationale": "string"
+      "rationale": "string",
+      "redTeamNotes": ["string"],
+      "architectVerdict": "pursue|research_first|defer|reject"
     }
   ],
   "proposedGoals": [
@@ -222,12 +326,20 @@ Suggested JSON schema:
 
 `proposedGoals` should be a subset of high-confidence opportunities. The prompt
 should say that an opportunity does not need to become a goal immediately.
+Only opportunities with `architectVerdict: "pursue"` should be eligible for goal
+materialization.
 
 ## Prompt Improvements
 
 The current PM prompts are intentionally minimal. Strategy mode should use
 stronger instructions:
 
+- Follow the cognitive lens sequence: strategic framing, reframing, empathy,
+  execution, risk, architecture, synthesis.
+- Use creative and reframing lenses to generate options, but apply `red_team`
+  and `sober_architect` before emitting any `proposedGoals`.
+- Return only short lens summaries, not hidden reasoning or long internal
+  deliberation.
 - Separate observed evidence from inference.
 - Do not treat placeholder validation commands as strong quality evidence.
 - Prefer opportunities with direct evidence from tasks, reviews, failures,
@@ -264,13 +376,17 @@ Add hard limits similar to existing PM analysis policy:
 - max proposed goals: existing `maxGoalsPerRun`;
 - max task proposals per goal: existing `maxTaskProposalsPerGoal`;
 - confidence integer: 0 through 100;
+- max analysis lenses per run: 7;
+- max red team notes per opportunity: 5;
 - opportunity text fields bounded by the existing PM text limits.
 
 Policy should reject:
 
 - opportunities without evidence refs;
 - `create_goal` opportunities with confidence below 60;
+- `create_goal` opportunities whose `architectVerdict` is not `pursue`;
 - proposed goals whose evidence does not overlap at least one opportunity;
+- proposed goals not backed by a `pursue` opportunity;
 - high-risk proposed goals that include broad executable task proposals;
 - unknown task types outside `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON`.
 
@@ -303,6 +419,7 @@ Response:
   "analysis": { "id": "pm_analysis_..." },
   "strategy": {
     "summary": "...",
+    "analysisLenses": [],
     "opportunities": [],
     "questionsForHuman": []
   }
@@ -314,6 +431,7 @@ The role should match current PM run permissions: `operator+`.
 ## Storage Design
 
 Use the existing `ProjectAnalysis` storage boundary and add optional fields:
+  - `strategyAnalysisLenses`;
   - `strategyOpportunities`;
   - `strategyQuestions`;
   - `strategyBrief`;
@@ -353,14 +471,18 @@ Initial UI can be minimal:
 - Add optional strategy brief input.
 - Show strategy run results in a compact section on the goals or operations page:
   - summary;
+  - short lens summaries as review context;
   - opportunities grouped by dimension;
-  - confidence, priority, risk, recommended next step;
+  - confidence, priority, risk, recommended next step, architect verdict;
+  - red team notes for opportunities with meaningful risk;
   - linked proposed goals;
   - questions for human.
 
 Avoid building a full roadmap board in the first implementation. The existing
 goal list/detail flow is enough once strategic opportunities can materialize as
-goals.
+goals. Also avoid exposing all cognitive modes as user controls in the first
+slice. The fixed strategy pipeline should be visible through its outputs, not
+through a complex configuration surface.
 
 ## Safety Invariants
 
@@ -385,8 +507,14 @@ Backend unit tests:
 - prompt includes strategy-specific guardrails and response schema;
 - parser accepts valid `PROJECT_STRATEGY` and rejects invalid markers, invalid
   JSON, missing evidence, invalid dimensions, invalid next steps;
+- parser validates `analysisLenses`, `redTeamNotes`, and `architectVerdict`
+  bounds;
 - policy rejects low-confidence `create_goal` opportunities;
+- policy rejects `create_goal` opportunities without a `pursue` architect
+  verdict;
 - policy rejects proposed goals not backed by opportunity evidence;
+- policy rejects proposed goals backed only by deferred, rejected, or
+  research-first opportunities;
 - orchestrator records strategy runs and materializes only `proposedGoals`;
 - repeated strategy runs do not duplicate non-terminal goals.
 
@@ -400,7 +528,7 @@ API tests:
 UI tests:
 
 - manual run form can choose strategy mode and send strategy brief;
-- strategy results render grouped opportunities;
+- strategy results render grouped opportunities and compact lens summaries;
 - strategy-created goals appear in `/goals`;
 - no UI path calls `POST /api/tasks` for strategy output.
 
@@ -416,7 +544,8 @@ E2E:
 ## Rollout Plan
 
 1. Prompt-only quality pass for existing `analysis` and `replan`.
-2. Add strategy parser/policy/types with tests.
+2. Add cognitive lens prompt contract and strategy parser/policy/types with
+   tests.
 3. Add strategy snapshot and orchestrator path.
 4. Add storage fields for strategy metadata.
 5. Add API support for `mode: "strategy"`.
