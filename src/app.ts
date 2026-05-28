@@ -176,6 +176,37 @@ const createProjectManagerStoreController = (
         });
         return orchestrator.runReplanOnce(input);
       },
+      runStrategyOnce: async (input) => {
+        const repository = fleetConfig.repositories.find(
+          (candidate) => candidate.name === input.repositoryName,
+        );
+        if (!repository) {
+          throw new Error(`Project manager repository not found: ${input.repositoryName}`);
+        }
+
+        const runtimeConfig = buildRepositoryRuntimeConfig(fleetConfig, repository);
+        if (!runtimeConfig.projectManager?.enabled) {
+          throw new Error(
+            `Project manager is not enabled for repository: ${input.repositoryName}`,
+          );
+        }
+
+        const codex = new CliCodexRunner(runtimeConfig, logger);
+        const orchestrator = new ProjectManagerOrchestrator({
+          taskTracker: internalTaskTracker,
+          codex,
+          store,
+          config: runtimeConfig.projectManager,
+        });
+        return orchestrator.runStrategyOnce({
+          ...input,
+          repositoryProfile: input.repositoryProfile ?? {
+            baseBranch: repository.baseBranch,
+            queue: repository.queues[0],
+            tags: [...repository.tags],
+          },
+        });
+      },
     },
   });
 

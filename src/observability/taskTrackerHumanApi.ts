@@ -3,8 +3,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   buildProjectGoalTaskProposalInputs,
   PROJECT_MANAGER_PROPOSED_TASK_LINK_TYPE,
+  PROJECT_ANALYSIS_KINDS,
   PROJECT_GOAL_STATUSES,
   type ListProjectGoalsInput,
+  type ProjectAnalysis,
+  type ProjectAnalysisKind,
   type ProjectGoal,
   type ProjectGoalTaskLink,
   type ProjectGoalStatus,
@@ -52,7 +55,10 @@ interface TaskTrackerHumanApiInput {
 
 export interface ProjectManagerApiDependencies {
   store: ProjectManagerStore;
-  runner?: Pick<ProjectManagerOrchestrator, "runAnalysisOnce" | "runReplanOnce">;
+  runner?: Pick<
+    ProjectManagerOrchestrator,
+    "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
+  >;
   configForRepository?: (repositoryName: string) => ProjectManagerConfig | undefined;
   executionProfileForRepository?: (
     repositoryName: string,
@@ -374,6 +380,7 @@ export class TaskTrackerHumanApi {
       path === `${apiPath}/operations` ||
       path === `${apiPath}/project-goals` ||
       path.startsWith(`${apiPath}/project-goals/`) ||
+      path === `${apiPath}/project-manager/analyses` ||
       path === `${apiPath}/project-manager/runs` ||
       path.startsWith(`${apiPath}/tasks/`)
     );
@@ -659,7 +666,7 @@ export class TaskTrackerHumanApi {
 
   private requireProjectManagerRunner(): Pick<
     ProjectManagerOrchestrator,
-    "runAnalysisOnce" | "runReplanOnce"
+    "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
   > {
     if (!this.input.projectManager) {
       throw new HttpApiError(503, "Project manager API is not configured.");
@@ -697,6 +704,30 @@ export class TaskTrackerHumanApi {
         linkedTaskCounts,
         role: auth.role,
         generatedAt: new Date().toISOString(),
+      });
+      return true;
+    }
+
+    if (route === "/project-manager/analyses") {
+      if (request.method !== "GET") {
+        text(response, 405, "method not allowed");
+        return true;
+      }
+      this.requireAuth(request, "viewer");
+      const filters = this.parseProjectAnalysisFilters(url);
+      const analyses = (await this.requireProjectManagerStore().listAnalyses())
+        .filter(
+          (analysis) =>
+            (!filters.repositoryName ||
+              analysis.repositoryName === filters.repositoryName) &&
+            (!filters.analysisKind || analysis.analysisKind === filters.analysisKind),
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(right.createdAt) - Date.parse(left.createdAt),
+        );
+      json(response, 200, {
+        analyses: analyses.map((analysis) => this.summarizeProjectAnalysis(analysis)),
       });
       return true;
     }
@@ -868,8 +899,37 @@ export class TaskTrackerHumanApi {
           trigger: "manual",
           replanReason: requiredString(body.replanReason, "replanReason"),
         });
+      } else if (mode === "strategy") {
+        const strategyBrief = optionalString(body.strategyBrief);
+        if (strategyBrief && strategyBrief.length > 2000) {
+          throw new HttpApiError(
+            400,
+            "strategyBrief must be at most 2000 characters.",
+          );
+        }
+        const repositoryProfile =
+          this.input.projectManager?.executionProfileForRepository?.(repositoryName);
+        result = await runner.runStrategyOnce({
+          repositoryName,
+          trigger: "manual",
+          ...(strategyBrief ? { strategyBrief } : {}),
+          ...(repositoryProfile
+            ? {
+                repositoryProfile: {
+                  ...(repositoryProfile.baseBranch
+                    ? { baseBranch: repositoryProfile.baseBranch }
+                    : {}),
+                  ...(repositoryProfile.queue ? { queue: repositoryProfile.queue } : {}),
+                  ...(repositoryProfile.tags ? { tags: repositoryProfile.tags } : {}),
+                },
+              }
+            : {}),
+        });
       } else {
-        throw new HttpApiError(400, "mode must be one of: analysis, replan.");
+        throw new HttpApiError(
+          400,
+          "mode must be one of: analysis, replan, strategy.",
+        );
       }
       json(response, 200, { result });
       return true;
@@ -1104,6 +1164,28 @@ export class TaskTrackerHumanApi {
         : statuses.length > 1
           ? { status: statuses }
           : {}),
+    };
+  }
+
+  private parseProjectAnalysisFilters(url: URL): {
+    repositoryName?: string;
+    analysisKind?: ProjectAnalysisKind;
+  } {
+    const repositoryName = optionalString(
+      url.searchParams.get("repositoryName") ?? undefined,
+    );
+    const rawKind = optionalString(
+      url.searchParams.get("analysisKind") ?? undefined,
+    );
+    if (rawKind && !PROJECT_ANALYSIS_KINDS.includes(rawKind as ProjectAnalysisKind)) {
+      throw new HttpApiError(
+        400,
+        "analysisKind must be one of: analysis, replan, strategy.",
+      );
+    }
+    return {
+      ...(repositoryName ? { repositoryName } : {}),
+      ...(rawKind ? { analysisKind: rawKind as ProjectAnalysisKind } : {}),
     };
   }
 
@@ -1430,6 +1512,27 @@ export class TaskTrackerHumanApi {
       priority: goal.priority,
       riskLevel: goal.riskLevel,
       repositoryName: goal.repositoryName,
+    };
+  }
+
+  private summarizeProjectAnalysis(analysis: ProjectAnalysis): Record<string, unknown> {
+    return {
+      id: analysis.id,
+      repositoryName: analysis.repositoryName,
+      analysisKind: analysis.analysisKind,
+      summary: analysis.summary,
+      createdAt: analysis.createdAt,
+      ...(analysis.analysisKind === "strategy"
+        ? {
+            strategy: {
+              summary: analysis.summary,
+              analysisLenses: analysis.strategyAnalysisLenses,
+              opportunities: analysis.strategyOpportunities,
+              goalLinks: analysis.strategyGoalLinks,
+              questionsForHuman: analysis.strategyQuestions,
+            },
+          }
+        : {}),
     };
   }
 

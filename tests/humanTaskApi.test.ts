@@ -1,6 +1,6 @@
 import type { AddressInfo } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   InMemoryProjectManagerStore,
@@ -198,6 +198,21 @@ const projectGoalTaskProposalDraft = (
     },
   ],
   ...overrides,
+});
+
+const fakeProjectManagerRunner = (): Pick<
+  ProjectManagerOrchestrator,
+  "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
+> => ({
+  runAnalysisOnce: vi.fn(async () => {
+    throw new Error("unexpected analysis run");
+  }),
+  runReplanOnce: vi.fn(async () => {
+    throw new Error("unexpected replan run");
+  }),
+  runStrategyOnce: vi.fn(async () => {
+    throw new Error("unexpected strategy run");
+  }),
 });
 
 describe("Phase 7F human task API", () => {
@@ -398,6 +413,9 @@ describe("Phase 7F human task API", () => {
           throw new Error("unused test runner");
         },
         runReplanOnce: async () => {
+          throw new Error("unused test runner");
+        },
+        runStrategyOnce: async () => {
           throw new Error("unused test runner");
         },
       },
@@ -1023,7 +1041,7 @@ describe("Phase 7F human task API", () => {
     const calls: Array<{ repositoryName: string; trigger?: string }> = [];
     const runner: Pick<
       ProjectManagerOrchestrator,
-      "runAnalysisOnce" | "runReplanOnce"
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
     > = {
       runAnalysisOnce: async (input) => {
         calls.push(input);
@@ -1060,6 +1078,9 @@ describe("Phase 7F human task API", () => {
       runReplanOnce: async () => {
         throw new Error("unexpected replan run");
       },
+      runStrategyOnce: async () => {
+        throw new Error("unexpected strategy run");
+      },
     };
     const { baseUrl } = await createServer(null, {}, {
       store: projectManagerStore,
@@ -1086,7 +1107,7 @@ describe("Phase 7F human task API", () => {
     const calls: Array<{ repositoryName: string; trigger?: string }> = [];
     const runner: Pick<
       ProjectManagerOrchestrator,
-      "runAnalysisOnce" | "runReplanOnce"
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
     > = {
       runAnalysisOnce: async (input) => {
         calls.push(input);
@@ -1123,6 +1144,9 @@ describe("Phase 7F human task API", () => {
       runReplanOnce: async () => {
         throw new Error("unexpected replan run");
       },
+      runStrategyOnce: async () => {
+        throw new Error("unexpected strategy run");
+      },
     };
     const { baseUrl } = await createServer(null, {}, {
       store: projectManagerStore,
@@ -1153,7 +1177,7 @@ describe("Phase 7F human task API", () => {
     }> = [];
     const runner: Pick<
       ProjectManagerOrchestrator,
-      "runAnalysisOnce" | "runReplanOnce"
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
     > = {
       runAnalysisOnce: async () => {
         throw new Error("unexpected analysis run");
@@ -1190,6 +1214,9 @@ describe("Phase 7F human task API", () => {
           },
         };
       },
+      runStrategyOnce: async () => {
+        throw new Error("unexpected strategy run");
+      },
     };
     const { baseUrl } = await createServer(null, {}, {
       store: projectManagerStore,
@@ -1221,12 +1248,171 @@ describe("Phase 7F human task API", () => {
     });
   });
 
+  it("allows operators to run project manager strategy mode with a bounded brief", async () => {
+    const now = "2026-05-25T00:01:00.000Z";
+    const runner: Pick<
+      ProjectManagerOrchestrator,
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
+    > = {
+      runAnalysisOnce: vi.fn(async () => {
+        throw new Error("unexpected analysis run");
+      }),
+      runReplanOnce: vi.fn(async () => {
+        throw new Error("unexpected replan run");
+      }),
+      runStrategyOnce: vi.fn<ProjectManagerOrchestrator["runStrategyOnce"]>(async (input) => ({
+        run: {
+          id: "pm_run_strategy",
+          repositoryName: input.repositoryName,
+          trigger: "manual",
+          mode: "strategy" as const,
+          status: "completed" as const,
+          proposedGoalIds: [],
+          proposedTaskIds: [],
+          startedAt: now,
+          completedAt: now,
+        },
+        analysis: {
+          id: "pm_analysis_strategy",
+          repositoryName: input.repositoryName,
+          analysisKind: "strategy" as const,
+          summary: "Strategy completed.",
+          healthSignals: [],
+          proposedGoals: [],
+          staleGoalIds: [],
+          goalReplans: [],
+          strategyAnalysisLenses: [],
+          strategyOpportunities: [],
+          strategyGoalLinks: [],
+          strategyQuestions: [],
+          strategyBrief: input.strategyBrief,
+          createdAt: now,
+        },
+        strategy: {
+          summary: "Strategy completed.",
+          analysisLenses: [],
+          opportunities: [],
+          goalLinks: [],
+          questionsForHuman: [],
+        },
+      })),
+    };
+    const projectManagerStore = new InMemoryProjectManagerStore();
+    const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, {
+      store: projectManagerStore,
+      runner,
+      executionProfileForRepository: () => ({
+        baseBranch: "main",
+        queue: "default",
+        tags: ["pm"],
+      }),
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({
+        repositoryName: "developer",
+        mode: "strategy",
+        strategyBrief: "Focus on operator confidence.",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(runner.runStrategyOnce).toHaveBeenCalledWith({
+      repositoryName: "developer",
+      trigger: "manual",
+      strategyBrief: "Focus on operator confidence.",
+      repositoryProfile: {
+        baseBranch: "main",
+        queue: "default",
+        tags: ["pm"],
+      },
+    });
+    expect(response.body).toMatchObject({
+      result: {
+        run: { mode: "strategy", status: "completed" },
+        analysis: { analysisKind: "strategy" },
+        strategy: { summary: "Strategy completed." },
+      },
+    });
+  });
+
+  it("rejects oversized strategy briefs before starting a strategy run", async () => {
+    const runner = fakeProjectManagerRunner();
+    const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, {
+      store: new InMemoryProjectManagerStore(),
+      runner,
+    });
+
+    const response = await requestJson(baseUrl, "/api/project-manager/runs", {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({
+        repositoryName: "developer",
+        mode: "strategy",
+        strategyBrief: "x".repeat(2001),
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("strategyBrief must be at most 2000 characters");
+    expect(runner.runStrategyOnce).not.toHaveBeenCalled();
+  });
+
+  it("lets viewers read stored strategy analyses", async () => {
+    const store = new InMemoryProjectManagerStore();
+    await store.recordAnalysis({
+      repositoryName: "developer",
+      analysisKind: "strategy",
+      summary: "Strategy summary.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      goalReplans: [],
+      strategyAnalysisLenses: [{ lens: "strategy", summary: "Frame." }],
+      strategyOpportunities: [],
+      strategyGoalLinks: [],
+      strategyQuestions: [],
+    });
+    await store.recordAnalysis({
+      repositoryName: "developer",
+      analysisKind: "analysis",
+      summary: "Operational summary.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      goalReplans: [],
+    });
+
+    const { baseUrl } = await createServer(new InMemoryTaskTrackerClient(), {}, { store });
+
+    const response = await requestJson(
+      baseUrl,
+      "/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy",
+      { headers: viewerHeaders },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.analyses).toEqual([
+      expect.objectContaining({
+        repositoryName: "developer",
+        analysisKind: "strategy",
+        summary: "Strategy summary.",
+        strategy: expect.objectContaining({
+          summary: "Strategy summary.",
+          analysisLenses: [expect.objectContaining({ lens: "strategy" })],
+        }),
+      }),
+    ]);
+  });
+
   it("rejects project manager replans without a replan reason", async () => {
     const projectManagerStore = new InMemoryProjectManagerStore();
     const calls: string[] = [];
     const runner: Pick<
       ProjectManagerOrchestrator,
-      "runAnalysisOnce" | "runReplanOnce"
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
     > = {
       runAnalysisOnce: async () => {
         calls.push("analysis");
@@ -1235,6 +1421,10 @@ describe("Phase 7F human task API", () => {
       runReplanOnce: async () => {
         calls.push("replan");
         throw new Error("unexpected replan run");
+      },
+      runStrategyOnce: async () => {
+        calls.push("strategy");
+        throw new Error("unexpected strategy run");
       },
     };
     const { baseUrl } = await createServer(null, {}, {
@@ -1269,7 +1459,7 @@ describe("Phase 7F human task API", () => {
     const calls: string[] = [];
     const runner: Pick<
       ProjectManagerOrchestrator,
-      "runAnalysisOnce" | "runReplanOnce"
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
     > = {
       runAnalysisOnce: async () => {
         calls.push("analysis");
@@ -1278,6 +1468,10 @@ describe("Phase 7F human task API", () => {
       runReplanOnce: async () => {
         calls.push("replan");
         throw new Error("unexpected replan run");
+      },
+      runStrategyOnce: async () => {
+        calls.push("strategy");
+        throw new Error("unexpected strategy run");
       },
     };
     const { baseUrl } = await createServer(null, {}, {
@@ -1297,9 +1491,9 @@ describe("Phase 7F human task API", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toContain("mode must be one of: analysis, replan");
+    expect(response.body.error).toContain("mode must be one of: analysis, replan, strategy");
     expect(blank.status).toBe(400);
-    expect(blank.body.error).toContain("mode must be one of: analysis, replan");
+    expect(blank.body.error).toContain("mode must be one of: analysis, replan, strategy");
     expect(calls).toEqual([]);
   });
 
@@ -1308,7 +1502,7 @@ describe("Phase 7F human task API", () => {
     const calls: string[] = [];
     const runner: Pick<
       ProjectManagerOrchestrator,
-      "runAnalysisOnce" | "runReplanOnce"
+      "runAnalysisOnce" | "runReplanOnce" | "runStrategyOnce"
     > = {
       runAnalysisOnce: async () => {
         calls.push("analysis");
@@ -1317,6 +1511,10 @@ describe("Phase 7F human task API", () => {
       runReplanOnce: async () => {
         calls.push("replan");
         throw new Error("unexpected replan run");
+      },
+      runStrategyOnce: async () => {
+        calls.push("strategy");
+        throw new Error("unexpected strategy run");
       },
     };
     const { baseUrl } = await createServer(null, {}, {

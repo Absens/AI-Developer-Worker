@@ -1742,7 +1742,7 @@ git commit -m "feat: add project manager strategy orchestrator"
 - Modify: `src/observability/taskTrackerHumanApi.ts`
 - Test: `tests/humanTaskApi.test.ts`
 
-- [ ] **Step 1: Add failing API tests for strategy runs**
+- [x] **Step 1: Add failing API tests for strategy runs**
 
 In `tests/humanTaskApi.test.ts`, add:
 
@@ -1851,7 +1851,7 @@ it("rejects oversized strategy briefs before starting a strategy run", async () 
 });
 ```
 
-- [ ] **Step 2: Add failing API tests for analysis read endpoint**
+- [x] **Step 2: Add failing API tests for analysis read endpoint**
 
 Add:
 
@@ -1905,7 +1905,7 @@ it("lets viewers read stored strategy analyses", async () => {
 });
 ```
 
-- [ ] **Step 3: Run failing API tests**
+- [x] **Step 3: Run failing API tests**
 
 Run:
 
@@ -1915,7 +1915,7 @@ npm test -- tests/humanTaskApi.test.ts
 
 Expected: runner type lacks `runStrategyOnce`, mode route rejects strategy, read endpoint missing.
 
-- [ ] **Step 4: Extend API dependencies**
+- [x] **Step 4: Extend API dependencies**
 
 In `src/observability/taskTrackerHumanApi.ts`, extend:
 
@@ -1928,7 +1928,7 @@ runner?: Pick<
 
 Update `requireProjectManagerRunner` with the same union.
 
-- [ ] **Step 5: Add analysis filter parsing**
+- [x] **Step 5: Add analysis filter parsing**
 
 Add helper:
 
@@ -1949,7 +1949,7 @@ private parseProjectAnalysisFilters(url: URL): {
 }
 ```
 
-- [ ] **Step 6: Add analyses read route**
+- [x] **Step 6: Add analyses read route**
 
 In `handleProjectManagerRoute`, before goal route parsing:
 
@@ -1999,7 +1999,7 @@ private summarizeProjectAnalysis(analysis: ProjectAnalysis): Record<string, unkn
 }
 ```
 
-- [ ] **Step 7: Extend run route with strategy**
+- [x] **Step 7: Extend run route with strategy**
 
 In `/project-manager/runs` handling:
 
@@ -2030,7 +2030,7 @@ In `/project-manager/runs` handling:
 }
 ```
 
-- [ ] **Step 8: Wire `runStrategyOnce` in `src/app.ts`**
+- [x] **Step 8: Wire `runStrategyOnce` in `src/app.ts`**
 
 In `createProjectManagerStoreController`, add to `runner`:
 
@@ -2068,7 +2068,7 @@ runStrategyOnce: async (input) => {
 },
 ```
 
-- [ ] **Step 9: Run API tests**
+- [x] **Step 9: Run API tests**
 
 Run:
 
@@ -2077,7 +2077,7 @@ npm test -- tests/humanTaskApi.test.ts tests/projectManagerOrchestrator.test.ts
 npm run typecheck
 ```
 
-- [ ] **Step 10: Commit Task 5**
+- [x] **Step 10: Commit Task 5**
 
 ```powershell
 git add src/app.ts src/observability/taskTrackerHumanApi.ts tests/humanTaskApi.test.ts
