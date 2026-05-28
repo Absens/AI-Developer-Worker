@@ -10,6 +10,7 @@ import {
   InMemoryProjectManagerStore,
   PROJECT_ANALYSIS_MARKER,
   PROJECT_REPLAN_MARKER,
+  PROJECT_STRATEGY_MARKER,
   ProjectManagerOrchestrator,
   type ProjectManagerConfig,
   type ProjectGoalDraft,
@@ -22,6 +23,7 @@ import type {
 } from "../src/domain/taskTracker/index.js";
 
 const baseTime = "2026-05-25T08:00:00.000Z";
+const fixedNow = (): Date => new Date(baseTime);
 
 const config: ProjectManagerConfig = {
   enabled: true,
@@ -120,6 +122,8 @@ const readonlyTracker = (tasks: TaskRecord[]): TaskTrackerClient => {
     releaseLease: mutatingMethod,
   } as unknown as TaskTrackerClient;
 };
+
+const trackerWithTasks = readonlyTracker;
 
 const expectTrackerMutationsUnused = (tracker: TaskTrackerClient): void => {
   expect(tracker.createTask).not.toHaveBeenCalled();
@@ -261,6 +265,72 @@ const replanResponse = (overrides: Record<string, unknown> = {}): string =>
     staleGoalIds: [],
     replanReason: "task failed validation",
     goalReplans: [],
+    ...overrides,
+  })}`;
+
+const strategyResponse = (overrides: Record<string, unknown> = {}): string =>
+  `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+    summary: "Strategy found a bounded improvement.",
+    analysisLenses: [{ lens: "strategy", summary: "Validation trust is high leverage." }],
+    opportunities: [
+      {
+        opportunityId: "opp-1",
+        dimension: "technical",
+        title: "Improve validation trust",
+        problemStatement: "No-op validation can be treated as strong evidence.",
+        userOrBusinessImpact: "Operators lose confidence in PM-created work.",
+        technicalImpact: "Quality gates are under-specified.",
+        evidenceRefs: [
+          {
+            kind: "snapshot",
+            ref: "projectSignals.failedTasks",
+            summary: "Failed tasks exist.",
+          },
+        ],
+        confidence: 80,
+        priority: "high",
+        riskLevel: "medium",
+        recommendedNextStep: "create_goal",
+        rationale: "Direct operational evidence supports a narrow goal.",
+        redTeamNotes: ["Avoid broad CI rewrites."],
+        architectVerdict: "pursue",
+      },
+    ],
+    proposedGoals: [
+      {
+        sourceOpportunityId: "opp-1",
+        title: "Improve validation trust",
+        problemStatement: "No-op validation can be treated as strong evidence.",
+        desiredOutcome: "PM prompts and tests distinguish weak validation evidence.",
+        successMetrics: ["Prompt tests cover no-op validation commands."],
+        evidenceRefs: [
+          {
+            kind: "snapshot",
+            ref: "projectSignals.failedTasks",
+            summary: "Failed tasks exist.",
+          },
+        ],
+        priority: "high",
+        riskLevel: "medium",
+        suggestedTaskProposals: [
+          {
+            title: "Add validation trust prompt tests",
+            description: "Add tests for no-op validation command treatment.",
+            taskType: "tests_only",
+            acceptanceCriteria: ["Tests cover no-op validation evidence."],
+            expectedBlastRadius: "Prompt tests only.",
+            evidenceRefs: [
+              {
+                kind: "snapshot",
+                ref: "projectSignals.failedTasks",
+                summary: "Failed tasks exist.",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    questionsForHuman: [],
     ...overrides,
   })}`;
 
@@ -537,6 +607,72 @@ describe("ProjectManagerOrchestrator", () => {
         completedAt: baseTime,
       }),
     ]);
+  });
+
+  it("stores a completed strategy run and materializes only proposed goals", async () => {
+    const codex = new FakeCodexRunner(codexExecution(strategyResponse()));
+    const store = new InMemoryProjectManagerStore({ now: fixedNow });
+    const tracker = trackerWithTasks([]);
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: tracker,
+      codex,
+      store,
+      config,
+    });
+
+    const result = await orchestrator.runStrategyOnce({
+      repositoryName: "developer",
+      strategyBrief: " Focus on validation trust. ",
+    });
+
+    expect(result.run).toMatchObject({
+      status: "completed",
+      mode: "strategy",
+      proposedTaskIds: [],
+    });
+    expect(result.analysis).toMatchObject({
+      analysisKind: "strategy",
+      strategyBrief: "Focus on validation trust.",
+      strategyOpportunities: [expect.objectContaining({ opportunityId: "opp-1" })],
+      strategyGoalLinks: [
+        expect.objectContaining({ sourceOpportunityId: "opp-1" }),
+      ],
+    });
+    const goals = await store.listGoals({ repositoryName: "developer" });
+    expect(goals).toHaveLength(1);
+    expect(goals[0]).toMatchObject({
+      title: "Improve validation trust",
+      sourceAnalysisId: result.analysis.id,
+      sourceRunId: result.run.id,
+      status: "proposed",
+    });
+    expect(goals[0]).not.toHaveProperty("sourceOpportunityId");
+    expect(codex.prompts[0]).toContain("Mode: project-management-strategy-only");
+    expect(codex.prompts[0]).toContain("PROJECT_STRATEGY:");
+    expect(codex.options).toEqual([expect.objectContaining({ sandbox: "read-only" })]);
+    expectTrackerStrictReadOnly(tracker);
+  });
+
+  it("stores failed strategy runs with mode when Codex output is invalid", async () => {
+    const codex = new FakeCodexRunner(codexExecution("not strategy"));
+    const store = new InMemoryProjectManagerStore({ now: fixedNow });
+    const orchestrator = new ProjectManagerOrchestrator({
+      taskTracker: trackerWithTasks([]),
+      codex,
+      store,
+      config,
+    });
+
+    await expect(
+      orchestrator.runStrategyOnce({ repositoryName: "developer" }),
+    ).rejects.toThrow(/valid PROJECT_STRATEGY/);
+
+    const [run] = await store.listRuns();
+    expect(run).toMatchObject({
+      status: "failed",
+      mode: "strategy",
+      diagnostic: expect.stringMatching(/valid PROJECT_STRATEGY/),
+    });
   });
 
   it("stores a completed replan run, records classifications, and creates proposed follow-up goals without mutating tasks", async () => {

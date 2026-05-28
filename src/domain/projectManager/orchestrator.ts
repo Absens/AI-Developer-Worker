@@ -8,24 +8,33 @@ import type { TaskTrackerClient } from "../taskTracker/types.js";
 import {
   assertProjectAnalysisWithinPolicy,
   assertProjectReplanWithinPolicy,
+  assertProjectStrategyWithinPolicy,
 } from "./analysisPolicy.js";
 import {
   parseProjectAnalysisResponse,
   parseProjectReplanResponse,
+  parseProjectStrategyResponse,
 } from "./analysisParser.js";
 import {
   buildProjectAnalysisPrompt,
   buildProjectReplanPrompt,
+  buildProjectStrategyPrompt,
 } from "./promptBuilder.js";
 import { collectProjectReplanSnapshot } from "./replanSnapshot.js";
 import { collectProjectSignals } from "./signalCollector.js";
 import type { ProjectManagerStore } from "./store.js";
+import { collectProjectStrategySnapshot } from "./strategySnapshot.js";
 import type {
   ProjectAnalysis,
   ProjectGoalReplanClassification,
   ProjectManagerConfig,
+  ProjectManagerMode,
   ProjectManagerRun,
   ProjectManagerTrigger,
+  ProjectStrategyGoalLink,
+  ProjectStrategyLensSummary,
+  ProjectStrategyOpportunity,
+  ProjectStrategyQuestion,
 } from "./types.js";
 
 export interface ProjectManagerOrchestratorInput {
@@ -58,8 +67,42 @@ export interface RunProjectReplanOnceResult {
   analysis: ProjectAnalysis;
 }
 
+export interface RunProjectStrategyOnceInput {
+  repositoryName: string;
+  strategyBrief?: string;
+  trigger?: ProjectManagerTrigger;
+  repositoryProfile?: {
+    baseBranch?: string;
+    queue?: string;
+    tags?: string[];
+  };
+}
+
+export interface RunProjectStrategyOnceResult {
+  run: ProjectManagerRun;
+  analysis: ProjectAnalysis;
+  strategy: {
+    summary: string;
+    analysisLenses: ProjectStrategyLensSummary[];
+    opportunities: ProjectStrategyOpportunity[];
+    goalLinks: ProjectStrategyGoalLink[];
+    questionsForHuman: ProjectStrategyQuestion[];
+  };
+}
+
 const diagnosticFor = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const normalizeStrategyBrief = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.length > 2000) {
+    throw new Error("strategyBrief must be at most 2000 characters.");
+  }
+  return trimmed;
+};
 
 const replanActor: TaskActor = {
   owner: "policy_admin",
@@ -157,6 +200,118 @@ export class ProjectManagerOrchestrator {
       this.recordProjectManagerRunMetric(
         input.repositoryName,
         "analysis",
+        trigger,
+        "failed",
+      );
+      throw error;
+    }
+  }
+
+  public async runStrategyOnce(
+    input: RunProjectStrategyOnceInput,
+  ): Promise<RunProjectStrategyOnceResult> {
+    if (!this.config.enabled) {
+      throw new Error("Project manager is disabled.");
+    }
+
+    const strategyBrief = normalizeStrategyBrief(input.strategyBrief);
+    const trigger = input.trigger ?? "manual";
+    const run = await this.store.startRun({
+      repositoryName: input.repositoryName,
+      trigger,
+      mode: "strategy",
+    });
+
+    try {
+      const snapshot = await collectProjectStrategySnapshot({
+        taskTracker: this.taskTracker,
+        store: this.store,
+        repositoryName: input.repositoryName,
+        config: this.config,
+        strategyBrief,
+        repositoryProfile: input.repositoryProfile,
+      });
+      const prompt = buildProjectStrategyPrompt({
+        snapshot,
+        maxGoalsPerRun: this.config.maxGoalsPerRun,
+        maxTaskProposalsPerGoal: this.config.maxTaskProposalsPerGoal,
+        allowedTaskTypes: this.config.allowedTaskTypes,
+        focusAreas: this.focusAreas,
+      });
+      const execution = await this.codex.runInitial(prompt, undefined, {
+        sandbox: "read-only",
+      });
+      if (execution.process.exitCode !== 0) {
+        throw new Error(
+          `Codex project strategy failed with exit code ${execution.process.exitCode}.`,
+        );
+      }
+
+      const parsed = parseProjectStrategyResponse(execution.finalMessage);
+      if (!parsed) {
+        throw new Error("Codex response must be valid PROJECT_STRATEGY output.");
+      }
+      assertProjectStrategyWithinPolicy({
+        parsed,
+        config: this.config,
+      });
+
+      const goalLinks = parsed.proposedGoals.map((goal) => ({
+        sourceOpportunityId: goal.sourceOpportunityId,
+        proposedGoalTitle: goal.title,
+        evidenceRefs: structuredClone(goal.evidenceRefs),
+      }));
+      const proposedGoals = parsed.proposedGoals.map(
+        ({ sourceOpportunityId: _sourceOpportunityId, ...goal }) => goal,
+      );
+      const analysis = await this.store.recordAnalysis({
+        repositoryName: input.repositoryName,
+        analysisKind: "strategy",
+        summary: parsed.summary,
+        healthSignals: [],
+        proposedGoals,
+        staleGoalIds: [],
+        goalReplans: [],
+        strategyAnalysisLenses: parsed.analysisLenses,
+        strategyOpportunities: parsed.opportunities,
+        strategyGoalLinks: goalLinks,
+        strategyQuestions: parsed.questionsForHuman,
+        ...(strategyBrief ? { strategyBrief } : {}),
+      });
+      const goals = await this.store.createGoalsFromAnalysis({
+        repositoryName: input.repositoryName,
+        sourceAnalysisId: analysis.id,
+        sourceRunId: run.id,
+        goals: analysis.proposedGoals,
+      });
+      const completedRun = await this.store.completeRun(run.id, {
+        analysisId: analysis.id,
+        proposedGoalIds: goals.map((goal) => goal.id),
+        proposedTaskIds: [],
+      });
+      this.recordProjectManagerRunMetric(
+        input.repositoryName,
+        "strategy",
+        trigger,
+        "completed",
+      );
+
+      return {
+        run: completedRun,
+        analysis,
+        strategy: {
+          summary: analysis.summary,
+          analysisLenses: analysis.strategyAnalysisLenses,
+          opportunities: analysis.strategyOpportunities,
+          goalLinks: analysis.strategyGoalLinks,
+          questionsForHuman: analysis.strategyQuestions,
+        },
+      };
+    } catch (error) {
+      await this.store.failRun(run.id, diagnosticFor(error));
+      this.recordProjectManagerRunMetric(
+        input.repositoryName,
+        "strategy",
         trigger,
         "failed",
       );
@@ -292,7 +447,7 @@ export class ProjectManagerOrchestrator {
 
   private recordProjectManagerRunMetric(
     repositoryName: string,
-    mode: "analysis" | "replan",
+    mode: ProjectManagerMode,
     trigger: ProjectManagerTrigger,
     status: "completed" | "failed",
   ): void {

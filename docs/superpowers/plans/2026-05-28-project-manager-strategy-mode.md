@@ -1405,7 +1405,7 @@ git commit -m "feat: collect project manager strategy snapshots"
 - Modify: `src/domain/projectManager/orchestrator.ts`
 - Test: `tests/projectManagerOrchestrator.test.ts`
 
-- [ ] **Step 1: Add failing orchestrator tests**
+- [x] **Step 1: Add failing orchestrator tests**
 
 In `tests/projectManagerOrchestrator.test.ts`, add a helper:
 
@@ -1524,7 +1524,7 @@ it("stores failed strategy runs with mode when Codex output is invalid", async (
 });
 ```
 
-- [ ] **Step 2: Run failing orchestrator tests**
+- [x] **Step 2: Run failing orchestrator tests**
 
 Run:
 
@@ -1534,7 +1534,7 @@ npm test -- tests/projectManagerOrchestrator.test.ts
 
 Expected: missing `runStrategyOnce`.
 
-- [ ] **Step 3: Add strategy run interfaces**
+- [x] **Step 3: Add strategy run interfaces**
 
 In `src/domain/projectManager/orchestrator.ts`, add:
 
@@ -1563,7 +1563,7 @@ export interface RunProjectStrategyOnceResult {
 }
 ```
 
-- [ ] **Step 4: Add strategy brief validation helper**
+- [x] **Step 4: Add strategy brief validation helper**
 
 In `orchestrator.ts`:
 
@@ -1580,7 +1580,7 @@ const normalizeStrategyBrief = (value: string | undefined): string | undefined =
 };
 ```
 
-- [ ] **Step 5: Implement `runStrategyOnce`**
+- [x] **Step 5: Implement `runStrategyOnce`**
 
 Add method:
 
@@ -1698,7 +1698,7 @@ public async runStrategyOnce(
 }
 ```
 
-- [ ] **Step 6: Widen metric mode type**
+- [x] **Step 6: Widen metric mode type**
 
 Change:
 
@@ -1714,7 +1714,7 @@ mode: ProjectManagerMode,
 
 in `recordProjectManagerRunMetric`.
 
-- [ ] **Step 7: Run orchestrator tests**
+- [x] **Step 7: Run orchestrator tests**
 
 Run:
 
@@ -1723,7 +1723,7 @@ npm test -- tests/projectManagerOrchestrator.test.ts tests/projectManagerAnalysi
 npm run typecheck
 ```
 
-- [ ] **Step 8: Commit Task 4**
+- [x] **Step 8: Commit Task 4**
 
 ```powershell
 git add src/domain/projectManager/orchestrator.ts tests/projectManagerOrchestrator.test.ts
