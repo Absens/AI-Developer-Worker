@@ -584,14 +584,21 @@ describe("Phase 7F human task API", () => {
       suggestedTaskProposals: [projectGoalTaskProposalDraft()],
     });
     await projectManagerStore.approveGoal(goal.id, { actor: human });
-    const { baseUrl } = await createServer(tracker, {}, {
+    const projectManagerDependencies = {
       store: projectManagerStore,
       configForRepository: () =>
         projectManagerConfig({
           maxTaskProposalsPerGoal: 1,
           defaultAutonomyLevel: "proposal_only",
         }),
-    });
+      executionProfileForRepository: () => ({
+        repoPathKey: "developer",
+        baseBranch: "test",
+        queue: "FRONTEND",
+        tags: ["ai_dev"],
+      }),
+    } satisfies ProjectManagerApiDependencies;
+    const { baseUrl } = await createServer(tracker, {}, projectManagerDependencies);
 
     const developerAttempt = await requestJson(
       baseUrl,
@@ -638,6 +645,11 @@ describe("Phase 7F human task API", () => {
     expect(first.body.tasks[0]).toMatchObject({
       title: "Add PM proposal regression coverage",
       status: "triage",
+      repositoryName: "developer",
+      repoPathKey: "developer",
+      baseBranch: "test",
+      queue: "FRONTEND",
+      tags: expect.arrayContaining(["ai_proposal", "ai_dev"]),
       source: { kind: "ai_proposal" },
       proposal: {
         supervisorStatus: "proposed",

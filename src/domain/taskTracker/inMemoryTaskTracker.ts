@@ -128,6 +128,11 @@ const normalizeStringArray = (values: readonly string[] | undefined): string[] =
 const externalRefKey = (provider: string, externalKey: string): string =>
   `${provider.trim().toLowerCase()}:${externalKey.trim().toLowerCase()}`;
 
+const isApprovedForExecution = (task: TaskRecord): boolean =>
+  !task.proposal ||
+  task.proposal.supervisorStatus === "approved" ||
+  task.proposal.supervisorStatus === "auto_approved";
+
 const hasOwn = <T extends object, K extends PropertyKey>(
   value: T,
   key: K,
@@ -1851,6 +1856,9 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     if (task.status !== "ready" && task.status !== "claimed") {
       return false;
     }
+    if (!isApprovedForExecution(task)) {
+      return false;
+    }
     if (!task.repositoryName || !task.repoPathKey) {
       return false;
     }
@@ -1890,6 +1898,9 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     now: Date,
   ): boolean {
     if (task.status !== "review") {
+      return false;
+    }
+    if (!isApprovedForExecution(task)) {
       return false;
     }
     if (!task.repositoryName || !task.repoPathKey) {

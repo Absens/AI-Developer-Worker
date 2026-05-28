@@ -3613,6 +3613,12 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
             AND t.status IN ('ready', 'claimed')
             AND t.repository_name IS NOT NULL
             AND t.repo_path_key IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM task_proposals proposal
+              WHERE proposal.task_id = t.id
+                AND proposal.supervisor_status NOT IN ('approved', 'auto_approved')
+            )
             AND (
               ${targetRef}::text IS NULL
               OR t.id = ${targetRef}
@@ -3687,6 +3693,12 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
           AND t.status = 'review'
           AND t.repository_name IS NOT NULL
           AND t.repo_path_key IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM task_proposals proposal
+            WHERE proposal.task_id = t.id
+              AND proposal.supervisor_status NOT IN ('approved', 'auto_approved')
+          )
           AND NOT EXISTS (
             SELECT 1
             FROM task_dependencies dep

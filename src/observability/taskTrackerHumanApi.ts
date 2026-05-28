@@ -54,6 +54,16 @@ export interface ProjectManagerApiDependencies {
   store: ProjectManagerStore;
   runner?: Pick<ProjectManagerOrchestrator, "runAnalysisOnce" | "runReplanOnce">;
   configForRepository?: (repositoryName: string) => ProjectManagerConfig | undefined;
+  executionProfileForRepository?: (
+    repositoryName: string,
+  ) =>
+    | {
+        repoPathKey?: string;
+        baseBranch?: string;
+        queue?: string;
+        tags?: string[];
+      }
+    | undefined;
 }
 
 interface AuthContext {
@@ -790,6 +800,10 @@ export class TaskTrackerHumanApi {
             `Cannot propose tasks for project goal from status ${goal.status}.`,
           );
         }
+        const executionProfile =
+          this.input.projectManager?.executionProfileForRepository?.(
+            goal.repositoryName,
+          );
         const tasks = [];
         const taskLinks = [];
         for (const proposalInput of buildProjectGoalTaskProposalInputs({
@@ -801,6 +815,14 @@ export class TaskTrackerHumanApi {
           const task = await tracker.proposeTask({
             ...proposalInput,
             autonomyLevel: "proposal_only",
+            ...(executionProfile?.repoPathKey
+              ? { repoPathKey: executionProfile.repoPathKey }
+              : {}),
+            ...(executionProfile?.baseBranch
+              ? { baseBranch: executionProfile.baseBranch }
+              : {}),
+            ...(executionProfile?.queue ? { queue: executionProfile.queue } : {}),
+            ...(executionProfile?.tags ? { tags: [...executionProfile.tags] } : {}),
           });
           tasks.push(task);
           taskLinks.push(

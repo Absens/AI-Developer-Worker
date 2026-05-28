@@ -76,6 +76,20 @@ describe("Phase 7G AI task proposals", () => {
     );
   });
 
+  it("does not claim a proposed task even if its task status was marked ready", async () => {
+    const tracker = new InMemoryTaskTrackerClient({ now: createClock() });
+    const task = await tracker.proposeTask(proposalInput());
+
+    await tracker.markReady(task.id, "Manual status edit before proposal approval.");
+    const claim = await tracker.claimNextTask(claimInput());
+
+    expect(claim).toBeNull();
+    await expect(tracker.getTask(task.id)).resolves.toMatchObject({
+      status: "ready",
+      proposal: { supervisorStatus: "proposed" },
+    });
+  });
+
   it("approves a proposal into the executable path and audits the decision", async () => {
     const tracker = new InMemoryTaskTrackerClient({ now: createClock() });
     const task = await tracker.proposeTask(proposalInput());

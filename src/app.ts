@@ -113,6 +113,20 @@ const createProjectManagerStoreController = (
       }
       return runtimeConfig.projectManager;
     },
+    executionProfileForRepository: (repositoryName) => {
+      const repository = fleetConfig.repositories.find(
+        (candidate) => candidate.name === repositoryName,
+      );
+      if (!repository) {
+        throw new Error(`Project manager repository not found: ${repositoryName}`);
+      }
+      return {
+        repoPathKey: repository.name,
+        baseBranch: repository.baseBranch,
+        queue: repository.queues[0],
+        tags: [...repository.tags],
+      };
+    },
     runner: {
       runAnalysisOnce: async (input) => {
         const repository = fleetConfig.repositories.find(
