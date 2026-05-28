@@ -169,4 +169,47 @@ describe('ProjectGoalService', () => {
     });
     request.flush(runResponse);
   });
+
+  it('runs strategy mode with a strategy brief', () => {
+    service.runStrategy('developer', 'Focus on validation trust.').subscribe();
+
+    const request = http.expectOne('/api/project-manager/runs');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({
+      repositoryName: 'developer',
+      mode: 'strategy',
+      strategyBrief: 'Focus on validation trust.',
+    });
+    request.flush({ result: { run: { id: 'pm_run_strategy', mode: 'strategy' } } });
+  });
+
+  it('lists strategy analyses', () => {
+    service.listAnalyses({ repositoryName: 'developer', analysisKind: 'strategy' }).subscribe((response) => {
+      expect(response.analyses[0].analysisKind).toBe('strategy');
+      expect(response.analyses[0].strategy?.summary).toBe('Strategy summary.');
+    });
+
+    const request = http.expectOne(
+      '/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy',
+    );
+    expect(request.request.method).toBe('GET');
+    request.flush({
+      analyses: [
+        {
+          id: 'pm_analysis_strategy',
+          repositoryName: 'developer',
+          analysisKind: 'strategy',
+          summary: 'Strategy summary.',
+          strategy: {
+            summary: 'Strategy summary.',
+            analysisLenses: [],
+            opportunities: [],
+            goalLinks: [],
+            questionsForHuman: [],
+          },
+          createdAt: '2026-05-28T00:00:00.000Z',
+        },
+      ],
+    });
+  });
 });

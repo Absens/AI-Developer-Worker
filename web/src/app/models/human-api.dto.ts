@@ -263,6 +263,66 @@ export type ProjectGoalStatusDto =
   | 'stale';
 export type ProjectGoalPriorityDto = 'low' | 'normal' | 'high' | 'critical';
 export type ProjectGoalRiskLevelDto = 'low' | 'medium' | 'high';
+export type ProjectAnalysisKindDto = 'analysis' | 'replan' | 'strategy';
+export type ProjectStrategyDimensionDto = 'product' | 'technical' | 'product_technical';
+export type ProjectStrategyNextStepDto = 'create_goal' | 'research' | 'ask_human' | 'defer';
+export type ProjectStrategyArchitectVerdictDto = 'pursue' | 'research_first' | 'defer' | 'reject';
+
+export interface ProjectStrategyLensSummaryDto {
+  lens: string;
+  summary: string;
+}
+
+export interface ProjectStrategyOpportunityDto {
+  opportunityId: string;
+  dimension: ProjectStrategyDimensionDto;
+  title: string;
+  problemStatement: string;
+  userOrBusinessImpact: string;
+  technicalImpact: string;
+  evidenceRefs: EvidenceRefDto[];
+  confidence: number;
+  priority: ProjectGoalPriorityDto;
+  riskLevel: ProjectGoalRiskLevelDto;
+  recommendedNextStep: ProjectStrategyNextStepDto;
+  rationale: string;
+  redTeamNotes: string[];
+  architectVerdict: ProjectStrategyArchitectVerdictDto;
+}
+
+export interface ProjectStrategyGoalLinkDto {
+  sourceOpportunityId: string;
+  proposedGoalTitle: string;
+  evidenceRefs: EvidenceRefDto[];
+}
+
+export interface ProjectStrategyQuestionDto {
+  question: string;
+  whyItMatters: string;
+  relatedOpportunityId?: string;
+  relatedOpportunityTitle?: string;
+}
+
+export interface ProjectStrategyAnalysisDto {
+  summary: string;
+  analysisLenses: ProjectStrategyLensSummaryDto[];
+  opportunities: ProjectStrategyOpportunityDto[];
+  goalLinks: ProjectStrategyGoalLinkDto[];
+  questionsForHuman: ProjectStrategyQuestionDto[];
+}
+
+export interface ProjectAnalysisDto {
+  id: string;
+  repositoryName: string;
+  analysisKind: ProjectAnalysisKindDto;
+  summary: string;
+  strategy?: ProjectStrategyAnalysisDto;
+  createdAt: string;
+}
+
+export interface ProjectAnalysisListResponseDto {
+  analyses: ProjectAnalysisDto[];
+}
 
 export interface ProjectGoalDto {
   id: string;

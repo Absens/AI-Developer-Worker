@@ -2097,7 +2097,7 @@ git commit -m "feat: expose project manager strategy api"
 - Modify: `web/src/app/services/project-goal.service.ts`
 - Test: `web/src/app/services/project-goal.service.spec.ts`
 
-- [ ] **Step 1: Add failing service tests**
+- [x] **Step 1: Add failing service tests**
 
 In `web/src/app/services/project-goal.service.spec.ts`, add:
 
@@ -2146,7 +2146,7 @@ it('lists strategy analyses', () => {
 });
 ```
 
-- [ ] **Step 2: Run failing Angular service tests**
+- [x] **Step 2: Run failing Angular service tests**
 
 Run:
 
@@ -2162,7 +2162,7 @@ npm run web:test
 
 Expected: missing methods and DTOs.
 
-- [ ] **Step 3: Add DTOs**
+- [x] **Step 3: Add DTOs**
 
 In `web/src/app/models/human-api.dto.ts`, add:
 
@@ -2229,7 +2229,7 @@ export interface ProjectAnalysisListResponseDto {
 }
 ```
 
-- [ ] **Step 4: Add mappers**
+- [x] **Step 4: Add mappers**
 
 In `web/src/app/services/task-mappers.ts`, add mapper functions:
 
@@ -2311,7 +2311,7 @@ export const mapProjectAnalysisListResponse = (
 };
 ```
 
-- [ ] **Step 5: Add service methods**
+- [x] **Step 5: Add service methods**
 
 In `web/src/app/services/project-goal.service.ts`, import the new mapper and DTO. Add:
 
@@ -2344,7 +2344,7 @@ listAnalyses(input: {
 }
 ```
 
-- [ ] **Step 6: Run Angular service checks**
+- [x] **Step 6: Run Angular service checks**
 
 Run:
 
@@ -2353,7 +2353,7 @@ npm run web:typecheck
 npm run web:test
 ```
 
-- [ ] **Step 7: Commit Task 6**
+- [x] **Step 7: Commit Task 6**
 
 ```powershell
 git add web/src/app/models/human-api.dto.ts web/src/app/services/task-mappers.ts web/src/app/services/project-goal.service.ts web/src/app/services/project-goal.service.spec.ts

@@ -15,6 +15,9 @@ import {
   OperationsSnapshotDto,
   ProposalListResponseDto,
   ProposalSummaryDto,
+  ProjectAnalysisDto,
+  ProjectAnalysisKindDto,
+  ProjectAnalysisListResponseDto,
   ProjectGoalAuditEventDto,
   ProjectGoalCommandResponseDto,
   ProjectGoalDetailResponseDto,
@@ -26,6 +29,11 @@ import {
   ProjectGoalStatusDto,
   ProjectGoalSummaryDto,
   ProjectGoalTaskLinkDto,
+  ProjectStrategyAnalysisDto,
+  ProjectStrategyArchitectVerdictDto,
+  ProjectStrategyDimensionDto,
+  ProjectStrategyNextStepDto,
+  ProjectStrategyOpportunityDto,
   ProjectTaskProposalDraftDto,
   QueueDepthDto,
   TaskCommentDto,
@@ -48,6 +56,9 @@ const record = (value: unknown): RawRecord =>
 
 const stringValue = (value: unknown, fallback = ''): string =>
   typeof value === 'string' ? value : fallback;
+
+const numberValue = (value: unknown, fallback = 0): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 
 const numberOrString = (value: unknown): string | number | undefined =>
   typeof value === 'string' || typeof value === 'number' ? value : undefined;
@@ -430,6 +441,75 @@ export const mapProjectGoalSummary = (value: unknown): ProjectGoalSummaryDto => 
     priority: stringValue(raw['priority'], 'normal') as ProjectGoalPriorityDto,
     riskLevel: stringValue(raw['riskLevel'], 'medium') as ProjectGoalRiskLevelDto,
     repositoryName: stringValue(raw['repositoryName']),
+  };
+};
+
+export const mapProjectStrategyOpportunity = (value: unknown): ProjectStrategyOpportunityDto => {
+  const raw = record(value);
+  return {
+    opportunityId: stringValue(raw['opportunityId']),
+    dimension: stringValue(raw['dimension'], 'technical') as ProjectStrategyDimensionDto,
+    title: stringValue(raw['title']),
+    problemStatement: stringValue(raw['problemStatement']),
+    userOrBusinessImpact: stringValue(raw['userOrBusinessImpact']),
+    technicalImpact: stringValue(raw['technicalImpact']),
+    evidenceRefs: records(raw['evidenceRefs']).map(mapEvidenceRef),
+    confidence: numberValue(raw['confidence']),
+    priority: stringValue(raw['priority'], 'normal') as ProjectGoalPriorityDto,
+    riskLevel: stringValue(raw['riskLevel'], 'medium') as ProjectGoalRiskLevelDto,
+    recommendedNextStep: stringValue(raw['recommendedNextStep'], 'defer') as ProjectStrategyNextStepDto,
+    rationale: stringValue(raw['rationale']),
+    redTeamNotes: stringArray(raw['redTeamNotes']),
+    architectVerdict: stringValue(raw['architectVerdict'], 'defer') as ProjectStrategyArchitectVerdictDto,
+  };
+};
+
+export const mapProjectStrategyAnalysis = (value: unknown): ProjectStrategyAnalysisDto => {
+  const raw = record(value);
+  return {
+    summary: stringValue(raw['summary']),
+    analysisLenses: records(raw['analysisLenses']).map((lens) => ({
+      lens: stringValue(lens['lens']),
+      summary: stringValue(lens['summary']),
+    })),
+    opportunities: records(raw['opportunities']).map(mapProjectStrategyOpportunity),
+    goalLinks: records(raw['goalLinks']).map((link) => ({
+      sourceOpportunityId: stringValue(link['sourceOpportunityId']),
+      proposedGoalTitle: stringValue(link['proposedGoalTitle']),
+      evidenceRefs: records(link['evidenceRefs']).map(mapEvidenceRef),
+    })),
+    questionsForHuman: records(raw['questionsForHuman']).map((question) => ({
+      question: stringValue(question['question']),
+      whyItMatters: stringValue(question['whyItMatters']),
+      ...(optionalString(question['relatedOpportunityId'])
+        ? { relatedOpportunityId: optionalString(question['relatedOpportunityId']) }
+        : {}),
+      ...(optionalString(question['relatedOpportunityTitle'])
+        ? { relatedOpportunityTitle: optionalString(question['relatedOpportunityTitle']) }
+        : {}),
+    })),
+  };
+};
+
+export const mapProjectAnalysis = (value: unknown): ProjectAnalysisDto => {
+  const raw = record(value);
+  const strategy = raw['strategy'] ? mapProjectStrategyAnalysis(raw['strategy']) : undefined;
+  return {
+    id: stringValue(raw['id']),
+    repositoryName: stringValue(raw['repositoryName']),
+    analysisKind: stringValue(raw['analysisKind'], 'analysis') as ProjectAnalysisKindDto,
+    summary: stringValue(raw['summary']),
+    ...(strategy ? { strategy } : {}),
+    createdAt: stringValue(raw['createdAt']),
+  };
+};
+
+export const mapProjectAnalysisListResponse = (
+  value: unknown,
+): ProjectAnalysisListResponseDto => {
+  const raw = record(value);
+  return {
+    analyses: records(raw['analyses']).map(mapProjectAnalysis),
   };
 };
 

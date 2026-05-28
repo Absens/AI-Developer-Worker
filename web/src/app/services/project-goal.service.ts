@@ -3,6 +3,8 @@ import { Injectable, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 
 import {
+  ProjectAnalysisKindDto,
+  ProjectAnalysisListResponseDto,
   ProjectGoalCommandResponseDto,
   ProjectGoalDetailResponseDto,
   ProjectGoalListResponseDto,
@@ -10,6 +12,7 @@ import {
 } from '../models/human-api.dto';
 import { ApiClient } from './api-client.service';
 import {
+  mapProjectAnalysisListResponse,
   mapProjectGoalCommandResponse,
   mapProjectGoalDetailResponse,
   mapProjectGoalListResponse,
@@ -97,5 +100,32 @@ export class ProjectGoalService {
         replanReason,
       },
     );
+  }
+
+  runStrategy(repositoryName: string, strategyBrief?: string): Observable<unknown> {
+    return this.api.post<
+      { repositoryName: string; mode: 'strategy'; strategyBrief?: string },
+      unknown
+    >('/project-manager/runs', {
+      repositoryName,
+      mode: 'strategy',
+      ...(strategyBrief?.trim() ? { strategyBrief: strategyBrief.trim() } : {}),
+    });
+  }
+
+  listAnalyses(input: {
+    repositoryName?: string;
+    analysisKind?: ProjectAnalysisKindDto;
+  } = {}): Observable<ProjectAnalysisListResponseDto> {
+    let params = new HttpParams();
+    if (input.repositoryName) {
+      params = params.set('repositoryName', input.repositoryName);
+    }
+    if (input.analysisKind) {
+      params = params.set('analysisKind', input.analysisKind);
+    }
+    return this.api
+      .get<unknown>('/project-manager/analyses', params)
+      .pipe(map(mapProjectAnalysisListResponse));
   }
 }
