@@ -19,13 +19,17 @@ import type {
   ProjectManagerMode,
   ProjectManagerRun,
   ProjectManagerTrigger,
+  ProjectStrategyGoalLink,
+  ProjectStrategyLensSummary,
+  ProjectStrategyOpportunity,
+  ProjectStrategyQuestion,
   RejectProjectGoalInput,
 } from "./types.js";
 import { isTerminalProjectGoalStatus } from "./types.js";
 
 export interface StartProjectManagerRunInput {
   repositoryName: string;
-  mode?: ProjectManagerMode;
+  mode: ProjectManagerMode;
   trigger: ProjectManagerTrigger;
 }
 
@@ -38,12 +42,12 @@ export interface CompleteProjectManagerRunInput {
 export interface RecordProjectAnalysisInput
   extends Omit<ParsedProjectAnalysis, "goalReplans"> {
   repositoryName: string;
-  analysisKind?: ProjectAnalysisKind;
+  analysisKind: ProjectAnalysisKind;
   goalReplans?: ProjectGoalReplanClassification[];
-  strategyAnalysisLenses?: ProjectAnalysis["strategyAnalysisLenses"];
-  strategyOpportunities?: ProjectAnalysis["strategyOpportunities"];
-  strategyGoalLinks?: ProjectAnalysis["strategyGoalLinks"];
-  strategyQuestions?: ProjectAnalysis["strategyQuestions"];
+  strategyAnalysisLenses?: ProjectStrategyLensSummary[];
+  strategyOpportunities?: ProjectStrategyOpportunity[];
+  strategyGoalLinks?: ProjectStrategyGoalLink[];
+  strategyQuestions?: ProjectStrategyQuestion[];
   strategyBrief?: string;
 }
 
@@ -119,7 +123,7 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     const run: ProjectManagerRun = {
       id: `pm_run_${randomUUID()}`,
       repositoryName: input.repositoryName,
-      mode: input.mode ?? "analysis",
+      mode: input.mode,
       trigger: input.trigger,
       status: "started",
       proposedGoalIds: [],
@@ -168,11 +172,7 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     const analysis: ProjectAnalysis = {
       id: `pm_analysis_${randomUUID()}`,
       repositoryName: input.repositoryName,
-      analysisKind:
-        input.analysisKind ??
-        (input.replanReason || (input.goalReplans?.length ?? 0) > 0
-          ? "replan"
-          : "analysis"),
+      analysisKind: input.analysisKind,
       summary: input.summary,
       healthSignals: input.healthSignals,
       proposedGoals: input.proposedGoals,

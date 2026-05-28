@@ -552,6 +552,7 @@ describe("ProjectManagerOrchestrator", () => {
     });
     const previousAnalysis = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "analysis",
       summary: "Previous project analysis.",
       healthSignals: [],
       proposedGoals: [],

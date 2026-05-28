@@ -762,7 +762,7 @@ git commit -m "feat: add project manager strategy contract"
 - Test: `tests/projectManagerGoalStore.test.ts`
 - Test: `tests/projectManagerPostgresStore.test.ts`
 
-- [ ] **Step 1: Add failing in-memory store tests**
+- [x] **Step 1: Add failing in-memory store tests**
 
 In `tests/projectManagerGoalStore.test.ts`, add:
 
@@ -843,7 +843,7 @@ it("stores strategy analysis metadata without changing goal storage shape", asyn
 });
 ```
 
-- [ ] **Step 2: Add failing PostgreSQL tests**
+- [x] **Step 2: Add failing PostgreSQL tests**
 
 In `tests/projectManagerPostgresStore.test.ts`, add in the store test suite:
 
@@ -900,7 +900,7 @@ it("includes a migration for project manager strategy persistence", () => {
 });
 ```
 
-- [ ] **Step 3: Run failing storage tests**
+- [x] **Step 3: Run failing storage tests**
 
 Run:
 
@@ -910,7 +910,7 @@ npm test -- tests/projectManagerGoalStore.test.ts tests/projectManagerPostgresSt
 
 Expected: compile failures for `mode`, `analysisKind`, and strategy fields.
 
-- [ ] **Step 4: Update in-memory store contracts**
+- [x] **Step 4: Update in-memory store contracts**
 
 In `src/domain/projectManager/store.ts`, change:
 
@@ -950,7 +950,7 @@ strategyQuestions: structuredClone(input.strategyQuestions ?? []),
 ...(input.strategyBrief ? { strategyBrief: input.strategyBrief } : {}),
 ```
 
-- [ ] **Step 5: Add PostgreSQL migration**
+- [x] **Step 5: Add PostgreSQL migration**
 
 Create `src/integrations/internalTracker/migrations/0009_project_manager_strategy.sql`:
 
@@ -999,7 +999,7 @@ CREATE INDEX IF NOT EXISTS project_analyses_repository_kind_time_idx
 
 Add `project_analyses_repository_kind_time_idx` to `REQUIRED_INTERNAL_TRACKER_INDEXES` in `src/integrations/internalTracker/migrations.ts`.
 
-- [ ] **Step 6: Update PostgreSQL row mapping**
+- [x] **Step 6: Update PostgreSQL row mapping**
 
 In `src/integrations/internalTracker/postgresProjectManagerStore.ts`:
 
@@ -1032,7 +1032,7 @@ strategy_brief
 
 Bind JSON values using `JSON.stringify(input.strategyAnalysisLenses ?? [])` and the same pattern for other strategy arrays.
 
-- [ ] **Step 7: Update existing callers and tests for required `mode` and `analysisKind`**
+- [x] **Step 7: Update existing callers and tests for required `mode` and `analysisKind`**
 
 Change existing orchestrator calls:
 
@@ -1068,7 +1068,7 @@ analysisKind: "replan",
 
 Update test helper calls in PM tests to include `mode` when calling `startRun` directly and `analysisKind` when calling `recordAnalysis` directly.
 
-- [ ] **Step 8: Run storage tests**
+- [x] **Step 8: Run storage tests**
 
 Run:
 
@@ -1079,7 +1079,7 @@ npm run typecheck
 
 Expected: storage tests pass; orchestrator tests pass after mode/kind updates.
 
-- [ ] **Step 9: Commit Task 2**
+- [x] **Step 9: Commit Task 2**
 
 ```powershell
 git add src/domain/projectManager/store.ts src/domain/projectManager/orchestrator.ts src/integrations/internalTracker/migrations.ts src/integrations/internalTracker/migrations/0009_project_manager_strategy.sql src/integrations/internalTracker/postgresProjectManagerStore.ts tests/projectManagerGoalStore.test.ts tests/projectManagerPostgresStore.test.ts tests/projectManagerOrchestrator.test.ts

@@ -7,6 +7,7 @@ import {
   PROJECT_GOAL_TERMINAL_STATUSES,
   type ProjectGoalDraft,
   type ProjectGoalReplanClassification,
+  type ProjectStrategyProposedGoalDraft,
 } from "../src/domain/projectManager/index.js";
 import type { TaskActor } from "../src/domain/taskTracker/index.js";
 
@@ -95,6 +96,135 @@ describe("project manager goal policy", () => {
 });
 
 describe("InMemoryProjectManagerStore goals", () => {
+  it("stores run mode for completed and failed project manager runs", async () => {
+    const store = createStore();
+
+    const startedForCompletion = await store.startRun({
+      repositoryName: "developer",
+      trigger: "manual",
+      mode: "strategy",
+    });
+    expect(startedForCompletion.mode).toBe("strategy");
+
+    const completed = await store.completeRun(startedForCompletion.id, {
+      analysisId: "pm_analysis_strategy",
+    });
+    expect(completed).toMatchObject({
+      id: startedForCompletion.id,
+      mode: "strategy",
+      status: "completed",
+      analysisId: "pm_analysis_strategy",
+    });
+
+    const startedForFailure = await store.startRun({
+      repositoryName: "developer",
+      trigger: "manual",
+      mode: "strategy",
+    });
+    expect(startedForFailure.mode).toBe("strategy");
+
+    const failed = await store.failRun(startedForFailure.id, "bad strategy output");
+    expect(failed).toMatchObject({
+      id: startedForFailure.id,
+      mode: "strategy",
+      status: "failed",
+      diagnostic: "bad strategy output",
+    });
+    await expect(store.listRuns()).resolves.toEqual([
+      expect.objectContaining({
+        id: startedForCompletion.id,
+        mode: "strategy",
+        status: "completed",
+      }),
+      expect.objectContaining({
+        id: startedForFailure.id,
+        mode: "strategy",
+        status: "failed",
+      }),
+    ]);
+  });
+
+  it("stores strategy analysis metadata without changing goal storage shape", async () => {
+    const store = createStore();
+    const proposedGoal: ProjectStrategyProposedGoalDraft = {
+      ...goalDraft({ title: "Strategy-created goal" }),
+      sourceOpportunityId: "opp-1",
+    };
+
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      analysisKind: "strategy",
+      summary: "Strategy summary.",
+      healthSignals: [],
+      proposedGoals: [proposedGoal],
+      staleGoalIds: [],
+      goalReplans: [],
+      strategyBrief: "Focus on validation trust.",
+      strategyAnalysisLenses: [
+        { lens: "strategy", summary: "Validation trust matters." },
+      ],
+      strategyOpportunities: [
+        {
+          opportunityId: "opp-1",
+          dimension: "technical",
+          title: "Validation trust",
+          problemStatement: "Weak validation evidence.",
+          userOrBusinessImpact: "Operators lose confidence.",
+          technicalImpact: "Quality signals are unreliable.",
+          evidenceRefs: [
+            {
+              kind: "snapshot",
+              ref: "projectSignals.failedTasks",
+              summary: "Failures exist.",
+            },
+          ],
+          confidence: 80,
+          priority: "high",
+          riskLevel: "medium",
+          recommendedNextStep: "create_goal",
+          rationale: "Evidence supports it.",
+          redTeamNotes: ["Keep scope narrow."],
+          architectVerdict: "pursue",
+        },
+      ],
+      strategyGoalLinks: [
+        {
+          sourceOpportunityId: "opp-1",
+          proposedGoalTitle: "Strategy-created goal",
+          evidenceRefs: [
+            {
+              kind: "snapshot",
+              ref: "projectSignals.failedTasks",
+              summary: "Failures exist.",
+            },
+          ],
+        },
+      ],
+      strategyQuestions: [],
+    });
+
+    expect(analysis).toMatchObject({
+      analysisKind: "strategy",
+      strategyBrief: "Focus on validation trust.",
+      strategyOpportunities: [
+        expect.objectContaining({ opportunityId: "opp-1" }),
+      ],
+      strategyGoalLinks: [
+        expect.objectContaining({ sourceOpportunityId: "opp-1" }),
+      ],
+    });
+
+    const [goal] = await store.createGoalsFromAnalysis({
+      repositoryName: "developer",
+      sourceAnalysisId: analysis.id,
+      goals: analysis.proposedGoals,
+    });
+    expect(goal).not.toHaveProperty("sourceOpportunityId");
+    await expect(store.listGoals({ sourceAnalysisId: analysis.id })).resolves.toEqual([
+      expect.not.objectContaining({ sourceOpportunityId: expect.anything() }),
+    ]);
+  });
+
   it("creates, lists, and gets goals from analysis drafts", async () => {
     const store = createStore();
 
@@ -385,6 +515,7 @@ describe("InMemoryProjectManagerStore goals", () => {
 
     const analysis = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "replan",
       summary: "Docs need replan.",
       healthSignals: [],
       proposedGoals: [],

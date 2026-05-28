@@ -426,6 +426,7 @@ const recordTestAnalysis = (
 ) =>
   store.recordAnalysis({
     repositoryName: overrides.repositoryName ?? "developer",
+    analysisKind: "analysis",
     summary: overrides.summary ?? "Docs need attention.",
     healthSignals: [],
     proposedGoals: overrides.proposedGoals ?? [goalDraft()],
@@ -433,15 +434,59 @@ const recordTestAnalysis = (
   });
 
 describe("PostgresProjectManagerStore", () => {
+  it("persists strategy run mode and analysis metadata", async () => {
+    const { store } = createStoreWithDb();
+
+    const run = await store.startRun({
+      repositoryName: "developer",
+      trigger: "manual",
+      mode: "strategy",
+    });
+    expect(run.mode).toBe("strategy");
+
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      analysisKind: "strategy",
+      summary: "Strategy summary.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      goalReplans: [],
+      strategyAnalysisLenses: [{ lens: "risk", summary: "Limit fan-out." }],
+      strategyOpportunities: [],
+      strategyGoalLinks: [],
+      strategyQuestions: [
+        {
+          question: "Which workflow matters most?",
+          whyItMatters: "Product context is missing.",
+        },
+      ],
+      strategyBrief: "Focus on operator confidence.",
+    });
+
+    const analyses = await store.listAnalyses();
+    expect(
+      analyses.find((candidate) => candidate.id === analysis.id),
+    ).toMatchObject({
+      analysisKind: "strategy",
+      strategyBrief: "Focus on operator confidence.",
+      strategyQuestions: [
+        expect.objectContaining({ question: "Which workflow matters most?" }),
+      ],
+    });
+  });
+
   it("persists runs and analyses with optional fields", async () => {
     const store = createStore();
 
     const run = await store.startRun({
       repositoryName: "developer",
+      mode: "analysis",
       trigger: "manual",
     });
     const analysis = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "replan",
       summary: "Docs need attention.",
       healthSignals: [
         {
@@ -464,6 +509,7 @@ describe("PostgresProjectManagerStore", () => {
     });
     const failedRun = await store.startRun({
       repositoryName: "developer",
+      mode: "analysis",
       trigger: "schedule",
     });
 
@@ -505,6 +551,7 @@ describe("PostgresProjectManagerStore", () => {
     const store = createStore();
     const run = await store.startRun({
       repositoryName: "developer",
+      mode: "analysis",
       trigger: "manual",
     });
     const analysis1 = await recordTestAnalysis(store);
@@ -680,6 +727,7 @@ describe("PostgresProjectManagerStore", () => {
 
     const analysis2 = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "replan",
       summary: "Docs need replan.",
       healthSignals: [],
       proposedGoals: [],
@@ -882,6 +930,7 @@ describe("project manager internal tracker migrations", () => {
       expect.arrayContaining([
         "project_manager_runs_repository_time_idx",
         "project_analyses_repository_time_idx",
+        "project_analyses_repository_kind_time_idx",
         "project_analyses_previous_analysis_idx",
         "project_goals_repository_status_idx",
         "project_goals_duplicate_signature_idx",
@@ -934,18 +983,43 @@ describe("project manager internal tracker migrations", () => {
     expect(migration?.sql).toContain("'project_goal_replan_classified'");
   });
 
-  it("includes a migration backfill for existing replan analyses and runs", () => {
+  it("includes a follow-up migration backfill for existing replan analyses and runs", () => {
     const migration = listInternalTrackerMigrations().find(
-      (candidate) => candidate.filename === "0009_project_manager_strategy.sql",
+      (candidate) =>
+        candidate.filename === "0010_project_manager_strategy_backfill.sql",
     );
 
     expect(migration?.sql).toContain("UPDATE project_analyses");
     expect(migration?.sql).toContain("analysis_kind = 'replan'");
+    expect(migration?.sql).toContain(
+      "(analysis_kind IS NULL OR analysis_kind = 'analysis')",
+    );
     expect(migration?.sql).toContain("replan_reason IS NOT NULL");
     expect(migration?.sql).toContain("jsonb_array_length(goal_replans)");
     expect(migration?.sql).toContain("UPDATE project_manager_runs");
     expect(migration?.sql).toContain("mode = 'replan'");
     expect(migration?.sql).toContain("analysis_id");
+    expect(migration?.sql).toContain("ALTER COLUMN mode DROP DEFAULT");
+    expect(migration?.sql).toContain(
+      "ALTER COLUMN analysis_kind DROP DEFAULT",
+    );
+    expect(migration?.sql).toContain(
+      "project_analyses_repository_kind_time_idx",
+    );
+  });
+
+  it("includes a migration for project manager strategy persistence", () => {
+    const migration = listInternalTrackerMigrations().find(
+      (candidate) => candidate.filename === "0009_project_manager_strategy.sql",
+    );
+
+    expect(migration?.sql).toContain("ADD COLUMN IF NOT EXISTS mode text");
+    expect(migration?.sql).toContain(
+      "ADD COLUMN IF NOT EXISTS analysis_kind text",
+    );
+    expect(migration?.sql).toContain("strategy_opportunities jsonb");
+    expect(migration?.sql).toContain("project_manager_runs_mode_check");
+    expect(migration?.sql).toContain("project_analyses_analysis_kind_check");
   });
 });
 
@@ -1016,6 +1090,7 @@ describePostgres("PostgresProjectManagerStore with real PostgreSQL", () => {
 
     const replanAnalysis = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "replan",
       summary: "Docs need replan.",
       healthSignals: [],
       proposedGoals: [],

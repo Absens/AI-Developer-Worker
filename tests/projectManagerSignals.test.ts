@@ -463,6 +463,7 @@ describe("project manager replan snapshot collector", () => {
     });
     const analysis = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "analysis",
       summary: "Prior PM analysis.",
       healthSignals: [],
       proposedGoals: [createGoalDraft("Stabilize validation")],
@@ -568,6 +569,7 @@ describe("project manager replan snapshot collector", () => {
     });
     const analysis = await store.recordAnalysis({
       repositoryName: "developer",
+      analysisKind: "analysis",
       summary: "Prior analysis.",
       healthSignals: [],
       proposedGoals: [

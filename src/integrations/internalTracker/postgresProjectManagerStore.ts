@@ -40,7 +40,7 @@ type TransactionClient = PostgresQueryable & { release?: () => void };
 type ProjectManagerRunRow = QueryResultRow & {
   id: string;
   repository_name: string;
-  mode?: ProjectManagerMode | null;
+  mode: ProjectManagerMode;
   trigger: ProjectManagerRun["trigger"];
   status: ProjectManagerRun["status"];
   analysis_id: string | null;
@@ -54,7 +54,7 @@ type ProjectManagerRunRow = QueryResultRow & {
 type ProjectAnalysisRow = QueryResultRow & {
   id: string;
   repository_name: string;
-  analysis_kind?: ProjectAnalysisKind | null;
+  analysis_kind: ProjectAnalysisKind;
   summary: string;
   health_signals: unknown;
   proposed_goals: unknown;
@@ -62,10 +62,10 @@ type ProjectAnalysisRow = QueryResultRow & {
   previous_analysis_id?: string | null;
   replan_reason: string | null;
   goal_replans?: unknown | null;
-  strategy_analysis_lenses?: unknown | null;
-  strategy_opportunities?: unknown | null;
-  strategy_goal_links?: unknown | null;
-  strategy_questions?: unknown | null;
+  strategy_analysis_lenses: unknown;
+  strategy_opportunities: unknown;
+  strategy_goal_links: unknown;
+  strategy_questions: unknown;
   strategy_brief?: string | null;
   created_at: Date | string;
 };
@@ -153,7 +153,7 @@ const optionalJsonValue = <T>(value: unknown | null): T | undefined => {
 const mapRunRow = (row: ProjectManagerRunRow): ProjectManagerRun => ({
   id: row.id,
   repositoryName: row.repository_name,
-  mode: row.mode ?? "analysis",
+  mode: row.mode,
   trigger: row.trigger,
   status: row.status,
   ...(row.analysis_id ? { analysisId: row.analysis_id } : {}),
@@ -167,8 +167,7 @@ const mapRunRow = (row: ProjectManagerRunRow): ProjectManagerRun => ({
 const mapAnalysisRow = (row: ProjectAnalysisRow): ProjectAnalysis => ({
   id: row.id,
   repositoryName: row.repository_name,
-  analysisKind:
-    row.analysis_kind ?? (row.replan_reason ? "replan" : "analysis"),
+  analysisKind: row.analysis_kind,
   summary: row.summary,
   healthSignals: jsonValue(row.health_signals, []),
   proposedGoals: jsonValue(row.proposed_goals, []),
@@ -276,7 +275,7 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
       [
         `pm_run_${randomUUID()}`,
         input.repositoryName,
-        input.mode ?? "analysis",
+        input.mode,
         input.trigger,
         [],
         [],
@@ -354,10 +353,7 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
       [
         `pm_analysis_${randomUUID()}`,
         input.repositoryName,
-        input.analysisKind ??
-          (input.replanReason || (input.goalReplans?.length ?? 0) > 0
-            ? "replan"
-            : "analysis"),
+        input.analysisKind,
         input.summary,
         JSON.stringify(input.healthSignals),
         JSON.stringify(input.proposedGoals),
