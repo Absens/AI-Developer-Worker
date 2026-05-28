@@ -228,6 +228,39 @@ const createInitialState = () => {
   return {
     tasks,
     projectGoals,
+    projectAnalyses: [
+      {
+        id: 'pm-analysis-strategy-initial',
+        repositoryName: 'developer',
+        analysisKind: 'strategy',
+        summary: 'Strategy summary.',
+        strategy: {
+          summary: 'Strategy summary.',
+          analysisLenses: [{ lens: 'strategy', summary: 'Focus on validation trust.' }],
+          opportunities: [
+            {
+              opportunityId: 'opp-validation',
+              dimension: 'technical',
+              title: 'Improve validation trust',
+              problemStatement: 'Weak validation evidence.',
+              userOrBusinessImpact: 'Operators lose confidence.',
+              technicalImpact: 'Quality signals are weak.',
+              evidenceRefs: [],
+              confidence: 80,
+              priority: 'high',
+              riskLevel: 'medium',
+              recommendedNextStep: 'create_goal',
+              rationale: 'Mock evidence supports a narrow tests-only goal.',
+              redTeamNotes: ['Keep scope narrow.'],
+              architectVerdict: 'pursue',
+            },
+          ],
+          goalLinks: [],
+          questionsForHuman: [],
+        },
+        createdAt: now(),
+      },
+    ],
     goalEvents,
     goalTaskLinks,
     createdCount: 0,
@@ -618,12 +651,102 @@ const handleApi = async (request, response, url) => {
     });
     return;
   }
+  if (path === '/api/project-manager/analyses' && request.method === 'GET') {
+    const repositoryName = url.searchParams.get('repositoryName');
+    const analysisKind = url.searchParams.get('analysisKind');
+    const analyses = state.projectAnalyses.filter(
+      (analysis) =>
+        (!repositoryName || analysis.repositoryName === repositoryName) &&
+        (!analysisKind || analysis.analysisKind === analysisKind),
+    );
+    json(response, 200, { analyses });
+    return;
+  }
   if (path === '/api/project-manager/runs' && request.method === 'POST') {
     if (!hasRequiredRole(request, 'operator')) {
       json(response, 403, { status: 'error', error: 'forbidden' });
       return;
     }
     const body = await readBody(request);
+    if (body.mode === 'strategy') {
+      const goal = {
+        id: `pm-goal-strategy-${state.projectGoals.size + 1}`,
+        sourceAnalysisId: `pm-analysis-strategy-${Date.now()}`,
+        sourceRunId: `pm-run-strategy-${Date.now()}`,
+        repositoryName: body.repositoryName || 'developer',
+        title: 'Improve validation trust',
+        problemStatement: 'No-op validation can be treated as strong evidence.',
+        desiredOutcome: 'PM prompts distinguish weak validation evidence.',
+        successMetrics: ['Prompt tests cover no-op validation commands.'],
+        evidenceRefs: [
+          { kind: 'snapshot', ref: 'projectSignals.failedTasks', summary: 'Failed tasks exist.' },
+        ],
+        status: 'proposed',
+        priority: 'high',
+        riskLevel: 'medium',
+        suggestedTaskProposals: [],
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      state.projectGoals.set(goal.id, goal);
+      const analysis = {
+        id: goal.sourceAnalysisId,
+        repositoryName: goal.repositoryName,
+        analysisKind: 'strategy',
+        summary: 'Strategy identified validation trust as a high-confidence opportunity.',
+        strategy: {
+          summary: 'Strategy identified validation trust as a high-confidence opportunity.',
+          analysisLenses: [{ lens: 'architecture', summary: 'Tests-only scope is feasible.' }],
+          opportunities: [
+            {
+              opportunityId: 'opp-validation',
+              dimension: 'technical',
+              title: 'Improve validation trust',
+              problemStatement: goal.problemStatement,
+              userOrBusinessImpact: 'Operators lose confidence.',
+              technicalImpact: 'Quality signals are weak.',
+              evidenceRefs: goal.evidenceRefs,
+              confidence: 82,
+              priority: 'high',
+              riskLevel: 'medium',
+              recommendedNextStep: 'create_goal',
+              rationale: 'Mock strategy run found bounded evidence.',
+              redTeamNotes: ['Avoid broad CI rewrites.'],
+              architectVerdict: 'pursue',
+            },
+          ],
+          goalLinks: [
+            {
+              sourceOpportunityId: 'opp-validation',
+              proposedGoalTitle: goal.title,
+              evidenceRefs: goal.evidenceRefs,
+            },
+          ],
+          questionsForHuman: [],
+        },
+        createdAt: now(),
+      };
+      state.projectAnalyses.unshift(analysis);
+      json(response, 200, {
+        result: {
+          run: {
+            id: goal.sourceRunId,
+            repositoryName: goal.repositoryName,
+            trigger: 'manual',
+            mode: 'strategy',
+            status: 'completed',
+            analysisId: analysis.id,
+            proposedGoalIds: [goal.id],
+            proposedTaskIds: [],
+            startedAt: now(),
+            completedAt: now(),
+          },
+          analysis,
+          strategy: analysis.strategy,
+        },
+      });
+      return;
+    }
     if (body.mode === 'replan') {
       const replanReason = typeof body.replanReason === 'string' ? body.replanReason.trim() : '';
       if (!replanReason) {

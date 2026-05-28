@@ -99,6 +99,43 @@ test.describe.serial('task tracker console production flows', () => {
     await operator.close();
   });
 
+  test('operator runs strategy mode and sees a strategy-created goal', async ({ browser }) => {
+    const operator = await newRolePage(browser, 'operator');
+    const page = operator.page;
+
+    await page.goto('/tasks/goals');
+    await expect(page.getByTestId('goals-page')).toBeVisible();
+    await expect(page.getByTestId('goals-strategy-summary')).toContainText(
+      'Improve validation trust',
+    );
+    await page.getByTestId('goals-strategy-brief').fill('Focus on operator confidence.');
+    await page.getByTestId('goals-run-strategy').click();
+    await expect(page.getByTestId('goals-strategy-summary')).toContainText(
+      'Strategy identified validation trust',
+    );
+    const strategyGoalRow = page
+      .locator('[data-testid^="goal-row-pm-goal-strategy-"]')
+      .filter({ hasText: 'Improve validation trust' });
+    await expect(strategyGoalRow).toHaveCount(1);
+    await expect(strategyGoalRow).toBeVisible();
+
+    await operator.close();
+  });
+
+  test('viewer can read strategy output but cannot run strategy mode', async ({ browser }) => {
+    const viewer = await newRolePage(browser, 'viewer');
+    const page = viewer.page;
+
+    await page.goto('/tasks/goals');
+    await expect(page.getByTestId('goals-page')).toBeVisible();
+    await expect(page.getByTestId('goals-strategy-summary')).toContainText(
+      'Improve validation trust',
+    );
+    await expect(page.getByTestId('goals-run-strategy')).toHaveCount(0);
+
+    await viewer.close();
+  });
+
   test('runs developer and operator critical workflows', async ({ browser }) => {
     const developer = await newRolePage(browser, 'developer');
     const page = developer.page;

@@ -2681,7 +2681,7 @@ git commit -m "feat: render project manager strategy results"
 - Modify: `web/e2e/mock-console-server.mjs`
 - Modify: `web/e2e/console-critical-flows.spec.ts`
 
-- [ ] **Step 1: Extend mock server state**
+- [x] **Step 1: Extend mock server state**
 
 In `web/e2e/mock-console-server.mjs`, add a strategy analysis fixture to the in-memory state:
 
@@ -2723,7 +2723,7 @@ projectAnalyses: [
 
 If the mock state currently uses separate collections, add `projectAnalyses` beside `projectGoals` and keep it as an array sorted newest first.
 
-- [ ] **Step 2: Add mock read endpoint**
+- [x] **Step 2: Add mock read endpoint**
 
 In the mock request handler, add:
 
@@ -2740,7 +2740,7 @@ if (request.method === 'GET' && pathname === '/api/project-manager/analyses') {
 }
 ```
 
-- [ ] **Step 3: Extend mock strategy run**
+- [x] **Step 3: Extend mock strategy run**
 
 In `POST /api/project-manager/runs`, add strategy handling before analysis fallback:
 
@@ -2824,7 +2824,7 @@ if (body.mode === 'strategy') {
 }
 ```
 
-- [ ] **Step 4: Add Playwright test**
+- [x] **Step 4: Add Playwright test**
 
 In `web/e2e/console-critical-flows.spec.ts`, add:
 
@@ -2859,7 +2859,7 @@ test('viewer can read strategy output but cannot run strategy mode', async ({ br
 });
 ```
 
-- [ ] **Step 5: Run E2E**
+- [x] **Step 5: Run E2E**
 
 Run:
 
@@ -2867,7 +2867,7 @@ Run:
 npm run web:e2e
 ```
 
-- [ ] **Step 6: Commit Task 8**
+- [x] **Step 6: Commit Task 8**
 
 ```powershell
 git add web/e2e/mock-console-server.mjs web/e2e/console-critical-flows.spec.ts
