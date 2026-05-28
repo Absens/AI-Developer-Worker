@@ -1098,7 +1098,7 @@ git commit -m "feat: persist project manager strategy metadata"
 - Modify: `src/domain/projectManager/index.ts`
 - Test: `tests/projectManagerSignals.test.ts`
 
-- [ ] **Step 1: Add failing snapshot tests**
+- [x] **Step 1: Add failing snapshot tests**
 
 In `tests/projectManagerSignals.test.ts`, import:
 
@@ -1234,7 +1234,7 @@ it("collects compact strategy inputs from signals, analyses, goals, proposals, a
 });
 ```
 
-- [ ] **Step 2: Run failing snapshot tests**
+- [x] **Step 2: Run failing snapshot tests**
 
 Run:
 
@@ -1244,7 +1244,7 @@ npm test -- tests/projectManagerSignals.test.ts
 
 Expected: missing `strategySnapshot.ts` and `collectProjectStrategySnapshot`.
 
-- [ ] **Step 3: Create strategy snapshot types and collector**
+- [x] **Step 3: Create strategy snapshot types and collector**
 
 Create `src/domain/projectManager/strategySnapshot.ts` with:
 
@@ -1370,7 +1370,7 @@ productContext: {
 }
 ```
 
-- [ ] **Step 4: Ensure export**
+- [x] **Step 4: Ensure export**
 
 `src/domain/projectManager/index.ts` already wildcard-exports known PM files. Add:
 
@@ -1378,7 +1378,7 @@ productContext: {
 export * from "./strategySnapshot.js";
 ```
 
-- [ ] **Step 5: Run snapshot tests**
+- [x] **Step 5: Run snapshot tests**
 
 Run:
 
@@ -1387,7 +1387,7 @@ npm test -- tests/projectManagerSignals.test.ts
 npm run typecheck
 ```
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```powershell
 git add src/domain/projectManager/strategySnapshot.ts src/domain/projectManager/index.ts tests/projectManagerSignals.test.ts

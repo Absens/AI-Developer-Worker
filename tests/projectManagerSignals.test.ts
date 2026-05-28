@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   collectProjectReplanSnapshot,
+  collectProjectStrategySnapshot,
   collectProjectSignals,
   InMemoryProjectManagerStore,
   type ProjectGoalDraft,
@@ -9,6 +10,7 @@ import {
 import { TaskNotFoundError } from "../src/domain/taskTracker/index.js";
 import type {
   TaskLeaseRecord,
+  TaskProposalRecord,
   TaskRecord,
   TaskStatus,
   TaskTrackerClient,
@@ -172,6 +174,41 @@ const createGoalDraft = (title: string): ProjectGoalDraft => ({
   priority: "normal" as const,
   riskLevel: "medium" as const,
   suggestedTaskProposals: [],
+});
+
+const taskProposal = (
+  taskId: string,
+  overrides: Partial<TaskProposalRecord> = {},
+): TaskProposalRecord => ({
+  taskId,
+  source: "ai_proposal",
+  proposedBy: "project-manager",
+  proposalReason: "Strategy proposal.",
+  evidenceRefs: [],
+  suggestedAcceptanceCriteria: [],
+  supervisorStatus: "proposed",
+  approvalPolicy: "default",
+  autonomyLevel: "proposal_only",
+  duplicateSignature: `proposal:${taskId}`,
+  cleanup: {
+    owner: "policy_admin",
+  },
+  policyEvaluation: {
+    id: `policy-${taskId}`,
+    taskId,
+    decision: "approved",
+    policy: "default",
+    allowed: true,
+    autoApproved: false,
+    reason: "Allowed.",
+    autonomyLevel: "proposal_only",
+    evidenceRefs: [],
+    createdAt: "2026-05-28T00:00:00.000Z",
+  },
+  policyEvaluations: [],
+  createdAt: "2026-05-28T00:00:00.000Z",
+  updatedAt: "2026-05-28T00:00:00.000Z",
+  ...overrides,
 });
 
 const requireValue = <T>(value: T | undefined, label: string): T => {
@@ -383,6 +420,207 @@ describe("project manager signal collector", () => {
         ...snapshot.recentReviewTasks,
       ].some((task) => task.id === "other-repository-task"),
     ).toBe(false);
+  });
+});
+
+describe("project manager strategy snapshot collector", () => {
+  it("collects compact strategy inputs from signals, analyses, goals, proposals, and repository profile", async () => {
+    const tracker = readonlyTracker([
+      baseTask({
+        id: "task-review",
+        title: "Review curator workflow",
+        status: "review",
+        repositoryName: "developer",
+        taskType: "tests_only",
+        qualityGateRuns: [
+          {
+            id: "qg-1",
+            taskId: "task-review",
+            workerId: "worker-1",
+            status: "failed",
+            changed: true,
+            testsPassed: false,
+            lintPassed: true,
+            gates: [],
+            diagnostic: "Validation failed.",
+            summary: "Validation failed.",
+            artifactRefs: [],
+            createdAt: "2026-05-28T00:00:00.000Z",
+          },
+        ],
+      }),
+      baseTask({
+        id: "task-proposal",
+        title: "Proposed PM task",
+        status: "triage",
+        repositoryName: "developer",
+        taskType: "unknown",
+        proposal: taskProposal("task-proposal", {
+          taskId: "task-proposal",
+          supervisorStatus: "proposed",
+          autonomyLevel: "proposal_only",
+        }),
+      }),
+    ]);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date("2026-05-28T00:00:00.000Z"),
+    });
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      analysisKind: "analysis",
+      summary: "Previous analysis summary.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      goalReplans: [],
+    });
+    const [goal] = await store.createGoalsFromAnalysis({
+      repositoryName: "developer",
+      sourceAnalysisId: analysis.id,
+      goals: [
+        {
+          title: "Improve validation trust",
+          problemStatement: "Validation evidence is weak.",
+          desiredOutcome: "Operators trust PM output.",
+          successMetrics: ["Validation summaries include real commands."],
+          evidenceRefs: [
+            {
+              kind: "snapshot",
+              ref: "projectSignals.failedTasks",
+              summary: "Failures exist.",
+            },
+          ],
+          priority: "high",
+          riskLevel: "medium",
+          suggestedTaskProposals: [],
+        },
+      ],
+    });
+
+    const snapshot = await collectProjectStrategySnapshot({
+      taskTracker: tracker,
+      store,
+      repositoryName: "developer",
+      strategyBrief: " Focus on validation trust. ",
+      config: {
+        enabled: true,
+        focusAreas: ["operator confidence"],
+        runOnce: false,
+        intervalMinutes: 60,
+        maxGoalsPerRun: 3,
+        maxTaskProposalsPerGoal: 2,
+        defaultAutonomyLevel: "proposal_only",
+        autoApproveLowRisk: false,
+        allowedTaskTypes: ["documentation", "tests_only"],
+        repositoryScanEnabled: false,
+        repositoryScanMaxFiles: 0,
+        requireHumanGoalApproval: true,
+      },
+      repositoryProfile: {
+        baseBranch: "main",
+        queue: "default",
+        tags: ["pm"],
+      },
+      now: () => new Date("2026-05-28T00:00:00.000Z"),
+    });
+
+    expect(snapshot).toMatchObject({
+      repositoryName: "developer",
+      strategyBrief: "Focus on validation trust.",
+      recentAnalyses: [
+        expect.objectContaining({ id: analysis.id, analysisKind: "analysis" }),
+      ],
+      proposalBacklog: expect.objectContaining({ proposed: 1 }),
+      taskTypeSummary: expect.objectContaining({ unknownTaskTypeCount: 1 }),
+      repositoryProfile: expect.objectContaining({
+        baseBranch: "main",
+        queue: "default",
+        tags: ["pm"],
+        focusAreas: ["operator confidence"],
+        allowedProjectManagerTaskTypes: ["documentation", "tests_only"],
+      }),
+      productContext: expect.objectContaining({
+        missingProductSignals: expect.arrayContaining([
+          "No explicit product telemetry configured.",
+        ]),
+      }),
+    });
+    expect(snapshot.goals).toEqual([
+      expect.objectContaining({
+        id: goal?.id,
+        title: "Improve validation trust",
+        linkedTaskOutcomes: [],
+      }),
+    ]);
+  });
+
+  it("caps strategy goals and linked task outcome lookups before link traversal", async () => {
+    const linkedTasks = Array.from({ length: 7 }, (_, index) =>
+      baseTask({
+        id: `linked-task-${index}`,
+        title: `Linked task ${index}`,
+        repositoryName: "developer",
+      }),
+    );
+    const tracker = readonlyTracker(linkedTasks);
+    const store = new InMemoryProjectManagerStore({
+      now: () => new Date("2026-05-28T00:00:00.000Z"),
+    });
+    const analysis = await store.recordAnalysis({
+      repositoryName: "developer",
+      analysisKind: "analysis",
+      summary: "Previous analysis summary.",
+      healthSignals: [],
+      proposedGoals: [],
+      staleGoalIds: [],
+      goalReplans: [],
+    });
+    const goals = await store.createGoalsFromAnalysis({
+      repositoryName: "developer",
+      sourceAnalysisId: analysis.id,
+      goals: Array.from({ length: 30 }, (_, index) =>
+        createGoalDraft(`Strategy goal ${index}`),
+      ),
+    });
+    for (const goal of goals) {
+      for (const task of linkedTasks) {
+        await store.linkGoalTask({
+          goalId: goal.id,
+          taskId: task.id,
+          linkType: "related",
+        });
+      }
+    }
+    const listGoalTaskLinks = vi.spyOn(store, "listGoalTaskLinks");
+
+    const snapshot = await collectProjectStrategySnapshot({
+      taskTracker: tracker,
+      store,
+      repositoryName: "developer",
+      config: {
+        enabled: true,
+        focusAreas: [],
+        runOnce: false,
+        intervalMinutes: 60,
+        maxGoalsPerRun: 3,
+        maxTaskProposalsPerGoal: 2,
+        defaultAutonomyLevel: "proposal_only",
+        autoApproveLowRisk: false,
+        allowedTaskTypes: ["documentation", "tests_only"],
+        repositoryScanEnabled: false,
+        repositoryScanMaxFiles: 0,
+        requireHumanGoalApproval: true,
+      },
+      now: () => new Date("2026-05-28T00:00:00.000Z"),
+      limit: 500,
+    });
+
+    expect(snapshot.goals).toHaveLength(25);
+    expect(listGoalTaskLinks).toHaveBeenCalledTimes(25);
+    expect(tracker.getTask).toHaveBeenCalledTimes(125);
+    expect(
+      snapshot.goals.every((goal) => goal.linkedTaskOutcomes.length <= 5),
+    ).toBe(true);
   });
 });
 

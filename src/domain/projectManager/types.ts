@@ -391,34 +391,3 @@ export interface ProjectSignalSnapshot {
   repeatedFailures: ProjectTaskSignal[];
   recentReviewTasks: ProjectTaskSignal[];
 }
-
-export interface ProjectStrategySnapshot {
-  repositoryName: string;
-  generatedAt: string;
-  strategyBrief?: string;
-  projectSignals: ProjectSignalSnapshot;
-  recentAnalyses: ProjectAnalysis[];
-  goals: ProjectGoal[];
-  proposalBacklog: {
-    proposed: number;
-    approved: number;
-    autoApproved: number;
-    rejected: number;
-    stale: number;
-  };
-  taskTypeSummary: {
-    counts: Partial<Record<TaskType, number>>;
-    unknownTaskTypeCount: number;
-  };
-  repositoryProfile: {
-    tags: string[];
-    focusAreas: string[];
-    allowedProjectManagerTaskTypes: TaskType[];
-  };
-  productContext: {
-    knownUsersOrRoles: string[];
-    knownWorkflows: string[];
-    knownProductSignals: string[];
-    missingProductSignals: string[];
-  };
-}

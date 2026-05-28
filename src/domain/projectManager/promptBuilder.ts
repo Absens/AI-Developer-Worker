@@ -1,6 +1,7 @@
 import type { TaskType } from "../../models/types.js";
 import { EVIDENCE_REF_KINDS } from "../taskTracker/types.js";
 import type { ProjectReplanSnapshot } from "./replanSnapshot.js";
+import type { ProjectStrategySnapshot } from "./strategySnapshot.js";
 import type { ProjectSignalSnapshot } from "./types.js";
 import {
   PROJECT_GOAL_REPLAN_DECISIONS,
@@ -11,7 +12,6 @@ import {
   PROJECT_STRATEGY_MARKER,
   PROJECT_STRATEGY_NEXT_STEPS,
 } from "./types.js";
-import type { ProjectStrategySnapshot } from "./types.js";
 
 export interface BuildProjectAnalysisPromptInput {
   snapshot: ProjectSignalSnapshot;

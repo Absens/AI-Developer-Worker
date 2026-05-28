@@ -6,5 +6,6 @@ export * from "./promptBuilder.js";
 export * from "./replanSnapshot.js";
 export * from "./signalCollector.js";
 export * from "./store.js";
+export * from "./strategySnapshot.js";
 export * from "./taskProposalBuilder.js";
 export * from "./types.js";
