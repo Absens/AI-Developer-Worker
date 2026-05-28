@@ -320,6 +320,146 @@ describe("project manager strategy parser", () => {
       }),
     ).toThrow(/recommendedNextStep|create_goal/);
   });
+
+  it("rejects high-risk source opportunities materialized as low-risk goals with broad proposals", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "High risk opportunity is downcast before materialization.",
+        analysisLenses: [],
+        opportunities: [
+          {
+            opportunityId: "opp-high-risk",
+            dimension: "technical",
+            title: "Rewrite validation orchestration",
+            problemStatement: "Validation orchestration can affect many worker flows.",
+            userOrBusinessImpact: "Operators may lose confidence in worker outcomes.",
+            technicalImpact: "A broad change can affect Tracker, Codex, and GitLab handoffs.",
+            evidenceRefs: [
+              { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures affect the worker." },
+            ],
+            confidence: 90,
+            priority: "high",
+            riskLevel: "high",
+            recommendedNextStep: "create_goal",
+            rationale: "A goal is warranted, but it must preserve the source risk.",
+            redTeamNotes: ["Avoid broad fan-out from a high-risk opportunity."],
+            architectVerdict: "pursue",
+          },
+        ],
+        proposedGoals: [
+          {
+            sourceOpportunityId: "opp-high-risk",
+            title: "Stabilize validation orchestration broadly",
+            problemStatement: "The high-risk opportunity is incorrectly treated as low risk.",
+            desiredOutcome: "Policy rejects downcast materialization.",
+            successMetrics: ["Policy rejects broad low-risk materialization."],
+            evidenceRefs: [
+              { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures affect the worker." },
+            ],
+            priority: "normal",
+            riskLevel: "low",
+            suggestedTaskProposals: [
+              {
+                title: "Update validation orchestration",
+                description: "Change the validation orchestration behavior.",
+                taskType: "dependency_update",
+                acceptanceCriteria: ["Validation orchestration is updated."],
+                expectedBlastRadius: "Worker validation flow.",
+                evidenceRefs: [
+                  { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures affect the worker." },
+                ],
+              },
+              {
+                title: "Update Codex handoff",
+                description: "Change how Codex handoff validation is wired.",
+                taskType: "dependency_update",
+                acceptanceCriteria: ["Codex handoff validation is updated."],
+                expectedBlastRadius: "Codex handoff flow.",
+                evidenceRefs: [
+                  { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures affect the worker." },
+                ],
+              },
+            ],
+          },
+        ],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeDefined();
+    expect(() =>
+      assertProjectStrategyWithinPolicy({
+        parsed: parsed!,
+        config: buildProjectManagerConfig({
+          allowedTaskTypes: ["documentation", "tests_only", "dependency_update"],
+        }),
+      }),
+    ).toThrow(/riskLevel.*source opportunity/i);
+  });
+
+  it("rejects strategy proposed goals with lower priority than their source opportunity", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Critical opportunity is downcast before materialization.",
+        analysisLenses: [],
+        opportunities: [
+          {
+            opportunityId: "opp-critical",
+            dimension: "technical",
+            title: "Protect release validation signal",
+            problemStatement: "Release validation evidence is unreliable.",
+            userOrBusinessImpact: "Operators cannot trust release readiness.",
+            technicalImpact: "Release checks may miss regressions.",
+            evidenceRefs: [
+              { kind: "validation_failure", ref: "TASK-42:quality", summary: "Release validation failed repeatedly." },
+            ],
+            confidence: 92,
+            priority: "critical",
+            riskLevel: "medium",
+            recommendedNextStep: "create_goal",
+            rationale: "The opportunity is critical and should not be downcast.",
+            redTeamNotes: [],
+            architectVerdict: "pursue",
+          },
+        ],
+        proposedGoals: [
+          {
+            sourceOpportunityId: "opp-critical",
+            title: "Improve release validation signal",
+            problemStatement: "The goal downcasts a critical source opportunity.",
+            desiredOutcome: "Policy rejects priority downcasting.",
+            successMetrics: ["Policy preserves source opportunity priority."],
+            evidenceRefs: [
+              { kind: "validation_failure", ref: "TASK-42:quality", summary: "Release validation failed repeatedly." },
+            ],
+            priority: "normal",
+            riskLevel: "medium",
+            suggestedTaskProposals: [
+              {
+                title: "Add release validation test",
+                description: "Cover release validation signal handling.",
+                taskType: "tests_only",
+                acceptanceCriteria: ["Release validation signal has a regression test."],
+                expectedBlastRadius: "Tests only.",
+                evidenceRefs: [
+                  { kind: "validation_failure", ref: "TASK-42:quality", summary: "Release validation failed repeatedly." },
+                ],
+              },
+            ],
+          },
+        ],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeDefined();
+    expect(() =>
+      assertProjectStrategyWithinPolicy({
+        parsed: parsed!,
+        config,
+      }),
+    ).toThrow(/priority.*source opportunity/i);
+  });
 });
 
 describe("project manager analysis parser", () => {

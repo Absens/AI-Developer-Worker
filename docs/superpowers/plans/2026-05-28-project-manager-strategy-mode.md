@@ -2884,7 +2884,7 @@ git commit -m "test: cover project manager strategy flow"
 
 - Modify docs only if roadmap status exists and needs a new line.
 
-- [ ] **Step 1: Run focused backend PM tests**
+- [x] **Step 1: Run focused backend PM tests**
 
 Run:
 
@@ -2894,7 +2894,7 @@ npm test -- tests/projectManagerAnalysis.test.ts tests/projectManagerPrompt.test
 
 Expected: all focused PM tests pass. If `TASK_TRACKER_TEST_DATABASE_URL` is unset, report that real PostgreSQL integration tests were skipped.
 
-- [ ] **Step 2: Run full backend checks**
+- [x] **Step 2: Run full backend checks**
 
 Run:
 
@@ -2906,7 +2906,7 @@ npm run build
 
 Expected: TypeScript, Vitest, and production build pass.
 
-- [ ] **Step 3: Run full web checks**
+- [x] **Step 3: Run full web checks**
 
 Run:
 
@@ -2918,7 +2918,7 @@ npm run web:e2e
 
 Expected: Angular typecheck, unit tests, and Playwright pass.
 
-- [ ] **Step 4: Remove generated Playwright output if present**
+- [x] **Step 4: Remove generated Playwright output if present**
 
 Run:
 
@@ -2933,7 +2933,7 @@ if (Test-Path 'web/test-results') {
 }
 ```
 
-- [ ] **Step 5: Request code review subagents**
+- [x] **Step 5: Request code review subagents**
 
 Dispatch two review subagents after implementation:
 
@@ -2951,7 +2951,7 @@ Review the Project Manager strategy mode API and Angular diff. Focus on role gat
 
 Fix Critical and Important findings before final verification.
 
-- [ ] **Step 6: Run final regression after review fixes**
+- [x] **Step 6: Run final regression after review fixes**
 
 Run:
 
@@ -2964,7 +2964,7 @@ npm run web:test
 npm run web:e2e
 ```
 
-- [ ] **Step 7: Commit final fixes**
+- [x] **Step 7: Commit final fixes**
 
 ```powershell
 git add src tests web docs
@@ -2982,28 +2982,28 @@ git commit -m "fix: address project manager strategy review"
 
 ## Safety Checklist
 
-- [ ] Strategy mode starts PM runs with `mode: "strategy"`.
-- [ ] Failed strategy runs retain `ProjectManagerRun.mode = "strategy"`.
-- [ ] Strategy analyses persist `analysisKind = "strategy"`.
-- [ ] Strategy Codex execution uses `sandbox: "read-only"`.
-- [ ] Strategy prompt says to analyze only the bounded snapshot.
-- [ ] Strategy path does not inspect repository files directly in the first slice.
-- [ ] Strategy path does not call external services from PM prompt.
-- [ ] Strategy path does not call `createTask`.
-- [ ] Strategy path does not call `proposeTask`.
-- [ ] Strategy path does not approve proposals.
-- [ ] Strategy path does not bypass goal approval.
-- [ ] Only strategy `proposedGoals` create `ProjectGoal` records.
-- [ ] Raw strategy `opportunities` remain advisory metadata.
-- [ ] Every strategy proposed goal has a valid `sourceOpportunityId`.
-- [ ] Every materialized strategy goal overlaps evidence with its referenced opportunity.
-- [ ] `architectVerdict !== "pursue"` prevents goal materialization.
-- [ ] `create_goal` with confidence below 60 is rejected.
-- [ ] High-risk strategy goals cannot fan out broad executable proposals.
-- [ ] Viewer can read strategy analyses.
-- [ ] Operator can run strategy.
-- [ ] Developer without operator role cannot run strategy.
-- [ ] Existing analysis/replan API behavior remains backward compatible.
+- [x] Strategy mode starts PM runs with `mode: "strategy"`.
+- [x] Failed strategy runs retain `ProjectManagerRun.mode = "strategy"`.
+- [x] Strategy analyses persist `analysisKind = "strategy"`.
+- [x] Strategy Codex execution uses `sandbox: "read-only"`.
+- [x] Strategy prompt says to analyze only the bounded snapshot.
+- [x] Strategy path does not inspect repository files directly in the first slice.
+- [x] Strategy path does not call external services from PM prompt.
+- [x] Strategy path does not call `createTask`.
+- [x] Strategy path does not call `proposeTask`.
+- [x] Strategy path does not approve proposals.
+- [x] Strategy path does not bypass goal approval.
+- [x] Only strategy `proposedGoals` create `ProjectGoal` records.
+- [x] Raw strategy `opportunities` remain advisory metadata.
+- [x] Every strategy proposed goal has a valid `sourceOpportunityId`.
+- [x] Every materialized strategy goal overlaps evidence with its referenced opportunity.
+- [x] `architectVerdict !== "pursue"` prevents goal materialization.
+- [x] `create_goal` with confidence below 60 is rejected.
+- [x] High-risk strategy goals cannot fan out broad executable proposals.
+- [x] Viewer can read strategy analyses.
+- [x] Operator can run strategy.
+- [x] Developer without operator role cannot run strategy.
+- [x] Existing analysis/replan API behavior remains backward compatible.
 
 ## Final Expected Verification
 

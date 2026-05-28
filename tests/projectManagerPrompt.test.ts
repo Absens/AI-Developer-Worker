@@ -6,6 +6,7 @@ import {
   buildProjectStrategyPrompt,
   type ProjectReplanSnapshot,
   type ProjectSignalSnapshot,
+  type ProjectStrategySnapshot,
 } from "../src/domain/projectManager/index.js";
 
 const buildSnapshot = (
@@ -130,6 +131,39 @@ const buildApprovedGoalEntry = (): ProjectReplanSnapshot["goals"][number] => ({
   linkedTasks: [],
   taskLinks: [],
   auditEvents: [],
+});
+
+const buildStrategySnapshot = (): ProjectStrategySnapshot => ({
+  repositoryName: "developer",
+  generatedAt: "2026-05-28T00:00:00.000Z",
+  strategyBrief: "Focus on operator confidence.",
+  projectSignals: {
+    repositoryName: "developer",
+    generatedAt: "2026-05-28T00:00:00.000Z",
+    totalTasks: 0,
+    statusCounts: {},
+    activeLeases: 0,
+    readyTasks: [],
+    failedTasks: [],
+    waitingForHuman: [],
+    repeatedFailures: [],
+    recentReviewTasks: [],
+  },
+  recentAnalyses: [],
+  goals: [],
+  proposalBacklog: { proposed: 0, approved: 0, autoApproved: 0, rejected: 0, stale: 0 },
+  taskTypeSummary: { counts: {}, unknownTaskTypeCount: 0 },
+  repositoryProfile: {
+    tags: [],
+    focusAreas: [],
+    allowedProjectManagerTaskTypes: ["documentation", "tests_only"],
+  },
+  productContext: {
+    knownUsersOrRoles: [],
+    knownWorkflows: [],
+    knownProductSignals: [],
+    missingProductSignals: ["No explicit product telemetry configured."],
+  },
 });
 
 describe("project manager prompt builder", () => {
@@ -274,38 +308,7 @@ describe("project manager replan prompt builder", () => {
 describe("project manager strategy prompt builder", () => {
   it("builds a strategy prompt with fixed lens pipeline and PROJECT_STRATEGY schema", () => {
     const prompt = buildProjectStrategyPrompt({
-      snapshot: {
-        repositoryName: "developer",
-        generatedAt: "2026-05-28T00:00:00.000Z",
-        strategyBrief: "Focus on operator confidence.",
-        projectSignals: {
-          repositoryName: "developer",
-          generatedAt: "2026-05-28T00:00:00.000Z",
-          totalTasks: 0,
-          statusCounts: {},
-          activeLeases: 0,
-          readyTasks: [],
-          failedTasks: [],
-          waitingForHuman: [],
-          repeatedFailures: [],
-          recentReviewTasks: [],
-        },
-        recentAnalyses: [],
-        goals: [],
-        proposalBacklog: { proposed: 0, approved: 0, autoApproved: 0, rejected: 0, stale: 0 },
-        taskTypeSummary: { counts: {}, unknownTaskTypeCount: 0 },
-        repositoryProfile: {
-          tags: [],
-          focusAreas: [],
-          allowedProjectManagerTaskTypes: ["documentation", "tests_only"],
-        },
-        productContext: {
-          knownUsersOrRoles: [],
-          knownWorkflows: [],
-          knownProductSignals: [],
-          missingProductSignals: ["No explicit product telemetry configured."],
-        },
-      },
+      snapshot: buildStrategySnapshot(),
       maxGoalsPerRun: 2,
       maxTaskProposalsPerGoal: 1,
       allowedTaskTypes: ["documentation", "tests_only"],
@@ -320,5 +323,18 @@ describe("project manager strategy prompt builder", () => {
     expect(prompt).toContain("Do not expose chain-of-thought");
     expect(prompt).toContain("sourceOpportunityId");
     expect(prompt).toContain("Focus on operator confidence.");
+  });
+
+  it("forbids direct repository file inspection during the first strategy slice", () => {
+    const prompt = buildProjectStrategyPrompt({
+      snapshot: buildStrategySnapshot(),
+    });
+
+    expect(prompt).toContain(
+      "For this first strategy slice, do not inspect repository files directly",
+    );
+    expect(prompt).toContain(
+      "browse local files outside the provided bounded strategy snapshot",
+    );
   });
 });

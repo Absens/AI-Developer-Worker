@@ -306,6 +306,7 @@ export const buildProjectStrategyPrompt = (
     "",
     "Guardrails:",
     "- Analyze only the provided strategy snapshot.",
+    "- For this first strategy slice, do not inspect repository files directly or browse local files outside the provided bounded strategy snapshot.",
     "- Do not modify files.",
     "- Do not create executable tasks directly.",
     "- Do not call external services.",

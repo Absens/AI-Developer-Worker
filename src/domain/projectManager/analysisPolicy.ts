@@ -1,9 +1,12 @@
 import type { EvidenceRef } from "../taskTracker/types.js";
+import { PROJECT_GOAL_PRIORITIES, PROJECT_GOAL_RISK_LEVELS } from "./types.js";
 import type {
   ParsedProjectAnalysis,
   ParsedProjectStrategyAnalysis,
   ProjectGoalReplanClassification,
   ProjectGoalDraft,
+  ProjectGoalPriority,
+  ProjectGoalRiskLevel,
   ProjectHealthSignal,
   ProjectManagerConfig,
   ProjectStrategyOpportunity,
@@ -465,6 +468,22 @@ const hasCriticalHighRiskEvidence = (
     ["task", "validation_failure", "review_comment"].includes(ref.kind),
   );
 
+const priorityRank = (priority: ProjectGoalPriority): number =>
+  PROJECT_GOAL_PRIORITIES.indexOf(priority);
+
+const riskLevelRank = (riskLevel: ProjectGoalRiskLevel): number =>
+  PROJECT_GOAL_RISK_LEVELS.indexOf(riskLevel);
+
+const maxPriority = (
+  left: ProjectGoalPriority,
+  right: ProjectGoalPriority,
+): ProjectGoalPriority => (priorityRank(left) >= priorityRank(right) ? left : right);
+
+const maxRiskLevel = (
+  left: ProjectGoalRiskLevel,
+  right: ProjectGoalRiskLevel,
+): ProjectGoalRiskLevel => (riskLevelRank(left) >= riskLevelRank(right) ? left : right);
+
 export const assertProjectStrategyWithinPolicy = (
   input: AssertProjectStrategyWithinPolicyInput,
 ): void => {
@@ -574,15 +593,28 @@ export const assertProjectStrategyWithinPolicy = (
         `${path}.evidenceRefs must overlap referenced opportunity evidence.`,
       );
     }
-    if (goal.riskLevel === "high" && goal.suggestedTaskProposals.length > 1) {
+    if (riskLevelRank(goal.riskLevel) < riskLevelRank(opportunity.riskLevel)) {
+      violations.push(
+        `${path}.riskLevel must not be lower than source opportunity riskLevel ${opportunity.riskLevel}.`,
+      );
+    }
+    if (priorityRank(goal.priority) < priorityRank(opportunity.priority)) {
+      violations.push(
+        `${path}.priority must not be lower than source opportunity priority ${opportunity.priority}.`,
+      );
+    }
+
+    const effectiveRiskLevel = maxRiskLevel(goal.riskLevel, opportunity.riskLevel);
+    const effectivePriority = maxPriority(goal.priority, opportunity.priority);
+    if (effectiveRiskLevel === "high" && goal.suggestedTaskProposals.length > 1) {
       violations.push(
         `${path}.suggestedTaskProposals must contain at most 1 task proposal for high-risk goals.`,
       );
     }
     if (
-      goal.riskLevel === "high" &&
+      effectiveRiskLevel === "high" &&
       !(
-        goal.priority === "critical" &&
+        effectivePriority === "critical" &&
         hasCriticalHighRiskEvidence(goal.evidenceRefs)
       )
     ) {
