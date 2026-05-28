@@ -2371,7 +2371,7 @@ git commit -m "feat: add strategy api models to web client"
 - Modify: `web/src/app/pages/goals-page.component.ts`
 - Test: `web/src/app/pages/workflow-pages.spec.ts`
 
-- [ ] **Step 1: Add failing UI test**
+- [x] **Step 1: Add failing UI test**
 
 In `web/src/app/pages/workflow-pages.spec.ts`, add a goals page test:
 
@@ -2452,7 +2452,7 @@ it('lets operators run strategy mode and renders latest strategy opportunities',
 });
 ```
 
-- [ ] **Step 2: Run failing UI tests**
+- [x] **Step 2: Run failing UI tests**
 
 Run:
 
@@ -2462,7 +2462,7 @@ npm run web:test
 
 Expected: missing strategy controls/rendering.
 
-- [ ] **Step 3: Add component state**
+- [x] **Step 3: Add component state**
 
 In `goals-page.component.ts`, add:
 
@@ -2485,7 +2485,7 @@ ngOnInit(): void {
 
 If `ngOnInit` already calls `load()`, add only `this.loadStrategyAnalyses();`.
 
-- [ ] **Step 4: Add load and run methods**
+- [x] **Step 4: Add load and run methods**
 
 Add:
 
@@ -2531,7 +2531,7 @@ protected latestStrategy(): ProjectAnalysisDto | undefined {
 
 When existing `load()` refreshes goals by repository filter, call `this.loadStrategyAnalyses()` after a successful refresh so the strategy section follows the current repository filter.
 
-- [ ] **Step 5: Add template controls**
+- [x] **Step 5: Add template controls**
 
 In the header action area, add:
 
@@ -2561,7 +2561,7 @@ In the header action area, add:
 
 Place this near the existing run analysis button, not inside a goal card.
 
-- [ ] **Step 6: Add compact strategy result section**
+- [x] **Step 6: Add compact strategy result section**
 
 Below notices/errors and before the goals list, add:
 
@@ -2613,7 +2613,7 @@ Below notices/errors and before the goals list, add:
 }
 ```
 
-- [ ] **Step 7: Add focused CSS inside component styles**
+- [x] **Step 7: Add focused CSS inside component styles**
 
 Add styles near the existing component style block:
 
@@ -2654,7 +2654,7 @@ Add styles near the existing component style block:
 }
 ```
 
-- [ ] **Step 8: Run web checks**
+- [x] **Step 8: Run web checks**
 
 Run:
 
@@ -2663,7 +2663,7 @@ npm run web:typecheck
 npm run web:test
 ```
 
-- [ ] **Step 9: Commit Task 7**
+- [x] **Step 9: Commit Task 7**
 
 ```powershell
 git add web/src/app/pages/goals-page.component.ts web/src/app/pages/workflow-pages.spec.ts

@@ -10,7 +10,7 @@ import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
 
-import { ProjectGoalDto, ProjectGoalStatusDto } from '../models/human-api.dto';
+import { ProjectAnalysisDto, ProjectGoalDto, ProjectGoalStatusDto } from '../models/human-api.dto';
 import { ProjectGoalService } from '../services/project-goal.service';
 import { SessionService } from '../services/session.service';
 import { canUseCapability, formatDate, truncate } from '../utils/task-ui';
@@ -38,15 +38,36 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
           <p>Отслеживайте цели Project Manager, риск, доказательства и связь с задачами.</p>
         </div>
         @if (canRunProjectManager()) {
-          <button
-            pButton
-            type="button"
-            data-testid="goals-run-analysis"
-            icon="pi pi-sitemap"
-            label="Запустить анализ"
-            [disabled]="runningAnalysis()"
-            (click)="runAnalysis()"
-          ></button>
+          <div class="project-manager-actions">
+            <button
+              pButton
+              type="button"
+              data-testid="goals-run-analysis"
+              icon="pi pi-sitemap"
+              label="Запустить анализ"
+              [disabled]="runningAnalysis()"
+              (click)="runAnalysis()"
+            ></button>
+            <div class="strategy-run">
+              <input
+                pInputText
+                type="text"
+                data-testid="goals-strategy-brief"
+                [formControl]="strategyBriefControl"
+                maxlength="2000"
+                placeholder="Strategy brief"
+              />
+              <button
+                pButton
+                type="button"
+                data-testid="goals-run-strategy"
+                icon="pi pi-compass"
+                label="Запустить strategy"
+                [disabled]="runningStrategy()"
+                (click)="runStrategy()"
+              ></button>
+            </div>
+          </div>
         }
       </header>
 
@@ -90,6 +111,54 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
 
       @if (error(); as message) {
         <p-message severity="error" [text]="message" />
+      }
+
+      @if (latestStrategy(); as analysis) {
+        <section class="surface strategy-summary" data-testid="goals-strategy-summary">
+          <div class="strategy-summary__header">
+            <div>
+              <span class="eyebrow">{{ analysis.id }}</span>
+              <h2>{{ analysis.strategy?.summary || analysis.summary }}</h2>
+            </div>
+            <span>{{ formatDate(analysis.createdAt) }}</span>
+          </div>
+
+          @if (analysis.strategy; as strategy) {
+            @if (strategy.analysisLenses.length) {
+              <div class="tag-row">
+                @for (lens of strategy.analysisLenses; track lens.lens) {
+                  <p-tag [value]="lens.lens" severity="secondary" />
+                }
+              </div>
+            }
+
+            @if (strategy.opportunities.length) {
+              <div class="strategy-opportunities">
+                @for (opportunity of strategy.opportunities; track opportunity.opportunityId) {
+                  <article class="strategy-opportunity">
+                    <div>
+                      <span class="eyebrow">{{ opportunity.dimension }} · {{ opportunity.architectVerdict }}</span>
+                      <h3>{{ opportunity.title }}</h3>
+                      <p>{{ opportunity.rationale }}</p>
+                    </div>
+                    <div class="tag-row">
+                      <p-tag [value]="'Confidence: ' + opportunity.confidence" severity="info" />
+                      <p-tag [value]="opportunity.priority" [severity]="prioritySeverity(opportunity.priority)" />
+                      <p-tag [value]="opportunity.recommendedNextStep" severity="secondary" />
+                    </div>
+                    @if (opportunity.redTeamNotes.length) {
+                      <ul>
+                        @for (note of opportunity.redTeamNotes; track note) {
+                          <li>{{ note }}</li>
+                        }
+                      </ul>
+                    }
+                  </article>
+                }
+              </div>
+            }
+          }
+        </section>
       }
 
       @if (loading()) {
@@ -151,6 +220,51 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
       }
     </section>
   `,
+  styles: [
+    `
+      .project-manager-actions {
+        display: grid;
+        gap: 0.5rem;
+        justify-items: end;
+      }
+
+      .strategy-run {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .strategy-run input {
+        min-width: min(26rem, 100%);
+      }
+
+      .strategy-summary {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .strategy-summary__header {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+      }
+
+      .strategy-opportunities {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      .strategy-opportunity {
+        display: grid;
+        gap: 0.5rem;
+        padding-block: 0.75rem;
+        border-top: 1px solid var(--surface-border, var(--console-border));
+      }
+    `,
+  ],
 })
 export class GoalsPageComponent implements OnInit {
   private readonly goalsApi = inject(ProjectGoalService);
@@ -168,19 +282,23 @@ export class GoalsPageComponent implements OnInit {
   ];
   protected readonly statusFilter = new FormControl<GoalStatusFilter>('proposed', { nonNullable: true });
   protected readonly repositoryFilter = new FormControl<string>('', { nonNullable: true });
+  protected readonly strategyBriefControl = new FormControl<string>('', { nonNullable: true });
 
   protected readonly goals = signal<ProjectGoalDto[]>([]);
   protected readonly linkedTaskCounts = signal<Record<string, number>>({});
   protected readonly loading = signal(false);
   protected readonly runningAnalysis = signal(false);
+  protected readonly runningStrategy = signal(false);
+  protected readonly strategyAnalyses = signal<ProjectAnalysisDto[]>([]);
   protected readonly error = signal<string | undefined>(undefined);
   protected readonly notice = signal<string | undefined>(undefined);
 
   ngOnInit(): void {
-    this.load();
+    this.load(false);
+    this.loadStrategyAnalyses();
   }
 
-  protected load(): void {
+  protected load(refreshStrategyAnalyses = true): void {
     this.loading.set(true);
     this.error.set(undefined);
     const repositoryName = this.repositoryFilter.value.trim();
@@ -195,11 +313,26 @@ export class GoalsPageComponent implements OnInit {
           this.goals.set(response.goals);
           this.linkedTaskCounts.set(response.linkedTaskCounts);
           this.loading.set(false);
+          if (refreshStrategyAnalyses) {
+            this.loadStrategyAnalyses();
+          }
         },
         error: (error: unknown) => {
-          this.error.set(error instanceof Error ? error.message : String(error));
+          this.error.set(this.errorMessage(error));
           this.loading.set(false);
         },
+      });
+  }
+
+  protected loadStrategyAnalyses(): void {
+    this.goalsApi
+      .listAnalyses({
+        repositoryName: this.repositoryFilter.value.trim() || undefined,
+        analysisKind: 'strategy',
+      })
+      .subscribe({
+        next: (response) => this.strategyAnalyses.set(response.analyses),
+        error: (error: unknown) => this.error.set(this.errorMessage(error)),
       });
   }
 
@@ -220,12 +353,39 @@ export class GoalsPageComponent implements OnInit {
         this.load();
       },
       error: (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = this.errorMessage(error);
         this.error.set(message);
         this.messages.add({ severity: 'error', summary: 'Анализ не запущен', detail: message });
         this.runningAnalysis.set(false);
       },
     });
+  }
+
+  protected runStrategy(): void {
+    const repositoryName = this.repositoryFilter.value.trim() || this.latestStrategy()?.repositoryName;
+    if (!repositoryName) {
+      this.error.set('Укажите репозиторий для strategy run.');
+      return;
+    }
+    const brief = this.strategyBriefControl.value.trim();
+    this.runningStrategy.set(true);
+    this.error.set(undefined);
+    this.goalsApi.runStrategy(repositoryName, brief).subscribe({
+      next: () => {
+        this.notice.set('Strategy Project Manager запущен.');
+        this.runningStrategy.set(false);
+        this.load(false);
+        this.loadStrategyAnalyses();
+      },
+      error: (error: unknown) => {
+        this.runningStrategy.set(false);
+        this.error.set(this.errorMessage(error));
+      },
+    });
+  }
+
+  protected latestStrategy(): ProjectAnalysisDto | undefined {
+    return this.strategyAnalyses()[0];
   }
 
   protected canRunProjectManager(): boolean {
@@ -296,5 +456,9 @@ export class GoalsPageComponent implements OnInit {
 
   protected formatDate(value: string): string {
     return formatDate(value);
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

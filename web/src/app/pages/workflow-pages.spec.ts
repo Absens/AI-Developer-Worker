@@ -493,6 +493,7 @@ describe('GoalsPageComponent', () => {
     const request = http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed');
     expect(request.request.params.has('repositoryName')).toBeFalse();
     request.flush(projectGoalList);
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
@@ -508,6 +509,80 @@ describe('GoalsPageComponent', () => {
     expect((fixture.nativeElement as HTMLElement).querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
   });
 
+  it('lets operators run strategy mode and renders latest strategy opportunities', async () => {
+    const now = '2026-04-29T08:00:00.000Z';
+    const http = await configure([GoalsPageComponent]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalsPageComponent);
+    fixture.detectChanges();
+
+    http.expectOne('/api/project-goals?status=proposed').flush({
+      goals: [],
+      linkedTaskCounts: {},
+      role: 'operator',
+      generatedAt: now,
+    });
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({
+      analyses: [
+        {
+          id: 'pm_analysis_strategy',
+          repositoryName: 'developer',
+          analysisKind: 'strategy',
+          summary: 'Strategy summary.',
+          strategy: {
+            summary: 'Strategy summary.',
+            analysisLenses: [{ lens: 'strategy', summary: 'Focus on validation trust.' }],
+            opportunities: [
+              {
+                opportunityId: 'opp-1',
+                dimension: 'technical',
+                title: 'Improve validation trust',
+                problemStatement: 'Weak evidence.',
+                userOrBusinessImpact: 'Operators lose confidence.',
+                technicalImpact: 'Quality signals are weak.',
+                evidenceRefs: [],
+                confidence: 80,
+                priority: 'high',
+                riskLevel: 'medium',
+                recommendedNextStep: 'create_goal',
+                rationale: 'Supported.',
+                redTeamNotes: ['Keep scope narrow.'],
+                architectVerdict: 'pursue',
+              },
+            ],
+            goalLinks: [
+              {
+                sourceOpportunityId: 'opp-1',
+                proposedGoalTitle: 'Improve validation trust',
+                evidenceRefs: [],
+              },
+            ],
+            questionsForHuman: [],
+          },
+          createdAt: now,
+        },
+      ],
+    });
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Improve validation trust');
+
+    const brief = (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>(
+      '[data-testid="goals-strategy-brief"]',
+    )!;
+    brief.value = 'Focus on operator confidence.';
+    brief.dispatchEvent(new Event('input'));
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('[data-testid="goals-run-strategy"]')!.click();
+
+    const request = http.expectOne('/api/project-manager/runs');
+    expect(request.request.body).toEqual({
+      repositoryName: 'developer',
+      mode: 'strategy',
+      strategyBrief: 'Focus on operator confidence.',
+    });
+  });
+
   it('requests goals with repository and status filters and can run analysis for operators', async () => {
     const http = await configure([GoalsPageComponent]);
     loadSession(http, pmOperatorSession);
@@ -515,6 +590,7 @@ describe('GoalsPageComponent', () => {
     const fixture = TestBed.createComponent(GoalsPageComponent);
     fixture.detectChanges();
     http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed').flush(projectGoalList);
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
 
     const component = fixture.componentInstance as unknown as {
       repositoryFilter: { setValue: (value: string) => void };
@@ -529,6 +605,7 @@ describe('GoalsPageComponent', () => {
     expect(filtered.request.params.get('repositoryName')).toBe('developer');
     expect(filtered.request.params.get('status')).toBe('approved');
     filtered.flush({ ...projectGoalList, goals: [approvedProjectGoal] });
+    http.expectOne('/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy').flush({ analyses: [] });
 
     fixture.detectChanges();
     expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="goals-run-analysis"]')).not.toBeNull();
@@ -537,6 +614,7 @@ describe('GoalsPageComponent', () => {
     expect(run.request.body).toEqual({ repositoryName: 'developer' });
     run.flush({ runId: 'run-2' });
     http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('repositoryName') === 'developer').flush(projectGoalList);
+    http.expectOne('/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy').flush({ analyses: [] });
   });
 });
 
