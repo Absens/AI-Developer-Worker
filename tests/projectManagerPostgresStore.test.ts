@@ -134,13 +134,14 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
       const row = {
         id: values[0],
         repository_name: values[1],
-        trigger: values[2],
+        mode: values[2],
+        trigger: values[3],
         status: "started",
         analysis_id: null,
-        proposed_goal_ids: values[3],
-        proposed_task_ids: values[4],
+        proposed_goal_ids: values[4],
+        proposed_task_ids: values[5],
         diagnostic: null,
-        started_at: values[5],
+        started_at: values[6],
         completed_at: null,
       };
       this.runs.push(row);
@@ -184,14 +185,20 @@ class ProjectManagerMemoryDb implements PostgresQueryable {
       const row = {
         id: values[0],
         repository_name: values[1],
-        summary: values[2],
-        health_signals: JSON.parse(String(values[3])),
-        proposed_goals: JSON.parse(String(values[4])),
-        stale_goal_ids: values[5],
-        replan_reason: values[6],
-        previous_analysis_id: values[7],
-        goal_replans: JSON.parse(String(values[8])),
-        created_at: values[9],
+        analysis_kind: values[2],
+        summary: values[3],
+        health_signals: JSON.parse(String(values[4])),
+        proposed_goals: JSON.parse(String(values[5])),
+        stale_goal_ids: values[6],
+        replan_reason: values[7],
+        previous_analysis_id: values[8],
+        goal_replans: JSON.parse(String(values[9])),
+        strategy_analysis_lenses: JSON.parse(String(values[10])),
+        strategy_opportunities: JSON.parse(String(values[11])),
+        strategy_goal_links: JSON.parse(String(values[12])),
+        strategy_questions: JSON.parse(String(values[13])),
+        strategy_brief: values[14],
+        created_at: values[15],
       };
       this.analyses.push(row);
       return asQueryResult(queryResult([row]));
@@ -925,6 +932,20 @@ describe("project manager internal tracker migrations", () => {
       "ADD CONSTRAINT project_goal_events_kind_check",
     );
     expect(migration?.sql).toContain("'project_goal_replan_classified'");
+  });
+
+  it("includes a migration backfill for existing replan analyses and runs", () => {
+    const migration = listInternalTrackerMigrations().find(
+      (candidate) => candidate.filename === "0009_project_manager_strategy.sql",
+    );
+
+    expect(migration?.sql).toContain("UPDATE project_analyses");
+    expect(migration?.sql).toContain("analysis_kind = 'replan'");
+    expect(migration?.sql).toContain("replan_reason IS NOT NULL");
+    expect(migration?.sql).toContain("jsonb_array_length(goal_replans)");
+    expect(migration?.sql).toContain("UPDATE project_manager_runs");
+    expect(migration?.sql).toContain("mode = 'replan'");
+    expect(migration?.sql).toContain("analysis_id");
   });
 });
 

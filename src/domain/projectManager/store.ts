@@ -11,10 +11,12 @@ import type {
   MarkProjectGoalStaleInput,
   ParsedProjectAnalysis,
   ProjectAnalysis,
+  ProjectAnalysisKind,
   ProjectGoal,
   ProjectGoalAuditEvent,
   ProjectGoalReplanClassification,
   ProjectGoalTaskLink,
+  ProjectManagerMode,
   ProjectManagerRun,
   ProjectManagerTrigger,
   RejectProjectGoalInput,
@@ -23,6 +25,7 @@ import { isTerminalProjectGoalStatus } from "./types.js";
 
 export interface StartProjectManagerRunInput {
   repositoryName: string;
+  mode?: ProjectManagerMode;
   trigger: ProjectManagerTrigger;
 }
 
@@ -35,7 +38,13 @@ export interface CompleteProjectManagerRunInput {
 export interface RecordProjectAnalysisInput
   extends Omit<ParsedProjectAnalysis, "goalReplans"> {
   repositoryName: string;
+  analysisKind?: ProjectAnalysisKind;
   goalReplans?: ProjectGoalReplanClassification[];
+  strategyAnalysisLenses?: ProjectAnalysis["strategyAnalysisLenses"];
+  strategyOpportunities?: ProjectAnalysis["strategyOpportunities"];
+  strategyGoalLinks?: ProjectAnalysis["strategyGoalLinks"];
+  strategyQuestions?: ProjectAnalysis["strategyQuestions"];
+  strategyBrief?: string;
 }
 
 export interface RecordGoalReplanClassificationInput {
@@ -110,6 +119,7 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     const run: ProjectManagerRun = {
       id: `pm_run_${randomUUID()}`,
       repositoryName: input.repositoryName,
+      mode: input.mode ?? "analysis",
       trigger: input.trigger,
       status: "started",
       proposedGoalIds: [],
@@ -158,6 +168,11 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
     const analysis: ProjectAnalysis = {
       id: `pm_analysis_${randomUUID()}`,
       repositoryName: input.repositoryName,
+      analysisKind:
+        input.analysisKind ??
+        (input.replanReason || (input.goalReplans?.length ?? 0) > 0
+          ? "replan"
+          : "analysis"),
       summary: input.summary,
       healthSignals: input.healthSignals,
       proposedGoals: input.proposedGoals,
@@ -167,6 +182,13 @@ export class InMemoryProjectManagerStore implements ProjectManagerStore {
         : {}),
       ...(input.replanReason ? { replanReason: input.replanReason } : {}),
       goalReplans: structuredClone(input.goalReplans ?? []),
+      strategyAnalysisLenses: structuredClone(
+        input.strategyAnalysisLenses ?? [],
+      ),
+      strategyOpportunities: structuredClone(input.strategyOpportunities ?? []),
+      strategyGoalLinks: structuredClone(input.strategyGoalLinks ?? []),
+      strategyQuestions: structuredClone(input.strategyQuestions ?? []),
+      ...(input.strategyBrief ? { strategyBrief: input.strategyBrief } : {}),
       createdAt: this.now().toISOString(),
     };
     this.analyses.set(analysis.id, structuredClone(analysis));

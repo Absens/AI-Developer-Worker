@@ -5,7 +5,13 @@ import type { ProjectSignalSnapshot } from "./types.js";
 import {
   PROJECT_GOAL_REPLAN_DECISIONS,
   PROJECT_REPLAN_MARKER,
+  PROJECT_STRATEGY_ARCHITECT_VERDICTS,
+  PROJECT_STRATEGY_DIMENSIONS,
+  PROJECT_STRATEGY_LENSES,
+  PROJECT_STRATEGY_MARKER,
+  PROJECT_STRATEGY_NEXT_STEPS,
 } from "./types.js";
+import type { ProjectStrategySnapshot } from "./types.js";
 
 export interface BuildProjectAnalysisPromptInput {
   snapshot: ProjectSignalSnapshot;
@@ -18,6 +24,15 @@ export interface BuildProjectAnalysisPromptInput {
 
 export interface BuildProjectReplanPromptInput {
   snapshot: ProjectReplanSnapshot;
+  maxGoalsPerRun?: number;
+  maxTaskProposalsPerGoal?: number;
+  allowedTaskTypes?: TaskType[];
+  focusAreas?: string[];
+  maxSnapshotChars?: number;
+}
+
+export interface BuildProjectStrategyPromptInput {
+  snapshot: ProjectStrategySnapshot;
   maxGoalsPerRun?: number;
   maxTaskProposalsPerGoal?: number;
   allowedTaskTypes?: TaskType[];
@@ -99,6 +114,58 @@ const REPLAN_RESPONSE_SCHEMA = {
   ],
 };
 
+const STRATEGY_RESPONSE_SCHEMA = {
+  summary: "string",
+  analysisLenses: [
+    {
+      lens: PROJECT_STRATEGY_LENSES.join("|"),
+      summary: "short audit summary only",
+    },
+  ],
+  opportunities: [
+    {
+      opportunityId: "string",
+      dimension: PROJECT_STRATEGY_DIMENSIONS.join("|"),
+      title: "string",
+      problemStatement: "string",
+      userOrBusinessImpact: "string",
+      technicalImpact: "string",
+      evidenceRefs: [
+        { kind: ALLOWED_EVIDENCE_REF_KINDS, ref: "string", summary: "string" },
+      ],
+      confidence: "integer 0-100",
+      priority: "low|normal|high|critical",
+      riskLevel: "low|medium|high",
+      recommendedNextStep: PROJECT_STRATEGY_NEXT_STEPS.join("|"),
+      rationale: "string",
+      redTeamNotes: ["string"],
+      architectVerdict: PROJECT_STRATEGY_ARCHITECT_VERDICTS.join("|"),
+    },
+  ],
+  proposedGoals: [
+    {
+      sourceOpportunityId: "string",
+      ...RESPONSE_SCHEMA.proposedGoals[0],
+    },
+  ],
+  questionsForHuman: [
+    {
+      question: "string",
+      whyItMatters: "string",
+      relatedOpportunityId: "string optional",
+      relatedOpportunityTitle: "string optional",
+    },
+  ],
+};
+
+const EVIDENCE_GUARDRAILS = [
+  "- Do not create goals from weak or missing evidence.",
+  "- If the snapshot only shows no-op validation commands, treat validation confidence as weak.",
+  "- Avoid duplicate goals that differ only in wording.",
+  "- Prefer tests-only or documentation proposals when evidence points to validation, reporting, or documentation gaps.",
+  "- Keep goal scope small enough for one or two task proposals.",
+];
+
 const truncateSnapshot = (snapshotJson: string, maxChars: number): string => {
   if (snapshotJson.length <= maxChars) {
     return snapshotJson;
@@ -135,6 +202,7 @@ export const buildProjectAnalysisPrompt = (
     "- Do not create executable tasks directly.",
     "- Do not call external services.",
     "- Evidence-backed goals only.",
+    ...EVIDENCE_GUARDRAILS,
     "- Obey limits.",
     "- task proposals must use allowed task types.",
     `- evidenceRefs.kind must be one of: ${EVIDENCE_REF_KINDS.join(", ")}.`,
@@ -183,6 +251,7 @@ export const buildProjectReplanPrompt = (
     "- Do not call external services.",
     "- Classify only approved or active goals listed in the snapshot.",
     "- Use linked task data as evidence for each classification.",
+    ...EVIDENCE_GUARDRAILS,
     "- Obey limits.",
     "- follow-up task proposals must use allowed task types.",
     `- evidenceRefs.kind must be one of: ${EVIDENCE_REF_KINDS.join(", ")}.`,
@@ -198,6 +267,67 @@ export const buildProjectReplanPrompt = (
     JSON.stringify(REPLAN_RESPONSE_SCHEMA),
     "",
     "Linked task data:",
+    snapshotJson,
+  ].join("\n");
+};
+
+export const buildProjectStrategyPrompt = (
+  input: BuildProjectStrategyPromptInput,
+): string => {
+  const maxGoalsPerRun = input.maxGoalsPerRun ?? DEFAULT_MAX_GOALS_PER_RUN;
+  const maxTaskProposalsPerGoal =
+    input.maxTaskProposalsPerGoal ?? DEFAULT_MAX_TASK_PROPOSALS_PER_GOAL;
+  const allowedTaskTypes =
+    input.allowedTaskTypes ?? DEFAULT_ALLOWED_TASK_TYPES;
+  const maxSnapshotChars =
+    input.maxSnapshotChars ?? DEFAULT_MAX_SNAPSHOT_CHARS;
+  const snapshotJson = truncateSnapshot(
+    JSON.stringify(input.snapshot),
+    maxSnapshotChars,
+  );
+  const focusAreas =
+    input.focusAreas && input.focusAreas.length > 0
+      ? input.focusAreas.join(", ")
+      : "none";
+
+  return [
+    "Mode: project-management-strategy-only",
+    "",
+    "Analyze product and technical opportunities from the bounded strategy snapshot.",
+    "Use this fixed internal lens sequence:",
+    "1. Strategic framing",
+    "2. Product and technical opportunity discovery",
+    "3. Defamiliarizing reframing",
+    "4. Empathic impact check",
+    "5. Executive conversion to actionable goals",
+    "6. Red Team rejection and risk reduction",
+    "7. Sober Architect final decision",
+    "8. Synthetic JSON output",
+    "",
+    "Guardrails:",
+    "- Analyze only the provided strategy snapshot.",
+    "- Do not modify files.",
+    "- Do not create executable tasks directly.",
+    "- Do not call external services.",
+    "- Do not expose chain-of-thought; return only short audit summaries in analysisLenses.",
+    "- Raw opportunities are advisory and must not create executable work.",
+    "- Only proposedGoals with sourceOpportunityId can be materialized as normal proposed goals.",
+    "- If product evidence is missing, ask focused questions instead of inventing product claims.",
+    ...EVIDENCE_GUARDRAILS,
+    "- proposed goal evidenceRefs must overlap the source opportunity evidenceRefs.",
+    "- task proposals must use allowed task types.",
+    `- evidenceRefs.kind must be one of: ${EVIDENCE_REF_KINDS.join(", ")}.`,
+    "",
+    `Limits: maxGoalsPerRun=${maxGoalsPerRun}, maxTaskProposalsPerGoal=${maxTaskProposalsPerGoal}.`,
+    `Allowed task types: ${allowedTaskTypes.join(", ")}`,
+    `Focus areas: ${focusAreas}`,
+    `Strategy brief: ${input.snapshot.strategyBrief ?? "none"}`,
+    "",
+    "Required output:",
+    `Reply with exactly one line starting with ${PROJECT_STRATEGY_MARKER} followed by compact JSON matching this schema.`,
+    JSON.stringify(STRATEGY_RESPONSE_SCHEMA),
+    "",
+    "Strategy snapshot:",
     snapshotJson,
   ].join("\n");
 };

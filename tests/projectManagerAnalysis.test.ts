@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   PROJECT_ANALYSIS_MARKER,
   PROJECT_REPLAN_MARKER,
+  PROJECT_STRATEGY_MARKER,
   assertProjectReplanWithinPolicy,
+  assertProjectStrategyWithinPolicy,
   parseProjectAnalysisResponse,
   parseProjectReplanResponse,
+  parseProjectStrategyResponse,
   type ProjectManagerConfig,
 } from "../src/domain/projectManager/index.js";
 
@@ -25,6 +28,8 @@ const buildProjectManagerConfig = (
   requireHumanGoalApproval: true,
   ...overrides,
 });
+
+const config = buildProjectManagerConfig();
 
 const validReplanGoal = (title: string): Record<string, unknown> => ({
   title,
@@ -53,6 +58,268 @@ const validReplanGoal = (title: string): Record<string, unknown> => ({
       ],
     },
   ],
+});
+
+describe("project manager strategy parser", () => {
+  it("parses valid PROJECT_STRATEGY output", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Strategy found one technical opportunity.",
+        analysisLenses: [
+          { lens: "strategy", summary: "Validation evidence is weak." },
+          { lens: "risk", summary: "Keep scope tests-only first." },
+        ],
+        opportunities: [
+          {
+            opportunityId: "opp-validation",
+            dimension: "technical",
+            title: "Make validation evidence trustworthy",
+            problemStatement: "Recent PM outputs rely on no-op validation summaries.",
+            userOrBusinessImpact: "Operators cannot trust completion signals.",
+            technicalImpact: "Validation confidence is overstated.",
+            evidenceRefs: [
+              { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures exist." },
+            ],
+            confidence: 82,
+            priority: "high",
+            riskLevel: "medium",
+            recommendedNextStep: "create_goal",
+            rationale: "Direct snapshot evidence supports a bounded tests-only goal.",
+            redTeamNotes: ["Avoid broad CI rewrites."],
+            architectVerdict: "pursue",
+          },
+        ],
+        proposedGoals: [
+          {
+            sourceOpportunityId: "opp-validation",
+            title: "Improve validation evidence quality",
+            problemStatement: "PM analysis can treat weak validation commands as strong evidence.",
+            desiredOutcome: "PM prompts and tests distinguish weak validation evidence from real checks.",
+            successMetrics: ["Prompt tests cover no-op validation commands."],
+            evidenceRefs: [
+              { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures exist." },
+            ],
+            priority: "high",
+            riskLevel: "medium",
+            suggestedTaskProposals: [
+              {
+                title: "Add PM validation evidence tests",
+                description: "Cover no-op validation command handling in PM prompt tests.",
+                taskType: "tests_only",
+                acceptanceCriteria: ["Tests fail before prompt hardening and pass after it."],
+                expectedBlastRadius: "Prompt tests only.",
+                evidenceRefs: [
+                  { kind: "snapshot", ref: "projectSignals.repeatedFailures", summary: "Repeated validation failures exist." },
+                ],
+              },
+            ],
+          },
+        ],
+        questionsForHuman: [
+          {
+            question: "Which user workflow should strategy mode optimize first?",
+            whyItMatters: "The snapshot has weak product context.",
+            relatedOpportunityId: "opp-validation",
+            relatedOpportunityTitle: "Make validation evidence trustworthy",
+          },
+        ],
+      })}`,
+    );
+
+    expect(parsed).toMatchObject({
+      summary: "Strategy found one technical opportunity.",
+      opportunities: [
+        {
+          opportunityId: "opp-validation",
+          architectVerdict: "pursue",
+          recommendedNextStep: "create_goal",
+        },
+      ],
+      proposedGoals: [
+        {
+          sourceOpportunityId: "opp-validation",
+          title: "Improve validation evidence quality",
+        },
+      ],
+    });
+  });
+
+  it("rejects PROJECT_STRATEGY proposed goals without sourceOpportunityId", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Invalid strategy.",
+        analysisLenses: [],
+        opportunities: [],
+        proposedGoals: [
+          {
+            title: "Missing source opportunity",
+            problemStatement: "No link.",
+            desiredOutcome: "Rejected.",
+            successMetrics: ["Rejected."],
+            evidenceRefs: [{ kind: "snapshot", ref: "x", summary: "x" }],
+            priority: "normal",
+            riskLevel: "low",
+            suggestedTaskProposals: [],
+          },
+        ],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeUndefined();
+  });
+
+  it("rejects PROJECT_STRATEGY output without analysisLenses", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Strategy output is missing required lens summaries.",
+        opportunities: [],
+        proposedGoals: [],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeUndefined();
+  });
+
+  it("rejects low-confidence create_goal opportunities", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Low confidence strategy.",
+        analysisLenses: [],
+        opportunities: [
+          {
+            opportunityId: "opp-low",
+            dimension: "technical",
+            title: "Low confidence",
+            problemStatement: "Weak evidence.",
+            userOrBusinessImpact: "Unknown.",
+            technicalImpact: "Unknown.",
+            evidenceRefs: [{ kind: "snapshot", ref: "x", summary: "x" }],
+            confidence: 59,
+            priority: "normal",
+            riskLevel: "low",
+            recommendedNextStep: "create_goal",
+            rationale: "Too weak.",
+            redTeamNotes: [],
+            architectVerdict: "pursue",
+          },
+        ],
+        proposedGoals: [],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeDefined();
+    expect(() =>
+      assertProjectStrategyWithinPolicy({
+        parsed: parsed!,
+        config,
+      }),
+    ).toThrow(/confidence below 60/i);
+  });
+
+  it("rejects proposed strategy goals without overlapping opportunity evidence", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Evidence mismatch.",
+        analysisLenses: [],
+        opportunities: [
+          {
+            opportunityId: "opp-1",
+            dimension: "technical",
+            title: "Opportunity",
+            problemStatement: "Problem.",
+            userOrBusinessImpact: "Operator impact.",
+            technicalImpact: "Technical impact.",
+            evidenceRefs: [{ kind: "snapshot", ref: "projectSignals.failedTasks", summary: "Failed tasks." }],
+            confidence: 80,
+            priority: "high",
+            riskLevel: "medium",
+            recommendedNextStep: "create_goal",
+            rationale: "Supported.",
+            redTeamNotes: [],
+            architectVerdict: "pursue",
+          },
+        ],
+        proposedGoals: [
+          {
+            sourceOpportunityId: "opp-1",
+            title: "Mismatched evidence goal",
+            problemStatement: "Goal evidence does not overlap.",
+            desiredOutcome: "Rejected.",
+            successMetrics: ["Rejected."],
+            evidenceRefs: [{ kind: "task", ref: "unrelated-task", summary: "Unrelated." }],
+            priority: "high",
+            riskLevel: "medium",
+            suggestedTaskProposals: [],
+          },
+        ],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeDefined();
+    expect(() =>
+      assertProjectStrategyWithinPolicy({
+        parsed: parsed!,
+        config,
+      }),
+    ).toThrow(/evidence/i);
+  });
+
+  it("rejects proposed strategy goals sourced from non-create_goal opportunities", () => {
+    const parsed = parseProjectStrategyResponse(
+      `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({
+        summary: "Research-only opportunity should not materialize goals.",
+        analysisLenses: [],
+        opportunities: [
+          {
+            opportunityId: "opp-research",
+            dimension: "technical",
+            title: "Research validation failures",
+            problemStatement: "The signal needs investigation before a goal is created.",
+            userOrBusinessImpact: "Operators need confidence in the chosen next step.",
+            technicalImpact: "Premature goals may optimize the wrong behavior.",
+            evidenceRefs: [
+              { kind: "snapshot", ref: "projectSignals.failedTasks", summary: "Failed tasks need triage." },
+            ],
+            confidence: 86,
+            priority: "high",
+            riskLevel: "medium",
+            recommendedNextStep: "research",
+            rationale: "Architect wants more research before materialization.",
+            redTeamNotes: [],
+            architectVerdict: "pursue",
+          },
+        ],
+        proposedGoals: [
+          {
+            sourceOpportunityId: "opp-research",
+            title: "Create premature validation goal",
+            problemStatement: "This should be rejected because the source is research-only.",
+            desiredOutcome: "No goal is materialized for research-only opportunities.",
+            successMetrics: ["Policy rejects non-create_goal source opportunities."],
+            evidenceRefs: [
+              { kind: "snapshot", ref: "projectSignals.failedTasks", summary: "Failed tasks need triage." },
+            ],
+            priority: "high",
+            riskLevel: "medium",
+            suggestedTaskProposals: [],
+          },
+        ],
+        questionsForHuman: [],
+      })}`,
+    );
+
+    expect(parsed).toBeDefined();
+    expect(() =>
+      assertProjectStrategyWithinPolicy({
+        parsed: parsed!,
+        config,
+      }),
+    ).toThrow(/recommendedNextStep|create_goal/);
+  });
 });
 
 describe("project manager analysis parser", () => {

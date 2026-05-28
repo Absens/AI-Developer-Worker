@@ -3,6 +3,50 @@ import type { EvidenceRef, TaskActor } from "../taskTracker/types.js";
 
 export const PROJECT_ANALYSIS_MARKER = "PROJECT_ANALYSIS:";
 export const PROJECT_REPLAN_MARKER = "PROJECT_REPLAN:";
+export const PROJECT_STRATEGY_MARKER = "PROJECT_STRATEGY:";
+
+export const PROJECT_MANAGER_MODES = ["analysis", "replan", "strategy"] as const;
+export type ProjectManagerMode = (typeof PROJECT_MANAGER_MODES)[number];
+
+export const PROJECT_ANALYSIS_KINDS = ["analysis", "replan", "strategy"] as const;
+export type ProjectAnalysisKind = (typeof PROJECT_ANALYSIS_KINDS)[number];
+
+export const PROJECT_STRATEGY_LENSES = [
+  "strategy",
+  "reframing",
+  "empathy",
+  "execution",
+  "risk",
+  "architecture",
+  "synthesis",
+] as const;
+export type ProjectStrategyLens = (typeof PROJECT_STRATEGY_LENSES)[number];
+
+export const PROJECT_STRATEGY_DIMENSIONS = [
+  "product",
+  "technical",
+  "product_technical",
+] as const;
+export type ProjectStrategyDimension =
+  (typeof PROJECT_STRATEGY_DIMENSIONS)[number];
+
+export const PROJECT_STRATEGY_NEXT_STEPS = [
+  "create_goal",
+  "research",
+  "ask_human",
+  "defer",
+] as const;
+export type ProjectStrategyRecommendedNextStep =
+  (typeof PROJECT_STRATEGY_NEXT_STEPS)[number];
+
+export const PROJECT_STRATEGY_ARCHITECT_VERDICTS = [
+  "pursue",
+  "research_first",
+  "defer",
+  "reject",
+] as const;
+export type ProjectStrategyArchitectVerdict =
+  (typeof PROJECT_STRATEGY_ARCHITECT_VERDICTS)[number];
 
 export const PROJECT_GOAL_REPLAN_DECISIONS = [
   "continue",
@@ -99,6 +143,53 @@ export interface ProjectGoalDraft {
   priority: ProjectGoalPriority;
   riskLevel: ProjectGoalRiskLevel;
   suggestedTaskProposals: ProjectTaskProposalDraft[];
+}
+
+export interface ProjectStrategyLensSummary {
+  lens: ProjectStrategyLens;
+  summary: string;
+}
+
+export interface ProjectStrategyOpportunity {
+  opportunityId: string;
+  dimension: ProjectStrategyDimension;
+  title: string;
+  problemStatement: string;
+  userOrBusinessImpact: string;
+  technicalImpact: string;
+  evidenceRefs: EvidenceRef[];
+  confidence: number;
+  priority: ProjectGoalPriority;
+  riskLevel: ProjectGoalRiskLevel;
+  recommendedNextStep: ProjectStrategyRecommendedNextStep;
+  rationale: string;
+  redTeamNotes: string[];
+  architectVerdict: ProjectStrategyArchitectVerdict;
+}
+
+export interface ProjectStrategyProposedGoalDraft extends ProjectGoalDraft {
+  sourceOpportunityId: string;
+}
+
+export interface ProjectStrategyQuestion {
+  question: string;
+  whyItMatters: string;
+  relatedOpportunityId?: string;
+  relatedOpportunityTitle?: string;
+}
+
+export interface ProjectStrategyGoalLink {
+  sourceOpportunityId: string;
+  proposedGoalTitle: string;
+  evidenceRefs: EvidenceRef[];
+}
+
+export interface ParsedProjectStrategyAnalysis {
+  summary: string;
+  analysisLenses: ProjectStrategyLensSummary[];
+  opportunities: ProjectStrategyOpportunity[];
+  proposedGoals: ProjectStrategyProposedGoalDraft[];
+  questionsForHuman: ProjectStrategyQuestion[];
 }
 
 export interface ProjectGoalReplanClassification {
@@ -208,6 +299,7 @@ export interface LinkProjectGoalTaskInput {
 export interface ProjectAnalysis {
   id: string;
   repositoryName: string;
+  analysisKind: ProjectAnalysisKind;
   summary: string;
   healthSignals: ProjectHealthSignal[];
   proposedGoals: ProjectGoalDraft[];
@@ -215,6 +307,11 @@ export interface ProjectAnalysis {
   previousAnalysisId?: string;
   replanReason?: string;
   goalReplans: ProjectGoalReplanClassification[];
+  strategyAnalysisLenses: ProjectStrategyLensSummary[];
+  strategyOpportunities: ProjectStrategyOpportunity[];
+  strategyGoalLinks: ProjectStrategyGoalLink[];
+  strategyQuestions: ProjectStrategyQuestion[];
+  strategyBrief?: string;
   createdAt: string;
 }
 
@@ -231,6 +328,7 @@ export interface ParsedProjectAnalysis {
 export interface ProjectManagerRun {
   id: string;
   repositoryName: string;
+  mode: ProjectManagerMode;
   trigger: ProjectManagerTrigger;
   status: "started" | "completed" | "failed";
   analysisId?: string;
@@ -292,4 +390,35 @@ export interface ProjectSignalSnapshot {
   waitingForHuman: ProjectTaskSignal[];
   repeatedFailures: ProjectTaskSignal[];
   recentReviewTasks: ProjectTaskSignal[];
+}
+
+export interface ProjectStrategySnapshot {
+  repositoryName: string;
+  generatedAt: string;
+  strategyBrief?: string;
+  projectSignals: ProjectSignalSnapshot;
+  recentAnalyses: ProjectAnalysis[];
+  goals: ProjectGoal[];
+  proposalBacklog: {
+    proposed: number;
+    approved: number;
+    autoApproved: number;
+    rejected: number;
+    stale: number;
+  };
+  taskTypeSummary: {
+    counts: Partial<Record<TaskType, number>>;
+    unknownTaskTypeCount: number;
+  };
+  repositoryProfile: {
+    tags: string[];
+    focusAreas: string[];
+    allowedProjectManagerTaskTypes: TaskType[];
+  };
+  productContext: {
+    knownUsersOrRoles: string[];
+    knownWorkflows: string[];
+    knownProductSignals: string[];
+    missingProductSignals: string[];
+  };
 }

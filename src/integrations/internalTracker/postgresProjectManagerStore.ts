@@ -19,10 +19,12 @@ import type {
   ListProjectGoalsInput,
   MarkProjectGoalStaleInput,
   ProjectAnalysis,
+  ProjectAnalysisKind,
   ProjectGoal,
   ProjectGoalAuditEvent,
   ProjectGoalAuditEventKind,
   ProjectGoalTaskLink,
+  ProjectManagerMode,
   ProjectManagerRun,
   RejectProjectGoalInput,
 } from "../../domain/projectManager/types.js";
@@ -38,6 +40,7 @@ type TransactionClient = PostgresQueryable & { release?: () => void };
 type ProjectManagerRunRow = QueryResultRow & {
   id: string;
   repository_name: string;
+  mode?: ProjectManagerMode | null;
   trigger: ProjectManagerRun["trigger"];
   status: ProjectManagerRun["status"];
   analysis_id: string | null;
@@ -51,6 +54,7 @@ type ProjectManagerRunRow = QueryResultRow & {
 type ProjectAnalysisRow = QueryResultRow & {
   id: string;
   repository_name: string;
+  analysis_kind?: ProjectAnalysisKind | null;
   summary: string;
   health_signals: unknown;
   proposed_goals: unknown;
@@ -58,6 +62,11 @@ type ProjectAnalysisRow = QueryResultRow & {
   previous_analysis_id?: string | null;
   replan_reason: string | null;
   goal_replans?: unknown | null;
+  strategy_analysis_lenses?: unknown | null;
+  strategy_opportunities?: unknown | null;
+  strategy_goal_links?: unknown | null;
+  strategy_questions?: unknown | null;
+  strategy_brief?: string | null;
   created_at: Date | string;
 };
 
@@ -144,6 +153,7 @@ const optionalJsonValue = <T>(value: unknown | null): T | undefined => {
 const mapRunRow = (row: ProjectManagerRunRow): ProjectManagerRun => ({
   id: row.id,
   repositoryName: row.repository_name,
+  mode: row.mode ?? "analysis",
   trigger: row.trigger,
   status: row.status,
   ...(row.analysis_id ? { analysisId: row.analysis_id } : {}),
@@ -157,6 +167,8 @@ const mapRunRow = (row: ProjectManagerRunRow): ProjectManagerRun => ({
 const mapAnalysisRow = (row: ProjectAnalysisRow): ProjectAnalysis => ({
   id: row.id,
   repositoryName: row.repository_name,
+  analysisKind:
+    row.analysis_kind ?? (row.replan_reason ? "replan" : "analysis"),
   summary: row.summary,
   healthSignals: jsonValue(row.health_signals, []),
   proposedGoals: jsonValue(row.proposed_goals, []),
@@ -166,6 +178,11 @@ const mapAnalysisRow = (row: ProjectAnalysisRow): ProjectAnalysis => ({
     : {}),
   ...(row.replan_reason ? { replanReason: row.replan_reason } : {}),
   goalReplans: jsonValue(row.goal_replans, []),
+  strategyAnalysisLenses: jsonValue(row.strategy_analysis_lenses, []),
+  strategyOpportunities: jsonValue(row.strategy_opportunities, []),
+  strategyGoalLinks: jsonValue(row.strategy_goal_links, []),
+  strategyQuestions: jsonValue(row.strategy_questions, []),
+  ...(row.strategy_brief ? { strategyBrief: row.strategy_brief } : {}),
   createdAt: toIso(row.created_at),
 });
 
@@ -250,15 +267,16 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
     const result = await this.db.query<ProjectManagerRunRow>(
       `
         INSERT INTO project_manager_runs (
-          id, repository_name, trigger, status, proposed_goal_ids,
+          id, repository_name, mode, trigger, status, proposed_goal_ids,
           proposed_task_ids, started_at
         )
-        VALUES ($1, $2, $3, 'started', $4, $5, $6)
+        VALUES ($1, $2, $3, $4, 'started', $5, $6, $7)
         RETURNING *
       `,
       [
         `pm_run_${randomUUID()}`,
         input.repositoryName,
+        input.mode ?? "analysis",
         input.trigger,
         [],
         [],
@@ -320,16 +338,26 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
     const result = await this.db.query<ProjectAnalysisRow>(
       `
         INSERT INTO project_analyses (
-          id, repository_name, summary, health_signals, proposed_goals,
-          stale_goal_ids, replan_reason, previous_analysis_id, goal_replans,
-          created_at
+          id, repository_name, analysis_kind, summary, health_signals,
+          proposed_goals, stale_goal_ids, replan_reason, previous_analysis_id,
+          goal_replans, strategy_analysis_lenses, strategy_opportunities,
+          strategy_goal_links, strategy_questions, strategy_brief, created_at
         )
-        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10)
+        VALUES (
+          $1, $2, $3, $4, $5::jsonb,
+          $6::jsonb, $7, $8, $9,
+          $10::jsonb, $11::jsonb, $12::jsonb,
+          $13::jsonb, $14::jsonb, $15, $16
+        )
         RETURNING *
       `,
       [
         `pm_analysis_${randomUUID()}`,
         input.repositoryName,
+        input.analysisKind ??
+          (input.replanReason || (input.goalReplans?.length ?? 0) > 0
+            ? "replan"
+            : "analysis"),
         input.summary,
         JSON.stringify(input.healthSignals),
         JSON.stringify(input.proposedGoals),
@@ -337,6 +365,11 @@ export class PostgresProjectManagerStore implements ProjectManagerStore {
         input.replanReason ?? null,
         input.previousAnalysisId ?? null,
         JSON.stringify(input.goalReplans ?? []),
+        JSON.stringify(input.strategyAnalysisLenses ?? []),
+        JSON.stringify(input.strategyOpportunities ?? []),
+        JSON.stringify(input.strategyGoalLinks ?? []),
+        JSON.stringify(input.strategyQuestions ?? []),
+        input.strategyBrief ?? null,
         this.nowIso(),
       ],
     );

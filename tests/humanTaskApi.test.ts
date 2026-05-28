@@ -1031,6 +1031,7 @@ describe("Phase 7F human task API", () => {
           run: {
             id: "pm-run-1",
             repositoryName: input.repositoryName,
+            mode: "analysis",
             trigger: input.trigger ?? "manual",
             status: "completed",
             analysisId: "analysis-1",
@@ -1042,11 +1043,16 @@ describe("Phase 7F human task API", () => {
           analysis: {
             id: "analysis-1",
             repositoryName: input.repositoryName,
+            analysisKind: "analysis",
             summary: "Manual analysis completed.",
             healthSignals: [],
             proposedGoals: [],
             staleGoalIds: [],
             goalReplans: [],
+            strategyAnalysisLenses: [],
+            strategyOpportunities: [],
+            strategyGoalLinks: [],
+            strategyQuestions: [],
             createdAt: "2026-05-25T00:01:00.000Z",
           },
         };
@@ -1088,6 +1094,7 @@ describe("Phase 7F human task API", () => {
           run: {
             id: "pm-run-analysis-1",
             repositoryName: input.repositoryName,
+            mode: "analysis",
             trigger: input.trigger ?? "manual",
             status: "completed",
             analysisId: "analysis-explicit-1",
@@ -1099,11 +1106,16 @@ describe("Phase 7F human task API", () => {
           analysis: {
             id: "analysis-explicit-1",
             repositoryName: input.repositoryName,
+            analysisKind: "analysis",
             summary: "Explicit analysis completed.",
             healthSignals: [],
             proposedGoals: [],
             staleGoalIds: [],
             goalReplans: [],
+            strategyAnalysisLenses: [],
+            strategyOpportunities: [],
+            strategyGoalLinks: [],
+            strategyQuestions: [],
             createdAt: "2026-05-25T00:01:00.000Z",
           },
         };
@@ -1152,6 +1164,7 @@ describe("Phase 7F human task API", () => {
           run: {
             id: "pm-run-replan-1",
             repositoryName: input.repositoryName,
+            mode: "replan",
             trigger: input.trigger ?? "manual",
             status: "completed",
             analysisId: "analysis-replan-1",
@@ -1163,11 +1176,16 @@ describe("Phase 7F human task API", () => {
           analysis: {
             id: "analysis-replan-1",
             repositoryName: input.repositoryName,
+            analysisKind: "replan",
             summary: "Manual replan completed.",
             healthSignals: [],
             proposedGoals: [],
             staleGoalIds: [],
             goalReplans: [],
+            strategyAnalysisLenses: [],
+            strategyOpportunities: [],
+            strategyGoalLinks: [],
+            strategyQuestions: [],
             createdAt: "2026-05-25T00:01:00.000Z",
           },
         };

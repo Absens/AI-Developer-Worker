@@ -94,6 +94,7 @@ export class ProjectManagerOrchestrator {
     const trigger = input.trigger ?? "manual";
     const run = await this.store.startRun({
       repositoryName: input.repositoryName,
+      mode: "analysis",
       trigger,
     });
 
@@ -126,6 +127,7 @@ export class ProjectManagerOrchestrator {
 
       const analysis = await this.store.recordAnalysis({
         repositoryName: input.repositoryName,
+        analysisKind: "analysis",
         ...parsed,
       });
       const goals = await this.store.createGoalsFromAnalysis({
@@ -177,6 +179,7 @@ export class ProjectManagerOrchestrator {
     const trigger = input.trigger ?? "manual";
     const run = await this.store.startRun({
       repositoryName: input.repositoryName,
+      mode: "replan",
       trigger,
     });
 
@@ -215,6 +218,7 @@ export class ProjectManagerOrchestrator {
 
       const analysis = await this.store.recordAnalysis({
         repositoryName: input.repositoryName,
+        analysisKind: "replan",
         summary: parsed.summary,
         healthSignals: parsed.healthSignals,
         proposedGoals: parsed.proposedGoals,
