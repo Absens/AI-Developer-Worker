@@ -58,18 +58,24 @@ Use a new explicit run mode: `mode: "strategy"`.
 The implementation should add a new prompt contract and parser marker:
 
 ```text
-PROJECT_STRATEGY: {"summary":"...","opportunities":[...],"proposedGoals":[...],"questionsForHuman":[...]}
+PROJECT_STRATEGY: {"summary":"...","analysisLenses":[...],"opportunities":[...],"proposedGoals":[...],"questionsForHuman":[...]}
 ```
 
-The strategy output should be stored as a `ProjectAnalysis`-compatible run with
-additional strategy metadata. A separate `ProjectStrategyAnalysis` aggregate is
-unnecessary for the first implementation because strategy runs share the same
-repository, run, goal materialization, and audit boundaries as analysis runs.
+The strategy output should be stored as a `ProjectAnalysis`-compatible analysis
+record with additional strategy metadata. The run record itself should also
+store the PM mode (`analysis`, `replan`, or `strategy`) so failed runs are still
+auditable by mode even when no analysis record is created.
+
+A separate `ProjectStrategyAnalysis` aggregate is unnecessary for the first
+implementation because strategy runs share the same repository, run, goal
+materialization, and audit boundaries as analysis runs.
 
 The recommended first slice is:
 
-1. Add a strategy snapshot builder that reuses current project signals and adds
-   compact repository/product context fields that are already available.
+1. Add a strategy snapshot builder with an explicit `ProjectStrategySnapshot`
+   contract. It should reuse current project signals and add compact
+   repository, goal, proposal, and product-context fields that are already
+   available.
 2. Add `buildProjectStrategyPrompt`.
 3. Add parser and policy validation for `PROJECT_STRATEGY`.
 4. Let strong `proposedGoals` materialize through the same
@@ -150,6 +156,7 @@ Suggested opportunity-level fields:
 
 ```json
 {
+  "opportunityId": "stable short id unique within the strategy response",
   "redTeamNotes": ["string"],
   "architectVerdict": "pursue|research_first|defer|reject"
 }
@@ -209,7 +216,79 @@ Recommendation: Alternative C.
 
 ## Strategy Snapshot
 
-The first version should stay read-only and use data the system already has:
+The first version should stay read-only and use data the system already has, but
+it should not overload `ProjectSignalSnapshot`. Add a separate
+`ProjectStrategySnapshot` so the prompt, tests, and future UI can distinguish
+operational health inputs from strategy inputs.
+
+Suggested first-version snapshot shape:
+
+```json
+{
+  "repositoryName": "string",
+  "generatedAt": "ISO timestamp",
+  "strategyBrief": "string optional",
+  "projectSignals": "ProjectSignalSnapshot",
+  "recentAnalyses": [
+    {
+      "id": "string",
+      "analysisKind": "analysis|replan|strategy",
+      "summary": "string",
+      "createdAt": "ISO timestamp"
+    }
+  ],
+  "goals": [
+    {
+      "id": "string",
+      "status": "proposed|approved|active|completed|rejected|stale",
+      "title": "string",
+      "priority": "low|normal|high|critical",
+      "riskLevel": "low|medium|high",
+      "summary": "string",
+      "linkedTaskOutcomes": [
+        {
+          "taskId": "string",
+          "status": "string",
+          "latestValidationSummary": "string optional",
+          "failedAgentRuns": 0,
+          "failedValidations": 0
+        }
+      ]
+    }
+  ],
+  "proposalBacklog": {
+    "proposed": 0,
+    "approved": 0,
+    "autoApproved": 0,
+    "rejected": 0,
+    "stale": 0
+  },
+  "taskTypeSummary": {
+    "counts": { "task type": 0 },
+    "unknownTaskTypeCount": 0
+  },
+  "repositoryProfile": {
+    "baseBranch": "string optional",
+    "queue": "string optional",
+    "tags": ["string"],
+    "focusAreas": ["string"],
+    "allowedProjectManagerTaskTypes": ["task type"]
+  },
+  "productContext": {
+    "knownUsersOrRoles": ["string"],
+    "knownWorkflows": ["string"],
+    "knownProductSignals": ["string"],
+    "missingProductSignals": ["string"]
+  }
+}
+```
+
+The snapshot should include compact summaries rather than full records. The
+initial implementation can leave `productContext` fields empty when no explicit
+product data exists; the prompt should turn that absence into questions instead
+of inventing product claims.
+
+The data sources are:
 
 - current `ProjectSignalSnapshot`;
 - recent project analyses and replan summaries;
@@ -233,7 +312,8 @@ The request body can include a bounded manual brief:
 }
 ```
 
-The brief is optional. It should be treated as context, not an instruction to
+The brief is optional. It should be trimmed, capped at 2,000 characters, stored
+with the analysis metadata, and treated as context rather than an instruction to
 ignore evidence.
 
 ## Product vs Technical Dimensions
@@ -272,6 +352,7 @@ Suggested JSON schema:
   ],
   "opportunities": [
     {
+      "opportunityId": "opp-1",
       "dimension": "product|technical|product_technical",
       "title": "string",
       "problemStatement": "string",
@@ -291,6 +372,7 @@ Suggested JSON schema:
   ],
   "proposedGoals": [
     {
+      "sourceOpportunityId": "opp-1",
       "title": "string",
       "problemStatement": "string",
       "desiredOutcome": "string",
@@ -318,6 +400,7 @@ Suggested JSON schema:
     {
       "question": "string",
       "whyItMatters": "string",
+      "relatedOpportunityId": "string optional",
       "relatedOpportunityTitle": "string"
     }
   ]
@@ -328,6 +411,13 @@ Suggested JSON schema:
 should say that an opportunity does not need to become a goal immediately.
 Only opportunities with `architectVerdict: "pursue"` should be eligible for goal
 materialization.
+
+`sourceOpportunityId` is required for every `proposedGoals` entry in
+`PROJECT_STRATEGY`. It gives policy a stable machine link instead of relying
+only on title matching or evidence overlap. The existing `ProjectGoalDraft`
+storage shape does not need to persist this field in `project_goals`; it can be
+used during parsing/policy validation and retained in `strategyGoalLinks`
+metadata.
 
 ## Prompt Improvements
 
@@ -378,20 +468,31 @@ Add hard limits similar to existing PM analysis policy:
 - confidence integer: 0 through 100;
 - max analysis lenses per run: 7;
 - max red team notes per opportunity: 5;
+- unique `opportunityId` per opportunity;
+- required `sourceOpportunityId` per proposed goal;
 - opportunity text fields bounded by the existing PM text limits.
 
 Policy should reject:
 
 - opportunities without evidence refs;
+- duplicate or missing opportunity ids;
 - `create_goal` opportunities with confidence below 60;
 - `create_goal` opportunities whose `architectVerdict` is not `pursue`;
-- proposed goals whose evidence does not overlap at least one opportunity;
-- proposed goals not backed by a `pursue` opportunity;
-- high-risk proposed goals that include broad executable task proposals;
+- proposed goals without a valid `sourceOpportunityId`;
+- proposed goals whose `sourceOpportunityId` points to an opportunity whose
+  `architectVerdict` is not `pursue`;
+- proposed goals whose evidence does not overlap the referenced opportunity;
+- high-risk proposed goals with more than one suggested task proposal;
+- high-risk proposed goals whose suggested task proposals use task types other
+  than `documentation` or `tests_only` unless the goal has critical priority and
+  direct validation, review, or task-failure evidence;
 - unknown task types outside `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON`.
 
 The confidence threshold should start hardcoded in policy and become configurable
 only after the mode proves useful.
+
+Evidence overlap should compare normalized `(kind, ref)` pairs. Summaries are
+human context and should not be used as the identity key.
 
 ## API Shape
 
@@ -415,24 +516,76 @@ Response:
 
 ```json
 {
-  "run": { "id": "pm_run_...", "status": "completed" },
-  "analysis": { "id": "pm_analysis_..." },
-  "strategy": {
-    "summary": "...",
-    "analysisLenses": [],
-    "opportunities": [],
-    "questionsForHuman": []
+  "result": {
+    "run": { "id": "pm_run_...", "status": "completed", "mode": "strategy" },
+    "analysis": { "id": "pm_analysis_...", "analysisKind": "strategy" },
+    "strategy": {
+      "summary": "...",
+      "analysisLenses": [],
+      "opportunities": [],
+      "goalLinks": [],
+      "questionsForHuman": []
+    }
   }
 }
 ```
 
+Keep the existing `{ "result": ... }` envelope used by the PM run endpoint so
+current UI and API clients do not need a response-shape migration just to add the
+new mode.
+
 The role should match current PM run permissions: `operator+`.
 
+Add a read endpoint for stored PM analyses so strategy results are not visible
+only in the immediate POST response:
+
+```http
+GET /api/project-manager/analyses?repositoryName=client-application&analysisKind=strategy
+```
+
+Response:
+
+```json
+{
+  "analyses": [
+    {
+      "id": "pm_analysis_...",
+      "repositoryName": "client-application",
+      "analysisKind": "strategy",
+      "summary": "...",
+      "strategy": {
+        "summary": "...",
+        "analysisLenses": [],
+        "opportunities": [],
+        "goalLinks": [],
+        "questionsForHuman": []
+      },
+      "createdAt": "ISO timestamp"
+    }
+  ]
+}
+```
+
+`viewer+` can read analyses. `operator+` is still required to create new PM
+runs.
+
 ## Storage Design
+
+Store run mode on every `ProjectManagerRun`:
+
+- `mode: "analysis" | "replan" | "strategy"`.
+
+This must be on the run record, not only the analysis record, because failed
+runs may never produce a `ProjectAnalysis`. PostgreSQL should add a non-null
+`mode` text column to `project_manager_runs` with a check constraint and
+backfill existing rows as `analysis` when no better historical signal exists.
+New `startRun` calls should require mode explicitly instead of inferring it
+later.
 
 Use the existing `ProjectAnalysis` storage boundary and add optional fields:
   - `strategyAnalysisLenses`;
   - `strategyOpportunities`;
+  - `strategyGoalLinks`;
   - `strategyQuestions`;
   - `strategyBrief`;
   - `analysisKind: "analysis" | "replan" | "strategy"`.
@@ -440,8 +593,29 @@ Use the existing `ProjectAnalysis` storage boundary and add optional fields:
 This keeps strategy runs near existing PM history and avoids another top-level
 store while the product value is being validated.
 
-PostgreSQL can store the new fields in `project_analyses` as JSONB columns.
-In-memory store can add optional properties to the existing analysis record.
+PostgreSQL can store the strategy fields in `project_analyses` as JSONB columns.
+`analysisKind` should be a non-null text column with a check constraint. Existing
+analysis rows can be backfilled as `replan` when `replan_reason` is present and
+`analysis` otherwise. In-memory store can add optional properties to the
+existing analysis record.
+
+`strategyGoalLinks` should preserve the strategy-only link between an
+opportunity and each proposed goal draft:
+
+```json
+[
+  {
+    "sourceOpportunityId": "opp-1",
+    "proposedGoalTitle": "string",
+    "evidenceRefs": []
+  }
+]
+```
+
+Do not persist `sourceOpportunityId` on `project_goals` in the first
+implementation unless goal-source traceability later needs it in the goal detail
+view. `strategyGoalLinks` retains the opportunity-to-goal relationship without
+changing the goal storage contract.
 
 If strategy mode grows into portfolio planning, split it later into
 `project_strategy_analyses` and `project_strategy_opportunities`.
@@ -451,6 +625,11 @@ If strategy mode grows into portfolio planning, split it later into
 Only `proposedGoals` from the strategy response should create `ProjectGoal`
 records. Raw `opportunities` are advisory and should not create goals by
 themselves.
+
+Before materialization, policy must verify that each proposed goal references a
+valid `pursue` opportunity through `sourceOpportunityId` and has overlapping
+evidence with that opportunity. The materialization step should strip
+strategy-only fields before passing drafts to `createGoalsFromAnalysis`.
 
 The normal duplicate goal policy still applies. A strategy run should not create
 another non-terminal goal with the same normalized title and evidence signature.
@@ -469,7 +648,9 @@ Initial UI can be minimal:
 
 - Add `strategy` as a selectable mode in the existing manual PM run action.
 - Add optional strategy brief input.
-- Show strategy run results in a compact section on the goals or operations page:
+- Show the latest strategy run results from
+  `GET /api/project-manager/analyses?analysisKind=strategy` in a compact section
+  on the goals or operations page:
   - summary;
   - short lens summaries as review context;
   - opportunities grouped by dimension;
@@ -477,6 +658,10 @@ Initial UI can be minimal:
   - red team notes for opportunities with meaningful risk;
   - linked proposed goals;
   - questions for human.
+
+The immediate POST response can optimistically render the completed strategy
+result, but the page should refresh from the read endpoint so results remain
+available after navigation or reload.
 
 Avoid building a full roadmap board in the first implementation. The existing
 goal list/detail flow is enough once strategic opportunities can materialize as
@@ -489,6 +674,14 @@ through a complex configuration surface.
 - Strategy mode runs Codex with `sandbox: "read-only"`.
 - Strategy mode does not modify repository files.
 - Strategy mode does not call external services.
+- If the Codex runner cannot enforce network isolation, "does not call external
+  services" is a prompt and operational invariant rather than a sandbox
+  guarantee. Document that limitation in the implementation and add a runner
+  option later if the CLI exposes network-off execution.
+- Strategy mode should analyze only the bounded `ProjectStrategySnapshot`.
+  Allowing Codex to inspect repository files directly is out of scope for the
+  first version unless a separate bounded repository scan is added to the
+  snapshot builder.
 - Strategy mode does not create executable tasks.
 - Strategy mode may only create proposed goals through the same store path as
   `analysis`.
@@ -509,13 +702,21 @@ Backend unit tests:
   JSON, missing evidence, invalid dimensions, invalid next steps;
 - parser validates `analysisLenses`, `redTeamNotes`, and `architectVerdict`
   bounds;
+- parser requires unique `opportunityId` values and `sourceOpportunityId` on
+  every strategy proposed goal;
 - policy rejects low-confidence `create_goal` opportunities;
 - policy rejects `create_goal` opportunities without a `pursue` architect
   verdict;
+- policy rejects proposed goals with missing or unknown `sourceOpportunityId`;
 - policy rejects proposed goals not backed by opportunity evidence;
 - policy rejects proposed goals backed only by deferred, rejected, or
   research-first opportunities;
+- policy rejects high-risk proposed goals with broad executable task proposal
+  fan-out;
 - orchestrator records strategy runs and materializes only `proposedGoals`;
+- storage preserves `strategyGoalLinks` after strategy-only fields are stripped
+  before goal creation;
+- failed runs still persist `ProjectManagerRun.mode = "strategy"`;
 - repeated strategy runs do not duplicate non-terminal goals.
 
 API tests:
@@ -523,12 +724,15 @@ API tests:
 - operator can run `mode: "strategy"`;
 - developer/viewer cannot run strategy;
 - missing/oversized strategy brief is rejected with a clear error;
+- run response preserves the existing `{ result: ... }` envelope;
+- viewer can read stored strategy analyses through the PM analyses read endpoint;
 - unavailable PM dependencies return the same style of 503 as analysis/replan.
 
 UI tests:
 
 - manual run form can choose strategy mode and send strategy brief;
-- strategy results render grouped opportunities and compact lens summaries;
+- strategy results render grouped opportunities and compact lens summaries from
+  the analyses read endpoint;
 - strategy-created goals appear in `/goals`;
 - no UI path calls `POST /api/tasks` for strategy output.
 
@@ -544,13 +748,20 @@ E2E:
 ## Rollout Plan
 
 1. Prompt-only quality pass for existing `analysis` and `replan`.
-2. Add cognitive lens prompt contract and strategy parser/policy/types with
-   tests.
-3. Add strategy snapshot and orchestrator path.
-4. Add storage fields for strategy metadata.
-5. Add API support for `mode: "strategy"`.
-6. Add minimal UI controls and rendering.
-7. Add Playwright critical flow.
+2. Add shared types for strategy opportunities, lens summaries, questions, and
+   strategy proposed goals with `sourceOpportunityId`.
+3. Add parser and policy validation for `PROJECT_STRATEGY` with tests,
+   including opportunity-goal linking rules.
+4. Add storage migrations for `ProjectManagerRun.mode`,
+   `ProjectAnalysis.analysisKind`, and strategy metadata fields.
+5. Add `ProjectStrategySnapshot` collection with compact goal, proposal,
+   repository profile, and product-context summaries.
+6. Add `buildProjectStrategyPrompt` and the orchestrator strategy path.
+7. Add API support for `mode: "strategy"` while preserving the existing
+   `{ result: ... }` run response envelope.
+8. Add the PM analyses read endpoint for persisted strategy results.
+9. Add minimal UI controls and rendering.
+10. Add Playwright critical flow.
 
 This order keeps prompt quality improvements independently shippable and keeps
 the new mode behind explicit manual invocation.
