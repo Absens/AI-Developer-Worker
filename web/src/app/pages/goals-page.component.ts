@@ -228,6 +228,30 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                   </div>
                 </div>
 
+                <div class="goal-summary-grid">
+                  <div class="summary-block">
+                    <h3>Проблема</h3>
+                    <p>{{ truncate(goal.problemStatement, 320) || 'Проблема не указана.' }}</p>
+                  </div>
+                  <div class="summary-block">
+                    <h3>Ожидаемый результат</h3>
+                    <p>{{ truncate(goal.desiredOutcome, 320) || 'Результат не указан.' }}</p>
+                  </div>
+                </div>
+
+                <div class="summary-block">
+                  <h3>Метрики успеха</h3>
+                  @if (goal.successMetrics.length) {
+                    <ul class="compact-list">
+                      @for (metric of goal.successMetrics.slice(0, 3); track metric) {
+                        <li>{{ metric }}</li>
+                      }
+                    </ul>
+                  } @else {
+                    <p>Метрики не указаны.</p>
+                  }
+                </div>
+
                 <div class="summary-block">
                   <h3>Доказательства</h3>
                   @if (evidenceSummary(goal)) {
@@ -489,6 +513,10 @@ export class GoalsPageComponent implements OnInit {
 
   protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
     return projectGoalRiskSeverity(riskLevel);
+  }
+
+  protected truncate(value: string | undefined, max?: number): string {
+    return truncate(value, max);
   }
 
   protected formatDate(value: string): string {

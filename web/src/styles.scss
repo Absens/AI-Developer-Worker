@@ -391,6 +391,12 @@ select {
   min-width: 0;
 }
 
+.goal-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .goal-badge,
 .linked-row {
   display: grid;
@@ -589,6 +595,7 @@ select {
   .filter-grid,
   .filter-grid--compact,
   .field-grid,
+  .goal-summary-grid,
   .preview-grid {
     grid-template-columns: 1fr;
   }

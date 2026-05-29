@@ -525,6 +525,14 @@ describe('GoalsPageComponent', () => {
     expect(text).toContain(approvedProjectGoal.title);
     expect(text).toContain('Одобрено');
     expect(text).toContain('Показаны все цели');
+    expect(text).toContain('Проблема');
+    expect(text).toContain(projectGoal.problemStatement);
+    expect(text).toContain('Ожидаемый результат');
+    expect(text).toContain(projectGoal.desiredOutcome);
+    expect(text).toContain('Метрики успеха');
+    expect(text).toContain(projectGoal.successMetrics[0]);
+    expect(text).toContain('Приоритет: Высокий');
+    expect(text).toContain('Риск: Средний');
   });
 
   it('explains empty filtered goal results and can switch back to all goals', async () => {
