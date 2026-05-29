@@ -11,18 +11,22 @@ import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
 
-import { ProjectAnalysisDto, ProjectGoalDto, ProjectGoalStatusDto } from '../models/human-api.dto';
+import { EvidenceRefDto, ProjectAnalysisDto, ProjectGoalDto, ProjectGoalStatusDto } from '../models/human-api.dto';
 import { ProjectGoalService } from '../services/project-goal.service';
 import { SessionService } from '../services/session.service';
 import {
   canUseCapability,
   formatDate,
+  projectConfidenceLabel,
   projectGoalPriorityLabel,
   projectGoalPrioritySeverity,
   projectGoalRiskLabel,
   projectGoalRiskSeverity,
   projectGoalStatusLabel,
   projectGoalStatusSeverity,
+  projectStrategyArchitectVerdictLabel,
+  projectStrategyDimensionLabel,
+  projectStrategyNextStepLabel,
   truncate,
 } from '../utils/task-ui';
 
@@ -149,14 +153,16 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                 @for (opportunity of strategy.opportunities; track opportunity.opportunityId) {
                   <article class="strategy-opportunity">
                     <div>
-                      <span class="eyebrow">{{ opportunity.dimension }} · {{ opportunity.architectVerdict }}</span>
+                      <span class="eyebrow">
+                        {{ strategyDimensionLabel(opportunity.dimension) }} · {{ architectVerdictLabel(opportunity.architectVerdict) }}
+                      </span>
                       <h3>{{ opportunity.title }}</h3>
                       <p>{{ opportunity.rationale }}</p>
                     </div>
                     <div class="tag-row">
-                      <p-tag [value]="'Confidence: ' + opportunity.confidence" severity="info" />
-                      <p-tag [value]="opportunity.priority" [severity]="prioritySeverity(opportunity.priority)" />
-                      <p-tag [value]="opportunity.recommendedNextStep" severity="secondary" />
+                      <p-tag [value]="confidenceLabel(opportunity.confidence)" severity="info" />
+                      <p-tag [value]="priorityLabel(opportunity.priority)" [severity]="prioritySeverity(opportunity.priority)" />
+                      <p-tag [value]="nextStepLabel(opportunity.recommendedNextStep)" severity="secondary" />
                     </div>
                     @if (opportunity.redTeamNotes.length) {
                       <ul>
@@ -167,6 +173,40 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                     }
                   </article>
                 }
+              </div>
+            }
+
+            @if (strategy.goalLinks.length) {
+              <div class="strategy-subsection">
+                <h3>Связанные цели</h3>
+                <div class="goal-badge-list">
+                  @for (link of strategy.goalLinks; track link.sourceOpportunityId + link.proposedGoalTitle) {
+                    <div class="goal-badge">
+                      <span class="goal-badge__title">{{ link.proposedGoalTitle }}</span>
+                      <span class="muted">Источник: {{ link.sourceOpportunityId }}</span>
+                      @if (link.evidenceRefs.length) {
+                        <span class="muted">{{ evidenceSummaryFromRefs(link.evidenceRefs) }}</span>
+                      }
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+
+            @if (strategy.questionsForHuman.length) {
+              <div class="strategy-subsection">
+                <h3>Вопросы человеку</h3>
+                <div class="goal-badge-list">
+                  @for (question of strategy.questionsForHuman; track question.question) {
+                    <div class="goal-badge">
+                      <span class="goal-badge__title">{{ question.question }}</span>
+                      <span>{{ question.whyItMatters }}</span>
+                      @if (question.relatedOpportunityTitle) {
+                        <span class="muted">{{ question.relatedOpportunityTitle }}</span>
+                      }
+                    </div>
+                  }
+                </div>
               </div>
             }
           }
@@ -309,6 +349,16 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
         gap: 0.5rem;
         padding-block: 0.75rem;
         border-top: 1px solid var(--surface-border, var(--console-border));
+      }
+
+      .strategy-subsection {
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .strategy-subsection h3 {
+        margin: 0;
+        font-size: 1rem;
       }
     `,
   ],
@@ -467,6 +517,16 @@ export class GoalsPageComponent implements OnInit {
     );
   }
 
+  protected evidenceSummaryFromRefs(evidenceRefs: EvidenceRefDto[]): string {
+    return truncate(
+      evidenceRefs
+        .map((evidence) => evidence.summary || `${evidence.kind}: ${evidence.ref}`)
+        .filter(Boolean)
+        .join(' '),
+      220,
+    );
+  }
+
   protected showAllGoals(): void {
     this.statusFilter.setValue('all');
     this.load();
@@ -513,6 +573,22 @@ export class GoalsPageComponent implements OnInit {
 
   protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
     return projectGoalRiskSeverity(riskLevel);
+  }
+
+  protected strategyDimensionLabel(dimension: string): string {
+    return projectStrategyDimensionLabel(dimension);
+  }
+
+  protected architectVerdictLabel(verdict: string): string {
+    return projectStrategyArchitectVerdictLabel(verdict);
+  }
+
+  protected nextStepLabel(nextStep: string): string {
+    return projectStrategyNextStepLabel(nextStep);
+  }
+
+  protected confidenceLabel(confidence: number): string {
+    return projectConfidenceLabel(confidence);
   }
 
   protected truncate(value: string | undefined, max?: number): string {

@@ -696,7 +696,14 @@ describe('GoalsPageComponent', () => {
                 evidenceRefs: [],
               },
             ],
-            questionsForHuman: [],
+            questionsForHuman: [
+              {
+                question: 'Should validation trust be product-facing?',
+                whyItMatters: 'It changes whether the next goal is product or technical.',
+                relatedOpportunityId: 'opp-1',
+                relatedOpportunityTitle: 'Improve validation trust',
+              },
+            ],
           },
           createdAt: now,
         },
@@ -705,6 +712,9 @@ describe('GoalsPageComponent', () => {
     fixture.detectChanges();
 
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('Improve validation trust');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Связанные цели');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Improve validation trust');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Вопросы человеку');
 
     const brief = (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>(
       '[data-testid="goals-strategy-brief"]',
