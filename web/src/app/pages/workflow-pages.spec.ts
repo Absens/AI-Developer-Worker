@@ -7,6 +7,7 @@ import { TestBed } from '@angular/core/testing';
 import Aura from '@primeuix/themes/aura';
 import { MessageService } from 'primeng/api';
 import { providePrimeNG } from 'primeng/config';
+import { BehaviorSubject } from 'rxjs';
 
 import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
 import { ProjectGoalDto } from '../models/human-api.dto';
@@ -505,29 +506,137 @@ describe('ProposalsPageComponent', () => {
 describe('GoalsPageComponent', () => {
   afterEach(() => TestBed.inject(HttpTestingController).verify());
 
-  it('renders project goals with the default proposed filter and linked task counts', async () => {
+  it('renders project goals without hiding approved goals by default', async () => {
     const http = await configure([GoalsPageComponent]);
     loadSession(http, pmOperatorSession);
 
     const fixture = TestBed.createComponent(GoalsPageComponent);
     fixture.detectChanges();
-    const request = http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed');
+
+    const request = http.expectOne((entry) => entry.url === '/api/project-goals');
+    expect(request.request.params.has('status')).toBeFalse();
     expect(request.request.params.has('repositoryName')).toBeFalse();
     request.flush(projectGoalList);
     http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Цели проекта');
     expect(text).toContain(projectGoal.title);
-    expect(text).toContain(projectGoal.id);
-    expect(text).toContain('developer');
-    expect(text).toContain('Связанные задачи');
-    expect(text).toContain('Черновики задач');
-    expect(text).toContain('1');
-    expect(text).toContain('run-1');
-    expect(text).toContain('PM analysis found missing traceability.');
-    expect((fixture.nativeElement as HTMLElement).querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
+    expect(text).toContain(approvedProjectGoal.title);
+    expect(text).toContain('Одобрено');
+    expect(text).toContain('Показаны все цели');
+  });
+
+  it('explains empty filtered goal results and can switch back to all goals', async () => {
+    const http = await configure([GoalsPageComponent]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalsPageComponent);
+    fixture.detectChanges();
+    http.expectOne((entry) => entry.url === '/api/project-goals' && !entry.params.has('status')).flush({
+      ...projectGoalList,
+      goals: [approvedProjectGoal],
+    });
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
+
+    const component = fixture.componentInstance as unknown as {
+      statusFilter: { setValue: (value: string) => void };
+      load: () => void;
+    };
+    component.statusFilter.setValue('proposed');
+    component.load();
+    http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed').flush({
+      ...projectGoalList,
+      goals: [],
+    });
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    expect(element.textContent).toContain('Нет целей со статусом Предложено');
+    element.querySelector<HTMLButtonElement>('[data-testid="goals-show-all"]')?.click();
+    http.expectOne((entry) => entry.url === '/api/project-goals' && !entry.params.has('status')).flush(projectGoalList);
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
+  });
+
+  it('hydrates goal filters from the URL, reacts to URL changes, and syncs later filter changes back to the URL', async () => {
+    const queryParams = new BehaviorSubject(
+      convertToParamMap({
+        status: 'approved',
+        repositoryName: 'developer',
+      }),
+    );
+    const http = await configure(
+      [GoalsPageComponent],
+      [
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            snapshot: {
+              queryParamMap: queryParams.value,
+            },
+            queryParamMap: queryParams.asObservable(),
+          },
+        },
+      ],
+    );
+    loadSession(http, pmOperatorSession);
+    const router = TestBed.inject(Router);
+    spyOn(router, 'navigate').and.resolveTo(true);
+
+    const fixture = TestBed.createComponent(GoalsPageComponent);
+    fixture.detectChanges();
+
+    const initial = http.expectOne((entry) => entry.url === '/api/project-goals');
+    expect(initial.request.params.get('status')).toBe('approved');
+    expect(initial.request.params.get('repositoryName')).toBe('developer');
+    initial.flush({ ...projectGoalList, goals: [approvedProjectGoal] });
+    http.expectOne('/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy').flush({ analyses: [] });
+
+    queryParams.next(convertToParamMap({ status: 'active', repositoryName: 'developer' }));
+    const routeChange = http.expectOne((entry) => entry.url === '/api/project-goals');
+    expect(routeChange.request.params.get('status')).toBe('active');
+    expect(routeChange.request.params.get('repositoryName')).toBe('developer');
+    routeChange.flush({ ...projectGoalList, goals: [] });
+    http.expectOne('/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy').flush({ analyses: [] });
+
+    const component = fixture.componentInstance as unknown as {
+      repositoryFilter: { setValue: (value: string) => void };
+      statusFilter: { setValue: (value: string) => void };
+      load: () => void;
+    };
+    component.repositoryFilter.setValue('');
+    component.statusFilter.setValue('all');
+    component.load();
+
+    expect(router.navigate).toHaveBeenCalledWith(
+      [],
+      jasmine.objectContaining({
+        queryParams: {},
+        replaceUrl: true,
+      }),
+    );
+    http.expectOne((entry) => entry.url === '/api/project-goals' && !entry.params.has('status')).flush(projectGoalList);
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
+  });
+
+  it('requires an explicit repository before running analysis from the all-goals view', async () => {
+    const http = await configure([GoalsPageComponent]);
+    loadSession(http, pmOperatorSession);
+
+    const fixture = TestBed.createComponent(GoalsPageComponent);
+    fixture.detectChanges();
+    http.expectOne((entry) => entry.url === '/api/project-goals' && !entry.params.has('status')).flush(projectGoalList);
+    http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
+
+    const component = fixture.componentInstance as unknown as {
+      runAnalysis: () => void;
+    };
+    component.runAnalysis();
+    fixture.detectChanges();
+
+    http.expectNone('/api/project-manager/runs');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Укажите репозиторий для анализа.');
   });
 
   it('lets operators run strategy mode and renders latest strategy opportunities', async () => {
@@ -538,7 +647,7 @@ describe('GoalsPageComponent', () => {
     const fixture = TestBed.createComponent(GoalsPageComponent);
     fixture.detectChanges();
 
-    http.expectOne('/api/project-goals?status=proposed').flush({
+    http.expectOne((entry) => entry.url === '/api/project-goals' && !entry.params.has('status')).flush({
       goals: [],
       linkedTaskCounts: {},
       role: 'operator',
@@ -610,7 +719,7 @@ describe('GoalsPageComponent', () => {
 
     const fixture = TestBed.createComponent(GoalsPageComponent);
     fixture.detectChanges();
-    http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('status') === 'proposed').flush(projectGoalList);
+    http.expectOne((entry) => entry.url === '/api/project-goals' && !entry.params.has('status')).flush(projectGoalList);
     http.expectOne('/api/project-manager/analyses?analysisKind=strategy').flush({ analyses: [] });
 
     const component = fixture.componentInstance as unknown as {
@@ -634,7 +743,11 @@ describe('GoalsPageComponent', () => {
     const run = http.expectOne('/api/project-manager/runs');
     expect(run.request.body).toEqual({ repositoryName: 'developer' });
     run.flush({ runId: 'run-2' });
-    http.expectOne((entry) => entry.url === '/api/project-goals' && entry.params.get('repositoryName') === 'developer').flush(projectGoalList);
+    http.expectOne((entry) =>
+      entry.url === '/api/project-goals' &&
+      entry.params.get('repositoryName') === 'developer' &&
+      entry.params.get('status') === 'approved',
+    ).flush(projectGoalList);
     http.expectOne('/api/project-manager/analyses?repositoryName=developer&analysisKind=strategy').flush({ analyses: [] });
   });
 });
