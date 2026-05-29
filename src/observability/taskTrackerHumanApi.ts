@@ -1512,6 +1512,8 @@ export class TaskTrackerHumanApi {
       priority: goal.priority,
       riskLevel: goal.riskLevel,
       repositoryName: goal.repositoryName,
+      problemStatement: goal.problemStatement,
+      desiredOutcome: goal.desiredOutcome,
     };
   }
 

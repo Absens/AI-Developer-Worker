@@ -365,6 +365,8 @@ export interface ProjectGoalSummaryDto {
   priority: ProjectGoalPriorityDto;
   riskLevel: ProjectGoalRiskLevelDto;
   repositoryName: string;
+  problemStatement?: string;
+  desiredOutcome?: string;
 }
 
 export interface ProjectGoalAuditEventDto {
