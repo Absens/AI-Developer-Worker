@@ -34,6 +34,17 @@ const createStatusMapFile = (): string => {
   return path;
 };
 
+const baseFleetEnv = (): NodeJS.ProcessEnv => ({
+  TRACKER_TOKEN: "tracker-token",
+  TRACKER_ORG_ID: "org-id",
+  TRACKER_STATUS_MAP_FILE: createStatusMapFile(),
+  GITLAB_URL: "https://gitlab.example.com/",
+  GITLAB_TOKEN: "gitlab-token",
+  GITLAB_PROJECT_ID: "123",
+  MAX_FIX_ATTEMPTS: "2",
+  WORKER_ID: "worker-1",
+});
+
 afterEach(() => {
   while (cleanupPaths.length > 0) {
     const path = cleanupPaths.pop();
@@ -166,6 +177,391 @@ describe("config", () => {
     });
 
     expect(config.taskTracker).toEqual({ provider: "yandex" });
+  });
+
+  it("defaults Telegram assistant to disabled", () => {
+    const config = loadFleetConfig(baseFleetEnv());
+    expect(config.telegramAssistant).toEqual({
+      enabled: false,
+      botToken: undefined,
+      mode: "polling",
+      pollIntervalSeconds: 2,
+      confirmWriteActions: true,
+      projectQaEnabled: false,
+      taskCreationEnabled: true,
+      profileAutomation: {
+        enabled: false,
+        autoReplyEnabled: false,
+        requireOwnerApproval: true,
+        projectQaEnabled: false,
+        allowedOwnerIds: [],
+        allowedChatIds: [],
+      },
+      allowedChatIds: [],
+      allowedUserIds: [],
+      developerUserIds: [],
+      operatorUserIds: [],
+      adminUserIds: [],
+      groupMode: "mentions_and_replies",
+      defaultRepository: undefined,
+      userTaskCreationDailyLimit: 20,
+      userCodexQaDailyLimit: 50,
+      codexTimeoutSeconds: 120,
+      codexMaxContextChars: 12000,
+      maxQueuedMessagesPerChat: 20,
+      conversationRetentionDays: 14,
+      webhook: undefined,
+      media: {
+        enabled: false,
+        maxBytes: 10485760,
+        allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "text/plain"],
+      },
+    });
+  });
+
+  it("requires a bot token when Telegram assistant is enabled", () => {
+    expect(() =>
+      loadFleetConfig({
+        ...baseFleetEnv(),
+        TELEGRAM_ASSISTANT_ENABLED: "true",
+      }),
+    ).toThrow(/TELEGRAM_ASSISTANT_BOT_TOKEN/);
+  });
+
+  it("rejects empty allowlists for enabled production Telegram assistant", () => {
+    expect(() =>
+      loadFleetConfig({
+        ...baseFleetEnv(),
+        NODE_ENV: "production",
+        TELEGRAM_ASSISTANT_ENABLED: "true",
+        TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+      }),
+    ).toThrow(/role-specific Telegram user ids/);
+  });
+
+  it("parses profile automation settings separately from the base assistant", () => {
+    const config = loadFleetConfig({
+      ...baseFleetEnv(),
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+      TELEGRAM_ALLOWED_USER_IDS: "101,202",
+      TELEGRAM_DEVELOPER_USER_IDS: "101",
+      TELEGRAM_OPERATOR_USER_IDS: "202",
+      TELEGRAM_PROFILE_AUTOMATION_ENABLED: "true",
+      TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS: "101",
+      TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS: "-1001,-1002",
+    });
+    expect(config.telegramAssistant).toMatchObject({
+      allowedUserIds: ["101", "202"],
+      developerUserIds: ["101"],
+      operatorUserIds: ["202"],
+    });
+    expect(config.telegramAssistant?.profileAutomation).toMatchObject({
+      enabled: true,
+      allowedOwnerIds: ["101"],
+      allowedChatIds: ["-1001", "-1002"],
+    });
+  });
+
+  it("parses Telegram assistant settings from config file values as well as env", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-telegram", pollIntervalMinutes: 1 },
+        tracker: { tokenEnv: "TRACKER_TOKEN", orgIdEnv: "TRACKER_ORG_ID", statusMapFile },
+        gitlab: { urlEnv: "GITLAB_URL", tokenEnv: "GITLAB_TOKEN" },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "file-secret",
+          mode: "webhook",
+          allowedUserIds: ["101"],
+          developerUserIds: ["101"],
+          webhook: { path: "/tg", secretToken: "hook-secret" },
+          projectQaEnabled: true,
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    });
+    expect(config.telegramAssistant).toMatchObject({
+      enabled: true,
+      botToken: "file-secret",
+      mode: "webhook",
+      allowedUserIds: ["101"],
+      developerUserIds: ["101"],
+      webhook: { path: "/tg", secretToken: "hook-secret" },
+      projectQaEnabled: true,
+    });
+  });
+
+  it("treats blank Telegram assistant env values as unset over config file values", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-telegram", pollIntervalMinutes: 1 },
+        tracker: { tokenEnv: "TRACKER_TOKEN", orgIdEnv: "TRACKER_ORG_ID", statusMapFile },
+        gitlab: { urlEnv: "GITLAB_URL", tokenEnv: "GITLAB_TOKEN" },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "file-secret",
+          mode: "webhook",
+          pollIntervalSeconds: 5,
+          confirmWriteActions: false,
+          allowedUserIds: ["101"],
+          webhook: { path: "/tg", secretToken: "hook-secret" },
+          media: {
+            enabled: true,
+            maxBytes: 2048,
+            allowedMimeTypes: ["image/png"],
+          },
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      TELEGRAM_ASSISTANT_ENABLED: "  ",
+      TELEGRAM_ASSISTANT_MODE: "  ",
+      TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS: "  ",
+      TELEGRAM_CONFIRM_WRITE_ACTIONS: "  ",
+      TELEGRAM_ALLOWED_USER_IDS: "  ",
+      TELEGRAM_WEBHOOK_PATH: "  ",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "  ",
+      TELEGRAM_MEDIA_ENABLED: "  ",
+      TELEGRAM_MEDIA_MAX_BYTES: "  ",
+      TELEGRAM_MEDIA_ALLOWED_MIME_TYPES: "  ",
+    });
+
+    expect(config.telegramAssistant).toMatchObject({
+      enabled: true,
+      botToken: "file-secret",
+      mode: "webhook",
+      pollIntervalSeconds: 5,
+      confirmWriteActions: false,
+      allowedUserIds: ["101"],
+      webhook: { path: "/tg", secretToken: "hook-secret" },
+      media: {
+        enabled: true,
+        maxBytes: 2048,
+        allowedMimeTypes: ["image/png"],
+      },
+    });
+  });
+
+  it("lets Telegram assistant env values override config file values", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-telegram", pollIntervalMinutes: 1 },
+        tracker: { tokenEnv: "TRACKER_TOKEN", orgIdEnv: "TRACKER_ORG_ID", statusMapFile },
+        gitlab: { urlEnv: "GITLAB_URL", tokenEnv: "GITLAB_TOKEN" },
+        telegramAssistant: {
+          enabled: false,
+          botToken: "file-secret",
+          mode: "polling",
+          allowedUserIds: ["101"],
+          media: { enabled: false, allowedMimeTypes: ["text/plain"] },
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "env-secret",
+      TELEGRAM_ALLOWED_USER_IDS: "202,303",
+      TELEGRAM_MEDIA_ENABLED: "true",
+      TELEGRAM_MEDIA_ALLOWED_MIME_TYPES: "image/png,image/webp",
+    });
+
+    expect(config.telegramAssistant).toMatchObject({
+      enabled: true,
+      botToken: "env-secret",
+      allowedUserIds: ["202", "303"],
+      media: {
+        enabled: true,
+        allowedMimeTypes: ["image/png", "image/webp"],
+      },
+    });
+  });
+
+  it("rejects invalid Telegram assistant config file list values", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const invalidAllowedUsersConfig = join(directory, "invalid-allowed-users.json");
+    writeFileSync(
+      invalidAllowedUsersConfig,
+      JSON.stringify({
+        worker: { id: "worker-telegram", pollIntervalMinutes: 1 },
+        tracker: { tokenEnv: "TRACKER_TOKEN", orgIdEnv: "TRACKER_ORG_ID", statusMapFile },
+        gitlab: { urlEnv: "GITLAB_URL", tokenEnv: "GITLAB_TOKEN" },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "file-secret",
+          allowedUserIds: "101,202",
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+    const invalidMediaConfig = join(directory, "invalid-media.json");
+    writeFileSync(
+      invalidMediaConfig,
+      JSON.stringify({
+        worker: { id: "worker-telegram", pollIntervalMinutes: 1 },
+        tracker: { tokenEnv: "TRACKER_TOKEN", orgIdEnv: "TRACKER_ORG_ID", statusMapFile },
+        gitlab: { urlEnv: "GITLAB_URL", tokenEnv: "GITLAB_TOKEN" },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "file-secret",
+          allowedUserIds: ["101"],
+          media: { allowedMimeTypes: "image/png" },
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+    const env = {
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    };
+
+    expect(() =>
+      loadFleetConfig({ ...env, WORKER_CONFIG_FILE: invalidAllowedUsersConfig }),
+    ).toThrow(/telegramAssistant\.allowedUserIds/);
+    expect(() =>
+      loadFleetConfig({ ...env, WORKER_CONFIG_FILE: invalidMediaConfig }),
+    ).toThrow(/telegramAssistant\.media\.allowedMimeTypes/);
+  });
+
+  it("labels Telegram assistant config file enum errors with config paths", () => {
+    const statusMapFile = createStatusMapFile();
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-telegram", pollIntervalMinutes: 1 },
+        tracker: { tokenEnv: "TRACKER_TOKEN", orgIdEnv: "TRACKER_ORG_ID", statusMapFile },
+        gitlab: { urlEnv: "GITLAB_URL", tokenEnv: "GITLAB_TOKEN" },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "file-secret",
+          mode: "long-polling",
+          allowedUserIds: ["101"],
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      loadFleetConfig({
+        WORKER_CONFIG_FILE: configFile,
+        TRACKER_TOKEN: "tracker-token",
+        TRACKER_ORG_ID: "org-id",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/telegramAssistant\.mode/);
+  });
+
+  it("ignores undocumented Telegram assistant env aliases", () => {
+    const config = loadFleetConfig({
+      ...baseFleetEnv(),
+      TELEGRAM_ASSISTANT_GROUP_MODE: "private_only",
+      TELEGRAM_ASSISTANT_WEBHOOK_PATH: "/tg",
+      TELEGRAM_ASSISTANT_MEDIA_ENABLED: "true",
+    });
+
+    expect(config.telegramAssistant).toMatchObject({
+      groupMode: "mentions_and_replies",
+      webhook: undefined,
+      media: { enabled: false },
+    });
   });
 
   it("parses internal task tracker PostgreSQL settings without Yandex config", () => {

@@ -239,6 +239,59 @@ export interface TrackerImageContextConfig {
   tempDir?: string;
 }
 
+export type TelegramAssistantMode = "polling" | "webhook";
+export type TelegramAssistantRole = "viewer" | "developer" | "operator" | "admin";
+export type TelegramAssistantGroupMode =
+  | "private_only"
+  | "mentions_and_replies"
+  | "all_messages";
+
+export interface TelegramAssistantMediaConfig {
+  enabled: boolean;
+  maxBytes: number;
+  allowedMimeTypes: string[];
+}
+
+export interface TelegramProfileAutomationConfig {
+  enabled: boolean;
+  autoReplyEnabled: boolean;
+  requireOwnerApproval: boolean;
+  projectQaEnabled: boolean;
+  allowedOwnerIds: string[];
+  allowedChatIds: string[];
+}
+
+export interface TelegramAssistantWebhookConfig {
+  path: string;
+  secretToken?: string;
+}
+
+export interface TelegramAssistantConfig {
+  enabled: boolean;
+  botToken?: string;
+  mode: TelegramAssistantMode;
+  pollIntervalSeconds: number;
+  confirmWriteActions: boolean;
+  projectQaEnabled: boolean;
+  taskCreationEnabled: boolean;
+  allowedChatIds: string[];
+  allowedUserIds: string[];
+  developerUserIds: string[];
+  operatorUserIds: string[];
+  adminUserIds: string[];
+  groupMode: TelegramAssistantGroupMode;
+  defaultRepository?: string;
+  userTaskCreationDailyLimit: number;
+  userCodexQaDailyLimit: number;
+  codexTimeoutSeconds: number;
+  codexMaxContextChars: number;
+  maxQueuedMessagesPerChat: number;
+  conversationRetentionDays: number;
+  webhook?: TelegramAssistantWebhookConfig;
+  media: TelegramAssistantMediaConfig;
+  profileAutomation: TelegramProfileAutomationConfig;
+}
+
 export interface CodexRunOptions {
   imagePaths?: string[];
   sandbox?: CodexSandbox;
@@ -409,6 +462,7 @@ export interface AppConfig {
   trackerStatusMap: Record<LogicalStatus, TrackerStatusConfig>;
   trackerApiBaseUrl: string;
   trackerImageContext?: TrackerImageContextConfig;
+  telegramAssistant?: TelegramAssistantConfig;
   trackerParentLinkType?: string;
   trackerBlockedByLinkType?: string;
   gitlabUrl: string;
@@ -579,6 +633,7 @@ export interface GlobalWorkerConfig {
   maxFixAttempts: number;
   maxReviewFixAttempts: number;
   trackerImageContext?: TrackerImageContextConfig;
+  telegramAssistant?: TelegramAssistantConfig;
   gitRepositoryToken: string;
   gitRepositoryUsername: string;
   gitCommitNoVerify: boolean;
