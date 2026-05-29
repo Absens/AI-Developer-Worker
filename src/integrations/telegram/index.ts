@@ -3,6 +3,11 @@ export {
   TelegramClient,
   TelegramRetryAfterError,
 } from "./client.js";
+export { TelegramUpdatePoller } from "./poller.js";
+export type {
+  TelegramUpdateHandler,
+  TelegramUpdatePollerOptions,
+} from "./poller.js";
 export type {
   TelegramAnswerCallbackQueryInput,
   TelegramClientOptions,

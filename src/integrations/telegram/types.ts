@@ -29,6 +29,7 @@ export interface TelegramChat {
 
 export interface TelegramMessage {
   message_id: number;
+  message_thread_id?: number;
   date: number;
   chat: TelegramChat;
   from?: TelegramUser;

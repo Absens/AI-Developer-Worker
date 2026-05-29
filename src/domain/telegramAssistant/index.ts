@@ -13,6 +13,11 @@ export {
   type TelegramAssistantStore,
 } from "./store.js";
 export { PostgresTelegramAssistantStore } from "./postgresStore.js";
+export {
+  TelegramAssistantService,
+  normalizeTelegramUpdate,
+  type TelegramAssistantServiceOptions,
+} from "./service.js";
 export type {
   TelegramAssistantActor,
   TelegramAssistantRole,

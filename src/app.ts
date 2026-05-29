@@ -13,6 +13,12 @@ import {
   type ProjectManagerStore,
 } from "./domain/projectManager/index.js";
 import { buildRepositoryContext } from "./domain/repositoryContext.js";
+import {
+  InMemoryTelegramAssistantStore,
+  PostgresTelegramAssistantStore,
+  TelegramAssistantService,
+  type TelegramAssistantStore,
+} from "./domain/telegramAssistant/index.js";
 import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
@@ -25,6 +31,7 @@ import {
   InternalTrackerCleanupScheduler,
   type InternalTrackerCleanupResult,
 } from "./integrations/internalTracker/cleanup.js";
+import { TelegramClient, TelegramUpdatePoller } from "./integrations/telegram/index.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
 import {
@@ -38,10 +45,45 @@ import { createObservabilityService } from "./observability/service.js";
 import type { ProjectManagerApiDependencies } from "./observability/taskTrackerHumanApi.js";
 import { Logger } from "./utils/logger.js";
 
-interface CleanupController {
+export interface CleanupController {
   start(): void;
   runOnce(): Promise<InternalTrackerCleanupResult | undefined>;
   stop(): Promise<void>;
+}
+
+export interface TelegramAssistantController {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+interface RuntimeConfig {
+  workerId: string;
+  runOnce: boolean;
+}
+
+interface RuntimeOrchestrator {
+  runOnce(): Promise<unknown>;
+  runForever(): Promise<unknown>;
+}
+
+interface RuntimeObservability {
+  start(): Promise<void>;
+  markNotReady(reason: string): void;
+  setWorkerState(input: { workerId: string; state: string }): void;
+  incrementCounter(name: string, labels: Record<string, string>): void;
+  markReady(): void;
+  stop(): Promise<void>;
+}
+
+export interface ApplicationRuntime {
+  config: RuntimeConfig;
+  orchestrator: RuntimeOrchestrator;
+  logger: Pick<Logger, "info">;
+  observability: RuntimeObservability;
+  cleanup: CleanupController;
+  telegramAssistant: TelegramAssistantController;
+  assertRepositoryReady(): Promise<void>;
+  assertCodexAuthenticated(): Promise<void>;
 }
 
 const noopCleanupController: CleanupController = {
@@ -50,6 +92,78 @@ const noopCleanupController: CleanupController = {
     return undefined;
   },
   async stop(): Promise<void> {},
+};
+
+const noopTelegramAssistantController: TelegramAssistantController = {
+  async start(): Promise<void> {},
+  async stop(): Promise<void> {},
+};
+
+export const runApplicationRuntime = async (
+  runtime: ApplicationRuntime,
+): Promise<void> => {
+  const {
+    config,
+    orchestrator,
+    logger,
+    observability,
+    cleanup,
+    telegramAssistant,
+    assertCodexAuthenticated,
+    assertRepositoryReady,
+  } = runtime;
+
+  await observability.start();
+  const markStopping = (): void => {
+    observability.markNotReady("shutting down");
+    observability.setWorkerState({
+      workerId: config.workerId,
+      state: "shutting_down",
+    });
+  };
+
+  try {
+    observability.markNotReady("startup checks pending");
+    process.on("SIGINT", markStopping);
+    process.on("SIGTERM", markStopping);
+    await telegramAssistant.start();
+    observability.setWorkerState({
+      workerId: config.workerId,
+      state: "starting",
+    });
+    await assertRepositoryReady();
+    observability.incrementCounter("ai_developer_preflight_checks_total", {
+      check: "repository_ready",
+      status: "pass",
+    });
+    await assertCodexAuthenticated();
+    observability.incrementCounter("ai_developer_preflight_checks_total", {
+      check: "codex_auth",
+      status: "pass",
+    });
+    cleanup.start();
+    observability.markReady();
+    if (config.runOnce) {
+      await orchestrator.runOnce();
+      logger.info("Worker completed a single run.");
+      return;
+    }
+
+    await orchestrator.runForever();
+  } catch (error) {
+    observability.markNotReady(error instanceof Error ? error.message : String(error));
+    observability.incrementCounter("ai_developer_preflight_checks_total", {
+      check: "startup",
+      status: "fail",
+    });
+    throw error;
+  } finally {
+    process.off("SIGINT", markStopping);
+    process.off("SIGTERM", markStopping);
+    await telegramAssistant.stop();
+    await observability.stop();
+    await cleanup.stop();
+  }
 };
 
 const createYandexBridgeStore = (
@@ -227,6 +341,80 @@ const createProjectManagerStoreController = (
   };
 };
 
+const createTelegramAssistantController = (
+  fleetConfig: ReturnType<typeof loadFleetConfig>,
+  internalTaskTracker: ReturnType<typeof createInternalTaskTrackerClient>,
+  logger: Logger,
+): TelegramAssistantController => {
+  const config = fleetConfig.telegramAssistant;
+  if (config?.enabled !== true) {
+    return noopTelegramAssistantController;
+  }
+  if (!config.botToken) {
+    throw new Error("Telegram assistant requires a bot token when enabled.");
+  }
+
+  let pool: Pool | undefined;
+  const store: TelegramAssistantStore =
+    fleetConfig.taskTracker?.provider === "internal" &&
+    fleetConfig.taskTracker.internal.storage === "postgres"
+      ? (() => {
+          pool = new Pool({
+            connectionString: fleetConfig.taskTracker.internal.databaseUrl,
+          });
+          return new PostgresTelegramAssistantStore(pool);
+        })()
+      : new InMemoryTelegramAssistantStore();
+
+  const telegramClient = new TelegramClient({ botToken: config.botToken });
+  const service = new TelegramAssistantService({
+    store,
+    config,
+    taskTracker: internalTaskTracker,
+    repositories: fleetConfig.repositories,
+    telegram: telegramClient,
+    logger,
+  });
+
+  if (config.mode !== "polling") {
+    return {
+      async start(): Promise<void> {},
+      async stop(): Promise<void> {
+        await pool?.end();
+      },
+    };
+  }
+
+  const poller = new TelegramUpdatePoller({
+    client: telegramClient,
+    getOffset: () => store.getOffset("default"),
+    handler: service,
+    intervalSeconds: config.pollIntervalSeconds,
+    withPollingLease: (operation) => store.withPollingLease("default", operation),
+    logger,
+  });
+  let started = false;
+
+  return {
+    async start(): Promise<void> {
+      if (started) {
+        return;
+      }
+      await telegramClient.deleteWebhook({ dropPendingUpdates: false });
+      poller.start();
+      started = true;
+    },
+    async stop(): Promise<void> {
+      try {
+        await poller.stop();
+      } finally {
+        started = false;
+        await pool?.end();
+      }
+    },
+  };
+};
+
 export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   const logger = new Logger();
   const fleetConfig = loadFleetConfig(env);
@@ -301,6 +489,11 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   if (internalMode && !internalTaskTracker) {
     throw new Error("TASK_TRACKER_PROVIDER=internal requires an internal task tracker client.");
   }
+  const telegramAssistant = createTelegramAssistantController(
+    fleetConfig,
+    internalTaskTracker,
+    logger,
+  );
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
   const yandexBridgeStore = createYandexBridgeStore(fleetConfig.taskTracker);
   const yandexBridgeSources =
@@ -393,6 +586,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       preflight,
       observability,
       cleanup,
+      telegramAssistant,
       projectManager: projectManager.dependencies,
       taskTracker: internalTaskTracker,
       yandexBridges,
@@ -461,6 +655,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     preflight,
     observability,
     cleanup,
+    telegramAssistant,
     projectManager: projectManager.dependencies,
     taskTracker: internalTaskTracker,
     yandexBridges,
