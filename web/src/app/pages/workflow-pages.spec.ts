@@ -177,7 +177,7 @@ describe('QueuePageComponent', () => {
     expect(text).toContain('Выберите задачу');
   });
 
-  it('renders a queue group for every known task status', async () => {
+  it('renders task groups first and summarizes empty queue groups', async () => {
     const http = await configure([QueuePageComponent]);
     loadSession(http, viewerSession);
 
@@ -192,10 +192,14 @@ describe('QueuePageComponent', () => {
     fixture.detectChanges();
 
     const groups = [...(fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('.surface.queue-group')];
-    expect(groups.length).toBe(TASK_STATUSES.length);
-    expect(groups.map((group) => group.querySelector('h2')?.textContent?.trim())).toEqual(
-      TASK_STATUSES.map(statusLabel),
-    );
+    expect(groups.length).toBe(1);
+    expect(groups[0]?.querySelector('h2')?.textContent?.trim()).toBe('Готова');
+    expect(groups[0]?.textContent).toContain('Implement ready queue item');
+
+    const summary = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.queue-empty-summary');
+    expect(summary?.textContent).toContain('Пустые группы');
+    expect(summary?.textContent).toContain('Новая');
+    expect(summary?.textContent).toContain('Ошибка');
   });
 });
 

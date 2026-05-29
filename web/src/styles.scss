@@ -173,6 +173,10 @@ select {
   min-height: 144px;
 }
 
+.queue-empty-summary {
+  min-height: 0;
+}
+
 .queue-group__header,
 .section-header,
 .operations-status,

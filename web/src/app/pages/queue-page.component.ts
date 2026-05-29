@@ -141,54 +141,64 @@ interface QueueGroup {
                 <p>Сбросьте фильтры или создайте задачу для этой очереди.</p>
               </div>
             } @else {
-              @for (group of groups(); track group.status) {
+              @for (group of visibleGroups(); track group.status) {
                 <section class="surface queue-group">
                   <header class="queue-group__header">
                     <h2>{{ group.label }}</h2>
                     <p-tag [value]="String(group.tasks.length)" severity="secondary" />
                   </header>
 
-                  @if (group.tasks.length === 0) {
-                    <p class="muted">В этой группе нет задач.</p>
-                  } @else {
-                    <div class="task-row-list">
-                      @for (task of group.tasks; track task.id) {
-                        <button
-                          type="button"
-                          class="task-row"
-                          [attr.data-testid]="'task-row-' + task.id"
-                          [class.task-row--selected]="task.id === selectedId()"
-                          (click)="selectTask(task.id)"
-                        >
-                          <span class="task-row__title">{{ task.title }}</span>
-                          <span class="task-row__meta">
-                            <p-tag [value]="statusLabel(task.status)" [severity]="statusSeverity(task.status)" />
-                            <span>{{ task.repositoryName || 'не назначено' }}</span>
-                            @if (task.queue) {
-                              <span>{{ task.queue }}</span>
-                            }
-                            @if (task.priority) {
-                              <span>{{ task.priority }}</span>
-                            }
-                          </span>
-                          @if (task.blockerReason || task.latestValidationSummary || task.latestAiSummary) {
-                            <span class="task-row__summary">
-                              {{ truncate(task.blockerReason || task.latestValidationSummary || task.latestAiSummary, 180) }}
-                            </span>
+                  <div class="task-row-list">
+                    @for (task of group.tasks; track task.id) {
+                      <button
+                        type="button"
+                        class="task-row"
+                        [attr.data-testid]="'task-row-' + task.id"
+                        [class.task-row--selected]="task.id === selectedId()"
+                        (click)="selectTask(task.id)"
+                      >
+                        <span class="task-row__title">{{ task.title }}</span>
+                        <span class="task-row__meta">
+                          <p-tag [value]="statusLabel(task.status)" [severity]="statusSeverity(task.status)" />
+                          <span>{{ task.repositoryName || 'не назначено' }}</span>
+                          @if (task.queue) {
+                            <span>{{ task.queue }}</span>
                           }
-                          <span class="task-row__footer">
-                            @if (task.activeWorker) {
-                              <span><i class="pi pi-user" aria-hidden="true"></i> {{ task.activeWorker }}</span>
-                            }
-                            @if (task.mergeRequestUrl) {
-                              <span><i class="pi pi-code" aria-hidden="true"></i> MR</span>
-                            }
-                            <span>{{ formatDate(task.updatedAt) }}</span>
+                          @if (task.priority) {
+                            <span>{{ task.priority }}</span>
+                          }
+                        </span>
+                        @if (task.blockerReason || task.latestValidationSummary || task.latestAiSummary) {
+                          <span class="task-row__summary">
+                            {{ truncate(task.blockerReason || task.latestValidationSummary || task.latestAiSummary, 180) }}
                           </span>
-                        </button>
-                      }
-                    </div>
-                  }
+                        }
+                        <span class="task-row__footer">
+                          @if (task.activeWorker) {
+                            <span><i class="pi pi-user" aria-hidden="true"></i> {{ task.activeWorker }}</span>
+                          }
+                          @if (task.mergeRequestUrl) {
+                            <span><i class="pi pi-code" aria-hidden="true"></i> MR</span>
+                          }
+                          <span>{{ formatDate(task.updatedAt) }}</span>
+                        </span>
+                      </button>
+                    }
+                  </div>
+                </section>
+              }
+
+              @if (emptyGroups().length) {
+                <section class="surface queue-empty-summary">
+                  <header class="queue-group__header">
+                    <h2>Пустые группы</h2>
+                    <p-tag [value]="String(emptyGroups().length)" severity="secondary" />
+                  </header>
+                  <div class="tag-row">
+                    @for (group of emptyGroups(); track group.status) {
+                      <p-tag [value]="group.label" severity="secondary" />
+                    }
+                  </div>
                 </section>
               }
             }
@@ -245,6 +255,12 @@ export class QueuePageComponent implements OnInit {
       ? [...knownGroups, { status: 'other', label: 'Другое', tasks: other }]
       : knownGroups;
   });
+  protected readonly visibleGroups = computed<QueueGroup[]>(() =>
+    this.groups().filter((group) => group.tasks.length > 0),
+  );
+  protected readonly emptyGroups = computed<QueueGroup[]>(() =>
+    this.groups().filter((group) => group.tasks.length === 0),
+  );
 
   private applyingUrl = false;
 
