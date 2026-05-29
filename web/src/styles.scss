@@ -173,6 +173,10 @@ select {
   min-height: 144px;
 }
 
+.queue-empty-summary {
+  min-height: 0;
+}
+
 .queue-group__header,
 .section-header,
 .operations-status,
@@ -391,6 +395,12 @@ select {
   min-width: 0;
 }
 
+.goal-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .goal-badge,
 .linked-row {
   display: grid;
@@ -428,6 +438,11 @@ select {
 .detail-section {
   display: grid;
   gap: 8px;
+}
+
+.goal-lifecycle {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border);
 }
 
 .detail-section h2 {
@@ -589,6 +604,7 @@ select {
   .filter-grid,
   .filter-grid--compact,
   .field-grid,
+  .goal-summary-grid,
   .preview-grid {
     grid-template-columns: 1fr;
   }

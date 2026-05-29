@@ -154,6 +154,111 @@ export const statusSeverity = (status: string): 'success' | 'info' | 'warn' | 'd
   return 'secondary';
 };
 
+export const PROJECT_GOAL_STATUS_LABELS: Record<string, string> = {
+  proposed: 'Предложено',
+  approved: 'Одобрено',
+  active: 'Активно',
+  completed: 'Завершено',
+  rejected: 'Отклонено',
+  stale: 'Устарело',
+};
+
+export const PROJECT_GOAL_PRIORITY_LABELS: Record<string, string> = {
+  low: 'Низкий',
+  normal: 'Обычный',
+  high: 'Высокий',
+  critical: 'Критический',
+};
+
+export const PROJECT_GOAL_RISK_LABELS: Record<string, string> = {
+  low: 'Низкий',
+  medium: 'Средний',
+  high: 'Высокий',
+};
+
+export const PROJECT_STRATEGY_DIMENSION_LABELS: Record<string, string> = {
+  product: 'Продукт',
+  technical: 'Техника',
+  product_technical: 'Продукт и техника',
+};
+
+export const PROJECT_STRATEGY_NEXT_STEP_LABELS: Record<string, string> = {
+  create_goal: 'Создать цель',
+  research: 'Исследовать',
+  ask_human: 'Спросить человека',
+  defer: 'Отложить',
+};
+
+export const PROJECT_STRATEGY_ARCHITECT_VERDICT_LABELS: Record<string, string> = {
+  pursue: 'Брать в работу',
+  research_first: 'Сначала исследовать',
+  defer: 'Отложить',
+  reject: 'Отклонить',
+};
+
+export const projectGoalStatusLabel = (status: string): string =>
+  PROJECT_GOAL_STATUS_LABELS[status] ?? statusLabel(status);
+
+export const projectGoalStatusSeverity = (
+  status: string,
+): 'success' | 'info' | 'warn' | 'danger' | 'secondary' => {
+  if (status === 'completed') {
+    return 'success';
+  }
+  if (status === 'active' || status === 'approved') {
+    return 'info';
+  }
+  if (status === 'proposed') {
+    return 'warn';
+  }
+  if (status === 'rejected' || status === 'stale') {
+    return 'danger';
+  }
+  return 'secondary';
+};
+
+export const projectGoalPriorityLabel = (priority: string): string =>
+  PROJECT_GOAL_PRIORITY_LABELS[priority] ?? statusLabel(priority);
+
+export const projectGoalPrioritySeverity = (
+  priority: string,
+): 'success' | 'info' | 'warn' | 'danger' | 'secondary' => {
+  if (priority === 'critical') {
+    return 'danger';
+  }
+  if (priority === 'high') {
+    return 'warn';
+  }
+  return 'secondary';
+};
+
+export const projectGoalRiskLabel = (riskLevel: string): string =>
+  PROJECT_GOAL_RISK_LABELS[riskLevel] ?? statusLabel(riskLevel);
+
+export const projectGoalRiskSeverity = (
+  riskLevel: string,
+): 'success' | 'info' | 'warn' | 'danger' | 'secondary' => {
+  if (riskLevel === 'high') {
+    return 'danger';
+  }
+  if (riskLevel === 'medium') {
+    return 'warn';
+  }
+  return 'success';
+};
+
+export const projectStrategyDimensionLabel = (dimension: string): string =>
+  PROJECT_STRATEGY_DIMENSION_LABELS[dimension] ?? statusLabel(dimension);
+
+export const projectStrategyNextStepLabel = (nextStep: string): string =>
+  PROJECT_STRATEGY_NEXT_STEP_LABELS[nextStep] ?? statusLabel(nextStep);
+
+export const projectStrategyArchitectVerdictLabel = (verdict: string): string =>
+  PROJECT_STRATEGY_ARCHITECT_VERDICT_LABELS[verdict] ?? statusLabel(verdict);
+
+export const projectConfidenceLabel = (confidence: number): string =>
+  `Уверенность: ${Math.round(confidence)}%`;
+
 export const canUseCapability = (
   session: SessionDto | undefined,
   capability: keyof SessionDto['capabilities'],

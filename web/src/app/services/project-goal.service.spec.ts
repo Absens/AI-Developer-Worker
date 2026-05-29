@@ -10,6 +10,7 @@ import {
   readyTaskDetail,
 } from '../testing/human-api.fixtures';
 import { ProjectGoalService } from './project-goal.service';
+import { mapTaskDetailResponse } from './task-mappers';
 
 describe('ProjectGoalService', () => {
   let service: ProjectGoalService;
@@ -211,5 +212,26 @@ describe('ProjectGoalService', () => {
         },
       ],
     });
+  });
+
+  it('maps enriched project goal summaries on task detail responses', () => {
+    const response = mapTaskDetailResponse({
+      ...readyTaskDetail,
+      projectGoals: [
+        {
+          id: projectGoal.id,
+          title: projectGoal.title,
+          status: projectGoal.status,
+          priority: projectGoal.priority,
+          riskLevel: projectGoal.riskLevel,
+          repositoryName: projectGoal.repositoryName,
+          problemStatement: projectGoal.problemStatement,
+          desiredOutcome: projectGoal.desiredOutcome,
+        },
+      ],
+    });
+
+    expect(response.projectGoals?.[0].problemStatement).toBe(projectGoal.problemStatement);
+    expect(response.projectGoals?.[0].desiredOutcome).toBe(projectGoal.desiredOutcome);
   });
 });

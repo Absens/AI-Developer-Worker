@@ -1,7 +1,8 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, DestroyRef, OnInit, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, ParamMap, Router, RouterLink } from '@angular/router';
 import { MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { InputTextModule } from 'primeng/inputtext';
@@ -10,10 +11,24 @@ import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
 
-import { ProjectAnalysisDto, ProjectGoalDto, ProjectGoalStatusDto } from '../models/human-api.dto';
+import { EvidenceRefDto, ProjectAnalysisDto, ProjectGoalDto, ProjectGoalStatusDto } from '../models/human-api.dto';
 import { ProjectGoalService } from '../services/project-goal.service';
 import { SessionService } from '../services/session.service';
-import { canUseCapability, formatDate, truncate } from '../utils/task-ui';
+import {
+  canUseCapability,
+  formatDate,
+  projectConfidenceLabel,
+  projectGoalPriorityLabel,
+  projectGoalPrioritySeverity,
+  projectGoalRiskLabel,
+  projectGoalRiskSeverity,
+  projectGoalStatusLabel,
+  projectGoalStatusSeverity,
+  projectStrategyArchitectVerdictLabel,
+  projectStrategyDimensionLabel,
+  projectStrategyNextStepLabel,
+  truncate,
+} from '../utils/task-ui';
 
 type GoalStatusFilter = ProjectGoalStatusDto | 'all';
 
@@ -104,6 +119,7 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
           ></button>
         </div>
       </div>
+      <div class="muted" data-testid="goals-filter-summary">{{ goalFilterSummary() }}</div>
 
       @if (notice(); as message) {
         <p-message severity="success" [text]="message" />
@@ -137,14 +153,16 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                 @for (opportunity of strategy.opportunities; track opportunity.opportunityId) {
                   <article class="strategy-opportunity">
                     <div>
-                      <span class="eyebrow">{{ opportunity.dimension }} · {{ opportunity.architectVerdict }}</span>
+                      <span class="eyebrow">
+                        {{ strategyDimensionLabel(opportunity.dimension) }} · {{ architectVerdictLabel(opportunity.architectVerdict) }}
+                      </span>
                       <h3>{{ opportunity.title }}</h3>
                       <p>{{ opportunity.rationale }}</p>
                     </div>
                     <div class="tag-row">
-                      <p-tag [value]="'Confidence: ' + opportunity.confidence" severity="info" />
-                      <p-tag [value]="opportunity.priority" [severity]="prioritySeverity(opportunity.priority)" />
-                      <p-tag [value]="opportunity.recommendedNextStep" severity="secondary" />
+                      <p-tag [value]="confidenceLabel(opportunity.confidence)" severity="info" />
+                      <p-tag [value]="priorityLabel(opportunity.priority)" [severity]="prioritySeverity(opportunity.priority)" />
+                      <p-tag [value]="nextStepLabel(opportunity.recommendedNextStep)" severity="secondary" />
                     </div>
                     @if (opportunity.redTeamNotes.length) {
                       <ul>
@@ -155,6 +173,40 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                     }
                   </article>
                 }
+              </div>
+            }
+
+            @if (strategy.goalLinks.length) {
+              <div class="strategy-subsection">
+                <h3>Связанные цели</h3>
+                <div class="goal-badge-list">
+                  @for (link of strategy.goalLinks; track link.sourceOpportunityId + link.proposedGoalTitle) {
+                    <div class="goal-badge">
+                      <span class="goal-badge__title">{{ link.proposedGoalTitle }}</span>
+                      <span class="muted">Источник: {{ link.sourceOpportunityId }}</span>
+                      @if (link.evidenceRefs.length) {
+                        <span class="muted">{{ evidenceSummaryFromRefs(link.evidenceRefs) }}</span>
+                      }
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+
+            @if (strategy.questionsForHuman.length) {
+              <div class="strategy-subsection">
+                <h3>Вопросы человеку</h3>
+                <div class="goal-badge-list">
+                  @for (question of strategy.questionsForHuman; track question.question) {
+                    <div class="goal-badge">
+                      <span class="goal-badge__title">{{ question.question }}</span>
+                      <span>{{ question.whyItMatters }}</span>
+                      @if (question.relatedOpportunityTitle) {
+                        <span class="muted">{{ question.relatedOpportunityTitle }}</span>
+                      }
+                    </div>
+                  }
+                </div>
               </div>
             }
           }
@@ -169,8 +221,19 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
       } @else if (goals().length === 0) {
         <div class="empty-state surface">
           <i class="pi pi-sitemap" aria-hidden="true"></i>
-          <h2>Цели не найдены</h2>
-          <p>Измените фильтры или запустите анализ Project Manager для репозитория.</p>
+          <h2>{{ emptyGoalTitle() }}</h2>
+          <p>{{ emptyGoalDescription() }}</p>
+          @if (statusFilter.value !== 'all') {
+            <button
+              pButton
+              type="button"
+              data-testid="goals-show-all"
+              icon="pi pi-list"
+              label="Показать все цели"
+              severity="secondary"
+              (click)="showAllGoals()"
+            ></button>
+          }
         </div>
       } @else {
         <div class="goal-list">
@@ -181,8 +244,8 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                 <h2><a [routerLink]="['/goals', goal.id]">{{ goal.title }}</a></h2>
                 <div class="tag-row">
                   <p-tag [value]="goalStatusLabel(goal.status)" [severity]="goalStatusSeverity(goal.status)" />
-                  <p-tag [value]="'Приоритет: ' + goal.priority" [severity]="prioritySeverity(goal.priority)" />
-                  <p-tag [value]="'Риск: ' + goal.riskLevel" [severity]="riskSeverity(goal.riskLevel)" />
+                  <p-tag [value]="'Приоритет: ' + priorityLabel(goal.priority)" [severity]="prioritySeverity(goal.priority)" />
+                  <p-tag [value]="'Риск: ' + riskLabel(goal.riskLevel)" [severity]="riskSeverity(goal.riskLevel)" />
                   <p-tag [value]="goal.repositoryName" severity="secondary" />
                 </div>
 
@@ -203,6 +266,30 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
                     <span class="field-label">Обновлено</span>
                     <span>{{ formatDate(goal.updatedAt) }}</span>
                   </div>
+                </div>
+
+                <div class="goal-summary-grid">
+                  <div class="summary-block">
+                    <h3>Проблема</h3>
+                    <p>{{ truncate(goal.problemStatement, 320) || 'Проблема не указана.' }}</p>
+                  </div>
+                  <div class="summary-block">
+                    <h3>Ожидаемый результат</h3>
+                    <p>{{ truncate(goal.desiredOutcome, 320) || 'Результат не указан.' }}</p>
+                  </div>
+                </div>
+
+                <div class="summary-block">
+                  <h3>Метрики успеха</h3>
+                  @if (goal.successMetrics.length) {
+                    <ul class="compact-list">
+                      @for (metric of goal.successMetrics.slice(0, 3); track metric) {
+                        <li>{{ metric }}</li>
+                      }
+                    </ul>
+                  } @else {
+                    <p>Метрики не указаны.</p>
+                  }
                 </div>
 
                 <div class="summary-block">
@@ -263,6 +350,16 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
         padding-block: 0.75rem;
         border-top: 1px solid var(--surface-border, var(--console-border));
       }
+
+      .strategy-subsection {
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .strategy-subsection h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
     `,
   ],
 })
@@ -270,17 +367,20 @@ export class GoalsPageComponent implements OnInit {
   private readonly goalsApi = inject(ProjectGoalService);
   private readonly session = inject(SessionService);
   private readonly messages = inject(MessageService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly destroyRef = inject(DestroyRef);
 
   protected readonly statusOptions: { label: string; value: GoalStatusFilter }[] = [
+    { label: 'Все', value: 'all' },
     { label: 'Предложено', value: 'proposed' },
     { label: 'Одобрено', value: 'approved' },
     { label: 'Активно', value: 'active' },
     { label: 'Завершено', value: 'completed' },
     { label: 'Отклонено', value: 'rejected' },
     { label: 'Устарело', value: 'stale' },
-    { label: 'Все', value: 'all' },
   ];
-  protected readonly statusFilter = new FormControl<GoalStatusFilter>('proposed', { nonNullable: true });
+  protected readonly statusFilter = new FormControl<GoalStatusFilter>('all', { nonNullable: true });
   protected readonly repositoryFilter = new FormControl<string>('', { nonNullable: true });
   protected readonly strategyBriefControl = new FormControl<string>('', { nonNullable: true });
 
@@ -293,14 +393,25 @@ export class GoalsPageComponent implements OnInit {
   protected readonly error = signal<string | undefined>(undefined);
   protected readonly notice = signal<string | undefined>(undefined);
 
+  private applyingUrl = false;
+  private urlFiltersInitialized = false;
+
   ngOnInit(): void {
-    this.load(false);
-    this.loadStrategyAnalyses();
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
+      if (!this.applyUrlFilters(params)) {
+        return;
+      }
+      this.applyingUrl = true;
+      this.load(false);
+      this.loadStrategyAnalyses();
+      this.applyingUrl = false;
+    });
   }
 
   protected load(refreshStrategyAnalyses = true): void {
     this.loading.set(true);
     this.error.set(undefined);
+    this.syncUrl();
     const repositoryName = this.repositoryFilter.value.trim();
     const status = this.statusFilter.value === 'all' ? undefined : this.statusFilter.value;
     this.goalsApi
@@ -337,7 +448,7 @@ export class GoalsPageComponent implements OnInit {
   }
 
   protected runAnalysis(): void {
-    const repositoryName = this.repositoryFilter.value.trim() || this.goals()[0]?.repositoryName;
+    const repositoryName = this.repositoryFilter.value.trim();
     if (!repositoryName) {
       this.error.set('Укажите репозиторий для анализа.');
       return;
@@ -406,56 +517,121 @@ export class GoalsPageComponent implements OnInit {
     );
   }
 
+  protected evidenceSummaryFromRefs(evidenceRefs: EvidenceRefDto[]): string {
+    return truncate(
+      evidenceRefs
+        .map((evidence) => evidence.summary || `${evidence.kind}: ${evidence.ref}`)
+        .filter(Boolean)
+        .join(' '),
+      220,
+    );
+  }
+
+  protected showAllGoals(): void {
+    this.statusFilter.setValue('all');
+    this.load();
+  }
+
+  protected goalFilterSummary(): string {
+    const repositoryName = this.repositoryFilter.value.trim();
+    const status = this.statusFilter.value;
+    const statusText = status === 'all' ? 'Показаны все цели' : `Статус: ${projectGoalStatusLabel(status)}`;
+    return repositoryName ? `${statusText}; репозиторий: ${repositoryName}` : statusText;
+  }
+
+  protected emptyGoalTitle(): string {
+    return this.statusFilter.value === 'all'
+      ? 'Цели не найдены'
+      : `Нет целей со статусом ${projectGoalStatusLabel(this.statusFilter.value)}`;
+  }
+
+  protected emptyGoalDescription(): string {
+    return this.statusFilter.value === 'all'
+      ? 'Запустите анализ Project Manager для репозитория или проверьте имя репозитория.'
+      : 'Текущий фильтр скрывает цели в других состояниях. Переключитесь на все цели, чтобы увидеть одобренные, активные и завершенные цели.';
+  }
+
   protected goalStatusLabel(status: string): string {
-    const labels: Record<string, string> = {
-      proposed: 'Предложено',
-      approved: 'Одобрено',
-      active: 'Активно',
-      completed: 'Завершено',
-      rejected: 'Отклонено',
-      stale: 'Устарело',
-    };
-    return labels[status] ?? status;
+    return projectGoalStatusLabel(status);
   }
 
   protected goalStatusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (status === 'completed') {
-      return 'success';
-    }
-    if (status === 'active' || status === 'approved') {
-      return 'info';
-    }
-    if (status === 'proposed') {
-      return 'warn';
-    }
-    if (status === 'rejected' || status === 'stale') {
-      return 'danger';
-    }
-    return 'secondary';
+    return projectGoalStatusSeverity(status);
+  }
+
+  protected priorityLabel(priority: string): string {
+    return projectGoalPriorityLabel(priority);
   }
 
   protected prioritySeverity(priority: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (priority === 'critical') {
-      return 'danger';
-    }
-    if (priority === 'high') {
-      return 'warn';
-    }
-    return 'secondary';
+    return projectGoalPrioritySeverity(priority);
+  }
+
+  protected riskLabel(riskLevel: string): string {
+    return projectGoalRiskLabel(riskLevel);
   }
 
   protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (riskLevel === 'high') {
-      return 'danger';
-    }
-    if (riskLevel === 'medium') {
-      return 'warn';
-    }
-    return 'success';
+    return projectGoalRiskSeverity(riskLevel);
+  }
+
+  protected strategyDimensionLabel(dimension: string): string {
+    return projectStrategyDimensionLabel(dimension);
+  }
+
+  protected architectVerdictLabel(verdict: string): string {
+    return projectStrategyArchitectVerdictLabel(verdict);
+  }
+
+  protected nextStepLabel(nextStep: string): string {
+    return projectStrategyNextStepLabel(nextStep);
+  }
+
+  protected confidenceLabel(confidence: number): string {
+    return projectConfidenceLabel(confidence);
+  }
+
+  protected truncate(value: string | undefined, max?: number): string {
+    return truncate(value, max);
   }
 
   protected formatDate(value: string): string {
     return formatDate(value);
+  }
+
+  private applyUrlFilters(params: ParamMap): boolean {
+    const requestedStatus = params.get('status');
+    const nextStatus = this.statusOptions.some((option) => option.value === requestedStatus)
+      ? (requestedStatus as GoalStatusFilter)
+      : 'all';
+    const nextRepositoryName = params.get('repositoryName') ?? '';
+    const changed =
+      !this.urlFiltersInitialized ||
+      this.statusFilter.value !== nextStatus ||
+      this.repositoryFilter.value !== nextRepositoryName;
+    this.urlFiltersInitialized = true;
+    if (!changed) {
+      return false;
+    }
+    this.statusFilter.setValue(nextStatus, { emitEvent: false });
+    this.repositoryFilter.setValue(nextRepositoryName, { emitEvent: false });
+    return true;
+  }
+
+  private syncUrl(): void {
+    if (this.applyingUrl || !this.urlFiltersInitialized) {
+      return;
+    }
+    const repositoryName = this.repositoryFilter.value.trim();
+    const status = this.statusFilter.value;
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        ...(status !== 'all' ? { status } : {}),
+        ...(repositoryName ? { repositoryName } : {}),
+      },
+      replaceUrl: true,
+    });
   }
 
   private errorMessage(error: unknown): string {

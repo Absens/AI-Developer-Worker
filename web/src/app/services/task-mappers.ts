@@ -441,6 +441,10 @@ export const mapProjectGoalSummary = (value: unknown): ProjectGoalSummaryDto => 
     priority: stringValue(raw['priority'], 'normal') as ProjectGoalPriorityDto,
     riskLevel: stringValue(raw['riskLevel'], 'medium') as ProjectGoalRiskLevelDto,
     repositoryName: stringValue(raw['repositoryName']),
+    ...(optionalString(raw['problemStatement'])
+      ? { problemStatement: optionalString(raw['problemStatement']) }
+      : {}),
+    ...(optionalString(raw['desiredOutcome']) ? { desiredOutcome: optionalString(raw['desiredOutcome']) } : {}),
   };
 };
 

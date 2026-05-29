@@ -702,6 +702,8 @@ describe("Phase 7F human task API", () => {
           priority: "normal",
           riskLevel: "low",
           repositoryName: "developer",
+          problemStatement: "Operators cannot see enough project-level context.",
+          desiredOutcome: "Project-level goals are visible and reviewable.",
         },
       ],
       proposal: {
@@ -719,14 +721,16 @@ describe("Phase 7F human task API", () => {
       { headers: viewerHeaders },
     );
     expect(detail.body.projectGoals).toEqual([
-      {
+      expect.objectContaining({
         id: goal.id,
         title: goal.title,
         status: "approved",
         priority: "normal",
         riskLevel: "low",
         repositoryName: "developer",
-      },
+        problemStatement: "Operators cannot see enough project-level context.",
+        desiredOutcome: "Project-level goals are visible and reviewable.",
+      }),
     ]);
   });
 
