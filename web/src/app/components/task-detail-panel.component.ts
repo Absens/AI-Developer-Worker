@@ -29,6 +29,12 @@ import {
   canUseCapability,
   commandVisible,
   formatDate,
+  projectGoalPriorityLabel,
+  projectGoalPrioritySeverity,
+  projectGoalRiskLabel,
+  projectGoalRiskSeverity,
+  projectGoalStatusLabel,
+  projectGoalStatusSeverity,
   statusLabel,
   statusSeverity,
   truncate,
@@ -215,9 +221,13 @@ const arrayText = (value: unknown): string | undefined =>
                       @for (goal of response.projectGoals; track goal.id) {
                         <a class="goal-badge" [routerLink]="['/goals', goal.id]">
                           <span class="goal-badge__title">{{ goal.title }}</span>
+                          @if (goal.desiredOutcome) {
+                            <span>{{ truncate(goal.desiredOutcome, 220) }}</span>
+                          }
                           <span class="tag-row tag-row--compact">
                             <p-tag [value]="goalStatusLabel(goal.status)" [severity]="goalStatusSeverity(goal.status)" />
-                            <p-tag [value]="'Риск: ' + goal.riskLevel" [severity]="riskSeverity(goal.riskLevel)" />
+                            <p-tag [value]="'Приоритет: ' + priorityLabel(goal.priority)" [severity]="prioritySeverity(goal.priority)" />
+                            <p-tag [value]="'Риск: ' + riskLabel(goal.riskLevel)" [severity]="riskSeverity(goal.riskLevel)" />
                           </span>
                         </a>
                       }
@@ -623,41 +633,27 @@ export class TaskDetailPanelComponent {
   }
 
   protected goalStatusLabel(status: string): string {
-    const labels: Record<string, string> = {
-      proposed: 'Предложено',
-      approved: 'Одобрено',
-      active: 'Активно',
-      completed: 'Завершено',
-      rejected: 'Отклонено',
-      stale: 'Устарело',
-    };
-    return labels[status] ?? status;
+    return projectGoalStatusLabel(status);
   }
 
   protected goalStatusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (status === 'completed') {
-      return 'success';
-    }
-    if (status === 'active' || status === 'approved') {
-      return 'info';
-    }
-    if (status === 'proposed') {
-      return 'warn';
-    }
-    if (status === 'rejected' || status === 'stale') {
-      return 'danger';
-    }
-    return 'secondary';
+    return projectGoalStatusSeverity(status);
+  }
+
+  protected priorityLabel(priority: string): string {
+    return projectGoalPriorityLabel(priority);
+  }
+
+  protected prioritySeverity(priority: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
+    return projectGoalPrioritySeverity(priority);
+  }
+
+  protected riskLabel(riskLevel: string): string {
+    return projectGoalRiskLabel(riskLevel);
   }
 
   protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (riskLevel === 'high') {
-      return 'danger';
-    }
-    if (riskLevel === 'medium') {
-      return 'warn';
-    }
-    return 'success';
+    return projectGoalRiskSeverity(riskLevel);
   }
 
   protected formatDate(value: string | undefined): string {

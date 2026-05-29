@@ -249,6 +249,7 @@ describe('TaskDetailPanelComponent', () => {
     const text = element.textContent ?? '';
     expect(text).toContain('Цели проекта');
     expect(text).toContain(projectGoal.title);
+    expect(text).toContain(projectGoal.desiredOutcome);
     expect(element.querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
   });
 
@@ -499,6 +500,7 @@ describe('ProposalsPageComponent', () => {
 
     const element = fixture.nativeElement as HTMLElement;
     expect(element.textContent).toContain(projectGoal.title);
+    expect(element.textContent).toContain(projectGoal.desiredOutcome);
     expect(element.querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
   });
 });
