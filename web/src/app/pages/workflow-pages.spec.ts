@@ -11,7 +11,18 @@ import { providePrimeNG } from 'primeng/config';
 import { TaskDetailPanelComponent } from '../components/task-detail-panel.component';
 import { ProjectGoalDto } from '../models/human-api.dto';
 import { SessionService } from '../services/session.service';
-import { TASK_COMMAND_POLICIES, TASK_STATUSES, statusLabel } from '../utils/task-ui';
+import {
+  TASK_COMMAND_POLICIES,
+  TASK_STATUSES,
+  projectConfidenceLabel,
+  projectGoalPriorityLabel,
+  projectGoalRiskLabel,
+  projectGoalStatusLabel,
+  projectStrategyArchitectVerdictLabel,
+  projectStrategyDimensionLabel,
+  projectStrategyNextStepLabel,
+  statusLabel,
+} from '../utils/task-ui';
 import { CreateTaskPageComponent } from './create-task-page.component';
 import { GoalDetailPageComponent } from './goal-detail-page.component';
 import { GoalsPageComponent } from './goals-page.component';
@@ -124,6 +135,16 @@ describe('task UI labels', () => {
       'Повторить',
       'Переанализировать',
     ]);
+  });
+
+  it('renders localized project manager labels', () => {
+    expect(projectGoalStatusLabel('approved')).toBe('Одобрено');
+    expect(projectGoalPriorityLabel('critical')).toBe('Критический');
+    expect(projectGoalRiskLabel('medium')).toBe('Средний');
+    expect(projectStrategyDimensionLabel('product_technical')).toBe('Продукт и техника');
+    expect(projectStrategyNextStepLabel('create_goal')).toBe('Создать цель');
+    expect(projectStrategyArchitectVerdictLabel('research_first')).toBe('Сначала исследовать');
+    expect(projectConfidenceLabel(82)).toBe('Уверенность: 82%');
   });
 });
 
