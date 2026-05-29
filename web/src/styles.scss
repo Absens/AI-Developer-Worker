@@ -108,16 +108,7 @@ select {
   align-items: start;
 }
 
-.queue-left,
-.queue-right,
-.queue-groups,
-.workflow-detail,
-.proposal-list,
-.stack,
-.create-form {
-  display: grid;
-  gap: 12px;
-}
+
 
 .queue-right {
   position: sticky;
