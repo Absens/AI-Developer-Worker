@@ -20,7 +20,19 @@ import {
 } from '../models/human-api.dto';
 import { ProjectGoalService } from '../services/project-goal.service';
 import { SessionService } from '../services/session.service';
-import { canUseCapability, formatDate, statusLabel, statusSeverity, truncate } from '../utils/task-ui';
+import {
+  canUseCapability,
+  formatDate,
+  projectGoalPriorityLabel,
+  projectGoalPrioritySeverity,
+  projectGoalRiskLabel,
+  projectGoalRiskSeverity,
+  projectGoalStatusLabel,
+  projectGoalStatusSeverity,
+  statusLabel,
+  statusSeverity,
+  truncate,
+} from '../utils/task-ui';
 
 type ReasonAction = 'reject' | 'stale';
 
@@ -46,8 +58,8 @@ type ReasonAction = 'reject' | 'stale';
           @if (goal(); as currentGoal) {
             <div class="tag-row">
               <p-tag [value]="goalStatusLabel(currentGoal.status)" [severity]="goalStatusSeverity(currentGoal.status)" />
-              <p-tag [value]="'Приоритет: ' + currentGoal.priority" [severity]="prioritySeverity(currentGoal.priority)" />
-              <p-tag [value]="'Риск: ' + currentGoal.riskLevel" [severity]="riskSeverity(currentGoal.riskLevel)" />
+              <p-tag [value]="'Приоритет: ' + priorityLabel(currentGoal.priority)" [severity]="prioritySeverity(currentGoal.priority)" />
+              <p-tag [value]="'Риск: ' + riskLabel(currentGoal.riskLevel)" [severity]="riskSeverity(currentGoal.riskLevel)" />
               <p-tag [value]="currentGoal.repositoryName" severity="secondary" />
             </div>
           }
@@ -152,6 +164,31 @@ type ReasonAction = 'reject' | 'stale';
       } @else if (detail(); as currentDetail) {
         <div class="detail-grid">
           <article class="surface workflow-detail">
+            <section class="detail-section goal-lifecycle">
+              <h2>Состояние цели</h2>
+              <div class="tag-row">
+                <p-tag [value]="goalStatusLabel(currentDetail.goal.status)" [severity]="goalStatusSeverity(currentDetail.goal.status)" />
+                <p-tag [value]="'Приоритет: ' + priorityLabel(currentDetail.goal.priority)" [severity]="prioritySeverity(currentDetail.goal.priority)" />
+                <p-tag [value]="'Риск: ' + riskLabel(currentDetail.goal.riskLevel)" [severity]="riskSeverity(currentDetail.goal.riskLevel)" />
+              </div>
+              <div class="summary-block">
+                <h3>Следующий шаг</h3>
+                <p>{{ nextStepText(currentDetail.goal) }}</p>
+              </div>
+              @if (currentDetail.goal.rejectionReason) {
+                <div class="summary-block">
+                  <h3>Причина отклонения</h3>
+                  <p>{{ currentDetail.goal.rejectionReason }}</p>
+                </div>
+              }
+              @if (currentDetail.goal.staleReason) {
+                <div class="summary-block">
+                  <h3>Причина устаревания</h3>
+                  <p>{{ currentDetail.goal.staleReason }}</p>
+                </div>
+              }
+            </section>
+
             <section class="detail-section">
               <h2>Метаданные</h2>
               <div class="field-grid">
@@ -277,12 +314,12 @@ type ReasonAction = 'reject' | 'stale';
             </section>
 
             <section class="detail-section">
-              <h2>Аудит</h2>
+              <h2>Аудит цели</h2>
               @if (currentDetail.auditEvents.length) {
                 <ol class="timeline-list">
                   @for (event of currentDetail.auditEvents; track event.id) {
                     <li>
-                      <strong>{{ event.kind }}</strong>
+                      <strong>{{ auditEventLabel(event.kind) }}</strong>
                       @if (event.message) {
                         <p>{{ event.message }}</p>
                       }
@@ -550,51 +587,27 @@ export class GoalDetailPageComponent implements OnInit {
   }
 
   protected goalStatusLabel(status: string): string {
-    const labels: Record<string, string> = {
-      proposed: 'Предложено',
-      approved: 'Одобрено',
-      active: 'Активно',
-      completed: 'Завершено',
-      rejected: 'Отклонено',
-      stale: 'Устарело',
-    };
-    return labels[status] ?? status;
+    return projectGoalStatusLabel(status);
   }
 
   protected goalStatusSeverity(status: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (status === 'completed') {
-      return 'success';
-    }
-    if (status === 'active' || status === 'approved') {
-      return 'info';
-    }
-    if (status === 'proposed') {
-      return 'warn';
-    }
-    if (status === 'rejected' || status === 'stale') {
-      return 'danger';
-    }
-    return 'secondary';
+    return projectGoalStatusSeverity(status);
+  }
+
+  protected priorityLabel(priority: string): string {
+    return projectGoalPriorityLabel(priority);
   }
 
   protected prioritySeverity(priority: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (priority === 'critical') {
-      return 'danger';
-    }
-    if (priority === 'high') {
-      return 'warn';
-    }
-    return 'secondary';
+    return projectGoalPrioritySeverity(priority);
+  }
+
+  protected riskLabel(riskLevel: string): string {
+    return projectGoalRiskLabel(riskLevel);
   }
 
   protected riskSeverity(riskLevel: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
-    if (riskLevel === 'high') {
-      return 'danger';
-    }
-    if (riskLevel === 'medium') {
-      return 'warn';
-    }
-    return 'success';
+    return projectGoalRiskSeverity(riskLevel);
   }
 
   protected statusLabel(status: string): string {
@@ -620,6 +633,47 @@ export class GoalDetailPageComponent implements OnInit {
   protected auditPayloadValue(event: ProjectGoalAuditEventDto, key: 'decision' | 'rationale'): string {
     const value = event.payload?.[key];
     return typeof value === 'string' ? value : '';
+  }
+
+  protected nextStepText(goal: ProjectGoalDto): string {
+    if (goal.status === 'proposed') {
+      return 'Одобрить или отклонить цель после проверки проблемы, результата, метрик и доказательств.';
+    }
+    if (goal.status === 'approved') {
+      return 'Предложить задачи из черновиков или запустить перепланирование, если контекст изменился.';
+    }
+    if (goal.status === 'active') {
+      return 'Проверить связанные задачи и завершить цель после выполнения метрик успеха.';
+    }
+    if (goal.status === 'completed') {
+      return 'Цель завершена. Используйте аудит и связанные задачи как историю исполнения.';
+    }
+    if (goal.status === 'rejected') {
+      return 'Цель отклонена. Причина отклонения зафиксирована ниже.';
+    }
+    if (goal.status === 'stale') {
+      return 'Цель устарела. Запустите новый анализ, если нужен обновленный план.';
+    }
+    return 'Проверьте состояние цели и выберите доступное действие.';
+  }
+
+  protected auditEventLabel(kind: string): string {
+    const labels: Record<string, string> = {
+      project_goal_created: 'Цель предложена',
+      goal_proposed: 'Цель предложена',
+      project_goal_approved: 'Цель одобрена',
+      goal_approved: 'Цель одобрена',
+      project_goal_activated: 'Цель активирована',
+      tasks_proposed: 'Задачи предложены',
+      project_goal_completed: 'Цель завершена',
+      goal_completed: 'Цель завершена',
+      project_goal_rejected: 'Цель отклонена',
+      goal_rejected: 'Цель отклонена',
+      project_goal_stale: 'Цель устарела',
+      goal_marked_stale: 'Цель устарела',
+      project_goal_replan_classified: 'Перепланирование классифицировано',
+    };
+    return labels[kind] ?? statusLabel(kind);
   }
 
   private runCommand(

@@ -436,6 +436,11 @@ select {
   gap: 8px;
 }
 
+.goal-lifecycle {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border);
+}
+
 .detail-section h2 {
   margin: 0;
   font-size: 16px;

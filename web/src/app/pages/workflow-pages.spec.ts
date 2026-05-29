@@ -793,6 +793,16 @@ describe('GoalDetailPageComponent', () => {
     expect(text).toContain('Show project goal context in proposals');
     expect(text).toContain(readyTask.title);
     expect(text).toContain('Project goal proposed.');
+    expect(text).toContain('Состояние цели');
+    expect(text).toContain('Следующий шаг');
+    expect(text).toContain('Одобрить или отклонить цель');
+    expect(text).toContain('Аудит цели');
+    expect(text).toContain('Цель предложена');
+    const headerText = (fixture.nativeElement as HTMLElement).querySelector('.page__header')?.textContent ?? '';
+    expect(headerText).toContain('Приоритет: Высокий');
+    expect(headerText).toContain('Риск: Средний');
+    expect(headerText).not.toContain('Приоритет: high');
+    expect(headerText).not.toContain('Риск: medium');
   });
 
   it('renders replan audit details and lets operators run a goal replan with a required reason', async () => {
@@ -891,6 +901,9 @@ describe('GoalDetailPageComponent', () => {
     http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(
       goalDetailWith({ ...projectGoal, status: 'rejected', rejectionReason: 'No longer matches roadmap.' }),
     );
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Причина отклонения');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('No longer matches roadmap.');
   });
 
   it('lets operators propose tasks for approved goals', async () => {
@@ -954,6 +967,9 @@ describe('GoalDetailPageComponent', () => {
     http.expectOne(`/api/project-goals/${projectGoal.id}`).flush(
       goalDetailWith({ ...projectGoal, status: 'stale', staleReason: 'Superseded by newer analysis.' }),
     );
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Причина устаревания');
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Superseded by newer analysis.');
   });
 
   it('hides goal mutation actions for viewer sessions', async () => {
