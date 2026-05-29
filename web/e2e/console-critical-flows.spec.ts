@@ -69,6 +69,20 @@ test.describe.serial('task tracker console production flows', () => {
     await operator.close();
   });
 
+  test('shows approved goals by default with richer goal content', async ({ browser }) => {
+    const operator = await newRolePage(browser, 'operator');
+    const page = operator.page;
+
+    await page.goto('/tasks/goals');
+    await expect(page.getByTestId('goals-page')).toBeVisible();
+    await expect(page.getByText('Keep approved goals visible')).toBeVisible();
+    await expect(page.getByText('Approved goals are hidden')).toBeVisible();
+    await expect(page.getByText('Operators can see approved goals')).toBeVisible();
+    await expect(page.getByTestId('goals-filter-summary')).toContainText('Показаны все цели');
+
+    await operator.close();
+  });
+
   test('records a project manager replan without creating tasks directly', async ({ browser }) => {
     const operator = await newRolePage(browser, 'operator');
     const page = operator.page;
@@ -108,6 +122,8 @@ test.describe.serial('task tracker console production flows', () => {
     await expect(page.getByTestId('goals-strategy-summary')).toContainText(
       'Improve validation trust',
     );
+    await expect(page.getByTestId('goals-strategy-summary')).toContainText('Связанные цели');
+    await expect(page.getByTestId('goals-strategy-summary')).toContainText('Вопросы человеку');
     await page.getByTestId('goals-strategy-brief').fill('Focus on operator confidence.');
     await page.getByTestId('goals-run-strategy').click();
     await expect(page.getByTestId('goals-strategy-summary')).toContainText(
@@ -296,11 +312,39 @@ test.describe.serial('task tracker console production flows', () => {
 
     await page.setViewportSize({ width: 760, height: 860 });
     await page.goto('/tasks');
+    await expect(page.locator('.queue-empty-summary')).toBeVisible();
+    await expect(page.locator('.queue-empty-summary')).toContainText('Назначена');
+    const renderedQueueGroups = page.locator('.surface.queue-group');
+    const renderedQueueGroupCount = await renderedQueueGroups.count();
+    expect(renderedQueueGroupCount).toBeGreaterThan(0);
+    expect(renderedQueueGroupCount).toBeLessThan(16);
+    for (const group of await renderedQueueGroups.all()) {
+      await expect(group.locator('.task-row').first()).toBeVisible();
+    }
     const narrow = await page.screenshot({
       path: testInfo.outputPath('narrow-queue.png'),
       fullPage: true,
     });
     expect(narrow.byteLength).toBeGreaterThan(1000);
+
+    await page.goto('/tasks/goals');
+    await expect(page.getByTestId('goals-filter-summary')).toContainText('Показаны все цели');
+    await expect(page.getByTestId('goals-page')).toContainText('Проблема');
+    await expect(page.getByTestId('goals-page')).toContainText('Ожидаемый результат');
+    const narrowGoals = await page.screenshot({
+      path: testInfo.outputPath('narrow-goals.png'),
+      fullPage: true,
+    });
+    expect(narrowGoals.byteLength).toBeGreaterThan(1000);
+
+    await page.goto('/tasks/goals/pm-goal-low-risk');
+    await expect(page.getByTestId('goal-detail-page')).toContainText('Состояние цели');
+    await expect(page.getByTestId('goal-detail-page')).toContainText('Следующий шаг');
+    const narrowGoalDetail = await page.screenshot({
+      path: testInfo.outputPath('narrow-goal-detail.png'),
+      fullPage: true,
+    });
+    expect(narrowGoalDetail.byteLength).toBeGreaterThan(1000);
 
     await page.setViewportSize({ width: 1280, height: 820 });
     await page.goto('/tasks/long-title-task');

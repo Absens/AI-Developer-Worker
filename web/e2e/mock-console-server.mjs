@@ -224,6 +224,36 @@ const createInitialState = () => {
       },
     ],
   );
+  putGoal(
+    {
+      id: 'pm-goal-approved-visible',
+      sourceAnalysisId: 'analysis-pm-approved',
+      sourceRunId: 'pm-run-approved',
+      repositoryName: 'developer',
+      title: 'Keep approved goals visible',
+      problemStatement: 'Approved goals are hidden when the goals page defaults to proposed-only filtering.',
+      desiredOutcome: 'Operators can see approved goals without changing filters.',
+      successMetrics: ['The default goals page includes approved goals.'],
+      evidenceRefs: [{ kind: 'ui_audit', ref: 'goals-default-filter' }],
+      status: 'approved',
+      priority: 'high',
+      riskLevel: 'medium',
+      suggestedTaskProposals: [],
+      createdAt: fixedNow,
+      updatedAt: fixedNow,
+      approvedAt: fixedNow,
+    },
+    [
+      {
+        id: 'goal-event-pm-goal-approved-visible-1',
+        goalId: 'pm-goal-approved-visible',
+        kind: 'project_goal_approved',
+        actor: { owner: 'agent', id: 'project-manager', displayName: 'Project Manager' },
+        message: 'Project Manager approved visibility goal.',
+        createdAt: fixedNow,
+      },
+    ],
+  );
 
   return {
     tasks,
@@ -255,8 +285,21 @@ const createInitialState = () => {
               architectVerdict: 'pursue',
             },
           ],
-          goalLinks: [],
-          questionsForHuman: [],
+          goalLinks: [
+            {
+              sourceOpportunityId: 'opp-validation',
+              proposedGoalTitle: 'Improve validation trust',
+              evidenceRefs: [{ kind: 'snapshot', ref: 'validation-trust' }],
+            },
+          ],
+          questionsForHuman: [
+            {
+              question: 'Should validation trust be exposed to product users?',
+              whyItMatters: 'It changes whether the next goal is product-facing or internal.',
+              relatedOpportunityId: 'opp-validation',
+              relatedOpportunityTitle: 'Improve validation trust',
+            },
+          ],
         },
         createdAt: now(),
       },
@@ -350,6 +393,8 @@ const summarizeProjectGoal = (goal) => ({
   priority: goal.priority,
   riskLevel: goal.riskLevel,
   repositoryName: goal.repositoryName,
+  problemStatement: goal.problemStatement,
+  desiredOutcome: goal.desiredOutcome,
 });
 
 const projectGoalsForTask = (taskId) =>
