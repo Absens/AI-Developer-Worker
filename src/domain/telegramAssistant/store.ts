@@ -72,7 +72,10 @@ export interface TelegramAssistantStore {
   saveOffset(scope: string, offset: number): Promise<void>;
   isUpdateProcessed(updateId: number): Promise<boolean>;
   markUpdateProcessed(updateId: number): Promise<void>;
-  withPollingLease<T>(leaseKey: string, operation: () => Promise<T>): Promise<T>;
+  withPollingLease<T>(
+    leaseKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T | undefined>;
   withConversationLock<T>(
     conversationKey: string,
     operation: () => Promise<T>,
@@ -191,7 +194,7 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
   public async withPollingLease<T>(
     _leaseKey: string,
     operation: () => Promise<T>,
-  ): Promise<T> {
+  ): Promise<T | undefined> {
     return operation();
   }
 

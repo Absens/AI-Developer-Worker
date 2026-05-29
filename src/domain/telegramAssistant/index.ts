@@ -12,6 +12,7 @@ export {
   type ReserveNotificationDeliveryInput,
   type TelegramAssistantStore,
 } from "./store.js";
+export { PostgresTelegramAssistantStore } from "./postgresStore.js";
 export type {
   TelegramAssistantActor,
   TelegramAssistantRole,
