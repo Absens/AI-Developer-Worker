@@ -1076,6 +1076,15 @@ const normalizeTelegramBotUsername = (
   return normalized || undefined;
 };
 
+const normalizeTelegramWebhookPath = (value: string, key: string): string => {
+  const withoutLeadingSlashes = value.trim().replace(/^\/+/, "");
+  const normalized = `/${withoutLeadingSlashes}`.replace(/\/+$/, "") || "/";
+  if (normalized === "/") {
+    throw new ConfigurationError(`${key} must be a non-root path.`);
+  }
+  return normalized;
+};
+
 const parseTelegramAssistantGroupMode = (
   value: string,
   name: string,
@@ -1122,6 +1131,13 @@ const parseTelegramAssistantConfig = (
     firstEnv(env, "TELEGRAM_WEBHOOK_SECRET_TOKEN") ||
     optionalString(webhook?.secretToken, `${path}.webhook.secretToken`);
   const hasWebhookConfig = webhook !== undefined || webhookPath || webhookSecretToken;
+  const webhookPathKey =
+    firstEnv(env, "TELEGRAM_WEBHOOK_PATH") === undefined
+      ? `${path}.webhook.path`
+      : "TELEGRAM_WEBHOOK_PATH";
+  const normalizedWebhookPath = webhookPath
+    ? normalizeTelegramWebhookPath(webhookPath, webhookPathKey)
+    : undefined;
 
   if (hasWebhookConfig && mode !== "webhook") {
     throw new ConfigurationError(
@@ -1131,6 +1147,11 @@ const parseTelegramAssistantConfig = (
   if (mode === "webhook" && !webhookPath) {
     throw new ConfigurationError(
       "TELEGRAM_WEBHOOK_PATH is required when TELEGRAM_ASSISTANT_MODE=webhook.",
+    );
+  }
+  if (mode === "webhook" && !webhookSecretToken) {
+    throw new ConfigurationError(
+      "TELEGRAM_WEBHOOK_SECRET_TOKEN is required when TELEGRAM_ASSISTANT_MODE=webhook.",
     );
   }
 
@@ -1251,9 +1272,9 @@ const parseTelegramAssistantConfig = (
       DEFAULT_TELEGRAM_ASSISTANT_CONFIG.conversationRetentionDays,
     ),
     webhook:
-      mode === "webhook" && webhookPath
+      mode === "webhook" && normalizedWebhookPath
         ? {
-            path: webhookPath,
+            path: normalizedWebhookPath,
             ...(webhookSecretToken ? { secretToken: webhookSecretToken } : {}),
           }
         : undefined,

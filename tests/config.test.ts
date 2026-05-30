@@ -326,6 +326,33 @@ describe("config", () => {
     });
   });
 
+  it("normalizes Telegram webhook paths from environment values", () => {
+    const config = loadFleetConfig({
+      ...baseFleetEnv(),
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+      TELEGRAM_ASSISTANT_MODE: "webhook",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+      TELEGRAM_WEBHOOK_PATH: "tg/",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "hook-secret",
+    });
+
+    expect(config.telegramAssistant?.webhook?.path).toBe("/tg");
+  });
+
+  it("rejects Telegram webhook mode without a secret token", () => {
+    expect(() =>
+      loadFleetConfig({
+        ...baseFleetEnv(),
+        TELEGRAM_ASSISTANT_ENABLED: "true",
+        TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+        TELEGRAM_ASSISTANT_MODE: "webhook",
+        TELEGRAM_ALLOWED_USER_IDS: "101",
+        TELEGRAM_WEBHOOK_PATH: "tg/",
+      }),
+    ).toThrow(/TELEGRAM_WEBHOOK_SECRET_TOKEN/);
+  });
+
   it("treats blank Telegram assistant env values as unset over config file values", () => {
     const statusMapFile = createStatusMapFile();
     const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));

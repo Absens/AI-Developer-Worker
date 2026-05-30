@@ -47,6 +47,7 @@ import {
 } from "./integrations/yandexBridge/index.js";
 import { redactSecrets } from "./observability/redaction.js";
 import { createObservabilityService } from "./observability/service.js";
+import type { TelegramWebhookRoute } from "./observability/server.js";
 import type { ProjectManagerApiDependencies } from "./observability/taskTrackerHumanApi.js";
 import { Logger } from "./utils/logger.js";
 
@@ -57,6 +58,7 @@ export interface CleanupController {
 }
 
 export interface TelegramAssistantController {
+  readonly webhook?: TelegramWebhookRoute;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -100,6 +102,7 @@ const noopCleanupController: CleanupController = {
 };
 
 const noopTelegramAssistantController: TelegramAssistantController = {
+  webhook: undefined,
   async start(): Promise<void> {},
   async stop(): Promise<void> {},
 };
@@ -116,6 +119,79 @@ export const buildTelegramAssistantCodexRuntimeConfig = <
     telegramConfig.codexTimeoutSeconds * 1000,
   ),
 });
+
+const buildTelegramWebhookUrl = (baseUrl: string, path: string): string =>
+  new URL(path, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+
+const isObservabilityHttpServerEnabled = (
+  config: ReturnType<typeof loadFleetConfig>["observability"],
+): boolean => config?.enabled === true || config?.taskTrackerUi.enabled === true;
+
+const normalizeRoutePath = (path: string): string => {
+  const trimmed = path.trim();
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "") || "/";
+};
+
+const pathIsAtOrInside = (parent: string, candidate: string): boolean =>
+  candidate === parent || candidate.startsWith(`${parent}/`);
+
+const validateTelegramWebhookRouteConfig = (
+  fleetConfig: ReturnType<typeof loadFleetConfig>,
+): void => {
+  const webhook = fleetConfig.telegramAssistant?.webhook;
+  if (fleetConfig.telegramAssistant?.enabled !== true || !webhook) {
+    return;
+  }
+
+  const webhookPath = normalizeRoutePath(webhook.path);
+  if (webhookPath === "/") {
+    throw new Error("Telegram webhook path must be a non-root path.");
+  }
+
+  const { observability } = fleetConfig;
+  if (!observability) {
+    throw new Error("Telegram assistant webhook mode requires an enabled HTTP server.");
+  }
+
+  const exactRoutes = [
+    { label: "health route", path: observability.health.path },
+    { label: "readiness route", path: observability.health.readinessPath },
+    ...(observability.metrics.enabled
+      ? [{ label: "metrics route", path: observability.metrics.path }]
+      : []),
+  ];
+
+  for (const route of exactRoutes) {
+    if (webhookPath === normalizeRoutePath(route.path)) {
+      throw new Error(
+        `Telegram webhook path ${webhookPath} conflicts with ${route.label} ${route.path}.`,
+      );
+    }
+  }
+
+  if (observability.taskTrackerUi.enabled) {
+    const taskUiPath = normalizeRoutePath(observability.taskTrackerUi.path);
+    if (
+      pathIsAtOrInside(taskUiPath, webhookPath) ||
+      pathIsAtOrInside(webhookPath, taskUiPath)
+    ) {
+      throw new Error(
+        `Telegram webhook path ${webhookPath} conflicts with task tracker ui route ${taskUiPath}.`,
+      );
+    }
+
+    const taskApiPath = normalizeRoutePath(observability.taskTrackerUi.apiPath);
+    if (
+      pathIsAtOrInside(taskApiPath, webhookPath) ||
+      pathIsAtOrInside(webhookPath, taskApiPath)
+    ) {
+      throw new Error(
+        `Telegram webhook path ${webhookPath} conflicts with task tracker api route ${taskApiPath}.`,
+      );
+    }
+  }
+};
 
 export const runApplicationRuntime = async (
   runtime: ApplicationRuntime,
@@ -372,6 +448,13 @@ const createTelegramAssistantController = (
   if (!config.botToken) {
     throw new Error("Telegram assistant requires a bot token when enabled.");
   }
+  const webhook = config.mode === "webhook" ? config.webhook : undefined;
+  if (config.mode === "webhook" && !webhook) {
+    throw new Error("Telegram assistant webhook mode requires webhook config.");
+  }
+  const webhookUrl = webhook
+    ? buildTelegramWebhookUrl(fleetConfig.observability?.baseUrl ?? "", webhook.path)
+    : undefined;
 
   let pool: Pool | undefined;
   const store: TelegramAssistantStore =
@@ -449,6 +532,7 @@ const createTelegramAssistantController = (
   let notificationInterval: ReturnType<typeof setInterval> | undefined;
   let notificationScanRunning = false;
   let started = false;
+  let webhookRegistered = false;
 
   const runNotificationScan = (): void => {
     if (!notificationRouter || notificationScanRunning) {
@@ -483,6 +567,15 @@ const createTelegramAssistantController = (
   };
 
   return {
+    webhook: webhook
+      ? {
+          path: webhook.path,
+          ...(webhook.secretToken !== undefined
+            ? { secretToken: webhook.secretToken }
+            : {}),
+          handler: service,
+        }
+      : undefined,
     async start(): Promise<void> {
       if (started) {
         return;
@@ -490,6 +583,14 @@ const createTelegramAssistantController = (
       if (poller) {
         await telegramClient.deleteWebhook({ dropPendingUpdates: false });
         poller.start();
+      } else if (webhookUrl) {
+        await telegramClient.setWebhook({
+          url: webhookUrl,
+          ...(webhook?.secretToken !== undefined
+            ? { secretToken: webhook.secretToken }
+            : {}),
+        });
+        webhookRegistered = true;
       }
       startNotificationInterval();
       started = true;
@@ -497,6 +598,10 @@ const createTelegramAssistantController = (
     async stop(): Promise<void> {
       try {
         await poller?.stop();
+        if (webhookRegistered) {
+          await telegramClient.deleteWebhook({ dropPendingUpdates: false });
+          webhookRegistered = false;
+        }
       } finally {
         stopNotificationInterval();
         started = false;
@@ -518,12 +623,33 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     internalTaskTracker,
     logger,
   );
+  const primaryRepository = fleetConfig.repositories[0];
+  if (!primaryRepository) {
+    throw new Error("No repository profiles configured.");
+  }
+  if (
+    fleetConfig.telegramAssistant?.enabled === true &&
+    fleetConfig.telegramAssistant.mode === "webhook" &&
+    !isObservabilityHttpServerEnabled(fleetConfig.observability)
+  ) {
+    throw new Error(
+      "Telegram assistant webhook mode requires an enabled HTTP server.",
+    );
+  }
+  validateTelegramWebhookRouteConfig(fleetConfig);
+  const telegramAssistant = createTelegramAssistantController(
+    fleetConfig,
+    internalTaskTracker,
+    logger,
+    projectManager.dependencies,
+  );
   const observability = createObservabilityService(
     fleetConfig.observability,
     logger,
     fleetConfig.repositories,
     internalTaskTracker,
     projectManager.dependencies,
+    telegramAssistant.webhook,
   );
   const internalCleanup =
     fleetConfig.taskTracker?.provider === "internal" &&
@@ -567,11 +693,6 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
       }
     },
   };
-  const primaryRepository = fleetConfig.repositories[0];
-  if (!primaryRepository) {
-    throw new Error("No repository profiles configured.");
-  }
-
   const internalMode = fleetConfig.taskTracker?.provider === "internal";
   const internalConfig =
     fleetConfig.taskTracker?.provider === "internal"
@@ -580,12 +701,6 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
   if (internalMode && !internalTaskTracker) {
     throw new Error("TASK_TRACKER_PROVIDER=internal requires an internal task tracker client.");
   }
-  const telegramAssistant = createTelegramAssistantController(
-    fleetConfig,
-    internalTaskTracker,
-    logger,
-    projectManager.dependencies,
-  );
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
   const yandexBridgeStore = createYandexBridgeStore(fleetConfig.taskTracker);
   const yandexBridgeSources =
