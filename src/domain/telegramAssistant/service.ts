@@ -12,6 +12,10 @@ import type {
 import { redactSecrets } from "../../observability/redaction.js";
 import type { Logger } from "../../utils/logger.js";
 import {
+  DuplicateExternalRefError,
+  type TaskRecord,
+} from "../taskTracker/index.js";
+import {
   canPerformTelegramWrite,
   resolveTelegramActor,
   resolveTelegramRole,
@@ -23,11 +27,17 @@ import {
 } from "./entityResolver.js";
 import { routeTelegramIntent } from "./intentRouter.js";
 import type { TelegramAssistantStore } from "./store.js";
+import {
+  buildHeuristicTaskDraft,
+  type TelegramTaskDraft,
+} from "./taskDraftBuilder.js";
 import { summarizeTaskForTelegram } from "./taskSummaries.js";
 import type {
   TelegramAssistantActor,
   TelegramConversationSource,
   TelegramInboundMessage,
+  TelegramIntent,
+  TelegramPendingAction,
   TelegramQueuedMessage,
 } from "./types.js";
 
@@ -54,12 +64,18 @@ const WRITE_ROLE_REQUIRED_MESSAGE =
   "Для действий записи нужен allowlist developer/operator/admin пользователя.";
 const TASK_TRACKER_UNAVAILABLE_MESSAGE =
   "Не могу проверить статус задачи: task tracker недоступен.";
+const TASK_CREATION_UNAVAILABLE_MESSAGE =
+  "Не могу создать задачу: task tracker недоступен.";
 const TASK_NOT_FOUND_MESSAGE = "Не нашел задачу. Можешь уточнить тему или task id?";
+const ACTION_NOT_FOUND_MESSAGE = "Нет ожидающего действия для подтверждения.";
+const ACTION_CANCEL_NOT_FOUND_MESSAGE = "Нет ожидающего действия для отмены.";
+const ACTION_CANCELLED_MESSAGE = "Действие отменено.";
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
   private readonly config: TelegramAssistantConfig;
   private readonly taskTracker?: TaskTrackerClient;
+  private readonly repositories: RepositoryProfile[];
   private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   private readonly logger?: TelegramAssistantLogger;
   private readonly botUsername?: string;
@@ -68,10 +84,10 @@ export class TelegramAssistantService {
     this.store = options.store;
     this.config = options.config;
     this.taskTracker = options.taskTracker;
+    this.repositories = options.repositories;
     this.telegram = options.telegram;
     this.logger = options.logger;
     this.botUsername = options.botUsername ?? this.config.botUsername;
-    void options.repositories;
   }
 
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
@@ -154,6 +170,25 @@ export class TelegramAssistantService {
             return;
           }
 
+          if (intent.name === "create_task_draft") {
+            await this.handleCreateTaskDraft(
+              message,
+              intent,
+              intent.rawText ?? message.text ?? "",
+            );
+            return;
+          }
+
+          if (intent.name === "approve_action") {
+            await this.handleApproveAction(message);
+            return;
+          }
+
+          if (intent.name === "reject_action") {
+            await this.handleRejectAction(message);
+            return;
+          }
+
           await this.sendPlainMessage(message, `Intent: ${intent.name}`);
         },
       );
@@ -165,6 +200,222 @@ export class TelegramAssistantService {
       }));
       throw error;
     }
+  }
+
+  private async handleCreateTaskDraft(
+    message: TelegramInboundMessage,
+    intent: TelegramIntent,
+    text: string,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_CREATION_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendPlainMessage(
+        message,
+        "Не могу создать задачу: не удалось определить сообщение или пользователя.",
+      );
+      return;
+    }
+
+    const draft = buildHeuristicTaskDraft(
+      text,
+      this.repositories,
+      this.config.defaultRepository,
+    );
+    const actionId = buildPendingActionId(message.updateId, message.messageId);
+    const externalKey = buildTelegramExternalKey(message.chatId, message.messageId);
+    const now = new Date().toISOString();
+    const pendingAction: TelegramPendingAction = {
+      id: actionId,
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      userId: message.userId,
+      intent,
+      payload: {
+        draft,
+        chatId: message.chatId,
+        messageId: message.messageId,
+        userId: message.userId,
+        externalKey,
+      },
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: addDays(now, this.config.conversationRetentionDays),
+    };
+
+    await this.store.upsertPendingAction(pendingAction);
+    await this.sendTelegramResponse(
+      message,
+      buildTaskDraftResponse(draft, pendingAction.id),
+    );
+  }
+
+  private async handleApproveAction(message: TelegramInboundMessage): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_CREATION_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.userId === undefined) {
+      await this.sendPlainMessage(message, ACTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const action = await this.findLatestCreateTaskAction(
+      message,
+      ["pending", "executing"],
+      now,
+    );
+    if (!action) {
+      await this.sendPlainMessage(message, ACTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const executableAction =
+      action.status === "executing"
+        ? action
+        : await this.store.consumePendingAction({
+            actionId: action.id,
+            chatId: message.chatId,
+            userId: message.userId,
+            terminalStatus: "executing",
+            now,
+          });
+    if (!executableAction) {
+      await this.sendPlainMessage(message, ACTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const task = await this.findOrCreateTaskFromPendingAction(executableAction);
+    await this.store.completePendingAction(executableAction.id, {
+      status: "completed",
+    });
+    await this.subscribeConversationToTask(message, task);
+    await this.sendPlainMessage(message, `Задача создана: ${task.id}`);
+  }
+
+  private async handleRejectAction(message: TelegramInboundMessage): Promise<void> {
+    if (message.userId === undefined) {
+      await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const action = await this.findLatestCreateTaskAction(message, ["pending"], now);
+    if (!action) {
+      await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const cancelled = await this.store.consumePendingAction({
+      actionId: action.id,
+      chatId: message.chatId,
+      userId: message.userId,
+      terminalStatus: "cancelled",
+      now,
+    });
+    if (!cancelled) {
+      await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    await this.store.completePendingAction(cancelled.id, { status: "cancelled" });
+    await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+  }
+
+  private async findLatestCreateTaskAction(
+    message: TelegramInboundMessage,
+    statuses: TelegramPendingAction["status"][],
+    now: string,
+  ): Promise<TelegramPendingAction | undefined> {
+    const actions = await this.store.listPendingActions({
+      conversationKey: message.conversationKey,
+      status: statuses,
+    });
+    return actions
+      .filter(
+        (action) =>
+          action.intent.name === "create_task_draft" &&
+          action.chatId === message.chatId &&
+          action.userId === message.userId &&
+          isPendingActionUnexpired(action, now),
+      )
+      .sort(comparePendingActionsNewestFirst)[0];
+  }
+
+  private async findOrCreateTaskFromPendingAction(
+    action: TelegramPendingAction,
+  ): Promise<TaskRecord> {
+    if (!this.taskTracker) {
+      throw new Error("Task tracker is required to create telegram task drafts.");
+    }
+
+    const payload = parseTaskDraftPayload(action.payload);
+    const existing = await this.taskTracker.findTaskByExternalRef(
+      "telegram",
+      payload.externalKey,
+    );
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      return await this.taskTracker.createTask({
+        title: payload.draft.title,
+        description: payload.draft.description,
+        source: {
+          kind: "system",
+          provider: "telegram",
+          externalKey: payload.externalKey,
+        },
+        createdBy: {
+          owner: "external_source",
+          id: "telegram",
+          displayName: "Telegram Assistant",
+        },
+        repositoryName: payload.draft.repositoryName,
+        tags: payload.draft.tags,
+        acceptanceCriteria: payload.draft.acceptanceCriteria,
+        externalRefs: [
+          { provider: "telegram", externalKey: payload.externalKey },
+        ],
+        externalSnapshot: {
+          chatId: payload.chatId,
+          messageId: payload.messageId,
+          userId: payload.userId,
+        },
+      });
+    } catch (error) {
+      if (error instanceof DuplicateExternalRefError) {
+        const existingAfterRace = await this.taskTracker.findTaskByExternalRef(
+          "telegram",
+          payload.externalKey,
+        );
+        if (existingAfterRace) {
+          return existingAfterRace;
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async subscribeConversationToTask(
+    message: TelegramInboundMessage,
+    task: TaskRecord,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    await this.store.upsertTaskSubscription({
+      id: buildTaskSubscriptionId(message.conversationKey, task.id),
+      taskId: task.id,
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      ...(message.userId !== undefined ? { userId: message.userId } : {}),
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   private async handleTaskStatus(
@@ -314,6 +565,32 @@ const buildTaskChoiceResponse = (
   disableWebPagePreview: true,
 });
 
+const buildTaskDraftResponse = (
+  draft: TelegramTaskDraft,
+  actionId: string,
+): TelegramResponse => ({
+  blocks: [
+    { kind: "title", text: "Создать задачу?" },
+    { kind: "field", label: "Название", value: draft.title },
+    ...(draft.repositoryName
+      ? [{ kind: "field" as const, label: "Репозиторий", value: draft.repositoryName }]
+      : []),
+    { kind: "paragraph", text: draft.description },
+    {
+      kind: "field",
+      label: "Критерии",
+      value: draft.acceptanceCriteria.join("\n"),
+    },
+  ],
+  inlineButtonRows: [
+    [
+      { text: "Создать", callbackData: `c:${actionId}` },
+      { text: "Отмена", callbackData: `cancel:${actionId}` },
+    ],
+  ],
+  disableWebPagePreview: true,
+});
+
 const formatTaskButtonText = (taskId: string, title: string): string => {
   const text = `${taskId}: ${title}`;
   if (text.length <= 64) {
@@ -322,6 +599,77 @@ const formatTaskButtonText = (taskId: string, title: string): string => {
 
   return `${text.slice(0, 61)}...`;
 };
+
+interface TaskDraftPayload {
+  draft: TelegramTaskDraft;
+  chatId: number;
+  messageId: number;
+  userId: number;
+  externalKey: string;
+}
+
+const parseTaskDraftPayload = (
+  payload: Record<string, unknown>,
+): TaskDraftPayload => {
+  const draft = payload.draft;
+  if (
+    !isTelegramTaskDraft(draft) ||
+    typeof payload.chatId !== "number" ||
+    typeof payload.messageId !== "number" ||
+    typeof payload.userId !== "number" ||
+    typeof payload.externalKey !== "string"
+  ) {
+    throw new Error("Invalid telegram task draft payload.");
+  }
+
+  return {
+    draft,
+    chatId: payload.chatId,
+    messageId: payload.messageId,
+    userId: payload.userId,
+    externalKey: payload.externalKey,
+  };
+};
+
+const isTelegramTaskDraft = (value: unknown): value is TelegramTaskDraft => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const draft = value as Partial<TelegramTaskDraft>;
+  return (
+    typeof draft.title === "string" &&
+    typeof draft.description === "string" &&
+    Array.isArray(draft.acceptanceCriteria) &&
+    draft.acceptanceCriteria.every((criterion) => typeof criterion === "string") &&
+    (draft.repositoryName === undefined || typeof draft.repositoryName === "string") &&
+    Array.isArray(draft.tags) &&
+    draft.tags.every((tag) => typeof tag === "string")
+  );
+};
+
+const comparePendingActionsNewestFirst = (
+  left: TelegramPendingAction,
+  right: TelegramPendingAction,
+): number =>
+  right.updatedAt.localeCompare(left.updatedAt) ||
+  right.createdAt.localeCompare(left.createdAt) ||
+  right.id.localeCompare(left.id);
+
+const isPendingActionUnexpired = (
+  action: TelegramPendingAction,
+  now: string,
+): boolean => Date.parse(action.expiresAt) > Date.parse(now);
+
+const buildPendingActionId = (updateId: number, messageId: number): string =>
+  `tgpa_${updateId.toString(36)}_${messageId.toString(36)}`;
+
+const buildTelegramExternalKey = (chatId: number, messageId: number): string =>
+  `telegram:${chatId}:${messageId}`;
+
+const buildTaskSubscriptionId = (
+  conversationKey: string,
+  taskId: string,
+): string => `task-subscription:${conversationKey}:${taskId}`;
 
 export const normalizeTelegramUpdate = (
   update: TelegramUpdate,

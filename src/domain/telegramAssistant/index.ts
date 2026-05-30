@@ -33,6 +33,10 @@ export {
   resolveTelegramTaskCandidates,
   type TelegramTaskCandidate,
 } from "./entityResolver.js";
+export {
+  buildHeuristicTaskDraft,
+  type TelegramTaskDraft,
+} from "./taskDraftBuilder.js";
 export { summarizeTaskForTelegram } from "./taskSummaries.js";
 export type {
   TelegramAssistantActor,

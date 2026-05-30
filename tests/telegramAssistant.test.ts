@@ -3,11 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryTelegramAssistantStore,
   TelegramAssistantService,
+  type TelegramPendingAction,
 } from "../src/domain/telegramAssistant/index.js";
+import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
 import { TelegramUpdatePoller } from "../src/integrations/telegram/index.js";
 import { runApplicationRuntime } from "../src/app.js";
-import type { TelegramAssistantConfig } from "../src/models/types.js";
 import type {
+  RepositoryProfile,
+  TelegramAssistantConfig,
+} from "../src/models/types.js";
+import type {
+  CreateTaskInput,
   TaskLeaseRecord,
   TaskRecord,
   TaskTrackerClient,
@@ -93,6 +99,57 @@ const taskFixture = (overrides: Partial<TaskRecord> = {}): TaskRecord => ({
   memoryContextRefs: [],
   createdAt: overrides.createdAt ?? baseTime,
   updatedAt: overrides.updatedAt ?? baseTime,
+  ...overrides,
+});
+
+const repositoryFixture = (
+  overrides: Partial<RepositoryProfile> = {},
+): RepositoryProfile => ({
+  name: overrides.name ?? "developer",
+  repoPath: overrides.repoPath ?? "C:\\repo\\developer",
+  gitlabProjectId: overrides.gitlabProjectId ?? "developer/project",
+  gitRemoteName: overrides.gitRemoteName ?? "origin",
+  baseBranch: overrides.baseBranch ?? "main",
+  queues: overrides.queues ?? ["DEV"],
+  tags: overrides.tags ?? [],
+  testCommand: overrides.testCommand ?? "npm test",
+  lintCommand: overrides.lintCommand ?? "npm run typecheck",
+  ...overrides,
+});
+
+const createTaskDraftPendingAction = (
+  overrides: Partial<TelegramPendingAction> = {},
+): TelegramPendingAction => ({
+  id: "tgpa_pending",
+  conversationKey: "bot_private:1",
+  chatId: 1,
+  userId: 10,
+  intent: {
+    name: "create_task_draft",
+    confidence: 1,
+    rawText: "создай задачу починить регистрацию",
+    requiresConfirmation: true,
+    safetyLevel: "confirm_write",
+  },
+  payload: {
+    chatId: 1,
+    messageId: 99,
+    userId: 10,
+    externalKey: "telegram:1:99",
+    draft: {
+      title: "починить регистрацию",
+      description: "создай задачу починить регистрацию",
+      repositoryName: "developer",
+      acceptanceCriteria: [
+        "Поведение реализовано и покрыто существующими проверками.",
+      ],
+      tags: ["telegram"],
+    },
+  },
+  status: "pending",
+  createdAt: "2026-05-30T08:00:00.000Z",
+  updatedAt: "2026-05-30T08:00:00.000Z",
+  expiresAt: "2099-01-01T00:00:00.000Z",
   ...overrides,
 });
 
@@ -490,6 +547,477 @@ describe("TelegramAssistantService", () => {
     }));
     expect(await store.listPendingActions()).toEqual([]);
     expect(await store.getOffset("default")).toBe(12);
+  });
+
+  it("creates a task draft pending action and waits for confirmation", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        defaultRepository: "developer",
+      },
+      taskTracker: readonlyTaskTracker([]),
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await service.handleUpdate({
+      update_id: 35,
+      message: {
+        message_id: 99,
+        date: 1,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "создай задачу починить регистрацию",
+      },
+    });
+
+    const [action] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    expect(action).toMatchObject({
+      id: "tgpa_z_2r",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      intent: expect.objectContaining({ name: "create_task_draft" }),
+      status: "pending",
+      payload: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        externalKey: "telegram:1:99",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+      },
+    });
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      parseMode: "HTML",
+      replyToMessageId: 99,
+      text: expect.stringContaining("Создать задачу"),
+      replyMarkup: {
+        inline_keyboard: [
+          [
+            { text: "Создать", callback_data: "c:tgpa_z_2r" },
+            { text: "Отмена", callback_data: "cancel:tgpa_z_2r" },
+          ],
+        ],
+      },
+    }));
+    expect(await store.getOffset("default")).toBe(36);
+  });
+
+  it("creates an internal task from a confirmed draft without idempotencyKey", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        defaultRepository: "developer",
+      },
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await service.handleUpdate({
+      update_id: 36,
+      message: {
+        message_id: 99,
+        date: 1,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "создай задачу починить регистрацию",
+      },
+    });
+    await service.handleUpdate({
+      update_id: 37,
+      message: {
+        message_id: 100,
+        date: 2,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    const createdInput = createTaskSpy.mock.calls[0]?.[0];
+    expect(createdInput).toBeDefined();
+    expect(createdInput).toEqual({
+      title: "починить регистрацию",
+      description: "создай задачу починить регистрацию",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      repositoryName: "developer",
+      tags: ["telegram"],
+      acceptanceCriteria: [
+        "Поведение реализовано и покрыто существующими проверками.",
+      ],
+      externalRefs: [{ provider: "telegram", externalKey: "telegram:1:99" }],
+      externalSnapshot: { chatId: 1, messageId: 99, userId: 10 },
+    });
+    expect(createdInput as unknown as Record<string, unknown>).not.toHaveProperty(
+      "idempotencyKey",
+    );
+
+    const [action] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+    });
+    expect(action).toMatchObject({ status: "completed" });
+
+    const [subscription] = await store.listTaskSubscriptions("bot_private:1");
+    expect(subscription).toMatchObject({
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+    });
+    const taskId = subscription?.taskId;
+    expect(taskId).toMatch(/^task_/);
+    if (taskId === undefined) {
+      throw new Error("Expected telegram task subscription task id.");
+    }
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 100,
+      text: expect.stringContaining(taskId),
+    }));
+    expect(await store.getOffset("default")).toBe(38);
+  });
+
+  it("does not create a duplicate task for repeated approvals with the same external ref", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createdTask = taskFixture({
+      id: "task_telegram_1",
+      title: "починить регистрацию",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      externalRefs: [
+        {
+          id: "ref-1",
+          taskId: "task_telegram_1",
+          provider: "telegram",
+          externalKey: "telegram:1:99",
+          createdAt: baseTime,
+        },
+      ],
+    });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => (
+      createdTask
+    ));
+    const findTaskByExternalRef = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(createdTask);
+    const taskTracker = {
+      ...readonlyTaskTracker([]),
+      createTask,
+      findTaskByExternalRef,
+    } as unknown as TaskTrackerClient;
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await store.upsertPendingAction({
+      id: "tgpa_duplicate_first",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      intent: {
+        name: "create_task_draft",
+        confidence: 1,
+        rawText: "создай задачу починить регистрацию",
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      payload: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        externalKey: "telegram:1:99",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+      },
+      status: "pending",
+      createdAt: "2026-05-30T08:00:00.000Z",
+      updatedAt: "2026-05-30T08:00:00.000Z",
+      expiresAt: "2026-06-13T08:00:00.000Z",
+    });
+    await service.handleUpdate({
+      update_id: 38,
+      message: {
+        message_id: 100,
+        date: 2,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    await store.upsertPendingAction({
+      id: "tgpa_duplicate_second",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      intent: {
+        name: "create_task_draft",
+        confidence: 1,
+        rawText: "создай задачу починить регистрацию",
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      payload: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        externalKey: "telegram:1:99",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+      },
+      status: "pending",
+      createdAt: "2026-05-30T08:01:00.000Z",
+      updatedAt: "2026-05-30T08:01:00.000Z",
+      expiresAt: "2026-06-13T08:01:00.000Z",
+    });
+    await service.handleUpdate({
+      update_id: 39,
+      message: {
+        message_id: 101,
+        date: 3,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    expect(findTaskByExternalRef).toHaveBeenCalledTimes(2);
+    expect(findTaskByExternalRef).toHaveBeenCalledWith("telegram", "telegram:1:99");
+    expect(createTask).toHaveBeenCalledOnce();
+    await expect(store.listTaskSubscriptions("bot_private:1")).resolves.toEqual([
+      expect.objectContaining({ taskId: "task_telegram_1" }),
+    ]);
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "completed",
+    })).resolves.toHaveLength(2);
+  });
+
+  it("uses an older valid pending draft when the newest matching draft is expired", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:10:00.000Z"),
+    });
+    const createdTask = taskFixture({
+      id: "task_valid_draft",
+      title: "починить регистрацию",
+    });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => (
+      createdTask
+    ));
+    const findTaskByExternalRef = vi.fn(async (): Promise<TaskRecord | null> => null);
+    const taskTracker = {
+      ...readonlyTaskTracker([]),
+      createTask,
+      findTaskByExternalRef,
+    } as unknown as TaskTrackerClient;
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_valid_older",
+      payload: {
+        chatId: 1,
+        messageId: 98,
+        userId: 10,
+        externalKey: "telegram:1:98",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+      },
+      createdAt: "2026-05-30T08:00:00.000Z",
+      updatedAt: "2026-05-30T08:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_expired_newer",
+      createdAt: "2026-05-30T08:05:00.000Z",
+      updatedAt: "2026-05-30T08:05:00.000Z",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    }));
+
+    await service.handleUpdate({
+      update_id: 41,
+      message: {
+        message_id: 103,
+        date: 2,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    expect(findTaskByExternalRef).toHaveBeenCalledOnce();
+    expect(findTaskByExternalRef).toHaveBeenCalledWith("telegram", "telegram:1:98");
+    expect(createTask).toHaveBeenCalledOnce();
+    expect(createTask.mock.calls[0]?.[0]).toMatchObject({
+      externalRefs: [{ provider: "telegram", externalKey: "telegram:1:98" }],
+      externalSnapshot: { chatId: 1, messageId: 98, userId: 10 },
+    });
+    await expect(store.getPendingAction("tgpa_valid_older")).resolves.toMatchObject({
+      status: "completed",
+    });
+    await expect(store.getPendingAction("tgpa_expired_newer")).resolves.toMatchObject({
+      status: "pending",
+    });
+  });
+
+  it("does not resolve or create a task from an expired executing draft", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:10:00.000Z"),
+    });
+    const findTaskByExternalRef = vi.fn(async (): Promise<TaskRecord | null> => (
+      taskFixture({ id: "task_expired" })
+    ));
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => (
+      taskFixture({ id: "task_expired" })
+    ));
+    const taskTracker = {
+      ...readonlyTaskTracker([]),
+      createTask,
+      findTaskByExternalRef,
+    } as unknown as TaskTrackerClient;
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_expired_executing",
+      status: "executing",
+      consumedAt: "2026-05-30T08:00:00.000Z",
+      createdAt: "2026-05-30T08:00:00.000Z",
+      updatedAt: "2026-05-30T08:00:00.000Z",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    }));
+
+    await service.handleUpdate({
+      update_id: 42,
+      message: {
+        message_id: 104,
+        date: 2,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    expect(findTaskByExternalRef).not.toHaveBeenCalled();
+    expect(createTask).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Нет ожидающего действия для подтверждения.",
+    }));
+    await expect(store.listTaskSubscriptions("bot_private:1")).resolves.toEqual([]);
+  });
+
+  it("does not save a task draft when the task tracker is unavailable", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker: undefined,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await service.handleUpdate({
+      update_id: 40,
+      message: {
+        message_id: 102,
+        date: 1,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "создай задачу починить регистрацию",
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Не могу создать задачу: task tracker недоступен.",
+    }));
+    expect(await store.listPendingActions()).toEqual([]);
+    expect(await store.getOffset("default")).toBe(41);
   });
 
   it("reports task status as unavailable when no task tracker is configured", async () => {
