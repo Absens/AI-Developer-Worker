@@ -17,6 +17,7 @@ import {
   InMemoryTelegramAssistantStore,
   PostgresTelegramAssistantStore,
   TelegramAssistantService,
+  TelegramNotificationRouter,
   type TelegramAssistantStore,
 } from "./domain/telegramAssistant/index.js";
 import { CliCodexRunner } from "./integrations/codex/runner.js";
@@ -41,6 +42,7 @@ import {
   YandexExternalTaskSource,
   type YandexBridgeStore,
 } from "./integrations/yandexBridge/index.js";
+import { redactSecrets } from "./observability/redaction.js";
 import { createObservabilityService } from "./observability/service.js";
 import type { ProjectManagerApiDependencies } from "./observability/taskTrackerHumanApi.js";
 import { Logger } from "./utils/logger.js";
@@ -367,48 +369,92 @@ const createTelegramAssistantController = (
       : new InMemoryTelegramAssistantStore();
 
   const telegramClient = new TelegramClient({ botToken: config.botToken });
+  const notificationRouter = internalTaskTracker
+    ? new TelegramNotificationRouter({
+        store,
+        telegram: telegramClient,
+        taskTracker: internalTaskTracker,
+        logger,
+      })
+    : undefined;
   const service = new TelegramAssistantService({
     store,
     config,
     taskTracker: internalTaskTracker,
     repositories: fleetConfig.repositories,
     telegram: telegramClient,
+    ...(notificationRouter ? { notificationRouter } : {}),
     logger,
     botUsername: config.botUsername,
   });
 
-  if (config.mode !== "polling") {
-    return {
-      async start(): Promise<void> {},
-      async stop(): Promise<void> {
-        await pool?.end();
-      },
-    };
-  }
-
-  const poller = new TelegramUpdatePoller({
-    client: telegramClient,
-    getOffset: () => store.getOffset("default"),
-    handler: service,
-    intervalSeconds: config.pollIntervalSeconds,
-    withPollingLease: (operation) => store.withPollingLease("default", operation),
-    logger,
-  });
+  const poller = config.mode === "polling"
+    ? new TelegramUpdatePoller({
+        client: telegramClient,
+        getOffset: () => store.getOffset("default"),
+        handler: service,
+        intervalSeconds: config.pollIntervalSeconds,
+        withPollingLease: (operation) => store.withPollingLease("default", operation),
+        logger,
+      })
+    : undefined;
+  const notificationIntervalMs = Math.max(
+    config.pollIntervalSeconds * 1000,
+    30_000,
+  );
+  let notificationInterval: ReturnType<typeof setInterval> | undefined;
+  let notificationScanRunning = false;
   let started = false;
+
+  const runNotificationScan = (): void => {
+    if (!notificationRouter || notificationScanRunning) {
+      return;
+    }
+    notificationScanRunning = true;
+    service.scanNotifications()
+      .catch((error) => {
+        logger.warn("Telegram assistant notification scan failed.", redactSecrets({
+          error: errorToMessage(error),
+        }));
+      })
+      .finally(() => {
+        notificationScanRunning = false;
+      });
+  };
+
+  const startNotificationInterval = (): void => {
+    if (!notificationRouter || notificationInterval) {
+      return;
+    }
+    notificationInterval = setInterval(runNotificationScan, notificationIntervalMs);
+    notificationInterval.unref?.();
+  };
+
+  const stopNotificationInterval = (): void => {
+    if (!notificationInterval) {
+      return;
+    }
+    clearInterval(notificationInterval);
+    notificationInterval = undefined;
+  };
 
   return {
     async start(): Promise<void> {
       if (started) {
         return;
       }
-      await telegramClient.deleteWebhook({ dropPendingUpdates: false });
-      poller.start();
+      if (poller) {
+        await telegramClient.deleteWebhook({ dropPendingUpdates: false });
+        poller.start();
+      }
+      startNotificationInterval();
       started = true;
     },
     async stop(): Promise<void> {
       try {
-        await poller.stop();
+        await poller?.stop();
       } finally {
+        stopNotificationInterval();
         started = false;
         await pool?.end();
       }
@@ -663,4 +709,11 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     assertRepositoryReady: () => git.assertRepositoryReady(),
     assertCodexAuthenticated: checkCodexAuth,
   };
+};
+
+const errorToMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 };

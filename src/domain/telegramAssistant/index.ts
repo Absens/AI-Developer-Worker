@@ -19,6 +19,10 @@ export {
   type TelegramAssistantServiceOptions,
 } from "./service.js";
 export {
+  TelegramNotificationRouter,
+  type TelegramNotificationRouterOptions,
+} from "./notificationRouter.js";
+export {
   canPerformTelegramWrite,
   resolveTelegramActor,
   shouldProcessGroupMessage,

@@ -116,6 +116,7 @@ export interface TelegramAssistantStore {
   ): Promise<TelegramTaskSubscription>;
   listTaskSubscriptions(conversationKey: string): Promise<TelegramTaskSubscription[]>;
   listTaskSubscriptionsForTask(taskId: string): Promise<TelegramTaskSubscription[]>;
+  listAllTaskSubscriptions(): Promise<TelegramTaskSubscription[]>;
   reserveNotificationDelivery(
     input: ReserveNotificationDeliveryInput,
   ): Promise<TelegramNotificationDelivery | undefined>;
@@ -425,6 +426,10 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
         (subscription) => subscription.taskId === taskId,
       ),
     );
+  }
+
+  public async listAllTaskSubscriptions(): Promise<TelegramTaskSubscription[]> {
+    return clone([...this.taskSubscriptions.values()]);
   }
 
   public async reserveNotificationDelivery(

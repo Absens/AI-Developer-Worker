@@ -30,6 +30,7 @@ import {
   resolveTelegramTaskCandidates,
   type TelegramTaskCandidate,
 } from "./entityResolver.js";
+import type { TelegramNotificationRouter } from "./notificationRouter.js";
 import { routeTelegramIntent } from "./intentRouter.js";
 import type { TelegramAssistantStore } from "./store.js";
 import {
@@ -54,6 +55,7 @@ export interface TelegramAssistantServiceOptions {
   taskTracker?: TaskTrackerClient;
   repositories: RepositoryProfile[];
   telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
+  notificationRouter?: Pick<TelegramNotificationRouter, "scanSubscribedTasks">;
   logger?: TelegramAssistantLogger;
   botUsername?: string;
 }
@@ -97,6 +99,10 @@ export class TelegramAssistantService {
   private readonly taskTracker?: TaskTrackerClient;
   private readonly repositories: RepositoryProfile[];
   private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
+  private readonly notificationRouter?: Pick<
+    TelegramNotificationRouter,
+    "scanSubscribedTasks"
+  >;
   private readonly logger?: TelegramAssistantLogger;
   private readonly botUsername?: string;
 
@@ -106,8 +112,13 @@ export class TelegramAssistantService {
     this.taskTracker = options.taskTracker;
     this.repositories = options.repositories;
     this.telegram = options.telegram;
+    this.notificationRouter = options.notificationRouter;
     this.logger = options.logger;
     this.botUsername = options.botUsername ?? this.config.botUsername;
+  }
+
+  public async scanNotifications(): Promise<void> {
+    await this.notificationRouter?.scanSubscribedTasks();
   }
 
   public async handleUpdate(update: TelegramUpdate): Promise<void> {

@@ -1,0 +1,267 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  InMemoryTelegramAssistantStore,
+  TelegramNotificationRouter,
+} from "../src/domain/telegramAssistant/index.js";
+import type {
+  TaskEvent,
+  TaskRecord,
+} from "../src/domain/taskTracker/index.js";
+import type { TelegramMessage } from "../src/integrations/telegram/index.js";
+
+const baseTime = "2026-05-30T08:00:00.000Z";
+const laterTime = "2026-05-30T08:00:01.000Z";
+const latestTime = "2026-05-30T08:00:02.000Z";
+
+const telegramMessage = (messageId: number, chatId: number): TelegramMessage => ({
+  message_id: messageId,
+  date: 1,
+  chat: { id: chatId, type: "private" },
+});
+
+const taskEvent = (overrides: Partial<TaskEvent> = {}): TaskEvent => ({
+  id: overrides.id ?? "event-1",
+  taskId: overrides.taskId ?? "TASK-1",
+  kind: overrides.kind ?? "status_changed",
+  source: overrides.source ?? "worker_agent",
+  message: overrides.message ?? "Task moved to review.",
+  createdAt: overrides.createdAt ?? baseTime,
+  ...overrides,
+});
+
+const taskFixture = (overrides: Partial<TaskRecord> = {}): TaskRecord => ({
+  id: overrides.id ?? "TASK-1",
+  title: overrides.title ?? "Task",
+  description: overrides.description ?? "Task description.",
+  source: { kind: "native" },
+  createdBy: { owner: "human", id: "user-1" },
+  repositoryName: "developer",
+  repoPathKey: "developer",
+  baseBranch: "main",
+  queue: "DEV",
+  tags: [],
+  components: [],
+  priority: "normal",
+  status: "review",
+  taskType: "backend_endpoint",
+  acceptanceCriteria: [],
+  constraints: [],
+  riskFactors: [],
+  missingContext: [],
+  externalRefs: [],
+  fieldOwners: [],
+  revisions: [],
+  events: overrides.events ?? [taskEvent({ taskId: overrides.id ?? "TASK-1" })],
+  comments: [],
+  decisions: [],
+  plans: [],
+  dependencies: [],
+  artifacts: [],
+  agentRuns: [],
+  qualityGateRuns: [],
+  mergeRequests: [],
+  clarificationQuestions: [],
+  humanAnswers: [],
+  decompositionDecisions: [],
+  reviewMetadata: [],
+  memoryContextRefs: [],
+  createdAt: overrides.createdAt ?? baseTime,
+  updatedAt: overrides.updatedAt ?? baseTime,
+  ...overrides,
+});
+
+describe("TelegramNotificationRouter", () => {
+  it("sends task notifications once per task event for subscribed task", async () => {
+    const store = new InMemoryTelegramAssistantStore();
+    await store.upsertTaskSubscription({
+      id: "sub-1",
+      taskId: "TASK-1",
+      conversationKey: "bot_private:100",
+      chatId: 100,
+      userId: 200,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const task = taskFixture({
+      id: "TASK-1",
+      events: [
+        taskEvent({
+          id: "event-1",
+          taskId: "TASK-1",
+          kind: "status_changed",
+          message: "Moved to review <check>.",
+        }),
+        taskEvent({
+          id: "event-2",
+          taskId: "TASK-1",
+          kind: "comment_added",
+          message: "Reviewer left feedback.",
+          createdAt: laterTime,
+        }),
+      ],
+    });
+    const getTask = vi.fn(async (taskId: string): Promise<TaskRecord> => {
+      expect(taskId).toBe("TASK-1");
+      return task;
+    });
+    const sendMessage = vi.fn(async () => telegramMessage(9001, 100));
+    const router = new TelegramNotificationRouter({
+      store,
+      taskTracker: { getTask },
+      telegram: { sendMessage },
+      clock: () => new Date(baseTime),
+    });
+
+    await router.scanSubscribedTasks();
+    await router.scanSubscribedTasks();
+
+    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      chatId: "100",
+      parseMode: "HTML",
+      disableWebPagePreview: true,
+      text: expect.stringContaining("<b>TASK-1: status_changed</b>"),
+    }));
+    expect(sendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      text: expect.stringContaining("Moved to review &lt;check&gt;."),
+    }));
+    expect(sendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      chatId: "100",
+      text: expect.stringContaining("<b>TASK-1: comment_added</b>"),
+    }));
+    await expect(store.listTaskSubscriptionsForTask("TASK-1")).resolves.toEqual([
+      expect.objectContaining({
+        id: "sub-1",
+        lastNotifiedEventId: "event-2",
+      }),
+    ]);
+  });
+
+  it("retries notification delivery when sendMessage fails before marking sent", async () => {
+    let now = new Date(baseTime);
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => now,
+    });
+    await store.upsertTaskSubscription({
+      id: "sub-retry",
+      taskId: "TASK-2",
+      conversationKey: "bot_private:101",
+      chatId: 101,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const task = taskFixture({
+      id: "TASK-2",
+      events: [
+        taskEvent({
+          id: "event-retry",
+          taskId: "TASK-2",
+          kind: "validation_failed",
+          message: "Validation failed.",
+        }),
+      ],
+    });
+    const getTask = vi.fn(async (): Promise<TaskRecord> => task);
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("telegram send failed"))
+      .mockResolvedValueOnce(telegramMessage(9002, 101));
+    const router = new TelegramNotificationRouter({
+      store,
+      taskTracker: { getTask },
+      telegram: { sendMessage },
+      clock: () => now,
+      retryStaleMs: 0,
+    });
+
+    await expect(router.scanSubscribedTasks()).rejects.toThrow("telegram send failed");
+    await expect(store.listTaskSubscriptionsForTask("TASK-2")).resolves.toEqual([
+      expect.not.objectContaining({ lastNotifiedEventId: "event-retry" }),
+    ]);
+
+    now = new Date(laterTime);
+    await router.scanSubscribedTasks();
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    await expect(store.listTaskSubscriptionsForTask("TASK-2")).resolves.toEqual([
+      expect.objectContaining({
+        id: "sub-retry",
+        lastNotifiedEventId: "event-retry",
+      }),
+    ]);
+  });
+
+  it("does not reserve or send events at or before a subscription watermark", async () => {
+    const store = new InMemoryTelegramAssistantStore();
+    await store.upsertTaskSubscription({
+      id: "sub-watermark",
+      taskId: "TASK-3",
+      conversationKey: "bot_private:102",
+      chatId: 102,
+      createdAt: baseTime,
+      updatedAt: laterTime,
+      lastNotifiedEventId: "event-watermark",
+    });
+    const task = taskFixture({
+      id: "TASK-3",
+      events: [
+        taskEvent({
+          id: "event-old",
+          taskId: "TASK-3",
+          kind: "analysis_started",
+          message: "Analysis started.",
+          createdAt: baseTime,
+        }),
+        taskEvent({
+          id: "event-watermark",
+          taskId: "TASK-3",
+          kind: "analysis_completed",
+          message: "Analysis completed.",
+          createdAt: laterTime,
+        }),
+        taskEvent({
+          id: "event-new",
+          taskId: "TASK-3",
+          kind: "review_requested",
+          message: "Review requested.",
+          createdAt: latestTime,
+        }),
+      ],
+    });
+    const reserveNotificationDelivery = vi.spyOn(
+      store,
+      "reserveNotificationDelivery",
+    );
+    const getTask = vi.fn(async (): Promise<TaskRecord> => task);
+    const sendMessage = vi.fn(async () => telegramMessage(9003, 102));
+    const router = new TelegramNotificationRouter({
+      store,
+      taskTracker: { getTask },
+      telegram: { sendMessage },
+      clock: () => new Date(latestTime),
+    });
+
+    await router.scanSubscribedTasks();
+
+    expect(reserveNotificationDelivery).toHaveBeenCalledOnce();
+    expect(reserveNotificationDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subscriptionId: "sub-watermark",
+        eventId: "event-new",
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "102",
+      text: expect.stringContaining("<b>TASK-3: review_requested</b>"),
+    }));
+    await expect(store.listTaskSubscriptionsForTask("TASK-3")).resolves.toEqual([
+      expect.objectContaining({
+        id: "sub-watermark",
+        lastNotifiedEventId: "event-new",
+      }),
+    ]);
+  });
+});

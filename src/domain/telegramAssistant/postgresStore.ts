@@ -782,6 +782,17 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
     return result.rows.map(mapTaskSubscriptionRow);
   }
 
+  public async listAllTaskSubscriptions(): Promise<TelegramTaskSubscription[]> {
+    const result = await this.db.query<TaskSubscriptionRow>(
+      `
+        SELECT *
+        FROM telegram_assistant_subscriptions
+        ORDER BY task_id, created_at, id
+      `,
+    );
+    return result.rows.map(mapTaskSubscriptionRow);
+  }
+
   public async reserveNotificationDelivery(
     input: ReserveNotificationDeliveryInput,
   ): Promise<TelegramNotificationDelivery | undefined> {
