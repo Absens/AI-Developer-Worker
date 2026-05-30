@@ -38,6 +38,7 @@ import {
 } from "./entityResolver.js";
 import type { TelegramNotificationRouter } from "./notificationRouter.js";
 import { routeTelegramIntent } from "./intentRouter.js";
+import { canHandleBusinessMessage } from "./profileAutomation.js";
 import type {
   AnswerProjectQuestionResult,
   AssistantSource,
@@ -112,6 +113,8 @@ const TASK_TRACKER_UNAVAILABLE_MESSAGE =
   "Не могу проверить статус задачи: task tracker недоступен.";
 const TASK_CREATION_UNAVAILABLE_MESSAGE =
   "Не могу создать задачу: task tracker недоступен.";
+const BUSINESS_REPLY_UNAVAILABLE_OWNER_MESSAGE =
+  "Не могу ответить клиенту через бизнес-чат: у подключения нет права can_reply.";
 const TASK_NOT_FOUND_MESSAGE = "Не нашел задачу. Можешь уточнить тему или task id?";
 const ACTION_NOT_FOUND_MESSAGE = "Нет ожидающего действия для подтверждения.";
 const ACTION_CANCEL_NOT_FOUND_MESSAGE = "Нет ожидающего действия для отмены.";
@@ -143,7 +146,6 @@ const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md
 const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
 const MAX_TASK_SOURCE_COUNT = 5;
-const BUSINESS_CONNECTION_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
@@ -203,6 +205,34 @@ export class TelegramAssistantService {
       return;
     }
 
+    if (update.deleted_business_messages) {
+      try {
+        await this.handleDeletedBusinessMessagesUpdate(update);
+        await this.markProcessedAndAdvance(update.update_id);
+      } catch (error) {
+        this.logger?.warn("Telegram assistant failed to handle update.", redactSecrets({
+          updateId: update.update_id,
+          error: errorToMessage(error),
+        }));
+        throw error;
+      }
+      return;
+    }
+
+    if (update.edited_business_message) {
+      try {
+        await this.handleEditedBusinessMessageUpdate(update);
+        await this.markProcessedAndAdvance(update.update_id);
+      } catch (error) {
+        this.logger?.warn("Telegram assistant failed to handle update.", redactSecrets({
+          updateId: update.update_id,
+          error: errorToMessage(error),
+        }));
+        throw error;
+      }
+      return;
+    }
+
     if (update.callback_query) {
       try {
         await this.handleCallbackUpdate(update);
@@ -220,6 +250,37 @@ export class TelegramAssistantService {
     const message = normalizeTelegramUpdate(update, this.config);
     if (!message) {
       await this.markProcessedAndAdvance(update.update_id);
+      return;
+    }
+
+    if (message.source === "business") {
+      try {
+        let afterConversationLock: AfterConversationLockOperation | undefined;
+        await this.store.withConversationLock(
+          message.conversationKey,
+          async () => {
+            afterConversationLock = await this.handleBusinessMessageUnderPolicy(
+              message,
+            );
+          },
+        );
+        if (afterConversationLock && !afterConversationLock.runInBackground) {
+          await afterConversationLock.run();
+        }
+        await this.markProcessedAndAdvance(update.update_id);
+        if (afterConversationLock?.runInBackground) {
+          this.runAfterConversationLockInBackground(
+            afterConversationLock,
+            update.update_id,
+          );
+        }
+      } catch (error) {
+        this.logger?.warn("Telegram assistant failed to handle update.", redactSecrets({
+          updateId: update.update_id,
+          error: errorToMessage(error),
+        }));
+        throw error;
+      }
       return;
     }
 
@@ -274,14 +335,23 @@ export class TelegramAssistantService {
     }
 
     const intent = routeTelegramIntent(message.text, {
-      projectQaEnabled: this.config.projectQaEnabled,
+      projectQaEnabled: this.isProjectQaEnabledForMessage(message),
     });
     const actor = resolveTelegramActor(this.config, message);
     const projectQuestionAllowedByProfile =
       intent.name === "project_question" &&
       message.source === "business" &&
       (await this.isProjectQuestionAllowedForMessage(message));
-    if (!actor.allowed && !projectQuestionAllowedByProfile) {
+    const profileOwnerApprovalAllowed =
+      (intent.name === "approve_action" || intent.name === "reject_action") &&
+      message.source === "bot_private" &&
+      message.userId !== undefined &&
+      this.config.profileAutomation.allowedOwnerIds.includes(String(message.userId));
+    if (
+      !actor.allowed &&
+      !projectQuestionAllowedByProfile &&
+      !profileOwnerApprovalAllowed
+    ) {
       await this.telegram.sendMessage({
         chatId: String(message.chatId),
         text: UNAUTHORIZED_MESSAGE,
@@ -308,7 +378,8 @@ export class TelegramAssistantService {
 
     if (
       intent.safetyLevel === "confirm_write" &&
-      !canPerformTelegramWrite(actor)
+      !canPerformTelegramWrite(actor) &&
+      !profileOwnerApprovalAllowed
     ) {
       await this.telegram.sendMessage({
         chatId: String(message.chatId),
@@ -400,7 +471,13 @@ export class TelegramAssistantService {
         }
 
         const actor = resolveTelegramActor(this.config, candidate.message);
-        if (!actor.allowed) {
+        const profileOwnerCallbackAllowed =
+          !canPerformTelegramWrite(actor) &&
+          await this.isProfileOwnerPendingActionCallbackAllowed(
+            candidate.message,
+            parsed,
+          );
+        if (!actor.allowed && !profileOwnerCallbackAllowed) {
           await this.answerCallback(callback.id, UNAUTHORIZED_MESSAGE);
           return;
         }
@@ -424,6 +501,7 @@ export class TelegramAssistantService {
           candidate.message,
           actor,
           parsed,
+          { profileOwnerCallbackAllowed },
         );
       },
     );
@@ -434,13 +512,14 @@ export class TelegramAssistantService {
     message: TelegramInboundMessage,
     actor: TelegramResolvedActor,
     callback: Extract<ParsedTelegramCallbackData, { kind: "confirm" }>,
+    options: { profileOwnerCallbackAllowed?: boolean } = {},
   ): Promise<void> {
     if (!isSupportedConfirmActionKind(callback.actionKind)) {
       await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
       return;
     }
 
-    if (!canPerformTelegramWrite(actor)) {
+    if (!canPerformTelegramWrite(actor) && !options.profileOwnerCallbackAllowed) {
       await this.answerCallback(callbackQueryId, WRITE_ROLE_REQUIRED_MESSAGE);
       return;
     }
@@ -534,16 +613,273 @@ export class TelegramAssistantService {
   ): Promise<void> {
     const eventAt = new Date(connection.date * 1000).toISOString();
     const existing = await this.store.getBusinessConnection(connection.id);
+    const rights = {
+      ...(connection.rights ?? {}),
+      can_reply: connection.rights?.can_reply ?? connection.can_reply ?? false,
+    };
     await this.store.upsertBusinessConnection({
-      id: connection.id,
-      userId: connection.user.id,
-      userChatId: connection.user_chat_id,
-      canReply: connection.can_reply,
+      businessConnectionId: connection.id,
+      ownerUserId: String(connection.user.id),
+      ownerChatId: String(connection.user_chat_id),
+      rights,
       isEnabled: connection.is_enabled,
       createdAt: existing?.createdAt ?? eventAt,
       updatedAt: eventAt,
       lastSeenAt: eventAt,
       updateId,
+    });
+  }
+
+  private async handleDeletedBusinessMessagesUpdate(
+    update: TelegramUpdate,
+  ): Promise<void> {
+    const deleted = update.deleted_business_messages;
+    if (!deleted) {
+      return;
+    }
+
+    const conversationKey = conversationKeyForMessage(
+      "business",
+      deleted.chat.id,
+      undefined,
+      deleted.business_connection_id,
+    );
+    if (!conversationKey) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    for (const messageId of deleted.message_ids) {
+      await this.store.recordMessageRef({
+        id: `message-ref:${update.update_id}:deleted-business-message:${messageId}`,
+        conversationKey,
+        chatId: deleted.chat.id,
+        messageId,
+        source: "system",
+        redactedText: "[deleted business message]",
+        createdAt: now,
+        expiresAt: addDays(now, this.config.conversationRetentionDays),
+      });
+    }
+  }
+
+  private async handleEditedBusinessMessageUpdate(
+    update: TelegramUpdate,
+  ): Promise<void> {
+    const message = normalizeTelegramUpdate(update, this.config);
+    if (!message || message.source !== "business") {
+      return;
+    }
+
+    await this.recordMessageRef(message);
+  }
+
+  private async handleBusinessMessageUnderPolicy(
+    message: TelegramInboundMessage,
+    options: MessageProcessingOptions = {},
+  ): Promise<AfterConversationLockOperation | undefined> {
+    await this.recordMessageRef(message);
+
+    const connection = message.businessConnectionId
+      ? await this.store.getBusinessConnection(message.businessConnectionId)
+      : undefined;
+    const policy = canHandleBusinessMessage(this.config, message, connection);
+    if (!policy.allowed || !connection) {
+      this.logger?.info("Telegram business message saved without automation.", {
+        reason: policy.reason ?? "missing connection",
+        conversationKey: message.conversationKey,
+      });
+      return undefined;
+    }
+
+    const intent = routeTelegramIntent(message.text, {
+      projectQaEnabled: this.config.profileAutomation.projectQaEnabled,
+    });
+
+    const activeTurn = await this.store.getActiveAssistantTurn(
+      message.conversationKey,
+    );
+    if (activeTurn) {
+      if (intent.name === "reject_action") {
+        await this.cancelActiveAssistantTurn(message, activeTurn.id);
+        return undefined;
+      }
+      await this.store.enqueueMessage(this.buildQueuedMessage(message));
+      return undefined;
+    }
+
+    if (intent.name === "create_task_draft") {
+      if (this.config.profileAutomation.requireOwnerApproval) {
+        await this.handleBusinessCreateTaskDraftForOwnerApproval(
+          message,
+          connection,
+          intent,
+          intent.rawText ?? message.text ?? "",
+        );
+      } else if (policy.shouldAutoReply && !policy.canReply) {
+        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
+      }
+      return undefined;
+    }
+
+    if (intent.name === "project_question") {
+      if (
+        !policy.shouldAutoReply ||
+        !this.config.profileAutomation.projectQaEnabled
+      ) {
+        return undefined;
+      }
+      if (!policy.canReply) {
+        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
+        return undefined;
+      }
+      return this.prepareProjectQuestionTurn(
+        message,
+        intent.rawText ?? message.text ?? "",
+        options,
+      );
+    }
+
+    if (!policy.shouldAutoReply) {
+      return undefined;
+    }
+    if (!policy.canReply) {
+      await this.notifyOwnerBusinessReplyUnavailable(connection, message);
+      return undefined;
+    }
+
+    await this.sendPlainMessage(message, `Intent: ${intent.name}`);
+    return undefined;
+  }
+
+  private async isProfileOwnerPendingActionCallbackAllowed(
+    message: TelegramInboundMessage,
+    callback: ParsedTelegramCallbackData,
+  ): Promise<boolean> {
+    if (
+      message.source !== "bot_private" ||
+      message.userId === undefined ||
+      !this.config.profileAutomation.allowedOwnerIds.includes(String(message.userId))
+    ) {
+      return false;
+    }
+    if (callback.kind === "select_task") {
+      return false;
+    }
+
+    const action = await this.store.getPendingAction(callback.id);
+    if (
+      !action ||
+      action.chatId !== message.chatId ||
+      action.userId !== message.userId ||
+      !isOwnerRoutedBusinessTaskDraftAction(action)
+    ) {
+      return false;
+    }
+    if (callback.kind === "confirm") {
+      return isConfirmableActionForCallback(action, callback.actionKind);
+    }
+    return isConfirmablePendingAction(action);
+  }
+
+  private async notifyOwnerBusinessReplyUnavailable(
+    connection: TelegramBusinessConnectionRecord,
+    message: TelegramInboundMessage,
+  ): Promise<void> {
+    await this.sendOwnerPlainMessage(
+      connection,
+      BUSINESS_REPLY_UNAVAILABLE_OWNER_MESSAGE,
+    );
+    this.logger?.info("Telegram business message owner notified without automation reply.", {
+      conversationKey: message.conversationKey,
+      businessConnectionId: message.businessConnectionId,
+    });
+  }
+
+  private async handleBusinessCreateTaskDraftForOwnerApproval(
+    message: TelegramInboundMessage,
+    connection: TelegramBusinessConnectionRecord,
+    intent: TelegramIntent,
+    text: string,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendOwnerPlainMessage(
+        connection,
+        TASK_CREATION_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendOwnerPlainMessage(
+        connection,
+        "Не могу создать задачу: не удалось определить сообщение или пользователя.",
+      );
+      return;
+    }
+
+    const ownerMessage = this.buildOwnerApprovalMessage(message, connection);
+    const draft = buildHeuristicTaskDraft(
+      text,
+      this.repositories,
+      this.config.defaultRepository,
+    );
+    const actionId = buildPendingActionId(message.updateId, message.messageId);
+    const externalKey = buildTelegramExternalKey(message.chatId, message.messageId);
+    const now = new Date().toISOString();
+    const pendingAction: TelegramPendingAction = {
+      id: actionId,
+      conversationKey: ownerMessage.conversationKey,
+      chatId: ownerMessage.chatId,
+      userId: ownerMessage.userId!,
+      intent,
+      payload: {
+        draft,
+        chatId: message.chatId,
+        messageId: message.messageId,
+        userId: message.userId,
+        externalKey,
+      },
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: addDays(now, this.config.conversationRetentionDays),
+    };
+
+    await this.store.upsertPendingAction(pendingAction);
+    await this.sendTelegramResponse(
+      ownerMessage,
+      buildTaskDraftResponse(draft, pendingAction.id),
+    );
+  }
+
+  private buildOwnerApprovalMessage(
+    message: TelegramInboundMessage,
+    connection: TelegramBusinessConnectionRecord,
+  ): TelegramInboundMessage {
+    const ownerChatId = Number(connection.ownerChatId);
+    const ownerUserId = Number(connection.ownerUserId);
+    return {
+      ...message,
+      id: `${message.id}:owner-approval`,
+      conversationKey: `bot_private:${connection.ownerChatId}`,
+      source: "bot_private",
+      chatId: ownerChatId,
+      userId: ownerUserId,
+      businessConnectionId: undefined,
+      actor: {
+        telegramUserId: ownerUserId,
+        role: resolveTelegramRole(this.config, ownerUserId),
+      },
+    };
+  }
+
+  private async sendOwnerPlainMessage(
+    connection: TelegramBusinessConnectionRecord,
+    text: string,
+  ): Promise<void> {
+    await this.telegram.sendMessage({
+      chatId: connection.ownerChatId,
+      text,
     });
   }
 
@@ -673,7 +1009,7 @@ export class TelegramAssistantService {
     options: MessageProcessingOptions = {},
   ): Promise<AfterConversationLockOperation | undefined> {
     if (
-      !this.config.projectQaEnabled ||
+      !this.isProjectQaEnabledForMessage(message) ||
       !this.assistantCodex ||
       !(await this.isProjectQuestionAllowedForMessage(message))
     ) {
@@ -688,7 +1024,7 @@ export class TelegramAssistantService {
       conversationKey: message.conversationKey,
       status: "running",
       startedAt: now,
-      input: message,
+      input: toPersistableInboundMessage(message),
     });
 
     return {
@@ -779,6 +1115,12 @@ export class TelegramAssistantService {
     await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
   }
 
+  private isProjectQaEnabledForMessage(message: TelegramInboundMessage): boolean {
+    return message.source === "business"
+      ? this.config.profileAutomation.projectQaEnabled
+      : this.config.projectQaEnabled;
+  }
+
   private async isProjectQuestionAllowedForMessage(
     message: TelegramInboundMessage,
   ): Promise<boolean> {
@@ -786,29 +1128,19 @@ export class TelegramAssistantService {
       return true;
     }
 
-    const automation = this.config.profileAutomation;
-    if (
-      !automation.enabled ||
-      !automation.projectQaEnabled ||
-      !message.businessConnectionId
-    ) {
+    if (!this.config.profileAutomation.projectQaEnabled) {
       return false;
     }
 
-    const connection = await this.store.getBusinessConnection(
-      message.businessConnectionId,
-    );
-    if (
-      !connection?.isEnabled ||
-      !connection.canReply ||
-      !isFreshBusinessConnection(connection)
-    ) {
+    const connection = message.businessConnectionId
+      ? await this.store.getBusinessConnection(message.businessConnectionId)
+      : undefined;
+    const policy = canHandleBusinessMessage(this.config, message, connection);
+    if (!policy.allowed) {
       return false;
     }
 
-    const ownerAllowed = automation.allowedOwnerIds.includes(String(connection.userId));
-    const chatAllowed = automation.allowedChatIds.includes(String(message.chatId));
-    return ownerAllowed && chatAllowed;
+    return true;
   }
 
   private async collectProjectQuestionSources(
@@ -1017,7 +1349,7 @@ export class TelegramAssistantService {
           return;
         }
 
-        afterConversationLock = await this.handleMessageUnderConversationLock(
+        afterConversationLock = await this.handleQueuedMessageUnderConversationLock(
           currentQueuedMessage.message,
           { drainAfterProjectTurn: false },
         );
@@ -1032,6 +1364,16 @@ export class TelegramAssistantService {
         await afterConversationLock.run();
       }
     }
+  }
+
+  private async handleQueuedMessageUnderConversationLock(
+    message: TelegramInboundMessage,
+    options: MessageProcessingOptions = {},
+  ): Promise<AfterConversationLockOperation | undefined> {
+    if (message.source === "business") {
+      return this.handleBusinessMessageUnderPolicy(message, options);
+    }
+    return this.handleMessageUnderConversationLock(message, options);
   }
 
   private runAfterConversationLockInBackground(
@@ -1455,7 +1797,7 @@ export class TelegramAssistantService {
       conversationKey: message.conversationKey,
       chatId: message.chatId,
       ...(message.userId !== undefined ? { userId: message.userId } : {}),
-      message,
+      message: toPersistableInboundMessage(message),
       status: "queued",
       createdAt,
       expiresAt: addDays(createdAt, this.config.conversationRetentionDays),
@@ -1493,22 +1835,34 @@ export class TelegramAssistantService {
   }
 }
 
-const isFreshBusinessConnection = (
-  connection: TelegramBusinessConnectionRecord,
-): boolean => {
-  const latestSeenAt = Math.max(
-    parseTimestamp(connection.lastSeenAt),
-    parseTimestamp(connection.updatedAt),
+const toPersistableInboundMessage = (
+  message: TelegramInboundMessage,
+): TelegramInboundMessage => {
+  const redactedText = message.redactedText ?? (
+    message.text !== undefined ? redactSecrets(message.text) : undefined
   );
-  return (
-    Number.isFinite(latestSeenAt) &&
-    Date.now() - latestSeenAt <= BUSINESS_CONNECTION_REPLY_WINDOW_MS
-  );
-};
 
-const parseTimestamp = (value: string): number => {
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+  return {
+    id: message.id,
+    updateId: message.updateId,
+    conversationKey: message.conversationKey,
+    source: message.source,
+    chatId: message.chatId,
+    ...(message.userId !== undefined ? { userId: message.userId } : {}),
+    ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
+    ...(redactedText !== undefined ? { text: redactedText, redactedText } : {}),
+    ...(message.actor ? { actor: message.actor } : {}),
+    ...(message.businessConnectionId
+      ? { businessConnectionId: message.businessConnectionId }
+      : {}),
+    ...(message.isReplyToBot !== undefined
+      ? { isReplyToBot: message.isReplyToBot }
+      : {}),
+    ...(message.replyToBotUsername
+      ? { replyToBotUsername: message.replyToBotUsername }
+      : {}),
+    receivedAt: message.receivedAt,
+  };
 };
 
 const validateCallbackPendingAction = (
@@ -1860,6 +2214,17 @@ const isConfirmablePendingAction = (action: TelegramPendingAction): boolean =>
   action.intent.name === "create_task_draft" ||
   action.intent.name === "answer_ai_question";
 
+const isOwnerRoutedBusinessTaskDraftAction = (
+  action: TelegramPendingAction,
+): boolean =>
+  action.intent.name === "create_task_draft" &&
+  typeof action.payload.chatId === "number" &&
+  typeof action.payload.userId === "number" &&
+  (
+    action.payload.chatId !== action.chatId ||
+    action.payload.userId !== action.userId
+  );
+
 const isSupportedConfirmActionKind = (actionKind: string): boolean =>
   actionKind === "create_task" || actionKind === "answer_question";
 
@@ -2038,6 +2403,7 @@ const normalizeTelegramUpdateCandidate = (
       message: update.edited_business_message,
       user: update.edited_business_message.from,
       text: update.edited_business_message.text,
+      redactedTextPrefix: "[edited] ",
       idSuffix: `edited_business_message:${update.edited_business_message.message_id}`,
       forceSource: "business",
     });
@@ -2063,6 +2429,7 @@ interface NormalizeMessageInput {
   message: NonNullable<TelegramUpdate["message"]>;
   user?: NonNullable<TelegramUpdate["message"]>["from"];
   text?: string;
+  redactedTextPrefix?: string;
   idSuffix: string;
   forceSource?: TelegramConversationSource;
 }
@@ -2091,6 +2458,9 @@ const normalizeMessage = (
   }
 
   const text = input.text;
+  const redactedText = text !== undefined
+    ? `${input.redactedTextPrefix ?? ""}${redactSecrets(text)}`
+    : undefined;
   const replyUsername = replyToBotUsername(input.message);
   const message: TelegramInboundMessage = {
     id: `telegram:${input.update.update_id}:${input.idSuffix}`,
@@ -2100,7 +2470,7 @@ const normalizeMessage = (
     chatId: input.message.chat.id,
     ...(input.user?.id !== undefined ? { userId: input.user.id } : {}),
     messageId: input.message.message_id,
-    ...(text !== undefined ? { text, redactedText: redactSecrets(text) } : {}),
+    ...(text !== undefined ? { text, redactedText } : {}),
     ...(input.user ? { actor: actorForUser(input.user, input.config) } : {}),
     ...(businessConnectionId ? { businessConnectionId } : {}),
     ...(replyUsername ? { replyToBotUsername: replyUsername, isReplyToBot: true } : {}),

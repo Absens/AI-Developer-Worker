@@ -984,6 +984,127 @@ describe("TelegramAssistantService", () => {
     }
   });
 
+  it("persists redacted project Q&A turn inputs and queued messages while still answering", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
+    try {
+      await writeFile(join(repoDir, "README.md"), "Project overview.");
+      const connectionTime = new Date().toISOString();
+      await store.upsertBusinessConnection({
+        id: "business-redaction",
+        userId: 10,
+        userChatId: 1000,
+        rights: { can_reply: true, can_read_messages: true },
+        isEnabled: true,
+        createdAt: connectionTime,
+        updatedAt: connectionTime,
+        lastSeenAt: connectionTime,
+      });
+
+      let resolveBusinessAnswer: ((value: { answer: string }) => void) | undefined;
+      const businessAnswer = new Promise<{ answer: string }>((resolve) => {
+        resolveBusinessAnswer = resolve;
+      });
+      let resolvePrivateAnswer: ((value: { answer: string }) => void) | undefined;
+      const privateAnswer = new Promise<{ answer: string }>((resolve) => {
+        resolvePrivateAnswer = resolve;
+      });
+      const answerProjectQuestion = vi.fn(async (
+        input: Parameters<FakeAssistantCodexService["answerProjectQuestion"]>[0],
+      ) => {
+        if (input.question.startsWith("Какие цели проекта?")) {
+          return businessAnswer;
+        }
+        if (input.question === "Первый вопрос?") {
+          return privateAnswer;
+        }
+        return { answer: `Очередь: ${input.question}` };
+      });
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        assistantCodex: { answerProjectQuestion },
+        config: {
+          projectQaEnabled: true,
+          profileAutomation: {
+            ...baseTelegramAssistantConfig().profileAutomation,
+            enabled: true,
+            autoReplyEnabled: true,
+            projectQaEnabled: true,
+            allowedOwnerIds: ["10"],
+            allowedChatIds: ["1"],
+          },
+        },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+
+      await service.handleUpdate({
+        update_id: 91,
+        business_message: {
+          message_id: 95,
+          date: 1,
+          business_connection_id: "business-redaction",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "Какие цели проекта? TOKEN=business-secret",
+        },
+      });
+      await waitForCondition(() => answerProjectQuestion.mock.calls.length === 1);
+
+      const businessTurn = await store.getActiveAssistantTurn(
+        "business:business-redaction:1",
+      );
+      expect(JSON.stringify(businessTurn?.input)).not.toContain("business-secret");
+      expect(businessTurn?.input).toEqual(expect.objectContaining({
+        text: "Какие цели проекта? TOKEN=[redacted]",
+        redactedText: "Какие цели проекта? TOKEN=[redacted]",
+      }));
+
+      resolveBusinessAnswer?.({ answer: "Business answer." });
+      await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+        input.text === "Business answer.",
+      ));
+
+      const firstUpdate = service.handleUpdate(messageUpdate("Первый вопрос?", {
+        updateId: 92,
+        messageId: 96,
+      }));
+      await waitForCondition(() => answerProjectQuestion.mock.calls.length === 2);
+      await firstUpdate;
+
+      await service.handleUpdate(messageUpdate("Второй вопрос TOKEN=queued-secret", {
+        updateId: 93,
+        messageId: 97,
+      }));
+      const queuedMessages = await store.listQueuedMessages("bot_private:1");
+      expect(queuedMessages).toHaveLength(1);
+      expect(JSON.stringify(queuedMessages[0]?.message)).not.toContain(
+        "queued-secret",
+      );
+      expect(queuedMessages[0]?.message).toEqual(expect.objectContaining({
+        text: "Второй вопрос TOKEN=[redacted]",
+        redactedText: "Второй вопрос TOKEN=[redacted]",
+      }));
+
+      resolvePrivateAnswer?.({ answer: "Первый ответ." });
+      await waitForCondition(() => answerProjectQuestion.mock.calls.length === 3);
+      await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+        input.text === "Очередь: Второй вопрос TOKEN=[redacted]",
+      ));
+      expect(answerProjectQuestion).toHaveBeenCalledWith(expect.objectContaining({
+        question: "Какие цели проекта? TOKEN=[redacted]",
+      }));
+      expect(answerProjectQuestion).toHaveBeenCalledWith(expect.objectContaining({
+        question: "Второй вопрос TOKEN=[redacted]",
+      }));
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns and advances offset while a project question answer is still running so cancellation can win", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore({
@@ -1431,11 +1552,7 @@ describe("TelegramAssistantService", () => {
     });
 
     expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
-    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      chatId: "1",
-      businessConnectionId: "business-1",
-      text: expect.stringContaining("недоступен"),
-    }));
+    expect(sendMessage).not.toHaveBeenCalled();
     expect(await store.getOffset("default")).toBe(76);
   });
 
@@ -1477,11 +1594,7 @@ describe("TelegramAssistantService", () => {
       });
 
       expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        chatId: "1",
-        businessConnectionId: "business-unverified-owner",
-        text: expect.stringContaining("недоступен"),
-      }));
+      expect(sendMessage).not.toHaveBeenCalled();
       expect(await store.getOffset("default")).toBe(81);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
@@ -1505,7 +1618,7 @@ describe("TelegramAssistantService", () => {
         id: "business-verified-owner",
         userId: 10,
         userChatId: 1000,
-        canReply: true,
+        rights: { can_reply: true, can_read_messages: true },
         isEnabled: true,
         createdAt: freshConnectionTime,
         updatedAt: freshConnectionTime,
@@ -1520,6 +1633,7 @@ describe("TelegramAssistantService", () => {
           profileAutomation: {
             ...baseTelegramAssistantConfig().profileAutomation,
             enabled: true,
+            autoReplyEnabled: true,
             projectQaEnabled: true,
             allowedOwnerIds: ["10"],
             allowedChatIds: ["1"],
@@ -1554,6 +1668,226 @@ describe("TelegramAssistantService", () => {
       }));
       expect(await store.getOffset("default")).toBe(82);
     } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("queues a second business project Q&A while one is running using redacted payloads", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
+    let resolveFirstAnswer: ((value: { answer: string }) => void) | undefined;
+    try {
+      await writeFile(join(repoDir, "README.md"), "Project overview.");
+      const freshConnectionTime = new Date().toISOString();
+      await store.upsertBusinessConnection({
+        id: "business-queue",
+        userId: 10,
+        userChatId: 1000,
+        rights: { can_reply: true, can_read_messages: true },
+        isEnabled: true,
+        createdAt: freshConnectionTime,
+        updatedAt: freshConnectionTime,
+        lastSeenAt: freshConnectionTime,
+      });
+      const firstAnswer = new Promise<{ answer: string }>((resolve) => {
+        resolveFirstAnswer = resolve;
+      });
+      const answerProjectQuestion = vi.fn(async (
+        input: Parameters<FakeAssistantCodexService["answerProjectQuestion"]>[0],
+      ) => {
+        if (input.question === "Какие цели проекта?") {
+          return firstAnswer;
+        }
+        return { answer: "Second business answer must not start." };
+      });
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        assistantCodex: { answerProjectQuestion },
+        config: {
+          projectQaEnabled: true,
+          profileAutomation: {
+            ...baseTelegramAssistantConfig().profileAutomation,
+            enabled: true,
+            autoReplyEnabled: true,
+            projectQaEnabled: true,
+            allowedOwnerIds: ["10"],
+            allowedChatIds: ["1"],
+          },
+        },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+
+      const firstUpdate = service.handleUpdate({
+        update_id: 141,
+        business_message: {
+          message_id: 145,
+          date: 1,
+          business_connection_id: "business-queue",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "Какие цели проекта?",
+        },
+      });
+      await waitForCondition(() => answerProjectQuestion.mock.calls.length === 1);
+      await firstUpdate;
+
+      await service.handleUpdate({
+        update_id: 142,
+        business_message: {
+          message_id: 146,
+          date: 2,
+          business_connection_id: "business-queue",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "Второй вопрос TOKEN=business-queued-secret",
+        },
+      });
+
+      expect(answerProjectQuestion).toHaveBeenCalledTimes(1);
+      await expect(store.listQueuedMessages("business:business-queue:1")).resolves.toEqual([
+        expect.objectContaining({
+          id: "queued:142",
+          message: expect.objectContaining({
+            businessConnectionId: "business-queue",
+            conversationKey: "business:business-queue:1",
+            text: "Второй вопрос TOKEN=[redacted]",
+            redactedText: "Второй вопрос TOKEN=[redacted]",
+          }),
+        }),
+      ]);
+      const queuedMessages = await store.listQueuedMessages("business:business-queue:1");
+      expect(JSON.stringify(queuedMessages[0]?.message)).not.toContain(
+        "business-queued-secret",
+      );
+      resolveFirstAnswer?.({ answer: "First business answer." });
+      await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+        input.text === "First business answer.",
+      ));
+    } finally {
+      resolveFirstAnswer?.({ answer: "First business answer." });
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels a running business project Q&A and suppresses late answers", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
+    let resolveAnswer: ((value: { answer: string }) => void) | undefined;
+    let answerPromiseResolved = false;
+    try {
+      await writeFile(join(repoDir, "README.md"), "Project overview.");
+      const freshConnectionTime = new Date().toISOString();
+      await store.upsertBusinessConnection({
+        id: "business-cancel",
+        userId: 10,
+        userChatId: 1000,
+        rights: { can_reply: true, can_read_messages: true },
+        isEnabled: true,
+        createdAt: freshConnectionTime,
+        updatedAt: freshConnectionTime,
+        lastSeenAt: freshConnectionTime,
+      });
+      const pendingAnswer = new Promise<{ answer: string }>((resolve) => {
+        resolveAnswer = resolve;
+      });
+      const answerProjectQuestion = vi.fn(async () => {
+        const result = await pendingAnswer;
+        answerPromiseResolved = true;
+        return result;
+      });
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        assistantCodex: { answerProjectQuestion },
+        config: {
+          projectQaEnabled: true,
+          profileAutomation: {
+            ...baseTelegramAssistantConfig().profileAutomation,
+            enabled: true,
+            autoReplyEnabled: true,
+            projectQaEnabled: true,
+            allowedOwnerIds: ["10"],
+            allowedChatIds: ["1"],
+          },
+        },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+
+      const firstUpdate = service.handleUpdate({
+        update_id: 143,
+        business_message: {
+          message_id: 147,
+          date: 1,
+          business_connection_id: "business-cancel",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "Какие цели проекта?",
+        },
+      });
+      await waitForCondition(() => answerProjectQuestion.mock.calls.length === 1);
+      await firstUpdate;
+      await store.enqueueMessage({
+        id: "queued:business-cancel",
+        conversationKey: "business:business-cancel:1",
+        chatId: 1,
+        userId: 999,
+        message: {
+          id: "telegram:queued-business",
+          updateId: 140,
+          conversationKey: "business:business-cancel:1",
+          source: "business",
+          chatId: 1,
+          userId: 999,
+          messageId: 144,
+          text: "Следующий вопрос",
+          redactedText: "Следующий вопрос",
+          businessConnectionId: "business-cancel",
+          receivedAt: "1970-01-01T00:00:02.000Z",
+        },
+        status: "queued",
+        createdAt: "2026-05-30T08:00:00.000Z",
+        expiresAt: "2026-06-13T08:00:00.000Z",
+      });
+
+      await service.handleUpdate({
+        update_id: 144,
+        business_message: {
+          message_id: 148,
+          date: 2,
+          business_connection_id: "business-cancel",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "отмена",
+        },
+      });
+
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        chatId: "1",
+        businessConnectionId: "business-cancel",
+        text: "Действие отменено.",
+        replyToMessageId: 148,
+      }));
+      await expect(
+        store.getActiveAssistantTurn("business:business-cancel:1"),
+      ).resolves.toBeUndefined();
+      await expect(
+        store.listQueuedMessages("business:business-cancel:1"),
+      ).resolves.toEqual([]);
+
+      resolveAnswer?.({ answer: "Late business answer." });
+      await waitForCondition(() => answerPromiseResolved);
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+        text: "Late business answer.",
+      }));
+    } finally {
+      resolveAnswer?.({ answer: "Late business answer." });
       await rm(repoDir, { recursive: true, force: true });
     }
   });
@@ -1607,19 +1941,8 @@ describe("TelegramAssistantService", () => {
         },
       });
 
-      await waitForCondition(() =>
-        sendMessage.mock.calls.length > 0 ||
-          vi.mocked(assistantCodex.answerProjectQuestion).mock.calls.length > 0,
-      );
       expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        chatId: "1",
-        businessConnectionId: "business-profile-disabled",
-        text: expect.stringContaining("недоступен"),
-      }));
-      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
-        text: "Internal Q&A answer.",
-      }));
+      expect(sendMessage).not.toHaveBeenCalled();
       expect(await store.getOffset("default")).toBe(83);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
@@ -1675,20 +1998,72 @@ describe("TelegramAssistantService", () => {
         },
       });
 
-      await waitForCondition(() =>
-        sendMessage.mock.calls.length > 0 ||
-          vi.mocked(assistantCodex.answerProjectQuestion).mock.calls.length > 0,
-      );
       expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        chatId: "1",
-        businessConnectionId: "business-cannot-reply",
-        text: expect.stringContaining("недоступен"),
-      }));
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
-        text: "Internal Q&A answer.",
+        businessConnectionId: "business-cannot-reply",
       }));
       expect(await store.getOffset("default")).toBe(85);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("denies business project Q&A when read rights are omitted", async () => {
+    const sendMessage = vi.fn();
+    const assistantCodex: FakeAssistantCodexService = {
+      answerProjectQuestion: vi.fn(async () => ({ answer: "Internal Q&A answer." })),
+    };
+    const store = new InMemoryTelegramAssistantStore();
+    const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
+    try {
+      await writeFile(join(repoDir, "README.md"), "Project overview.");
+      const freshConnectionTime = new Date().toISOString();
+      await store.upsertBusinessConnection({
+        id: "business-missing-read-rights",
+        userId: 10,
+        userChatId: 1000,
+        rights: { can_reply: true },
+        isEnabled: true,
+        createdAt: freshConnectionTime,
+        updatedAt: freshConnectionTime,
+        lastSeenAt: freshConnectionTime,
+      });
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        assistantCodex,
+        config: {
+          projectQaEnabled: true,
+          profileAutomation: {
+            ...baseTelegramAssistantConfig().profileAutomation,
+            enabled: true,
+            autoReplyEnabled: true,
+            projectQaEnabled: true,
+            allowedOwnerIds: ["10"],
+            allowedChatIds: ["1"],
+          },
+        },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+
+      await service.handleUpdate({
+        update_id: 85,
+        business_message: {
+          message_id: 89,
+          date: 1,
+          business_connection_id: "business-missing-read-rights",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "Какие цели проекта?",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+        businessConnectionId: "business-missing-read-rights",
+      }));
+      expect(await store.getOffset("default")).toBe(86);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
@@ -1723,6 +2098,7 @@ describe("TelegramAssistantService", () => {
           profileAutomation: {
             ...baseTelegramAssistantConfig().profileAutomation,
             enabled: true,
+            autoReplyEnabled: true,
             projectQaEnabled: true,
             allowedOwnerIds: ["10"],
             allowedChatIds: ["1"],
@@ -1743,19 +2119,8 @@ describe("TelegramAssistantService", () => {
         },
       });
 
-      await waitForCondition(() =>
-        sendMessage.mock.calls.length > 0 ||
-          vi.mocked(assistantCodex.answerProjectQuestion).mock.calls.length > 0,
-      );
       expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        chatId: "1",
-        businessConnectionId: "business-stale",
-        text: expect.stringContaining("недоступен"),
-      }));
-      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
-        text: "Internal Q&A answer.",
-      }));
+      expect(sendMessage).not.toHaveBeenCalled();
       expect(await store.getOffset("default")).toBe(87);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
@@ -1779,7 +2144,7 @@ describe("TelegramAssistantService", () => {
         id: "business-revoked",
         userId: 10,
         userChatId: 1000,
-        canReply: true,
+        rights: { can_reply: true, can_read_messages: true },
         isEnabled: true,
         createdAt: freshConnectionTime,
         updatedAt: freshConnectionTime,
@@ -1794,6 +2159,7 @@ describe("TelegramAssistantService", () => {
           profileAutomation: {
             ...baseTelegramAssistantConfig().profileAutomation,
             enabled: true,
+            autoReplyEnabled: true,
             projectQaEnabled: true,
             allowedOwnerIds: ["10"],
             allowedChatIds: ["1"],
@@ -1849,19 +2215,8 @@ describe("TelegramAssistantService", () => {
         },
       });
 
-      await waitForCondition(() =>
-        sendMessage.mock.calls.length > 0 ||
-          vi.mocked(assistantCodex.answerProjectQuestion).mock.calls.length > 1,
-      );
       expect(assistantCodex.answerProjectQuestion).toHaveBeenCalledOnce();
-      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        chatId: "1",
-        businessConnectionId: "business-revoked",
-        text: expect.stringContaining("недоступен"),
-      }));
-      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
-        text: "Internal Q&A answer.",
-      }));
+      expect(sendMessage).not.toHaveBeenCalled();
       await expect(store.getBusinessConnection("business-revoked")).resolves.toEqual(
         expect.objectContaining({
           userId: 11,
@@ -1893,7 +2248,7 @@ describe("TelegramAssistantService", () => {
         id: "business-profile-qa",
         userId: 10,
         userChatId: 1000,
-        canReply: true,
+        rights: { can_reply: true, can_read_messages: true },
         isEnabled: true,
         createdAt: freshConnectionTime,
         updatedAt: freshConnectionTime,
@@ -1913,6 +2268,7 @@ describe("TelegramAssistantService", () => {
           profileAutomation: {
             ...baseTelegramAssistantConfig().profileAutomation,
             enabled: true,
+            autoReplyEnabled: true,
             projectQaEnabled: true,
             allowedOwnerIds: ["10"],
             allowedChatIds: ["1"],
@@ -1946,6 +2302,107 @@ describe("TelegramAssistantService", () => {
         text: "Business profile Q&A answer.",
       }));
       expect(await store.getOffset("default")).toBe(84);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows profile automation project Q&A when global project Q&A is disabled but keeps private Q&A disabled", async () => {
+    const businessSendMessage = vi.fn();
+    const businessAssistantCodex: FakeAssistantCodexService = {
+      answerProjectQuestion: vi.fn(async () => ({
+        answer: "Business profile-only Q&A answer.",
+      })),
+    };
+    const businessStore = new InMemoryTelegramAssistantStore();
+    const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
+    try {
+      await writeFile(join(repoDir, "README.md"), "Project overview.");
+      const freshConnectionTime = new Date().toISOString();
+      await businessStore.upsertBusinessConnection({
+        id: "business-profile-only-qa",
+        userId: 10,
+        userChatId: 1000,
+        rights: { can_reply: true, can_read_messages: true },
+        isEnabled: true,
+        createdAt: freshConnectionTime,
+        updatedAt: freshConnectionTime,
+        lastSeenAt: freshConnectionTime,
+      });
+      const businessService = buildAssistant({
+        store: businessStore,
+        sendMessage: businessSendMessage,
+        assistantCodex: businessAssistantCodex,
+        config: {
+          projectQaEnabled: false,
+          allowedChatIds: [],
+          allowedUserIds: [],
+          developerUserIds: [],
+          operatorUserIds: [],
+          adminUserIds: [],
+          profileAutomation: {
+            ...baseTelegramAssistantConfig().profileAutomation,
+            enabled: true,
+            autoReplyEnabled: true,
+            projectQaEnabled: true,
+            allowedOwnerIds: ["10"],
+            allowedChatIds: ["1"],
+          },
+        },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+
+      await businessService.handleUpdate({
+        update_id: 94,
+        business_message: {
+          message_id: 98,
+          date: 1,
+          business_connection_id: "business-profile-only-qa",
+          chat: { id: 1, type: "private" },
+          from: { id: 999, is_bot: false, first_name: "External User" },
+          text: "Какие цели проекта?",
+        },
+      });
+
+      await waitForCondition(() =>
+        vi.mocked(businessAssistantCodex.answerProjectQuestion).mock.calls.length === 1,
+      );
+      await waitForCondition(() => businessSendMessage.mock.calls.some(([input]) =>
+        input.text === "Business profile-only Q&A answer.",
+      ));
+      expect(businessSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        chatId: "1",
+        businessConnectionId: "business-profile-only-qa",
+        text: "Business profile-only Q&A answer.",
+      }));
+
+      const privateSendMessage = vi.fn();
+      const privateAssistantCodex: FakeAssistantCodexService = {
+        answerProjectQuestion: vi.fn(async () => ({
+          answer: "Private Q&A must not run.",
+        })),
+      };
+      const privateStore = new InMemoryTelegramAssistantStore();
+      const privateService = buildAssistant({
+        store: privateStore,
+        sendMessage: privateSendMessage,
+        assistantCodex: privateAssistantCodex,
+        config: { projectQaEnabled: false },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+
+      await privateService.handleUpdate(messageUpdate("Какие цели проекта?", {
+        updateId: 95,
+        messageId: 99,
+      }));
+
+      expect(privateAssistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
+      expect(privateSendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+        text: "Private Q&A must not run.",
+      }));
+      await expect(
+        privateStore.getActiveAssistantTurn("bot_private:1"),
+      ).resolves.toBeUndefined();
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

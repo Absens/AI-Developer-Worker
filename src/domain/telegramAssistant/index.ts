@@ -34,6 +34,10 @@ export {
   type RouteTelegramIntentOptions,
 } from "./intentRouter.js";
 export {
+  canHandleBusinessMessage,
+  type BusinessMessagePolicy,
+} from "./profileAutomation.js";
+export {
   resolveTelegramTaskCandidates,
   type TelegramTaskCandidate,
 } from "./entityResolver.js";
@@ -60,7 +64,9 @@ export type {
   TelegramAssistantRole,
   TelegramAssistantTurn,
   TelegramAssistantTurnStatus,
+  TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
+  TelegramBusinessConnectionRights,
   TelegramConversationSource,
   TelegramInboundMessage,
   TelegramIntent,

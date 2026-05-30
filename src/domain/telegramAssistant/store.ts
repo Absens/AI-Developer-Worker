@@ -1,6 +1,7 @@
 import type {
   TelegramAssistantTurn,
   TelegramAssistantTurnStatus,
+  TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
   TelegramMessageRef,
   TelegramNotificationDelivery,
@@ -131,7 +132,7 @@ export interface TelegramAssistantStore {
     input: CompleteNotificationDeliveryInput,
   ): Promise<TelegramNotificationDelivery>;
   upsertBusinessConnection(
-    record: TelegramBusinessConnectionRecord,
+    record: TelegramBusinessConnectionInput,
   ): Promise<TelegramBusinessConnectionRecord>;
   getBusinessConnection(
     connectionId: string,
@@ -170,6 +171,56 @@ const shouldReplaceBusinessConnection = (
     latestBusinessConnectionTimestamp(incoming) >
     latestBusinessConnectionTimestamp(existing)
   );
+};
+
+const normalizeBusinessConnection = (
+  record: TelegramBusinessConnectionInput,
+): TelegramBusinessConnectionRecord => {
+  const id = record.id ?? record.businessConnectionId;
+  if (!id) {
+    throw new Error("Telegram business connection id is required.");
+  }
+
+  const ownerUserId = record.ownerUserId ?? (
+    record.userId !== undefined ? String(record.userId) : undefined
+  );
+  const userId = record.userId ?? parseNumericId(ownerUserId);
+  if (userId === undefined || ownerUserId === undefined) {
+    throw new Error("Telegram business connection owner user id is required.");
+  }
+
+  const ownerChatId = record.ownerChatId ?? (
+    record.userChatId !== undefined ? String(record.userChatId) : undefined
+  );
+  const userChatId = record.userChatId ?? parseNumericId(ownerChatId);
+  if (userChatId === undefined || ownerChatId === undefined) {
+    throw new Error("Telegram business connection owner chat id is required.");
+  }
+
+  const rights = {
+    ...(record.rights ?? {}),
+    can_reply: record.rights?.can_reply ?? record.canReply ?? false,
+  };
+
+  return {
+    ...record,
+    id,
+    businessConnectionId: id,
+    userId,
+    ownerUserId,
+    userChatId,
+    ownerChatId,
+    canReply: rights.can_reply === true,
+    rights,
+  };
+};
+
+const parseNumericId = (value: string | undefined): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 };
 
 const PENDING_ACTION_TERMINAL_STATUSES = new Set<TelegramPendingActionStatus>([
@@ -557,14 +608,15 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
   }
 
   public async upsertBusinessConnection(
-    record: TelegramBusinessConnectionRecord,
+    record: TelegramBusinessConnectionInput,
   ): Promise<TelegramBusinessConnectionRecord> {
-    const existing = this.businessConnections.get(record.id);
-    if (existing && !shouldReplaceBusinessConnection(existing, record)) {
+    const normalized = normalizeBusinessConnection(record);
+    const existing = this.businessConnections.get(normalized.id);
+    if (existing && !shouldReplaceBusinessConnection(existing, normalized)) {
       return clone(existing);
     }
-    this.businessConnections.set(record.id, clone(record));
-    return clone(record);
+    this.businessConnections.set(normalized.id, clone(normalized));
+    return clone(normalized);
   }
 
   public async getBusinessConnection(

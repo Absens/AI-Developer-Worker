@@ -43,8 +43,9 @@ export interface TelegramBusinessConnection {
   user: TelegramUser;
   user_chat_id: number;
   date: number;
-  can_reply: boolean;
+  can_reply?: boolean;
   is_enabled: boolean;
+  rights?: Record<string, boolean | undefined>;
 }
 
 export interface TelegramCallbackQuery {

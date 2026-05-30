@@ -18,6 +18,7 @@ import type {
 } from "./store.js";
 import type {
   TelegramAssistantTurn,
+  TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
   TelegramInboundMessage,
   TelegramIntent,
@@ -116,6 +117,7 @@ type BusinessConnectionRow = QueryResultRow & {
   user_id: number | string;
   user_chat_id: number | string;
   can_reply: boolean;
+  can_read_messages: boolean | null | undefined;
   is_enabled: boolean;
   created_at: Date | string;
   updated_at: Date | string;
@@ -254,17 +256,68 @@ const mapNotificationDeliveryRow = (
 
 const mapBusinessConnectionRow = (
   row: BusinessConnectionRow,
-): TelegramBusinessConnectionRecord => ({
-  id: row.id,
-  userId: toNumber(row.user_id),
-  userChatId: toNumber(row.user_chat_id),
-  canReply: row.can_reply,
-  isEnabled: row.is_enabled,
-  createdAt: toIso(row.created_at),
-  updatedAt: toIso(row.updated_at),
-  lastSeenAt: toIso(row.last_seen_at),
-  ...(row.update_id !== null ? { updateId: toNumber(row.update_id) } : {}),
-});
+): TelegramBusinessConnectionRecord => {
+  const rights = {
+    can_reply: row.can_reply,
+    ...(row.can_read_messages !== null && row.can_read_messages !== undefined
+      ? { can_read_messages: row.can_read_messages }
+      : {}),
+  };
+
+  return {
+    id: row.id,
+    businessConnectionId: row.id,
+    userId: toNumber(row.user_id),
+    ownerUserId: String(toNumber(row.user_id)),
+    userChatId: toNumber(row.user_chat_id),
+    ownerChatId: String(toNumber(row.user_chat_id)),
+    canReply: row.can_reply,
+    rights,
+    isEnabled: row.is_enabled,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    lastSeenAt: toIso(row.last_seen_at),
+    ...(row.update_id !== null ? { updateId: toNumber(row.update_id) } : {}),
+  };
+};
+
+const normalizeBusinessConnectionInput = (
+  record: TelegramBusinessConnectionInput,
+): TelegramBusinessConnectionRecord => {
+  const id = record.id ?? record.businessConnectionId;
+  const ownerUserId = record.ownerUserId ?? (
+    record.userId !== undefined ? String(record.userId) : undefined
+  );
+  const ownerChatId = record.ownerChatId ?? (
+    record.userChatId !== undefined ? String(record.userChatId) : undefined
+  );
+  if (!id || !ownerUserId || !ownerChatId) {
+    throw new Error("Telegram business connection id, owner user id, and owner chat id are required.");
+  }
+
+  const userId = record.userId ?? Number(ownerUserId);
+  const userChatId = record.userChatId ?? Number(ownerChatId);
+  if (!Number.isFinite(userId) || !Number.isFinite(userChatId)) {
+    throw new Error("Telegram business connection owner ids must be numeric.");
+  }
+
+  const rights = {
+    ...(record.rights ?? {}),
+    can_reply: record.rights?.can_reply ?? record.canReply ?? false,
+  };
+
+  return {
+    ...record,
+    id,
+    businessConnectionId: id,
+    userId,
+    ownerUserId,
+    userChatId,
+    ownerChatId,
+    canReply: rights.can_reply === true,
+    rights,
+  };
+};
 
 export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
   private readonly now: () => Date;
@@ -923,21 +976,23 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
   }
 
   public async upsertBusinessConnection(
-    record: TelegramBusinessConnectionRecord,
+    record: TelegramBusinessConnectionInput,
   ): Promise<TelegramBusinessConnectionRecord> {
+    const normalized = normalizeBusinessConnectionInput(record);
     const result = await this.db.query<BusinessConnectionRow>(
       `
         WITH upsert AS (
           INSERT INTO telegram_profile_automation_connections (
-            id, user_id, user_chat_id, can_reply, is_enabled,
-            created_at, updated_at, last_seen_at, update_id
+            id, user_id, user_chat_id, can_reply, can_read_messages,
+            is_enabled, created_at, updated_at, last_seen_at, update_id
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           ON CONFLICT (id)
           DO UPDATE SET
             user_id = EXCLUDED.user_id,
             user_chat_id = EXCLUDED.user_chat_id,
             can_reply = EXCLUDED.can_reply,
+            can_read_messages = EXCLUDED.can_read_messages,
             is_enabled = EXCLUDED.is_enabled,
             created_at = EXCLUDED.created_at,
             updated_at = EXCLUDED.updated_at,
@@ -971,15 +1026,16 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         LIMIT 1
       `,
       [
-        record.id,
-        record.userId,
-        record.userChatId,
-        record.canReply,
-        record.isEnabled,
-        record.createdAt,
-        record.updatedAt,
-        record.lastSeenAt,
-        record.updateId ?? null,
+        normalized.id,
+        normalized.userId,
+        normalized.userChatId,
+        normalized.canReply,
+        normalized.rights.can_read_messages ?? null,
+        normalized.isEnabled,
+        normalized.createdAt,
+        normalized.updatedAt,
+        normalized.lastSeenAt,
+        normalized.updateId ?? null,
       ],
     );
     return mapBusinessConnectionRow(result.rows[0]!);

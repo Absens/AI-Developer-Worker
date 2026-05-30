@@ -133,6 +133,95 @@ describe("PostgresTelegramAssistantStore polling leases", () => {
   });
 });
 
+describe("PostgresTelegramAssistantStore business connections", () => {
+  it("persists and maps business connection read rights", async () => {
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        expect(text).toContain("can_read_messages");
+        expect(values).toContain(false);
+        return queryResult([
+          {
+            id: "biz-read-rights",
+            user_id: 200,
+            user_chat_id: 100,
+            can_reply: true,
+            can_read_messages: false,
+            is_enabled: true,
+            created_at: baseTime,
+            updated_at: baseTime,
+            last_seen_at: baseTime,
+            update_id: null,
+          } as unknown as R,
+        ]);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    const saved = await store.upsertBusinessConnection({
+      id: "biz-read-rights",
+      userId: 200,
+      userChatId: 100,
+      rights: { can_reply: true, can_read_messages: false },
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    expect(saved).toMatchObject({
+      id: "biz-read-rights",
+      canReply: true,
+      rights: { can_reply: true, can_read_messages: false },
+    });
+  });
+
+  it("does not grant business connection read rights when they are omitted", async () => {
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        _text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        expect(values?.[4]).not.toBe(true);
+        return queryResult([
+          {
+            id: "biz-missing-read-rights",
+            user_id: 200,
+            user_chat_id: 100,
+            can_reply: true,
+            can_read_messages: null,
+            is_enabled: true,
+            created_at: baseTime,
+            updated_at: baseTime,
+            last_seen_at: baseTime,
+            update_id: null,
+          } as unknown as R,
+        ]);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    const saved = await store.upsertBusinessConnection({
+      id: "biz-missing-read-rights",
+      userId: 200,
+      userChatId: 100,
+      rights: { can_reply: true },
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    expect(saved).toEqual(expect.objectContaining({
+      id: "biz-missing-read-rights",
+      canReply: true,
+      rights: expect.not.objectContaining({ can_read_messages: true }),
+    }));
+  });
+});
+
 describe("telegram assistant internal tracker migrations", () => {
   it("lists migration 0011 without introducing a duplicate 0010 migration", () => {
     const migrations = listInternalTrackerMigrations();
@@ -167,6 +256,31 @@ describe("telegram assistant internal tracker migrations", () => {
     );
     expect(updateIdMigration?.sql).toContain(
       "ADD COLUMN IF NOT EXISTS update_id bigint",
+    );
+  });
+
+  it("adds business connection read rights in a separate migration after 0012", () => {
+    const migrations = listInternalTrackerMigrations();
+    const telegramMigration = migrations.find((migration) =>
+      migration.filename === "0011_telegram_assistant.sql"
+    );
+    const readRightsMigration = migrations.find((migration) =>
+      migration.filename === "0013_telegram_business_connection_read_rights.sql"
+    );
+    const businessConnectionTable = telegramMigration?.sql.match(
+      /CREATE TABLE IF NOT EXISTS telegram_profile_automation_connections \([\s\S]*?\);/,
+    )?.[0];
+
+    expect(businessConnectionTable).not.toContain("can_read_messages");
+    expect(readRightsMigration?.version).toBe("0013");
+    expect(readRightsMigration?.sql).toContain(
+      "ALTER TABLE telegram_profile_automation_connections",
+    );
+    expect(readRightsMigration?.sql).toContain(
+      "ADD COLUMN IF NOT EXISTS can_read_messages boolean",
+    );
+    expect(readRightsMigration?.sql).not.toMatch(
+      /can_read_messages boolean[^\n;]*DEFAULT true/i,
     );
   });
 });
@@ -504,17 +618,89 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
       lastSeenAt: baseTime,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       id: "biz-stale",
+      businessConnectionId: "biz-stale",
       userId: 201,
+      ownerUserId: "201",
       userChatId: 101,
+      ownerChatId: "101",
       canReply: false,
+      rights: { can_reply: false },
       isEnabled: false,
       createdAt: baseTime,
       updatedAt: laterTime,
       lastSeenAt: laterTime,
     });
-    await expect(store.getBusinessConnection("biz-stale")).resolves.toEqual(result);
+    await expect(store.getBusinessConnection("biz-stale")).resolves.toMatchObject({
+      id: "biz-stale",
+      businessConnectionId: "biz-stale",
+      ownerUserId: "201",
+      ownerChatId: "101",
+      rights: { can_reply: false },
+    });
+  });
+
+  it("round-trips business connection read rights", async () => {
+    await runInternalTrackerMigrations(pool);
+    const store = new PostgresTelegramAssistantStore(pool, {
+      now: () => new Date(baseTime),
+    });
+
+    const saved = await store.upsertBusinessConnection({
+      id: "biz-read-rights",
+      userId: 200,
+      userChatId: 100,
+      rights: { can_reply: true, can_read_messages: false },
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    expect(saved).toEqual(expect.objectContaining({
+      id: "biz-read-rights",
+      canReply: true,
+      rights: { can_reply: true, can_read_messages: false },
+    }));
+    await expect(store.getBusinessConnection("biz-read-rights")).resolves.toEqual(
+      expect.objectContaining({
+        id: "biz-read-rights",
+        canReply: true,
+        rights: { can_reply: true, can_read_messages: false },
+      }),
+    );
+  });
+
+  it("round-trips omitted business connection read rights without granting them", async () => {
+    await runInternalTrackerMigrations(pool);
+    const store = new PostgresTelegramAssistantStore(pool, {
+      now: () => new Date(baseTime),
+    });
+
+    const saved = await store.upsertBusinessConnection({
+      id: "biz-missing-read-rights",
+      userId: 200,
+      userChatId: 100,
+      rights: { can_reply: true },
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    expect(saved).toEqual(expect.objectContaining({
+      id: "biz-missing-read-rights",
+      canReply: true,
+      rights: expect.not.objectContaining({ can_read_messages: true }),
+    }));
+    await expect(
+      store.getBusinessConnection("biz-missing-read-rights"),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "biz-missing-read-rights",
+      canReply: true,
+      rights: expect.not.objectContaining({ can_read_messages: true }),
+    }));
   });
 
   it("does not overwrite newer business connection records with same-second stale update ids", async () => {
@@ -524,9 +710,13 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
     });
     const expected = {
       id: "biz-same-second",
+      businessConnectionId: "biz-same-second",
       userId: 201,
+      ownerUserId: "201",
       userChatId: 101,
+      ownerChatId: "101",
       canReply: false,
+      rights: { can_reply: false },
       isEnabled: false,
       createdAt: baseTime,
       updatedAt: baseTime,
@@ -558,9 +748,9 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
       updateId: 11,
     });
 
-    expect(lowerUpdate).toEqual(expected);
-    expect(equalUpdate).toEqual(expected);
-    await expect(store.getBusinessConnection("biz-same-second")).resolves.toEqual(
+    expect(lowerUpdate).toMatchObject(expected);
+    expect(equalUpdate).toMatchObject(expected);
+    await expect(store.getBusinessConnection("biz-same-second")).resolves.toMatchObject(
       expected,
     );
   });

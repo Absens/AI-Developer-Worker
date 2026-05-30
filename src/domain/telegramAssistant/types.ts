@@ -144,12 +144,48 @@ export interface TelegramNotificationDelivery {
 
 export interface TelegramBusinessConnectionRecord {
   id: string;
+  businessConnectionId: string;
   userId: number;
+  ownerUserId: string;
   userChatId: number;
+  ownerChatId: string;
   canReply: boolean;
+  rights: TelegramBusinessConnectionRights;
   isEnabled: boolean;
   createdAt: string;
   updatedAt: string;
   lastSeenAt: string;
   updateId?: number;
 }
+
+export interface TelegramBusinessConnectionRights {
+  can_reply?: boolean;
+  can_read_messages?: boolean;
+  [right: string]: boolean | undefined;
+}
+
+export type TelegramBusinessConnectionInput =
+  Omit<
+    TelegramBusinessConnectionRecord,
+    | "id"
+    | "businessConnectionId"
+    | "userId"
+    | "ownerUserId"
+    | "userChatId"
+    | "ownerChatId"
+    | "canReply"
+    | "rights"
+  > &
+  Partial<
+    Pick<
+      TelegramBusinessConnectionRecord,
+      | "id"
+      | "businessConnectionId"
+      | "userId"
+      | "ownerUserId"
+      | "userChatId"
+      | "ownerChatId"
+      | "canReply"
+      | "rights"
+    >
+  >;

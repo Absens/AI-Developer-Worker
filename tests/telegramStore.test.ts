@@ -824,14 +824,45 @@ describe("InMemoryTelegramAssistantStore", () => {
 
     await expect(store.getBusinessConnection("biz-1")).resolves.toEqual({
       id: "biz-1",
+      businessConnectionId: "biz-1",
       userId: 200,
+      ownerUserId: "200",
       userChatId: 100,
+      ownerChatId: "100",
       canReply: false,
+      rights: { can_reply: false },
       isEnabled: false,
       createdAt: baseTime,
       updatedAt: laterTime,
       lastSeenAt: laterTime,
     });
+  });
+
+  it("does not grant business connection read rights when they are omitted", async () => {
+    const store = createStore();
+
+    await store.upsertBusinessConnection({
+      id: "biz-missing-read-rights",
+      userId: 200,
+      userChatId: 100,
+      rights: { can_reply: true },
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    await expect(
+      store.getBusinessConnection("biz-missing-read-rights"),
+    ).resolves.toEqual(expect.objectContaining({
+      canReply: true,
+      rights: expect.objectContaining({ can_reply: true }),
+    }));
+    await expect(
+      store.getBusinessConnection("biz-missing-read-rights"),
+    ).resolves.toEqual(expect.objectContaining({
+      rights: expect.not.objectContaining({ can_read_messages: true }),
+    }));
   });
 
   it("does not overwrite newer business connection records with stale updates", async () => {
@@ -860,9 +891,13 @@ describe("InMemoryTelegramAssistantStore", () => {
 
     expect(result).toEqual({
       id: "biz-stale",
+      businessConnectionId: "biz-stale",
       userId: 201,
+      ownerUserId: "201",
       userChatId: 101,
+      ownerChatId: "101",
       canReply: false,
+      rights: { can_reply: false },
       isEnabled: false,
       createdAt: baseTime,
       updatedAt: laterTime,
@@ -875,9 +910,13 @@ describe("InMemoryTelegramAssistantStore", () => {
     const store = createStore();
     const expected = {
       id: "biz-same-second",
+      businessConnectionId: "biz-same-second",
       userId: 201,
+      ownerUserId: "201",
       userChatId: 101,
+      ownerChatId: "101",
       canReply: false,
+      rights: { can_reply: false, can_read_messages: true },
       isEnabled: false,
       createdAt: baseTime,
       updatedAt: baseTime,
