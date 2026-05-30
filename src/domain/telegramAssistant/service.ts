@@ -17,6 +17,8 @@ import { redactSecrets } from "../../observability/redaction.js";
 import type { Logger } from "../../utils/logger.js";
 import {
   DuplicateExternalRefError,
+  type ClarificationQuestionRecord,
+  type HumanAnswerInput,
   type TaskRecord,
 } from "../taskTracker/index.js";
 import {
@@ -65,6 +67,16 @@ interface NormalizedUpdateCandidate {
   callbackQueryId?: string;
 }
 
+interface AnswerAiQuestionCandidate {
+  task: TaskRecord;
+  question: ClarificationQuestionRecord;
+}
+
+type AnswerAiQuestionCandidateResolution =
+  | { status: "single"; candidate: AnswerAiQuestionCandidate }
+  | { status: "none" }
+  | { status: "multiple" };
+
 export type ParsedTelegramCallbackData =
   | { kind: "confirm"; actionKind: string; id: string }
   | { kind: "cancel"; id: string }
@@ -92,6 +104,16 @@ const CALLBACK_ACTION_OTHER_USER_MESSAGE =
 const CALLBACK_ACTION_OTHER_CHAT_MESSAGE =
   "Это действие создано для другого чата.";
 const CALLBACK_CREATING_TASK_MESSAGE = "Создаю задачу...";
+const CALLBACK_RECORDING_ANSWER_MESSAGE = "Записываю ответ...";
+const TASK_ANSWER_UNAVAILABLE_MESSAGE =
+  "Не могу ответить на вопрос: task tracker недоступен.";
+const ANSWER_QUESTION_NOT_FOUND_MESSAGE =
+  "Не нашел открытый вопрос AI. Уточни задачу или дождись вопроса.";
+const ANSWER_QUESTION_AMBIGUOUS_MESSAGE =
+  "Нашел несколько открытых вопросов AI. Уточни task id или ответь из карточки задачи.";
+const ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE =
+  "Не могу ответить на вопрос: не удалось определить сообщение или пользователя.";
+const ANSWER_RECORDED_MESSAGE = "Ответ записан. Задача продолжит работу.";
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
@@ -224,6 +246,15 @@ export class TelegramAssistantService {
             return;
           }
 
+          if (intent.name === "answer_ai_question") {
+            await this.handleAnswerAiQuestion(
+              message,
+              intent,
+              intent.rawText ?? message.text ?? "",
+            );
+            return;
+          }
+
           if (intent.name === "approve_action") {
             await this.handleApproveAction(message);
             return;
@@ -314,7 +345,7 @@ export class TelegramAssistantService {
     actor: TelegramResolvedActor,
     callback: Extract<ParsedTelegramCallbackData, { kind: "confirm" }>,
   ): Promise<void> {
-    if (callback.actionKind !== "create_task") {
+    if (!isSupportedConfirmActionKind(callback.actionKind)) {
       await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
       return;
     }
@@ -325,28 +356,31 @@ export class TelegramAssistantService {
     }
 
     if (!this.taskTracker) {
-      await this.answerCallback(callbackQueryId, TASK_CREATION_UNAVAILABLE_MESSAGE);
+      await this.answerCallback(
+        callbackQueryId,
+        callback.actionKind === "create_task"
+          ? TASK_CREATION_UNAVAILABLE_MESSAGE
+          : TASK_ANSWER_UNAVAILABLE_MESSAGE,
+      );
       return;
     }
 
     const now = new Date().toISOString();
     const action = await this.store.getPendingAction(callback.id);
-    const validationMessage = validateCallbackPendingAction(action, message, now);
+    const validationMessage = validateCallbackConfirmAction(action, message, now);
     if (validationMessage) {
       await this.answerCallback(callbackQueryId, validationMessage);
       return;
     }
 
-    if (!action || action.intent.name !== "create_task_draft") {
+    if (!action || !isConfirmableActionForCallback(action, callback.actionKind)) {
       await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
       return;
     }
 
-    const executableAction = await this.consumeCreateTaskAction(
-      action.id,
-      message,
-      now,
-    );
+    const executableAction = action.status === "executing"
+      ? action
+      : await this.consumePendingActionForMessage(action.id, message, now);
     if (!executableAction) {
       await this.answerCallback(
         callbackQueryId,
@@ -355,8 +389,13 @@ export class TelegramAssistantService {
       return;
     }
 
-    await this.answerCallback(callbackQueryId, CALLBACK_CREATING_TASK_MESSAGE);
-    await this.completeCreateTaskAction(message, executableAction);
+    await this.answerCallback(
+      callbackQueryId,
+      action.intent.name === "answer_ai_question"
+        ? CALLBACK_RECORDING_ANSWER_MESSAGE
+        : CALLBACK_CREATING_TASK_MESSAGE,
+    );
+    await this.completeConfirmedAction(message, executableAction);
   }
 
   private async handleCancelCallback(
@@ -372,12 +411,12 @@ export class TelegramAssistantService {
       return;
     }
 
-    if (!action || action.intent.name !== "create_task_draft") {
+    if (!action || !isConfirmablePendingAction(action)) {
       await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
       return;
     }
 
-    const cancelled = await this.cancelCreateTaskAction(action.id, message, now);
+    const cancelled = await this.cancelPendingAction(action.id, message, now);
     await this.answerCallback(
       callbackQueryId,
       cancelled ? ACTION_CANCELLED_MESSAGE : CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE,
@@ -450,6 +489,75 @@ export class TelegramAssistantService {
     );
   }
 
+  private async handleAnswerAiQuestion(
+    message: TelegramInboundMessage,
+    intent: TelegramIntent,
+    text: string,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_ANSWER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendPlainMessage(
+        message,
+        ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
+
+    const candidateResolution = await this.resolveAnswerAiQuestionCandidate();
+    if (candidateResolution.status === "none") {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+    if (candidateResolution.status === "multiple") {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_AMBIGUOUS_MESSAGE);
+      return;
+    }
+
+    const body = text.trim() || message.text?.trim() || "";
+    const command = { type: "resume" as const, rawText: body };
+    const actionId = buildPendingActionId(message.updateId, message.messageId);
+    const externalKey = buildTelegramAnswerExternalKey(
+      message.chatId,
+      message.messageId,
+      candidateResolution.candidate.question.id,
+    );
+    const now = new Date().toISOString();
+    const pendingAction: TelegramPendingAction = {
+      id: actionId,
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      userId: message.userId,
+      intent,
+      payload: {
+        taskId: candidateResolution.candidate.task.id,
+        questionId: candidateResolution.candidate.question.id,
+        body,
+        command,
+        chatId: message.chatId,
+        messageId: message.messageId,
+        userId: message.userId,
+        externalKey,
+      },
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: addDays(now, this.config.conversationRetentionDays),
+    };
+
+    await this.store.upsertPendingAction(pendingAction);
+    await this.sendTelegramResponse(
+      message,
+      buildAnswerAiQuestionResponse(
+        candidateResolution.candidate,
+        body,
+        pendingAction.id,
+      ),
+    );
+  }
+
   private async handleApproveAction(message: TelegramInboundMessage): Promise<void> {
     if (!this.taskTracker) {
       await this.sendPlainMessage(message, TASK_CREATION_UNAVAILABLE_MESSAGE);
@@ -461,7 +569,7 @@ export class TelegramAssistantService {
     }
 
     const now = new Date().toISOString();
-    const action = await this.findLatestCreateTaskAction(
+    const action = await this.findLatestConfirmableAction(
       message,
       ["pending", "executing"],
       now,
@@ -473,13 +581,13 @@ export class TelegramAssistantService {
 
     const executableAction = action.status === "executing"
       ? action
-      : await this.consumeCreateTaskAction(action.id, message, now);
+      : await this.consumePendingActionForMessage(action.id, message, now);
     if (!executableAction) {
       await this.sendPlainMessage(message, ACTION_NOT_FOUND_MESSAGE);
       return;
     }
 
-    await this.completeCreateTaskAction(message, executableAction);
+    await this.completeConfirmedAction(message, executableAction);
   }
 
   private async handleRejectAction(message: TelegramInboundMessage): Promise<void> {
@@ -489,13 +597,13 @@ export class TelegramAssistantService {
     }
 
     const now = new Date().toISOString();
-    const action = await this.findLatestCreateTaskAction(message, ["pending"], now);
+    const action = await this.findLatestConfirmableAction(message, ["pending"], now);
     if (!action) {
       await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
       return;
     }
 
-    const cancelled = await this.cancelCreateTaskAction(action.id, message, now);
+    const cancelled = await this.cancelPendingAction(action.id, message, now);
     if (!cancelled) {
       await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
       return;
@@ -504,7 +612,7 @@ export class TelegramAssistantService {
     await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
   }
 
-  private async consumeCreateTaskAction(
+  private async consumePendingActionForMessage(
     actionId: string,
     message: TelegramInboundMessage,
     now: string,
@@ -522,7 +630,7 @@ export class TelegramAssistantService {
     });
   }
 
-  private async cancelCreateTaskAction(
+  private async cancelPendingAction(
     actionId: string,
     message: TelegramInboundMessage,
     now: string,
@@ -548,6 +656,22 @@ export class TelegramAssistantService {
     return cancelled;
   }
 
+  private async completeConfirmedAction(
+    message: TelegramInboundMessage,
+    executableAction: TelegramPendingAction,
+  ): Promise<void> {
+    if (executableAction.intent.name === "create_task_draft") {
+      await this.completeCreateTaskAction(message, executableAction);
+      return;
+    }
+    if (executableAction.intent.name === "answer_ai_question") {
+      await this.completeAnswerAiQuestionAction(message, executableAction);
+      return;
+    }
+
+    throw new Error(`Unsupported telegram pending action: ${executableAction.intent.name}`);
+  }
+
   private async completeCreateTaskAction(
     message: TelegramInboundMessage,
     executableAction: TelegramPendingAction,
@@ -560,7 +684,85 @@ export class TelegramAssistantService {
     await this.sendPlainMessage(message, `Задача создана: ${task.id}`);
   }
 
-  private async findLatestCreateTaskAction(
+  private async completeAnswerAiQuestionAction(
+    message: TelegramInboundMessage,
+    executableAction: TelegramPendingAction,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      throw new Error("Task tracker is required to answer AI questions from telegram.");
+    }
+
+    const payload = parseAnswerAiQuestionPayload(executableAction.payload);
+    const answer: HumanAnswerInput = {
+      questionId: payload.questionId,
+      author: buildTelegramHumanAnswerAuthor(message, payload.userId),
+      body: payload.body,
+      command: payload.command,
+    };
+    if (!(await this.hasRecordedTelegramAnswer(payload, answer))) {
+      await this.taskTracker.recordHumanAnswer(payload.taskId, answer);
+    }
+    await this.store.completePendingAction(executableAction.id, {
+      status: "completed",
+    });
+    await this.sendPlainMessage(message, ANSWER_RECORDED_MESSAGE);
+  }
+
+  private async hasRecordedTelegramAnswer(
+    payload: AnswerAiQuestionPayload,
+    answer: HumanAnswerInput,
+  ): Promise<boolean> {
+    if (!this.taskTracker) {
+      return false;
+    }
+
+    const task = await this.taskTracker.getTask(payload.taskId);
+    return task.humanAnswers.some(
+      (candidate) =>
+        candidate.questionId === answer.questionId &&
+        candidate.body === answer.body &&
+        candidate.author.id === answer.author.id &&
+        candidate.command?.type === answer.command?.type &&
+        candidate.command?.rawText === answer.command?.rawText,
+    );
+  }
+
+  private async resolveAnswerAiQuestionCandidate(): Promise<
+    AnswerAiQuestionCandidateResolution
+  > {
+    if (!this.taskTracker) {
+      return { status: "none" };
+    }
+
+    const tasks = await this.taskTracker.listTasks({
+      statuses: ["awaiting_human"],
+      limit: 500,
+    });
+    const candidates = tasks
+      .map((task) => {
+        const question = latestOpenClarificationQuestion(task);
+        return question ? { task, question } : undefined;
+      })
+      .filter((candidate): candidate is AnswerAiQuestionCandidate => (
+        candidate !== undefined
+      ));
+
+    if (candidates.length === 0) {
+      return { status: "none" };
+    }
+    if (candidates.length > 1) {
+      return { status: "multiple" };
+    }
+
+    const candidate = candidates[0];
+    if (!candidate) {
+      return { status: "none" };
+    }
+
+    return { status: "single", candidate };
+  }
+
+  private async findLatestConfirmableAction(
     message: TelegramInboundMessage,
     statuses: TelegramPendingAction["status"][],
     now: string,
@@ -572,7 +774,7 @@ export class TelegramAssistantService {
     return actions
       .filter(
         (action) =>
-          action.intent.name === "create_task_draft" &&
+          isConfirmablePendingAction(action) &&
           action.chatId === message.chatId &&
           action.userId === message.userId &&
           isPendingActionUnexpired(action, now),
@@ -808,6 +1010,29 @@ const validateCallbackPendingAction = (
   return undefined;
 };
 
+const validateCallbackConfirmAction = (
+  action: TelegramPendingAction | undefined,
+  message: TelegramInboundMessage,
+  now: string,
+): string | undefined => {
+  if (!action) {
+    return CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE;
+  }
+  if (action.chatId !== message.chatId) {
+    return CALLBACK_ACTION_OTHER_CHAT_MESSAGE;
+  }
+  if (message.userId === undefined || action.userId !== message.userId) {
+    return CALLBACK_ACTION_OTHER_USER_MESSAGE;
+  }
+  if (!isPendingActionUnexpired(action, now)) {
+    return CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE;
+  }
+  if (action.status !== "pending" && action.status !== "executing") {
+    return CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE;
+  }
+  return undefined;
+};
+
 const buildTaskChoiceResponse = (
   candidates: TelegramTaskCandidate[],
 ): TelegramResponse => ({
@@ -855,6 +1080,30 @@ const buildTaskDraftResponse = (
   disableWebPagePreview: true,
 });
 
+const buildAnswerAiQuestionResponse = (
+  candidate: AnswerAiQuestionCandidate,
+  body: string,
+  actionId: string,
+): TelegramResponse => ({
+  blocks: [
+    { kind: "title", text: "Ответить AI?" },
+    { kind: "field", label: "Задача", value: candidate.task.id },
+    {
+      kind: "field",
+      label: "Вопрос",
+      value: describeClarificationQuestion(candidate.question),
+    },
+    { kind: "field", label: "Ответ", value: body },
+  ],
+  inlineButtonRows: [
+    [
+      { text: "Ответить", callbackData: `confirm:answer_question:${actionId}` },
+      { text: "Отмена", callbackData: `cancel:${actionId}` },
+    ],
+  ],
+  disableWebPagePreview: true,
+});
+
 const formatTaskButtonText = (taskId: string, title: string): string => {
   const text = `${taskId}: ${title}`;
   if (text.length <= 64) {
@@ -866,6 +1115,22 @@ const formatTaskButtonText = (taskId: string, title: string): string => {
 
 interface TaskDraftPayload {
   draft: TelegramTaskDraft;
+  chatId: number;
+  messageId: number;
+  userId: number;
+  externalKey: string;
+}
+
+interface TelegramResumeCommand {
+  type: "resume";
+  rawText: string;
+}
+
+interface AnswerAiQuestionPayload {
+  taskId: string;
+  questionId: string;
+  body: string;
+  command: TelegramResumeCommand;
   chatId: number;
   messageId: number;
   userId: number;
@@ -895,6 +1160,35 @@ const parseTaskDraftPayload = (
   };
 };
 
+const parseAnswerAiQuestionPayload = (
+  payload: Record<string, unknown>,
+): AnswerAiQuestionPayload => {
+  const command = payload.command;
+  if (
+    typeof payload.taskId !== "string" ||
+    typeof payload.questionId !== "string" ||
+    typeof payload.body !== "string" ||
+    !isTelegramResumeCommand(command) ||
+    typeof payload.chatId !== "number" ||
+    typeof payload.messageId !== "number" ||
+    typeof payload.userId !== "number" ||
+    typeof payload.externalKey !== "string"
+  ) {
+    throw new Error("Invalid telegram AI answer payload.");
+  }
+
+  return {
+    taskId: payload.taskId,
+    questionId: payload.questionId,
+    body: payload.body,
+    command,
+    chatId: payload.chatId,
+    messageId: payload.messageId,
+    userId: payload.userId,
+    externalKey: payload.externalKey,
+  };
+};
+
 const isTelegramTaskDraft = (value: unknown): value is TelegramTaskDraft => {
   if (!value || typeof value !== "object") {
     return false;
@@ -909,6 +1203,61 @@ const isTelegramTaskDraft = (value: unknown): value is TelegramTaskDraft => {
     Array.isArray(draft.tags) &&
     draft.tags.every((tag) => typeof tag === "string")
   );
+};
+
+const isTelegramResumeCommand = (value: unknown): value is TelegramResumeCommand => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const command = value as Partial<TelegramResumeCommand>;
+  return command.type === "resume" && typeof command.rawText === "string";
+};
+
+const isConfirmablePendingAction = (action: TelegramPendingAction): boolean =>
+  action.intent.name === "create_task_draft" ||
+  action.intent.name === "answer_ai_question";
+
+const isSupportedConfirmActionKind = (actionKind: string): boolean =>
+  actionKind === "create_task" || actionKind === "answer_question";
+
+const isConfirmableActionForCallback = (
+  action: TelegramPendingAction,
+  actionKind: string,
+): boolean =>
+  (actionKind === "create_task" && action.intent.name === "create_task_draft") ||
+  (
+    actionKind === "answer_question" &&
+    action.intent.name === "answer_ai_question"
+  );
+
+const latestOpenClarificationQuestion = (
+  task: TaskRecord,
+): ClarificationQuestionRecord | undefined =>
+  task.clarificationQuestions
+    .filter((question) => question.status === "open")
+    .sort(compareClarificationQuestionsNewestFirst)[0];
+
+const compareClarificationQuestionsNewestFirst = (
+  left: ClarificationQuestionRecord,
+  right: ClarificationQuestionRecord,
+): number =>
+  right.createdAt.localeCompare(left.createdAt) ||
+  right.id.localeCompare(left.id);
+
+const describeClarificationQuestion = (
+  question: ClarificationQuestionRecord,
+): string => {
+  const directQuestion = question.question.question.trim();
+  if (directQuestion) {
+    return directQuestion;
+  }
+
+  const blockingReason = question.question.blockingReason.trim();
+  if (blockingReason) {
+    return blockingReason;
+  }
+
+  return question.question.summary;
 };
 
 const comparePendingActionsNewestFirst = (
@@ -930,10 +1279,28 @@ const buildPendingActionId = (updateId: number, messageId: number): string =>
 const buildTelegramExternalKey = (chatId: number, messageId: number): string =>
   `telegram:${chatId}:${messageId}`;
 
+const buildTelegramAnswerExternalKey = (
+  chatId: number,
+  messageId: number,
+  questionId: string,
+): string => `telegram_answer:${chatId}:${messageId}:${questionId}`;
+
 const buildTaskSubscriptionId = (
   conversationKey: string,
   taskId: string,
 ): string => `task-subscription:${conversationKey}:${taskId}`;
+
+const buildTelegramHumanAnswerAuthor = (
+  message: TelegramInboundMessage,
+  userId: number,
+): HumanAnswerInput["author"] => {
+  const displayName = message.actor?.displayName?.trim();
+  return {
+    owner: "human",
+    id: `telegram:${userId}`,
+    ...(displayName ? { displayName } : {}),
+  };
+};
 
 export const normalizeTelegramUpdate = (
   update: TelegramUpdate,

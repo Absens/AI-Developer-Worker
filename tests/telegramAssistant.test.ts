@@ -19,6 +19,7 @@ import type {
 } from "../src/models/types.js";
 import type {
   CreateTaskInput,
+  HumanAnswerInput,
   TaskLeaseRecord,
   TaskRecord,
   TaskTrackerClient,
@@ -221,6 +222,109 @@ const fakeTaskTracker = (
     ...readonlyTaskTracker([task]),
     createTask,
     findTaskByExternalRef,
+  } as unknown as TaskTrackerClient;
+};
+
+const fakeTaskTrackerWithAwaitingHumanTask = (): TaskTrackerClient => {
+  const task = taskFixture({
+    id: "task_awaiting",
+    title: "Нужен ответ по варианту",
+    status: "awaiting_human",
+    clarificationQuestions: [
+      {
+        id: "question_old",
+        taskId: "task_awaiting",
+        workerId: "worker-1",
+        question: {
+          summary: "Нужен выбор варианта",
+          blockingReason: "Не выбран вариант реализации.",
+          question: "Выбрать вариант A или B?",
+          options: ["A", "B"],
+          resumeHint: "Ответьте и попросите продолжить.",
+        },
+        status: "open",
+        createdAt: "2026-05-30T08:00:00.000Z",
+      },
+      {
+        id: "question_latest",
+        taskId: "task_awaiting",
+        workerId: "worker-1",
+        question: {
+          summary: "Нужен финальный выбор",
+          blockingReason: "AI ждет подтверждения варианта.",
+          question: "Можно продолжать с вариантом A?",
+          options: ["Да", "Нет"],
+          resumeHint: "Ответьте и попросите продолжить.",
+        },
+        status: "open",
+        createdAt: "2026-05-30T08:05:00.000Z",
+      },
+    ],
+  });
+  return {
+    ...readonlyTaskTracker([task]),
+    listTasks: vi.fn(async (): Promise<TaskRecord[]> => [task]),
+    recordHumanAnswer: vi.fn(async (): Promise<void> => undefined),
+  } as unknown as TaskTrackerClient;
+};
+
+const awaitingHumanTaskFixture = (): TaskRecord => taskFixture({
+  id: "task_awaiting",
+  title: "Нужен ответ по варианту",
+  status: "awaiting_human",
+  clarificationQuestions: [
+    {
+      id: "question_latest",
+      taskId: "task_awaiting",
+      workerId: "worker-1",
+      question: {
+        summary: "Нужен финальный выбор",
+        blockingReason: "AI ждет подтверждения варианта.",
+        question: "Можно продолжать с вариантом A?",
+        options: ["Да", "Нет"],
+        resumeHint: "Ответьте и попросите продолжить.",
+      },
+      status: "open",
+      createdAt: "2026-05-30T08:05:00.000Z",
+    },
+  ],
+});
+
+const fakeMutableTaskTrackerWithAwaitingHumanTask = (
+  input: { failRecordHumanAnswerOnce?: boolean } = {},
+): TaskTrackerClient => {
+  const task = awaitingHumanTaskFixture();
+  let shouldFailRecordHumanAnswer = input.failRecordHumanAnswerOnce === true;
+  const recordHumanAnswer = vi.fn(
+    async (taskId: string, answer: HumanAnswerInput): Promise<void> => {
+      if (shouldFailRecordHumanAnswer) {
+        shouldFailRecordHumanAnswer = false;
+        throw new Error("transient answer write failure");
+      }
+
+      task.humanAnswers.push({
+        id: `answer_${task.humanAnswers.length + 1}`,
+        taskId,
+        ...(answer.questionId ? { questionId: answer.questionId } : {}),
+        author: answer.author,
+        body: answer.body,
+        ...(answer.command ? { command: answer.command } : {}),
+        createdAt: baseTime,
+      });
+      const question = task.clarificationQuestions.find(
+        (candidate) => candidate.id === answer.questionId,
+      );
+      if (question) {
+        question.status = "answered";
+      }
+    },
+  );
+
+  return {
+    ...readonlyTaskTracker([task]),
+    listTasks: vi.fn(async (): Promise<TaskRecord[]> => [task]),
+    getTask: vi.fn(async (): Promise<TaskRecord> => task),
+    recordHumanAnswer,
   } as unknown as TaskTrackerClient;
 };
 
@@ -774,6 +878,151 @@ describe("TelegramAssistantService", () => {
       },
     }));
     expect(await store.getOffset("default")).toBe(36);
+  });
+
+  it("records a human answer for the latest open AI question after confirmation", async () => {
+    const taskTracker = fakeTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({ store, taskTracker });
+
+    await service.handleUpdate(messageUpdate(
+      "ответь что можно продолжать с вариантом А",
+      { updateId: 43, messageId: 105 },
+    ));
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 44,
+      messageId: 106,
+      date: 2,
+    }));
+
+    expect(taskTracker.listTasks).toHaveBeenCalledWith({
+      statuses: ["awaiting_human"],
+      limit: 500,
+    });
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: expect.stringContaining("вариантом А"),
+        command: expect.objectContaining({
+          type: "resume",
+          rawText: expect.stringContaining("вариантом А"),
+        }),
+      }),
+    );
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "completed",
+    })).resolves.toHaveLength(1);
+    expect(await store.getOffset("default")).toBe(45);
+  });
+
+  it("retries an answer callback from an executing action after answer write failure", async () => {
+    const answerCallbackQuery = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask({
+      failRecordHumanAnswerOnce: true,
+    });
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      answerCallbackQuery,
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "ответь что можно продолжать с вариантом А",
+      { updateId: 43, messageId: 105 },
+    ));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram answer action.");
+    }
+    const confirmUpdate = callbackUpdate(
+      `confirm:answer_question:${pending.id}`,
+      { updateId: 44, callbackQueryId: "cb_answer_1", messageId: 106 },
+    );
+
+    await expect(service.handleUpdate(confirmUpdate)).rejects.toThrow(
+      "transient answer write failure",
+    );
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "executing",
+    });
+    expect(await store.isUpdateProcessed(44)).toBe(false);
+    expect(await store.getOffset("default")).toBe(44);
+
+    await service.handleUpdate(confirmUpdate);
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledTimes(2);
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(await store.isUpdateProcessed(44)).toBe(true);
+    expect(await store.getOffset("default")).toBe(45);
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_answer_1",
+      text: "Записываю ответ...",
+    }));
+  });
+
+  it("does not record an answer twice when callback retry follows completion failure", async () => {
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const originalCompletePendingAction = store.completePendingAction.bind(store);
+    const completePendingAction = vi.spyOn(store, "completePendingAction")
+      .mockRejectedValueOnce(new Error("complete pending action failed"))
+      .mockImplementation(originalCompletePendingAction);
+    const service = buildAssistant({ store, taskTracker });
+
+    await service.handleUpdate(messageUpdate(
+      "ответь что можно продолжать с вариантом А",
+      { updateId: 43, messageId: 105 },
+    ));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram answer action.");
+    }
+    const confirmUpdate = callbackUpdate(
+      `confirm:answer_question:${pending.id}`,
+      { updateId: 44, callbackQueryId: "cb_answer_2", messageId: 106 },
+    );
+
+    await expect(service.handleUpdate(confirmUpdate)).rejects.toThrow(
+      "complete pending action failed",
+    );
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(completePendingAction).toHaveBeenCalledOnce();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "executing",
+    });
+    expect(await store.isUpdateProcessed(44)).toBe(false);
+    expect(await store.getOffset("default")).toBe(44);
+
+    await service.handleUpdate(confirmUpdate);
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(completePendingAction).toHaveBeenCalledTimes(2);
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(await store.isUpdateProcessed(44)).toBe(true);
+    expect(await store.getOffset("default")).toBe(45);
   });
 
   it("creates an internal task from a confirmed draft without idempotencyKey", async () => {
