@@ -32,6 +32,7 @@ import type {
   CreateTaskInput,
   HumanAnswerInput,
   TaskLeaseRecord,
+  TaskEventInput,
   TaskRecord,
   TaskTrackerClient,
 } from "../src/domain/taskTracker/index.js";
@@ -198,6 +199,7 @@ const readonlyTaskTracker = (tasks: TaskRecord[]): TaskTrackerClient => {
     findTaskByExternalRef: mutatingMethod,
     getAgentTaskContext: mutatingMethod,
     appendEvent: mutatingMethod,
+    appendEventOnce: mutatingMethod,
     appendComment: mutatingMethod,
     setStatus: mutatingMethod,
     recordDecision: mutatingMethod,
@@ -576,6 +578,169 @@ describe("TelegramAssistantService", () => {
     expect(await store.isUpdateProcessed(6)).toBe(true);
     expect(await store.getOffset("default")).toBe(7);
     expect(await store.listPendingActions()).toEqual([]);
+  });
+
+  it("ignores Telegram photos when the media mime allowlist excludes images", async () => {
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createdTask = taskFixture({ id: "task_without_photo" });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => (
+      createdTask
+    ));
+    const appendEventOnce = vi.fn(async (): Promise<boolean> => true);
+    const taskTracker = {
+      ...readonlyTaskTracker([]),
+      createTask,
+      findTaskByExternalRef: vi.fn(async (): Promise<TaskRecord | null> => null),
+      appendEventOnce,
+    } as unknown as TaskTrackerClient;
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      config: {
+        media: {
+          enabled: true,
+          maxBytes: 2000,
+          allowedMimeTypes: ["text/plain"],
+        },
+      },
+    });
+
+    await service.handleUpdate({
+      ...messageUpdate("создай задачу проверить фото"),
+      message: {
+        ...messageUpdate("создай задачу проверить фото").message!,
+        photo: [
+          {
+            file_id: "photo_small",
+            file_unique_id: "photo_unique_small",
+            width: 64,
+            height: 64,
+            file_size: 500,
+          },
+          {
+            file_id: "photo_large",
+            file_unique_id: "photo_unique_large",
+            width: 128,
+            height: 128,
+            file_size: 1000,
+          },
+        ],
+      },
+    });
+
+    const pendingActions = await store.listPendingActions();
+    expect(pendingActions).toHaveLength(1);
+    expect(pendingActions[0]?.payload.attachments).toBeUndefined();
+
+    await service.handleUpdate(callbackUpdate(`c:${pendingActions[0]?.id}`));
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      externalSnapshot: expect.not.objectContaining({
+        attachments: expect.any(Array),
+      }),
+    }));
+    expect(appendEventOnce).not.toHaveBeenCalledWith(
+      "task_without_photo",
+      expect.objectContaining({ kind: "attachments_registered" }),
+    );
+  });
+
+  it("records Telegram photo metadata with inferred jpeg mime when images are allowed", async () => {
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createdTask = taskFixture({ id: "task_with_photo" });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => (
+      createdTask
+    ));
+    const appendEventOnce = vi.fn(async (): Promise<boolean> => true);
+    const taskTracker = {
+      ...readonlyTaskTracker([]),
+      createTask,
+      findTaskByExternalRef: vi.fn(async (): Promise<TaskRecord | null> => null),
+      appendEventOnce,
+    } as unknown as TaskTrackerClient;
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      config: {
+        media: {
+          enabled: true,
+          maxBytes: 2000,
+          allowedMimeTypes: ["image/jpeg"],
+        },
+      },
+    });
+
+    await service.handleUpdate({
+      ...messageUpdate("создай задачу проверить фото"),
+      message: {
+        ...messageUpdate("создай задачу проверить фото").message!,
+        photo: [
+          {
+            file_id: "photo_small",
+            file_unique_id: "photo_unique_small",
+            width: 64,
+            height: 64,
+            file_size: 500,
+          },
+          {
+            file_id: "photo_large",
+            file_unique_id: "photo_unique_large",
+            width: 128,
+            height: 128,
+            file_size: 1000,
+          },
+        ],
+      },
+    });
+
+    const pendingActions = await store.listPendingActions();
+    expect(pendingActions).toHaveLength(1);
+    expect(pendingActions[0]?.payload.attachments).toEqual([
+      {
+        type: "photo",
+        fileId: "photo_large",
+        mimeType: "image/jpeg",
+        size: 1000,
+        width: 128,
+        height: 128,
+      },
+    ]);
+
+    await service.handleUpdate(callbackUpdate(`c:${pendingActions[0]?.id}`));
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      externalSnapshot: expect.objectContaining({
+        attachments: [
+          {
+            type: "photo",
+            fileId: "photo_large",
+            mimeType: "image/jpeg",
+            size: 1000,
+            width: 128,
+            height: 128,
+          },
+        ],
+      }),
+    }));
+    expect(appendEventOnce).toHaveBeenCalledWith("task_with_photo", expect.objectContaining({
+      kind: "attachments_registered",
+      payload: expect.objectContaining({
+        attachments: [
+          {
+            type: "photo",
+            fileId: "photo_large",
+            mimeType: "image/jpeg",
+            size: 1000,
+            width: 128,
+            height: 128,
+          },
+        ],
+      }),
+    }));
   });
 
   it("does not let non-business project Q&A bypass global Telegram allowlists", async () => {
@@ -3343,6 +3508,346 @@ describe("TelegramAssistantService", () => {
       conversationKey: "bot_private:1",
       status: "completed",
     })).resolves.toHaveLength(2);
+  });
+
+  it("registers Telegram attachments when approval resolves an existing external ref", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const existingTask = taskFixture({
+      id: "task_existing_attachment",
+      title: "починить регистрацию",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      externalRefs: [
+        {
+          id: "ref-1",
+          taskId: "task_existing_attachment",
+          provider: "telegram",
+          externalKey: "telegram:1:99",
+          createdAt: baseTime,
+        },
+      ],
+    });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => {
+      throw new Error("createTask should not be called");
+    });
+    const appendEventOnce = vi.fn(async (): Promise<boolean> => true);
+    const findTaskByExternalRef = vi.fn(async (): Promise<TaskRecord | null> => (
+      existingTask
+    ));
+    const taskTracker = {
+      ...readonlyTaskTracker([existingTask]),
+      createTask,
+      findTaskByExternalRef,
+      appendEventOnce,
+    } as unknown as TaskTrackerClient;
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_existing_attachment",
+      payload: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        externalKey: "telegram:1:99",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+        attachments: [
+          {
+            type: "document",
+            fileId: "file_1",
+            fileName: "screen.png",
+            mimeType: "image/png",
+            size: 1000,
+          },
+        ],
+      },
+    }));
+
+    await service.handleUpdate({
+      update_id: 40,
+      message: {
+        message_id: 102,
+        date: 2,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    expect(createTask).not.toHaveBeenCalled();
+    expect(appendEventOnce).toHaveBeenCalledOnce();
+    expect(appendEventOnce).toHaveBeenCalledWith("task_existing_attachment", expect.objectContaining({
+      kind: "attachments_registered",
+      payload: expect.objectContaining({
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+        registrationKey: "telegram:telegram:1:99:attachments_registered",
+      }),
+    }));
+    await expect(store.getPendingAction("tgpa_existing_attachment")).resolves.toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("retries Telegram attachment registration after task creation succeeds but event append fails", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createdTask = taskFixture({
+      id: "task_retry_attachment",
+      title: "починить регистрацию",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      externalRefs: [
+        {
+          id: "ref-1",
+          taskId: "task_retry_attachment",
+          provider: "telegram",
+          externalKey: "telegram:1:99",
+          createdAt: baseTime,
+        },
+      ],
+    });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => (
+      createdTask
+    ));
+    const appendEventOnce = vi.fn()
+      .mockRejectedValueOnce(new Error("append failed"))
+      .mockResolvedValueOnce(true);
+    const findTaskByExternalRef = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(createdTask);
+    const taskTracker = {
+      ...readonlyTaskTracker([createdTask]),
+      createTask,
+      findTaskByExternalRef,
+      appendEventOnce,
+    } as unknown as TaskTrackerClient;
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_retry_attachment",
+      payload: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        externalKey: "telegram:1:99",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+        attachments: [
+          {
+            type: "document",
+            fileId: "file_1",
+            fileName: "screen.png",
+            mimeType: "image/png",
+            size: 1000,
+          },
+        ],
+      },
+    }));
+
+    await expect(service.handleUpdate({
+      update_id: 43,
+      message: {
+        message_id: 105,
+        date: 2,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    })).rejects.toThrow("append failed");
+
+    await expect(store.getPendingAction("tgpa_retry_attachment")).resolves.toMatchObject({
+      status: "executing",
+    });
+
+    await service.handleUpdate({
+      update_id: 44,
+      message: {
+        message_id: 106,
+        date: 3,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "да",
+      },
+    });
+
+    expect(createTask).toHaveBeenCalledOnce();
+    expect(appendEventOnce).toHaveBeenCalledTimes(2);
+    expect(appendEventOnce).toHaveBeenLastCalledWith("task_retry_attachment", expect.objectContaining({
+      kind: "attachments_registered",
+      payload: expect.objectContaining({
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+        registrationKey: "telegram:telegram:1:99:attachments_registered",
+      }),
+    }));
+    await expect(store.getPendingAction("tgpa_retry_attachment")).resolves.toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("deduplicates duplicate Telegram attachment registration callbacks with a stale task snapshot", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const storedEvents: TaskEventInput[] = [];
+    const existingTask = taskFixture({
+      id: "task_concurrent_attachment",
+      title: "починить регистрацию",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      externalRefs: [
+        {
+          id: "ref-1",
+          taskId: "task_concurrent_attachment",
+          provider: "telegram",
+          externalKey: "telegram:1:99",
+          createdAt: baseTime,
+        },
+      ],
+    });
+    const appendEvent = vi.fn(async (_taskId: string, input: TaskEventInput): Promise<void> => {
+      storedEvents.push(input);
+    });
+    const appendEventOnce = vi.fn(async (
+      _taskId: string,
+      input: TaskEventInput,
+    ): Promise<boolean> => {
+      const registrationKey = input.payload?.registrationKey;
+      if (typeof registrationKey === "string" && storedEvents.some((event) => (
+        event.kind === input.kind &&
+        event.payload?.registrationKey === registrationKey
+      ))) {
+        return false;
+      }
+      storedEvents.push(input);
+      return true;
+    });
+    const findTaskByExternalRef = vi.fn(async (): Promise<TaskRecord | null> => {
+      return {
+        ...existingTask,
+        events: [],
+      };
+    });
+    const taskTracker = {
+      ...readonlyTaskTracker([existingTask]),
+      findTaskByExternalRef,
+      appendEvent,
+      appendEventOnce,
+    } as unknown as TaskTrackerClient;
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker,
+      repositories: [repositoryFixture()],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_concurrent_attachment",
+      status: "executing",
+      payload: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        externalKey: "telegram:1:99",
+        draft: {
+          title: "починить регистрацию",
+          description: "создай задачу починить регистрацию",
+          repositoryName: "developer",
+          acceptanceCriteria: [
+            "Поведение реализовано и покрыто существующими проверками.",
+          ],
+          tags: ["telegram"],
+        },
+        attachments: [
+          {
+            type: "document",
+            fileId: "file_1",
+            fileName: "screen.png",
+            mimeType: "image/png",
+            size: 1000,
+          },
+        ],
+      },
+    }));
+
+    await service.handleUpdate(callbackUpdate("c:tgpa_concurrent_attachment", {
+      updateId: 45,
+      callbackQueryId: "cb_duplicate_1",
+    }));
+    await store.upsertPendingAction({
+      ...(await store.getPendingAction("tgpa_concurrent_attachment"))!,
+      status: "executing",
+    });
+    await service.handleUpdate(callbackUpdate("c:tgpa_concurrent_attachment", {
+      updateId: 46,
+      callbackQueryId: "cb_duplicate_2",
+    }));
+
+    expect(storedEvents.filter((event) => event.kind === "attachments_registered"))
+      .toHaveLength(1);
+    expect(storedEvents[0]).toMatchObject({
+      kind: "attachments_registered",
+      payload: expect.objectContaining({
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+        registrationKey: "telegram:telegram:1:99:attachments_registered",
+      }),
+    });
   });
 
   it("uses an older valid pending draft when the newest matching draft is expired", async () => {

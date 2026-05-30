@@ -6,6 +6,7 @@ import type {
   TelegramClient,
   TelegramUpdate,
 } from "../../integrations/telegram/index.js";
+import type { TelegramPhotoSize } from "../../integrations/telegram/types.js";
 import {
   renderTelegramResponse,
   type TelegramResponse,
@@ -38,6 +39,7 @@ import {
 } from "./entityResolver.js";
 import type { TelegramNotificationRouter } from "./notificationRouter.js";
 import { routeTelegramIntent } from "./intentRouter.js";
+import { validateTelegramAttachment } from "./media.js";
 import { canHandleBusinessMessage } from "./profileAutomation.js";
 import type {
   AnswerProjectQuestionResult,
@@ -53,6 +55,7 @@ import {
 import { summarizeTaskForTelegram } from "./taskSummaries.js";
 import type {
   TelegramAssistantActor,
+  TelegramAttachmentMetadata,
   TelegramBusinessConnectionRecord,
   TelegramConversationSource,
   TelegramInboundMessage,
@@ -838,6 +841,9 @@ export class TelegramAssistantService {
         messageId: message.messageId,
         userId: message.userId,
         externalKey,
+        ...(message.attachments && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
       },
       status: "pending",
       createdAt: now,
@@ -920,6 +926,9 @@ export class TelegramAssistantService {
         messageId: message.messageId,
         userId: message.userId,
         externalKey,
+        ...(message.attachments && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
       },
       status: "pending",
       createdAt: now,
@@ -1640,11 +1649,12 @@ export class TelegramAssistantService {
       payload.externalKey,
     );
     if (existing) {
+      await this.ensureTelegramAttachmentsRegistered(existing, payload);
       return existing;
     }
 
     try {
-      return await this.taskTracker.createTask({
+      const task = await this.taskTracker.createTask({
         title: payload.draft.title,
         description: payload.draft.description,
         source: {
@@ -1667,8 +1677,13 @@ export class TelegramAssistantService {
           chatId: payload.chatId,
           messageId: payload.messageId,
           userId: payload.userId,
+          ...(payload.attachments && payload.attachments.length > 0
+            ? { attachments: payload.attachments }
+            : {}),
         },
       });
+      await this.ensureTelegramAttachmentsRegistered(task, payload);
+      return task;
     } catch (error) {
       if (error instanceof DuplicateExternalRefError) {
         const existingAfterRace = await this.taskTracker.findTaskByExternalRef(
@@ -1676,11 +1691,49 @@ export class TelegramAssistantService {
           payload.externalKey,
         );
         if (existingAfterRace) {
+          await this.ensureTelegramAttachmentsRegistered(existingAfterRace, payload);
           return existingAfterRace;
         }
       }
       throw error;
     }
+  }
+
+  private async ensureTelegramAttachmentsRegistered(
+    task: TaskRecord,
+    payload: TaskDraftPayload,
+  ): Promise<void> {
+    if (!payload.attachments || payload.attachments.length === 0) {
+      return;
+    }
+    if (!this.taskTracker) {
+      throw new Error("Task tracker is required to register telegram attachments.");
+    }
+
+    const registrationKey = buildTelegramAttachmentsRegistrationKey(payload.externalKey);
+    if (task.events.some((event) => (
+      event.kind === "attachments_registered" &&
+      event.payload?.registrationKey === registrationKey
+    ))) {
+      return;
+    }
+
+    await this.taskTracker.appendEventOnce(task.id, {
+      kind: "attachments_registered",
+      source: "external_source",
+      message: "Telegram attachments registered.",
+      payload: {
+        provider: "telegram",
+        externalKey: payload.externalKey,
+        registrationKey,
+        source: {
+          provider: "telegram",
+          externalKey: payload.externalKey,
+          kind: "attachments_registered",
+        },
+        attachments: payload.attachments,
+      },
+    });
   }
 
   private async subscribeConversationToTask(
@@ -2116,7 +2169,11 @@ interface TaskDraftPayload {
   messageId: number;
   userId: number;
   externalKey: string;
+  attachments?: TelegramAttachmentMetadata[];
 }
+
+const buildTelegramAttachmentsRegistrationKey = (externalKey: string): string =>
+  `telegram:${externalKey}:attachments_registered`;
 
 interface TelegramResumeCommand {
   type: "resume";
@@ -2138,12 +2195,17 @@ const parseTaskDraftPayload = (
   payload: Record<string, unknown>,
 ): TaskDraftPayload => {
   const draft = payload.draft;
+  const attachments = payload.attachments;
   if (
     !isTelegramTaskDraft(draft) ||
     typeof payload.chatId !== "number" ||
     typeof payload.messageId !== "number" ||
     typeof payload.userId !== "number" ||
-    typeof payload.externalKey !== "string"
+    typeof payload.externalKey !== "string" ||
+    (
+      attachments !== undefined &&
+      (!Array.isArray(attachments) || !attachments.every(isTelegramAttachmentMetadata))
+    )
   ) {
     throw new Error("Invalid telegram task draft payload.");
   }
@@ -2154,6 +2216,9 @@ const parseTaskDraftPayload = (
     messageId: payload.messageId,
     userId: payload.userId,
     externalKey: payload.externalKey,
+    ...(attachments !== undefined
+      ? { attachments }
+      : {}),
   };
 };
 
@@ -2199,6 +2264,24 @@ const isTelegramTaskDraft = (value: unknown): value is TelegramTaskDraft => {
     (draft.repositoryName === undefined || typeof draft.repositoryName === "string") &&
     Array.isArray(draft.tags) &&
     draft.tags.every((tag) => typeof tag === "string")
+  );
+};
+
+const isTelegramAttachmentMetadata = (
+  value: unknown,
+): value is TelegramAttachmentMetadata => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const attachment = value as Partial<TelegramAttachmentMetadata>;
+  return (
+    (attachment.type === "document" || attachment.type === "photo") &&
+    typeof attachment.fileId === "string" &&
+    (attachment.fileName === undefined || typeof attachment.fileName === "string") &&
+    (attachment.mimeType === undefined || typeof attachment.mimeType === "string") &&
+    (attachment.size === undefined || typeof attachment.size === "number") &&
+    (attachment.width === undefined || typeof attachment.width === "number") &&
+    (attachment.height === undefined || typeof attachment.height === "number")
   );
 };
 
@@ -2390,7 +2473,7 @@ const normalizeTelegramUpdateCandidate = (
       config,
       message: update.business_message,
       user: update.business_message.from,
-      text: update.business_message.text,
+      text: update.business_message.text ?? update.business_message.caption,
       idSuffix: `business_message:${update.business_message.message_id}`,
       forceSource: "business",
     });
@@ -2402,7 +2485,7 @@ const normalizeTelegramUpdateCandidate = (
       config,
       message: update.edited_business_message,
       user: update.edited_business_message.from,
-      text: update.edited_business_message.text,
+      text: update.edited_business_message.text ?? update.edited_business_message.caption,
       redactedTextPrefix: "[edited] ",
       idSuffix: `edited_business_message:${update.edited_business_message.message_id}`,
       forceSource: "business",
@@ -2415,7 +2498,7 @@ const normalizeTelegramUpdateCandidate = (
       config,
       message: update.message,
       user: update.message.from,
-      text: update.message.text,
+      text: update.message.text ?? update.message.caption,
       idSuffix: `message:${update.message.message_id}`,
     });
   }
@@ -2462,6 +2545,7 @@ const normalizeMessage = (
     ? `${input.redactedTextPrefix ?? ""}${redactSecrets(text)}`
     : undefined;
   const replyUsername = replyToBotUsername(input.message);
+  const attachments = extractTelegramAttachments(input.message, input.config);
   const message: TelegramInboundMessage = {
     id: `telegram:${input.update.update_id}:${input.idSuffix}`,
     updateId: input.update.update_id,
@@ -2471,6 +2555,7 @@ const normalizeMessage = (
     ...(input.user?.id !== undefined ? { userId: input.user.id } : {}),
     messageId: input.message.message_id,
     ...(text !== undefined ? { text, redactedText } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
     ...(input.user ? { actor: actorForUser(input.user, input.config) } : {}),
     ...(businessConnectionId ? { businessConnectionId } : {}),
     ...(replyUsername ? { replyToBotUsername: replyUsername, isReplyToBot: true } : {}),
@@ -2479,6 +2564,76 @@ const normalizeMessage = (
 
   return { message };
 };
+
+const extractTelegramAttachments = (
+  message: NonNullable<TelegramUpdate["message"]>,
+  config: TelegramAssistantConfig,
+): TelegramAttachmentMetadata[] => {
+  const candidates: TelegramAttachmentMetadata[] = [];
+  if (message.document) {
+    candidates.push(sanitizeTelegramAttachment({
+      type: "document",
+      fileId: message.document.file_id,
+      ...(message.document.file_name
+        ? { fileName: message.document.file_name }
+        : {}),
+      ...(message.document.mime_type
+        ? { mimeType: message.document.mime_type }
+        : {}),
+      ...(message.document.file_size !== undefined
+        ? { size: message.document.file_size }
+        : {}),
+    }));
+  }
+
+  const photo = selectLargestTelegramPhoto(message.photo);
+  if (photo) {
+    candidates.push(sanitizeTelegramAttachment({
+      type: "photo",
+      fileId: photo.file_id,
+      mimeType: "image/jpeg",
+      ...(photo.file_size !== undefined ? { size: photo.file_size } : {}),
+      width: photo.width,
+      height: photo.height,
+    }));
+  }
+
+  return candidates.filter((candidate) =>
+    validateTelegramAttachment(candidate, config.media).accepted,
+  );
+};
+
+const selectLargestTelegramPhoto = (
+  photos: NonNullable<TelegramUpdate["message"]>["photo"],
+): TelegramPhotoSize | undefined => {
+  if (!photos || photos.length === 0) {
+    return undefined;
+  }
+
+  return [...photos].sort((left, right) =>
+    (right.file_size ?? 0) - (left.file_size ?? 0) ||
+    (right.width * right.height) - (left.width * left.height),
+  )[0];
+};
+
+const sanitizeTelegramAttachment = (
+  attachment: TelegramAttachmentMetadata,
+): TelegramAttachmentMetadata => ({
+  type: attachment.type,
+  fileId: truncateMetadata(attachment.fileId, 256),
+  ...(attachment.fileName
+    ? { fileName: truncateMetadata(attachment.fileName, 256) }
+    : {}),
+  ...(attachment.mimeType
+    ? { mimeType: truncateMetadata(attachment.mimeType, 128) }
+    : {}),
+  ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+  ...(attachment.width !== undefined ? { width: attachment.width } : {}),
+  ...(attachment.height !== undefined ? { height: attachment.height } : {}),
+});
+
+const truncateMetadata = (value: string, maxLength: number): string =>
+  value.length <= maxLength ? value : value.slice(0, maxLength);
 
 const sourceForChat = (
   chatType: NonNullable<TelegramUpdate["message"]>["chat"]["type"],

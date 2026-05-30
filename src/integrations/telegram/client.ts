@@ -1,6 +1,7 @@
 import { redactSecrets } from "../../observability/redaction.js";
 import type {
   TelegramApiResponse,
+  TelegramFile,
   TelegramInlineKeyboardMarkup,
   TelegramMessage,
   TelegramUpdate,
@@ -159,6 +160,33 @@ export class TelegramClient {
     });
   }
 
+  async getFile(fileId: string): Promise<TelegramFile> {
+    return this.post<TelegramFile>("getFile", { file_id: fileId });
+  }
+
+  async downloadFile(filePath: string): Promise<ArrayBuffer> {
+    const url = this.fileUrl(filePath);
+    const response = await this.fetchImpl(url).catch((error) => {
+      throw new TelegramApiError(
+        "downloadFile",
+        0,
+        `Telegram file download failed: ${errorToMessage(error)}`,
+        [this.botToken, url],
+      );
+    });
+
+    if (!response.ok) {
+      throw new TelegramApiError(
+        "downloadFile",
+        response.status,
+        "Telegram file download failed.",
+        [this.botToken, url],
+      );
+    }
+
+    return response.arrayBuffer();
+  }
+
   private buildSendMessageBody(input: TelegramSendMessageInput): Record<string, unknown> {
     return {
       chat_id: input.chatId,
@@ -231,6 +259,14 @@ export class TelegramClient {
 
   private methodUrl(method: string): string {
     return `${this.apiBaseUrl.replace(/\/$/, "")}/bot${this.botToken}/${method}`;
+  }
+
+  private fileUrl(filePath: string): string {
+    const encodedPath = filePath
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    return `${this.apiBaseUrl.replace(/\/$/, "")}/file/bot${this.botToken}/${encodedPath}`;
   }
 }
 

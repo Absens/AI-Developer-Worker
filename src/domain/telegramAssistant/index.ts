@@ -46,6 +46,10 @@ export {
   type TelegramTaskDraft,
 } from "./taskDraftBuilder.js";
 export {
+  validateTelegramAttachment,
+  type TelegramAttachmentCandidate,
+} from "./media.js";
+export {
   TelegramAssistantCodexService,
   type AnswerProjectQuestionInput,
   type AnswerProjectQuestionResult,
@@ -61,6 +65,8 @@ export {
 export { summarizeTaskForTelegram } from "./taskSummaries.js";
 export type {
   TelegramAssistantActor,
+  TelegramAttachmentMetadata,
+  TelegramAttachmentType,
   TelegramAssistantRole,
   TelegramAssistantTurn,
   TelegramAssistantTurnStatus,

@@ -23,6 +23,18 @@ export interface TelegramAssistantActor {
   role: TelegramAssistantRole;
 }
 
+export type TelegramAttachmentType = "document" | "photo";
+
+export interface TelegramAttachmentMetadata {
+  type: TelegramAttachmentType;
+  fileId: string;
+  fileName?: string;
+  mimeType?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+}
+
 export interface TelegramInboundMessage {
   id: string;
   updateId: number;
@@ -33,6 +45,7 @@ export interface TelegramInboundMessage {
   messageId?: number;
   text?: string;
   redactedText?: string;
+  attachments?: TelegramAttachmentMetadata[];
   actor?: TelegramAssistantActor;
   businessConnectionId?: string;
   isReplyToBot?: boolean;
