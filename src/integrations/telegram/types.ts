@@ -56,6 +56,8 @@ export interface TelegramCallbackQuery {
   data?: string;
 }
 
+export const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
+
 export interface TelegramDeletedBusinessMessages {
   business_connection_id: string;
   chat: TelegramChat;

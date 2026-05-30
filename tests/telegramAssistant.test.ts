@@ -3,10 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryTelegramAssistantStore,
   TelegramAssistantService,
+  type TelegramAssistantServiceOptions,
   type TelegramPendingAction,
 } from "../src/domain/telegramAssistant/index.js";
+import { parseCallbackData } from "../src/domain/telegramAssistant/service.js";
 import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
-import { TelegramUpdatePoller } from "../src/integrations/telegram/index.js";
+import {
+  TelegramUpdatePoller,
+  type TelegramUpdate,
+} from "../src/integrations/telegram/index.js";
 import { runApplicationRuntime } from "../src/app.js";
 import type {
   RepositoryProfile,
@@ -203,6 +208,157 @@ const readonlyTaskTracker = (tasks: TaskRecord[]): TaskTrackerClient => {
     releaseLease: mutatingMethod,
   } as unknown as TaskTrackerClient;
 };
+
+const fakeTaskTracker = (
+  task: TaskRecord = taskFixture({
+    id: "task_callback_1",
+    title: "починить регистрацию",
+  }),
+): TaskTrackerClient => {
+  const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => task);
+  const findTaskByExternalRef = vi.fn(async (): Promise<TaskRecord | null> => null);
+  return {
+    ...readonlyTaskTracker([task]),
+    createTask,
+    findTaskByExternalRef,
+  } as unknown as TaskTrackerClient;
+};
+
+interface BuildAssistantInput {
+  store: InMemoryTelegramAssistantStore;
+  taskTracker?: TaskTrackerClient;
+  answerCallbackQuery?: TelegramAssistantServiceOptions["telegram"]["answerCallbackQuery"];
+  sendMessage?: TelegramAssistantServiceOptions["telegram"]["sendMessage"];
+  config?: Partial<TelegramAssistantConfig>;
+  repositories?: RepositoryProfile[];
+}
+
+const buildAssistant = (input: BuildAssistantInput): TelegramAssistantService =>
+  new TelegramAssistantService({
+    store: input.store,
+    config: {
+      ...baseTelegramAssistantConfig(),
+      defaultRepository: "developer",
+      ...input.config,
+    },
+    taskTracker: input.taskTracker,
+    repositories: input.repositories ?? [repositoryFixture()],
+    telegram: {
+      sendMessage: input.sendMessage ?? vi.fn(),
+      answerCallbackQuery: input.answerCallbackQuery ?? vi.fn(),
+    },
+  });
+
+interface MessageUpdateOverrides {
+  updateId?: number;
+  messageId?: number;
+  chatId?: number;
+  userId?: number;
+  date?: number;
+}
+
+const messageUpdate = (
+  text: string,
+  overrides: MessageUpdateOverrides = {},
+): TelegramUpdate => ({
+  update_id: overrides.updateId ?? 100,
+  message: {
+    message_id: overrides.messageId ?? 99,
+    date: overrides.date ?? 1,
+    chat: { id: overrides.chatId ?? 1, type: "private" },
+    from: {
+      id: overrides.userId ?? 10,
+      is_bot: false,
+      first_name: "User",
+    },
+    text,
+  },
+});
+
+interface CallbackUpdateOverrides {
+  updateId?: number;
+  callbackQueryId?: string;
+  messageId?: number;
+  chatId?: number;
+  userId?: number;
+  date?: number;
+  hasMessage?: boolean;
+}
+
+const callbackUpdate = (
+  data: string | undefined,
+  overrides: CallbackUpdateOverrides = {},
+): TelegramUpdate => ({
+  update_id: overrides.updateId ?? 101,
+  callback_query: {
+    id: overrides.callbackQueryId ?? "cb_1",
+    from: {
+      id: overrides.userId ?? 10,
+      is_bot: false,
+      first_name: "User",
+    },
+    ...(overrides.hasMessage === false
+      ? {}
+      : {
+          message: {
+            message_id: overrides.messageId ?? 100,
+            date: overrides.date ?? 2,
+            chat: { id: overrides.chatId ?? 1, type: "private" },
+            text: "Создать задачу?",
+          },
+        }),
+    chat_instance: "chat_instance_1",
+    ...(data !== undefined ? { data } : {}),
+  },
+});
+
+describe("parseCallbackData", () => {
+  it("parses valid compact callback forms", () => {
+    expect(parseCallbackData("c:id")).toEqual({
+      kind: "confirm",
+      actionKind: "create_task",
+      id: "id",
+    });
+    expect(parseCallbackData("confirm:create_task:id")).toEqual({
+      kind: "confirm",
+      actionKind: "create_task",
+      id: "id",
+    });
+    expect(parseCallbackData("cancel:id")).toEqual({
+      kind: "cancel",
+      id: "id",
+    });
+    expect(parseCallbackData("select_task:task_1")).toEqual({
+      kind: "select_task",
+      taskId: "task_1",
+    });
+  });
+
+  it("rejects missing callback fields", () => {
+    expect(parseCallbackData(undefined)).toBeUndefined();
+    expect(parseCallbackData("")).toBeUndefined();
+    expect(parseCallbackData("c")).toBeUndefined();
+    expect(parseCallbackData("c:")).toBeUndefined();
+    expect(parseCallbackData("confirm:create_task")).toBeUndefined();
+    expect(parseCallbackData("confirm:create_task:")).toBeUndefined();
+    expect(parseCallbackData("cancel")).toBeUndefined();
+    expect(parseCallbackData("cancel:")).toBeUndefined();
+    expect(parseCallbackData("select_task")).toBeUndefined();
+    expect(parseCallbackData("select_task:")).toBeUndefined();
+  });
+
+  it("rejects callback data with extra fields", () => {
+    expect(parseCallbackData("c:id:extra")).toBeUndefined();
+    expect(parseCallbackData("confirm:create_task:id:extra")).toBeUndefined();
+    expect(parseCallbackData("cancel:id:extra")).toBeUndefined();
+    expect(parseCallbackData("select_task:task_1:extra")).toBeUndefined();
+  });
+
+  it("rejects callback data longer than 64 UTF-8 bytes", () => {
+    expect(parseCallbackData("x".repeat(65))).toBeUndefined();
+    expect(parseCallbackData(`c:${"ж".repeat(32)}`)).toBeUndefined();
+  });
+});
 
 describe("TelegramAssistantService", () => {
   it("ignores updates without a supported message shape and advances offset", async () => {
@@ -711,6 +867,293 @@ describe("TelegramAssistantService", () => {
       text: expect.stringContaining(taskId),
     }));
     expect(await store.getOffset("default")).toBe(38);
+  });
+
+  it("retries text approval from an executing draft after tracker write failure", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createdTask = taskFixture({
+      id: "task_retry_1",
+      title: "починить регистрацию",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      externalRefs: [
+        {
+          id: "ref-retry-1",
+          taskId: "task_retry_1",
+          provider: "telegram",
+          externalKey: "telegram:1:99",
+          createdAt: baseTime,
+        },
+      ],
+    });
+    let storedTask: TaskRecord | null = null;
+    const findTaskByExternalRef = vi.fn(
+      async (provider: string, externalKey: string): Promise<TaskRecord | null> => {
+        if (provider === "telegram" && externalKey === "telegram:1:99") {
+          return storedTask;
+        }
+        return null;
+      },
+    );
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> => {
+      storedTask = createdTask;
+      throw new Error("transient tracker write failure");
+    });
+    const taskTracker = {
+      ...readonlyTaskTracker([]),
+      createTask,
+      findTaskByExternalRef,
+    } as unknown as TaskTrackerClient;
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 36,
+      messageId: 99,
+    }));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+
+    const approvalUpdate = messageUpdate("да", {
+      updateId: 37,
+      messageId: 100,
+      date: 2,
+    });
+    await expect(service.handleUpdate(approvalUpdate)).rejects.toThrow(
+      "transient tracker write failure",
+    );
+
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "executing",
+    });
+    expect(await store.isUpdateProcessed(37)).toBe(false);
+    expect(await store.getOffset("default")).toBe(37);
+
+    await service.handleUpdate(approvalUpdate);
+
+    expect(findTaskByExternalRef).toHaveBeenCalledTimes(2);
+    expect(createTask).toHaveBeenCalledOnce();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "completed",
+    });
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+    })).resolves.toHaveLength(1);
+    await expect(store.listTaskSubscriptions("bot_private:1")).resolves.toEqual([
+      expect.objectContaining({ taskId: "task_retry_1" }),
+    ]);
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 100,
+      text: "Задача создана: task_retry_1",
+    }));
+    expect(await store.isUpdateProcessed(37)).toBe(true);
+    expect(await store.getOffset("default")).toBe(38);
+  });
+
+  it("handles confirm create-task callback and answers callback query", async () => {
+    const answerCallbackQuery = vi.fn();
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({ store, taskTracker, answerCallbackQuery });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию"));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+
+    await service.handleUpdate(callbackUpdate(`c:${pending.id}`));
+
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_1",
+    }));
+    expect(taskTracker.createTask).toHaveBeenCalled();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("answers expired or already consumed callbacks without executing the action", async () => {
+    const answerCallbackQuery = vi.fn();
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({ store, taskTracker, answerCallbackQuery });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию"));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+    await store.completePendingAction(pending.id, { status: "cancelled" });
+
+    await service.handleUpdate(callbackUpdate(`c:${pending.id}`));
+
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_1",
+      text: expect.stringContaining("уже"),
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("answers user mismatch callbacks without mutating or writing", async () => {
+    const answerCallbackQuery = vi.fn();
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      answerCallbackQuery,
+      config: {
+        allowedUserIds: ["10", "99"],
+        developerUserIds: ["10", "99"],
+      },
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию"));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+
+    await service.handleUpdate(callbackUpdate(`c:${pending.id}`, { userId: 99 }));
+
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_1",
+      text: "Это действие создано для другого пользователя.",
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "pending",
+    });
+  });
+
+  it("answers overlong callback data without executing an action", async () => {
+    const answerCallbackQuery = vi.fn();
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({ store, taskTracker, answerCallbackQuery });
+
+    await service.handleUpdate(callbackUpdate("x".repeat(65)));
+
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_1",
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    expect(await store.isUpdateProcessed(101)).toBe(true);
+    expect(await store.getOffset("default")).toBe(102);
+  });
+
+  it("cancels create-task callbacks and clears queued messages", async () => {
+    const answerCallbackQuery = vi.fn();
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({ store, taskTracker, answerCallbackQuery });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию"));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+    await store.enqueueMessage({
+      id: "queued-follow-up",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      message: {
+        id: "telegram:queued",
+        updateId: 500,
+        conversationKey: "bot_private:1",
+        source: "bot_private",
+        chatId: 1,
+        userId: 10,
+        messageId: 501,
+        text: "еще вопрос",
+        redactedText: "еще вопрос",
+        receivedAt: "2026-05-30T08:00:00.000Z",
+      },
+      status: "queued",
+      createdAt: "2026-05-30T08:00:00.000Z",
+      expiresAt: "2026-06-13T08:00:00.000Z",
+    });
+    const cancelQueuedMessages = vi.spyOn(store, "cancelQueuedMessages");
+
+    await service.handleUpdate(callbackUpdate(`cancel:${pending.id}`));
+
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_1",
+      text: expect.stringContaining("отмен"),
+    }));
+    expect(cancelQueuedMessages).toHaveBeenCalledWith("bot_private:1", {
+      cancelledAt: expect.any(String),
+    });
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    await expect(store.listQueuedMessages("bot_private:1")).resolves.toHaveLength(0);
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "cancelled",
+    });
+  });
+
+  it("handles select task callbacks and answers callback query", async () => {
+    const answerCallbackQuery = vi.fn();
+    const sendMessage = vi.fn();
+    const taskTracker = readonlyTaskTracker([
+      taskFixture({
+        id: "task_123",
+        title: "Починить регистрацию",
+        status: "review",
+      }),
+    ]);
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      answerCallbackQuery,
+    });
+
+    await service.handleUpdate(callbackUpdate("select_task:task_123"));
+
+    expect(answerCallbackQuery).toHaveBeenCalledWith(expect.objectContaining({
+      callbackQueryId: "cb_1",
+    }));
+    expect(taskTracker.getTask).toHaveBeenCalledWith("task_123");
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      parseMode: "HTML",
+      text: expect.stringContaining("<b>task_123: Починить регистрацию</b>"),
+    }));
   });
 
   it("does not create a duplicate task for repeated approvals with the same external ref", async () => {

@@ -1,8 +1,12 @@
-import type { TelegramClient, TelegramUpdate } from "../../integrations/telegram/index.js";
+import type {
+  TelegramClient,
+  TelegramUpdate,
+} from "../../integrations/telegram/index.js";
 import {
   renderTelegramResponse,
   type TelegramResponse,
 } from "../../integrations/telegram/renderer.js";
+import { TELEGRAM_CALLBACK_DATA_MAX_BYTES } from "../../integrations/telegram/types.js";
 import type {
   RepositoryProfile,
   TaskTrackerClient,
@@ -20,6 +24,7 @@ import {
   resolveTelegramActor,
   resolveTelegramRole,
   shouldProcessGroupMessage,
+  type TelegramResolvedActor,
 } from "./accessControl.js";
 import {
   resolveTelegramTaskCandidates,
@@ -58,6 +63,11 @@ interface NormalizedUpdateCandidate {
   callbackQueryId?: string;
 }
 
+export type ParsedTelegramCallbackData =
+  | { kind: "confirm"; actionKind: string; id: string }
+  | { kind: "cancel"; id: string }
+  | { kind: "select_task"; taskId: string };
+
 const DEFAULT_OFFSET_SCOPE = "default";
 const UNAUTHORIZED_MESSAGE = "У меня нет доступа к этому чату/пользователю.";
 const WRITE_ROLE_REQUIRED_MESSAGE =
@@ -70,6 +80,16 @@ const TASK_NOT_FOUND_MESSAGE = "Не нашел задачу. Можешь ут�
 const ACTION_NOT_FOUND_MESSAGE = "Нет ожидающего действия для подтверждения.";
 const ACTION_CANCEL_NOT_FOUND_MESSAGE = "Нет ожидающего действия для отмены.";
 const ACTION_CANCELLED_MESSAGE = "Действие отменено.";
+const CALLBACK_INVALID_MESSAGE =
+  "Не удалось обработать кнопку. Попробуй отправить команду текстом.";
+const CALLBACK_NO_MESSAGE_MESSAGE = "Не удалось определить чат для действия.";
+const CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE =
+  "Это действие уже выполнено или истекло.";
+const CALLBACK_ACTION_OTHER_USER_MESSAGE =
+  "Это действие создано для другого пользователя.";
+const CALLBACK_ACTION_OTHER_CHAT_MESSAGE =
+  "Это действие создано для другого чата.";
+const CALLBACK_CREATING_TASK_MESSAGE = "Создаю задачу...";
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
@@ -93,6 +113,20 @@ export class TelegramAssistantService {
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
     if (await this.store.isUpdateProcessed(update.update_id)) {
       await this.saveOffsetAfter(update.update_id);
+      return;
+    }
+
+    if (update.callback_query) {
+      try {
+        await this.handleCallbackUpdate(update);
+        await this.markProcessedAndAdvance(update.update_id);
+      } catch (error) {
+        this.logger?.warn("Telegram assistant failed to handle update.", redactSecrets({
+          updateId: update.update_id,
+          error: errorToMessage(error),
+        }));
+        throw error;
+      }
       return;
     }
 
@@ -202,6 +236,158 @@ export class TelegramAssistantService {
     }
   }
 
+  private async handleCallbackUpdate(update: TelegramUpdate): Promise<void> {
+    const callback = update.callback_query;
+    if (!callback) {
+      return;
+    }
+
+    if (isCallbackDataTooLong(callback.data)) {
+      await this.answerCallback(callback.id, CALLBACK_INVALID_MESSAGE);
+      return;
+    }
+
+    const parsed = parseCallbackData(callback.data);
+    if (!parsed) {
+      await this.answerCallback(callback.id, CALLBACK_INVALID_MESSAGE);
+      return;
+    }
+
+    const candidate = normalizeTelegramCallbackUpdate(update, this.config);
+    if (!candidate) {
+      await this.answerCallback(callback.id, CALLBACK_NO_MESSAGE_MESSAGE);
+      return;
+    }
+
+    await this.store.withConversationLock(
+      candidate.message.conversationKey,
+      async () => {
+        if (!this.config.enabled) {
+          await this.answerCallback(callback.id, "Ассистент выключен.");
+          return;
+        }
+
+        const actor = resolveTelegramActor(this.config, candidate.message);
+        if (!actor.allowed) {
+          await this.answerCallback(callback.id, UNAUTHORIZED_MESSAGE);
+          return;
+        }
+
+        if (parsed.kind === "select_task") {
+          await this.handleSelectTaskCallback(
+            callback.id,
+            candidate.message,
+            parsed.taskId,
+          );
+          return;
+        }
+
+        if (parsed.kind === "cancel") {
+          await this.handleCancelCallback(callback.id, candidate.message, parsed.id);
+          return;
+        }
+
+        await this.handleConfirmCallback(
+          callback.id,
+          candidate.message,
+          actor,
+          parsed,
+        );
+      },
+    );
+  }
+
+  private async handleConfirmCallback(
+    callbackQueryId: string,
+    message: TelegramInboundMessage,
+    actor: TelegramResolvedActor,
+    callback: Extract<ParsedTelegramCallbackData, { kind: "confirm" }>,
+  ): Promise<void> {
+    if (callback.actionKind !== "create_task") {
+      await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
+      return;
+    }
+
+    if (!canPerformTelegramWrite(actor)) {
+      await this.answerCallback(callbackQueryId, WRITE_ROLE_REQUIRED_MESSAGE);
+      return;
+    }
+
+    if (!this.taskTracker) {
+      await this.answerCallback(callbackQueryId, TASK_CREATION_UNAVAILABLE_MESSAGE);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const action = await this.store.getPendingAction(callback.id);
+    const validationMessage = validateCallbackPendingAction(action, message, now);
+    if (validationMessage) {
+      await this.answerCallback(callbackQueryId, validationMessage);
+      return;
+    }
+
+    if (!action || action.intent.name !== "create_task_draft") {
+      await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
+      return;
+    }
+
+    const executableAction = await this.consumeCreateTaskAction(
+      action.id,
+      message,
+      now,
+    );
+    if (!executableAction) {
+      await this.answerCallback(
+        callbackQueryId,
+        CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE,
+      );
+      return;
+    }
+
+    await this.answerCallback(callbackQueryId, CALLBACK_CREATING_TASK_MESSAGE);
+    await this.completeCreateTaskAction(message, executableAction);
+  }
+
+  private async handleCancelCallback(
+    callbackQueryId: string,
+    message: TelegramInboundMessage,
+    actionId: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const action = await this.store.getPendingAction(actionId);
+    const validationMessage = validateCallbackPendingAction(action, message, now);
+    if (validationMessage) {
+      await this.answerCallback(callbackQueryId, validationMessage);
+      return;
+    }
+
+    if (!action || action.intent.name !== "create_task_draft") {
+      await this.answerCallback(callbackQueryId, CALLBACK_INVALID_MESSAGE);
+      return;
+    }
+
+    const cancelled = await this.cancelCreateTaskAction(action.id, message, now);
+    await this.answerCallback(
+      callbackQueryId,
+      cancelled ? ACTION_CANCELLED_MESSAGE : CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE,
+    );
+  }
+
+  private async handleSelectTaskCallback(
+    callbackQueryId: string,
+    message: TelegramInboundMessage,
+    taskId: string,
+  ): Promise<void> {
+    await this.answerCallback(callbackQueryId);
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_TRACKER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+
+    const task = await this.taskTracker.getTask(taskId);
+    await this.sendTelegramResponse(message, summarizeTaskForTelegram(task));
+  }
+
   private async handleCreateTaskDraft(
     message: TelegramInboundMessage,
     intent: TelegramIntent,
@@ -274,27 +460,15 @@ export class TelegramAssistantService {
       return;
     }
 
-    const executableAction =
-      action.status === "executing"
-        ? action
-        : await this.store.consumePendingAction({
-            actionId: action.id,
-            chatId: message.chatId,
-            userId: message.userId,
-            terminalStatus: "executing",
-            now,
-          });
+    const executableAction = action.status === "executing"
+      ? action
+      : await this.consumeCreateTaskAction(action.id, message, now);
     if (!executableAction) {
       await this.sendPlainMessage(message, ACTION_NOT_FOUND_MESSAGE);
       return;
     }
 
-    const task = await this.findOrCreateTaskFromPendingAction(executableAction);
-    await this.store.completePendingAction(executableAction.id, {
-      status: "completed",
-    });
-    await this.subscribeConversationToTask(message, task);
-    await this.sendPlainMessage(message, `Задача создана: ${task.id}`);
+    await this.completeCreateTaskAction(message, executableAction);
   }
 
   private async handleRejectAction(message: TelegramInboundMessage): Promise<void> {
@@ -310,20 +484,69 @@ export class TelegramAssistantService {
       return;
     }
 
+    const cancelled = await this.cancelCreateTaskAction(action.id, message, now);
+    if (!cancelled) {
+      await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+  }
+
+  private async consumeCreateTaskAction(
+    actionId: string,
+    message: TelegramInboundMessage,
+    now: string,
+  ): Promise<TelegramPendingAction | undefined> {
+    if (message.userId === undefined) {
+      return undefined;
+    }
+
+    return this.store.consumePendingAction({
+      actionId,
+      chatId: message.chatId,
+      userId: message.userId,
+      terminalStatus: "executing",
+      now,
+    });
+  }
+
+  private async cancelCreateTaskAction(
+    actionId: string,
+    message: TelegramInboundMessage,
+    now: string,
+  ): Promise<TelegramPendingAction | undefined> {
+    if (message.userId === undefined) {
+      return undefined;
+    }
+
     const cancelled = await this.store.consumePendingAction({
-      actionId: action.id,
+      actionId,
       chatId: message.chatId,
       userId: message.userId,
       terminalStatus: "cancelled",
       now,
     });
     if (!cancelled) {
-      await this.sendPlainMessage(message, ACTION_CANCEL_NOT_FOUND_MESSAGE);
-      return;
+      return undefined;
     }
 
-    await this.store.completePendingAction(cancelled.id, { status: "cancelled" });
-    await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+    await this.store.cancelQueuedMessages(message.conversationKey, {
+      cancelledAt: now,
+    });
+    return cancelled;
+  }
+
+  private async completeCreateTaskAction(
+    message: TelegramInboundMessage,
+    executableAction: TelegramPendingAction,
+  ): Promise<void> {
+    const task = await this.findOrCreateTaskFromPendingAction(executableAction);
+    await this.store.completePendingAction(executableAction.id, {
+      status: "completed",
+    });
+    await this.subscribeConversationToTask(message, task);
+    await this.sendPlainMessage(message, `Задача создана: ${task.id}`);
   }
 
   private async findLatestCreateTaskAction(
@@ -467,6 +690,16 @@ export class TelegramAssistantService {
     });
   }
 
+  private async answerCallback(
+    callbackQueryId: string,
+    text?: string,
+  ): Promise<void> {
+    await this.telegram.answerCallbackQuery({
+      callbackQueryId,
+      ...(text !== undefined ? { text } : {}),
+    });
+  }
+
   private async sendTelegramResponse(
     message: TelegramInboundMessage,
     response: TelegramResponse,
@@ -543,6 +776,26 @@ export class TelegramAssistantService {
     }
   }
 }
+
+const validateCallbackPendingAction = (
+  action: TelegramPendingAction | undefined,
+  message: TelegramInboundMessage,
+  now: string,
+): string | undefined => {
+  if (!action) {
+    return CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE;
+  }
+  if (action.chatId !== message.chatId) {
+    return CALLBACK_ACTION_OTHER_CHAT_MESSAGE;
+  }
+  if (message.userId === undefined || action.userId !== message.userId) {
+    return CALLBACK_ACTION_OTHER_USER_MESSAGE;
+  }
+  if (action.status !== "pending" || !isPendingActionUnexpired(action, now)) {
+    return CALLBACK_ACTION_ALREADY_HANDLED_MESSAGE;
+  }
+  return undefined;
+};
 
 const buildTaskChoiceResponse = (
   candidates: TelegramTaskCandidate[],
@@ -679,19 +932,63 @@ export const normalizeTelegramUpdate = (
   return candidate?.message;
 };
 
+export const parseCallbackData = (
+  value: string | undefined,
+): ParsedTelegramCallbackData | undefined => {
+  if (!value || isCallbackDataTooLong(value)) {
+    return undefined;
+  }
+
+  const parts = value.split(":");
+  if (parts[0] === "c" && parts.length === 2 && parts[1]) {
+    return { kind: "confirm", actionKind: "create_task", id: parts[1] };
+  }
+  if (
+    parts[0] === "confirm" &&
+    parts.length === 3 &&
+    parts[1] &&
+    parts[2]
+  ) {
+    return { kind: "confirm", actionKind: parts[1], id: parts[2] };
+  }
+  if (parts[0] === "cancel" && parts.length === 2 && parts[1]) {
+    return { kind: "cancel", id: parts[1] };
+  }
+  if (parts[0] === "select_task" && parts.length === 2 && parts[1]) {
+    return { kind: "select_task", taskId: parts[1] };
+  }
+  return undefined;
+};
+
+const isCallbackDataTooLong = (value: string | undefined): boolean =>
+  value !== undefined &&
+  Buffer.byteLength(value, "utf8") > TELEGRAM_CALLBACK_DATA_MAX_BYTES;
+
+const normalizeTelegramCallbackUpdate = (
+  update: TelegramUpdate,
+  config: TelegramAssistantConfig,
+): NormalizedUpdateCandidate | undefined => {
+  const callback = update.callback_query;
+  if (!callback?.message) {
+    return undefined;
+  }
+
+  return normalizeMessage({
+    update,
+    config,
+    message: callback.message,
+    user: callback.from,
+    text: callback.message.text,
+    idSuffix: `callback:${callback.id}`,
+  });
+};
+
 const normalizeTelegramUpdateCandidate = (
   update: TelegramUpdate,
   config: TelegramAssistantConfig,
 ): NormalizedUpdateCandidate | undefined => {
-  if (update.callback_query?.message) {
-    return normalizeMessage({
-      update,
-      config,
-      message: update.callback_query.message,
-      user: update.callback_query.from,
-      text: update.callback_query.data ?? update.callback_query.message.text,
-      idSuffix: `callback:${update.callback_query.id}`,
-    });
+  if (update.callback_query) {
+    return normalizeTelegramCallbackUpdate(update, config);
   }
 
   if (update.business_message) {
