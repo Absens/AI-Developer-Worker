@@ -29,6 +29,11 @@ export {
   routeTelegramIntent,
   type RouteTelegramIntentOptions,
 } from "./intentRouter.js";
+export {
+  resolveTelegramTaskCandidates,
+  type TelegramTaskCandidate,
+} from "./entityResolver.js";
+export { summarizeTaskForTelegram } from "./taskSummaries.js";
 export type {
   TelegramAssistantActor,
   TelegramAssistantRole,

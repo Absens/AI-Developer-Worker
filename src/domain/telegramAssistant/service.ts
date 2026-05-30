@@ -1,4 +1,8 @@
 import type { TelegramClient, TelegramUpdate } from "../../integrations/telegram/index.js";
+import {
+  renderTelegramResponse,
+  type TelegramResponse,
+} from "../../integrations/telegram/renderer.js";
 import type {
   RepositoryProfile,
   TaskTrackerClient,
@@ -13,8 +17,13 @@ import {
   resolveTelegramRole,
   shouldProcessGroupMessage,
 } from "./accessControl.js";
+import {
+  resolveTelegramTaskCandidates,
+  type TelegramTaskCandidate,
+} from "./entityResolver.js";
 import { routeTelegramIntent } from "./intentRouter.js";
 import type { TelegramAssistantStore } from "./store.js";
+import { summarizeTaskForTelegram } from "./taskSummaries.js";
 import type {
   TelegramAssistantActor,
   TelegramConversationSource,
@@ -43,10 +52,14 @@ const DEFAULT_OFFSET_SCOPE = "default";
 const UNAUTHORIZED_MESSAGE = "У меня нет доступа к этому чату/пользователю.";
 const WRITE_ROLE_REQUIRED_MESSAGE =
   "Для действий записи нужен allowlist developer/operator/admin пользователя.";
+const TASK_TRACKER_UNAVAILABLE_MESSAGE =
+  "Не могу проверить статус задачи: task tracker недоступен.";
+const TASK_NOT_FOUND_MESSAGE = "Не нашел задачу. Можешь уточнить тему или task id?";
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
   private readonly config: TelegramAssistantConfig;
+  private readonly taskTracker?: TaskTrackerClient;
   private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   private readonly logger?: TelegramAssistantLogger;
   private readonly botUsername?: string;
@@ -54,10 +67,10 @@ export class TelegramAssistantService {
   public constructor(options: TelegramAssistantServiceOptions) {
     this.store = options.store;
     this.config = options.config;
+    this.taskTracker = options.taskTracker;
     this.telegram = options.telegram;
     this.logger = options.logger;
     this.botUsername = options.botUsername ?? this.config.botUsername;
-    void options.taskTracker;
     void options.repositories;
   }
 
@@ -108,6 +121,14 @@ export class TelegramAssistantService {
 
           await this.recordMessageRef(message);
 
+          const activeTurn = await this.store.getActiveAssistantTurn(
+            message.conversationKey,
+          );
+          if (activeTurn) {
+            await this.store.enqueueMessage(this.buildQueuedMessage(message));
+            return;
+          }
+
           const intent = routeTelegramIntent(message.text, {
             projectQaEnabled: this.config.projectQaEnabled,
           });
@@ -128,24 +149,12 @@ export class TelegramAssistantService {
             return;
           }
 
-          const activeTurn = await this.store.getActiveAssistantTurn(
-            message.conversationKey,
-          );
-          if (activeTurn) {
-            await this.store.enqueueMessage(this.buildQueuedMessage(message));
+          if (intent.name === "task_status") {
+            await this.handleTaskStatus(message, intent.rawText ?? message.text ?? "");
             return;
           }
 
-          await this.telegram.sendMessage({
-            chatId: String(message.chatId),
-            text: `Intent: ${intent.name}`,
-            ...(message.messageId
-              ? { replyToMessageId: message.messageId }
-              : {}),
-            ...(message.businessConnectionId
-              ? { businessConnectionId: message.businessConnectionId }
-              : {}),
-          });
+          await this.sendPlainMessage(message, `Intent: ${intent.name}`);
         },
       );
       await this.markProcessedAndAdvance(update.update_id);
@@ -155,6 +164,87 @@ export class TelegramAssistantService {
         error: errorToMessage(error),
       }));
       throw error;
+    }
+  }
+
+  private async handleTaskStatus(
+    message: TelegramInboundMessage,
+    query: string,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_TRACKER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+
+    const tasks = await this.taskTracker.listTasks({ limit: 500 });
+    const candidates = resolveTelegramTaskCandidates(query, tasks);
+    const topCandidate = candidates[0];
+    if (!topCandidate) {
+      await this.sendPlainMessage(message, TASK_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const secondCandidate = candidates[1];
+    const hasStrongUniqueCandidate =
+      topCandidate.score >= 20 &&
+      (secondCandidate === undefined || secondCandidate.score < topCandidate.score);
+    if (hasStrongUniqueCandidate) {
+      const task = await this.taskTracker.getTask(topCandidate.task.id);
+      await this.sendTelegramResponse(message, summarizeTaskForTelegram(task));
+      return;
+    }
+
+    await this.sendTelegramResponse(
+      message,
+      buildTaskChoiceResponse(candidates.slice(0, 5)),
+    );
+  }
+
+  private async sendPlainMessage(
+    message: TelegramInboundMessage,
+    text: string,
+  ): Promise<void> {
+    await this.telegram.sendMessage({
+      chatId: String(message.chatId),
+      text,
+      ...(message.messageId
+        ? { replyToMessageId: message.messageId }
+        : {}),
+      ...(message.businessConnectionId
+        ? { businessConnectionId: message.businessConnectionId }
+        : {}),
+    });
+  }
+
+  private async sendTelegramResponse(
+    message: TelegramInboundMessage,
+    response: TelegramResponse,
+  ): Promise<void> {
+    const rendered = renderTelegramResponse(response);
+
+    for (let index = 0; index < rendered.messages.length; index += 1) {
+      const text = rendered.messages[index];
+      if (text === undefined) {
+        continue;
+      }
+
+      await this.telegram.sendMessage({
+        chatId: String(message.chatId),
+        text,
+        parseMode: rendered.parseMode,
+        ...(rendered.disableWebPagePreview !== undefined
+          ? { disableWebPagePreview: rendered.disableWebPagePreview }
+          : {}),
+        ...(index === 0 && message.messageId
+          ? { replyToMessageId: message.messageId }
+          : {}),
+        ...(index === 0 && rendered.replyMarkup
+          ? { replyMarkup: rendered.replyMarkup }
+          : {}),
+        ...(message.businessConnectionId
+          ? { businessConnectionId: message.businessConnectionId }
+          : {}),
+      });
     }
   }
 
@@ -202,6 +292,36 @@ export class TelegramAssistantService {
     }
   }
 }
+
+const buildTaskChoiceResponse = (
+  candidates: TelegramTaskCandidate[],
+): TelegramResponse => ({
+  blocks: [
+    { kind: "title", text: "Нашел несколько задач" },
+    { kind: "paragraph", text: "Выбери нужную задачу:" },
+    ...candidates.map((candidate) => ({
+      kind: "field" as const,
+      label: candidate.task.id,
+      value: `${candidate.task.title} (${candidate.task.status})`,
+    })),
+  ],
+  inlineButtonRows: candidates.map((candidate) => [
+    {
+      text: formatTaskButtonText(candidate.task.id, candidate.task.title),
+      callbackData: `select_task:${candidate.task.id}`,
+    },
+  ]),
+  disableWebPagePreview: true,
+});
+
+const formatTaskButtonText = (taskId: string, title: string): string => {
+  const text = `${taskId}: ${title}`;
+  if (text.length <= 64) {
+    return text;
+  }
+
+  return `${text.slice(0, 61)}...`;
+};
 
 export const normalizeTelegramUpdate = (
   update: TelegramUpdate,
