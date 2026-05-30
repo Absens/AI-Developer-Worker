@@ -35,6 +35,7 @@ export interface ListPendingActionsInput {
 export interface CompleteAssistantTurnInput {
   status: Exclude<TelegramAssistantTurnStatus, "running">;
   completedAt?: string;
+  threadId?: string;
   diagnostic?: string;
 }
 
@@ -90,6 +91,10 @@ export interface TelegramAssistantStore {
     turnId: string,
     input: CompleteAssistantTurnInput,
   ): Promise<TelegramAssistantTurn>;
+  completeAssistantTurnIfRunning(
+    turnId: string,
+    input: CompleteAssistantTurnInput,
+  ): Promise<TelegramAssistantTurn | undefined>;
   enqueueMessage(message: TelegramQueuedMessage): Promise<TelegramQueuedMessage>;
   listQueuedMessages(conversationKey: string): Promise<TelegramQueuedMessage[]>;
   deleteQueuedMessage(messageId: string): Promise<void>;
@@ -147,6 +152,25 @@ const isExpired = (expiresAt: string, now: string): boolean =>
 
 const notificationDeliveryKey = (subscriptionId: string, eventId: string): string =>
   JSON.stringify([subscriptionId, eventId]);
+
+const latestBusinessConnectionTimestamp = (
+  record: Pick<TelegramBusinessConnectionRecord, "updatedAt" | "lastSeenAt">,
+): number =>
+  Math.max(Date.parse(record.updatedAt), Date.parse(record.lastSeenAt));
+
+const shouldReplaceBusinessConnection = (
+  existing: TelegramBusinessConnectionRecord,
+  incoming: TelegramBusinessConnectionRecord,
+): boolean => {
+  if (existing.updateId !== undefined && incoming.updateId !== undefined) {
+    return incoming.updateId > existing.updateId;
+  }
+
+  return (
+    latestBusinessConnectionTimestamp(incoming) >
+    latestBusinessConnectionTimestamp(existing)
+  );
+};
 
 const PENDING_ACTION_TERMINAL_STATUSES = new Set<TelegramPendingActionStatus>([
   "completed",
@@ -265,14 +289,36 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
     input: CompleteAssistantTurnInput,
   ): Promise<TelegramAssistantTurn> {
     const existing = this.requireAssistantTurn(turnId);
+    const completed = this.buildCompletedAssistantTurn(existing, input);
+    this.assistantTurns.set(turnId, clone(completed));
+    return clone(completed);
+  }
+
+  public async completeAssistantTurnIfRunning(
+    turnId: string,
+    input: CompleteAssistantTurnInput,
+  ): Promise<TelegramAssistantTurn | undefined> {
+    const existing = this.assistantTurns.get(turnId);
+    if (!existing || existing.status !== "running") {
+      return undefined;
+    }
+    const completed = this.buildCompletedAssistantTurn(existing, input);
+    this.assistantTurns.set(turnId, clone(completed));
+    return clone(completed);
+  }
+
+  private buildCompletedAssistantTurn(
+    existing: TelegramAssistantTurn,
+    input: CompleteAssistantTurnInput,
+  ): TelegramAssistantTurn {
     const completed: TelegramAssistantTurn = {
       ...existing,
       status: input.status,
       completedAt: input.completedAt ?? this.nowIso(),
+      ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
     };
-    this.assistantTurns.set(turnId, clone(completed));
-    return clone(completed);
+    return completed;
   }
 
   public async enqueueMessage(
@@ -513,6 +559,10 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
   public async upsertBusinessConnection(
     record: TelegramBusinessConnectionRecord,
   ): Promise<TelegramBusinessConnectionRecord> {
+    const existing = this.businessConnections.get(record.id);
+    if (existing && !shouldReplaceBusinessConnection(existing, record)) {
+      return clone(existing);
+    }
     this.businessConnections.set(record.id, clone(record));
     return clone(record);
   }

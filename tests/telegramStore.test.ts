@@ -833,4 +833,86 @@ describe("InMemoryTelegramAssistantStore", () => {
       lastSeenAt: laterTime,
     });
   });
+
+  it("does not overwrite newer business connection records with stale updates", async () => {
+    const store = createStore();
+
+    await store.upsertBusinessConnection({
+      id: "biz-stale",
+      userId: 201,
+      userChatId: 101,
+      canReply: false,
+      isEnabled: false,
+      createdAt: baseTime,
+      updatedAt: laterTime,
+      lastSeenAt: laterTime,
+    });
+    const result = await store.upsertBusinessConnection({
+      id: "biz-stale",
+      userId: 200,
+      userChatId: 100,
+      canReply: true,
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    expect(result).toEqual({
+      id: "biz-stale",
+      userId: 201,
+      userChatId: 101,
+      canReply: false,
+      isEnabled: false,
+      createdAt: baseTime,
+      updatedAt: laterTime,
+      lastSeenAt: laterTime,
+    });
+    await expect(store.getBusinessConnection("biz-stale")).resolves.toEqual(result);
+  });
+
+  it("does not overwrite newer business connection records with same-second stale update ids", async () => {
+    const store = createStore();
+    const expected = {
+      id: "biz-same-second",
+      userId: 201,
+      userChatId: 101,
+      canReply: false,
+      isEnabled: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+      updateId: 11,
+    };
+
+    await store.upsertBusinessConnection(expected);
+    const lowerUpdate = await store.upsertBusinessConnection({
+      id: "biz-same-second",
+      userId: 200,
+      userChatId: 100,
+      canReply: true,
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+      updateId: 10,
+    });
+    const equalUpdate = await store.upsertBusinessConnection({
+      id: "biz-same-second",
+      userId: 200,
+      userChatId: 100,
+      canReply: true,
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+      updateId: 11,
+    });
+
+    expect(lowerUpdate).toEqual(expected);
+    expect(equalUpdate).toEqual(expected);
+    await expect(store.getBusinessConnection("biz-same-second")).resolves.toEqual(
+      expected,
+    );
+  });
 });

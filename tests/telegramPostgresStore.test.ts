@@ -144,6 +144,31 @@ describe("telegram assistant internal tracker migrations", () => {
       1,
     );
   });
+
+  it("adds business connection update ids in a separate migration after 0011", () => {
+    const migrations = listInternalTrackerMigrations();
+    const telegramMigration = migrations.find((migration) =>
+      migration.filename === "0011_telegram_assistant.sql"
+    );
+    const updateIdMigration = migrations.find((migration) =>
+      migration.filename === "0012_telegram_business_connection_update_id.sql"
+    );
+    const businessConnectionTable = telegramMigration?.sql.match(
+      /CREATE TABLE IF NOT EXISTS telegram_profile_automation_connections \([\s\S]*?\);/,
+    )?.[0];
+
+    expect(businessConnectionTable).toContain(
+      "CREATE TABLE IF NOT EXISTS telegram_profile_automation_connections",
+    );
+    expect(businessConnectionTable).not.toContain("update_id");
+    expect(updateIdMigration?.version).toBe("0012");
+    expect(updateIdMigration?.sql).toContain(
+      "ALTER TABLE telegram_profile_automation_connections",
+    );
+    expect(updateIdMigration?.sql).toContain(
+      "ADD COLUMN IF NOT EXISTS update_id bigint",
+    );
+  });
 });
 
 describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
@@ -450,5 +475,93 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
       queuedMessages: 1,
       pendingActions: 0,
     });
+  });
+
+  it("does not overwrite newer business connection records with stale updates", async () => {
+    await runInternalTrackerMigrations(pool);
+    const store = new PostgresTelegramAssistantStore(pool, {
+      now: () => new Date(baseTime),
+    });
+
+    await store.upsertBusinessConnection({
+      id: "biz-stale",
+      userId: 201,
+      userChatId: 101,
+      canReply: false,
+      isEnabled: false,
+      createdAt: baseTime,
+      updatedAt: laterTime,
+      lastSeenAt: laterTime,
+    });
+    const result = await store.upsertBusinessConnection({
+      id: "biz-stale",
+      userId: 200,
+      userChatId: 100,
+      canReply: true,
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+    });
+
+    expect(result).toEqual({
+      id: "biz-stale",
+      userId: 201,
+      userChatId: 101,
+      canReply: false,
+      isEnabled: false,
+      createdAt: baseTime,
+      updatedAt: laterTime,
+      lastSeenAt: laterTime,
+    });
+    await expect(store.getBusinessConnection("biz-stale")).resolves.toEqual(result);
+  });
+
+  it("does not overwrite newer business connection records with same-second stale update ids", async () => {
+    await runInternalTrackerMigrations(pool);
+    const store = new PostgresTelegramAssistantStore(pool, {
+      now: () => new Date(baseTime),
+    });
+    const expected = {
+      id: "biz-same-second",
+      userId: 201,
+      userChatId: 101,
+      canReply: false,
+      isEnabled: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+      updateId: 11,
+    };
+
+    await store.upsertBusinessConnection(expected);
+    const lowerUpdate = await store.upsertBusinessConnection({
+      id: "biz-same-second",
+      userId: 200,
+      userChatId: 100,
+      canReply: true,
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+      updateId: 10,
+    });
+    const equalUpdate = await store.upsertBusinessConnection({
+      id: "biz-same-second",
+      userId: 200,
+      userChatId: 100,
+      canReply: true,
+      isEnabled: true,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      lastSeenAt: baseTime,
+      updateId: 11,
+    });
+
+    expect(lowerUpdate).toEqual(expected);
+    expect(equalUpdate).toEqual(expected);
+    await expect(store.getBusinessConnection("biz-same-second")).resolves.toEqual(
+      expected,
+    );
   });
 });

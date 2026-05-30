@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildApplication } from "../src/app.js";
+import {
+  buildApplication,
+  buildTelegramAssistantCodexRuntimeConfig,
+} from "../src/app.js";
 
 const cleanupPaths: string[] = [];
 
@@ -18,6 +21,25 @@ afterEach(() => {
 });
 
 describe("application wiring", () => {
+  it("clamps Telegram assistant Codex process timeout to the Telegram timeout", () => {
+    const workerRuntimeConfig = { codexTimeoutMs: 30 * 60 * 1000 };
+    const telegramConfig = { codexTimeoutSeconds: 120 };
+
+    expect(
+      buildTelegramAssistantCodexRuntimeConfig(
+        workerRuntimeConfig,
+        telegramConfig,
+      ).codexTimeoutMs,
+    ).toBe(120 * 1000);
+    expect(workerRuntimeConfig.codexTimeoutMs).toBe(30 * 60 * 1000);
+    expect(
+      buildTelegramAssistantCodexRuntimeConfig(
+        { codexTimeoutMs: 45 * 1000 },
+        telegramConfig,
+      ).codexTimeoutMs,
+    ).toBe(45 * 1000);
+  });
+
   it("builds internal task tracker mode without Yandex direct config", () => {
     const app = buildApplication({
       TASK_TRACKER_PROVIDER: "internal",

@@ -120,6 +120,7 @@ type BusinessConnectionRow = QueryResultRow & {
   created_at: Date | string;
   updated_at: Date | string;
   last_seen_at: Date | string;
+  update_id: number | string | null;
 };
 
 const TERMINAL_PENDING_ACTION_STATUSES = new Set<TelegramPendingActionStatus>([
@@ -262,6 +263,7 @@ const mapBusinessConnectionRow = (
   createdAt: toIso(row.created_at),
   updatedAt: toIso(row.updated_at),
   lastSeenAt: toIso(row.last_seen_at),
+  ...(row.update_id !== null ? { updateId: toNumber(row.update_id) } : {}),
 });
 
 export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
@@ -477,17 +479,40 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         UPDATE telegram_assistant_turns
         SET status = $2,
             completed_at = $3,
-            diagnostic = COALESCE($4, diagnostic)
+            thread_id = COALESCE($4, thread_id),
+            diagnostic = COALESCE($5, diagnostic)
         WHERE id = $1
         RETURNING *
       `,
-      [turnId, input.status, completedAt, input.diagnostic ?? null],
+      [turnId, input.status, completedAt, input.threadId ?? null, input.diagnostic ?? null],
     );
     const row = result.rows[0];
     if (!row) {
       throw new Error(`Telegram assistant turn not found: ${turnId}`);
     }
     return mapAssistantTurnRow(row);
+  }
+
+  public async completeAssistantTurnIfRunning(
+    turnId: string,
+    input: CompleteAssistantTurnInput,
+  ): Promise<TelegramAssistantTurn | undefined> {
+    const completedAt = input.completedAt ?? this.nowIso();
+    const result = await this.db.query<AssistantTurnRow>(
+      `
+        UPDATE telegram_assistant_turns
+        SET status = $2,
+            completed_at = $3,
+            thread_id = COALESCE($4, thread_id),
+            diagnostic = COALESCE($5, diagnostic)
+        WHERE id = $1
+          AND status = 'running'
+        RETURNING *
+      `,
+      [turnId, input.status, completedAt, input.threadId ?? null, input.diagnostic ?? null],
+    );
+    const row = result.rows[0];
+    return row ? mapAssistantTurnRow(row) : undefined;
   }
 
   public async enqueueMessage(
@@ -902,21 +927,48 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
   ): Promise<TelegramBusinessConnectionRecord> {
     const result = await this.db.query<BusinessConnectionRow>(
       `
-        INSERT INTO telegram_profile_automation_connections (
-          id, user_id, user_chat_id, can_reply, is_enabled,
-          created_at, updated_at, last_seen_at
+        WITH upsert AS (
+          INSERT INTO telegram_profile_automation_connections (
+            id, user_id, user_chat_id, can_reply, is_enabled,
+            created_at, updated_at, last_seen_at, update_id
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (id)
+          DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            user_chat_id = EXCLUDED.user_chat_id,
+            can_reply = EXCLUDED.can_reply,
+            is_enabled = EXCLUDED.is_enabled,
+            created_at = EXCLUDED.created_at,
+            updated_at = EXCLUDED.updated_at,
+            last_seen_at = EXCLUDED.last_seen_at,
+            update_id = EXCLUDED.update_id
+          WHERE (
+              telegram_profile_automation_connections.update_id IS NOT NULL
+              AND EXCLUDED.update_id IS NOT NULL
+              AND EXCLUDED.update_id > telegram_profile_automation_connections.update_id
+            )
+            OR (
+              (
+                telegram_profile_automation_connections.update_id IS NULL
+                OR EXCLUDED.update_id IS NULL
+              )
+              AND GREATEST(EXCLUDED.updated_at, EXCLUDED.last_seen_at) >
+                GREATEST(
+                  telegram_profile_automation_connections.updated_at,
+                  telegram_profile_automation_connections.last_seen_at
+                )
+            )
+          RETURNING *
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (id)
-        DO UPDATE SET
-          user_id = EXCLUDED.user_id,
-          user_chat_id = EXCLUDED.user_chat_id,
-          can_reply = EXCLUDED.can_reply,
-          is_enabled = EXCLUDED.is_enabled,
-          created_at = EXCLUDED.created_at,
-          updated_at = EXCLUDED.updated_at,
-          last_seen_at = EXCLUDED.last_seen_at
-        RETURNING *
+        SELECT *
+        FROM upsert
+        UNION ALL
+        SELECT *
+        FROM telegram_profile_automation_connections
+        WHERE id = $1
+          AND NOT EXISTS (SELECT 1 FROM upsert)
+        LIMIT 1
       `,
       [
         record.id,
@@ -927,6 +979,7 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         record.createdAt,
         record.updatedAt,
         record.lastSeenAt,
+        record.updateId ?? null,
       ],
     );
     return mapBusinessConnectionRow(result.rows[0]!);

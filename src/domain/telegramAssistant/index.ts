@@ -41,6 +41,19 @@ export {
   buildHeuristicTaskDraft,
   type TelegramTaskDraft,
 } from "./taskDraftBuilder.js";
+export {
+  TelegramAssistantCodexService,
+  type AnswerProjectQuestionInput,
+  type AnswerProjectQuestionResult,
+  type AssistantSource,
+  type TelegramAssistantCodexServiceOptions,
+} from "./assistantCodex.js";
+export {
+  TelegramAssistantProjectContextSourceProvider,
+  type TelegramAssistantProjectContextSourceProviderOptions,
+  type TelegramAssistantProjectSourceInput,
+  type TelegramAssistantProjectSourceProvider,
+} from "./projectSources.js";
 export { summarizeTaskForTelegram } from "./taskSummaries.js";
 export type {
   TelegramAssistantActor,

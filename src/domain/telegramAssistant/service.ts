@@ -1,3 +1,7 @@
+import type { Dirent } from "node:fs";
+import { readdir, readFile, realpath } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
+
 import type {
   TelegramClient,
   TelegramUpdate,
@@ -34,6 +38,12 @@ import {
 } from "./entityResolver.js";
 import type { TelegramNotificationRouter } from "./notificationRouter.js";
 import { routeTelegramIntent } from "./intentRouter.js";
+import type {
+  AnswerProjectQuestionResult,
+  AssistantSource,
+  TelegramAssistantCodexService,
+} from "./assistantCodex.js";
+import type { TelegramAssistantProjectSourceProvider } from "./projectSources.js";
 import type { TelegramAssistantStore } from "./store.js";
 import {
   buildHeuristicTaskDraft,
@@ -42,6 +52,7 @@ import {
 import { summarizeTaskForTelegram } from "./taskSummaries.js";
 import type {
   TelegramAssistantActor,
+  TelegramBusinessConnectionRecord,
   TelegramConversationSource,
   TelegramInboundMessage,
   TelegramIntent,
@@ -55,6 +66,8 @@ export interface TelegramAssistantServiceOptions {
   store: TelegramAssistantStore;
   config: TelegramAssistantConfig;
   taskTracker?: TaskTrackerClient;
+  assistantCodex?: Pick<TelegramAssistantCodexService, "answerProjectQuestion">;
+  projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   repositories: RepositoryProfile[];
   telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   notificationRouter?: Pick<TelegramNotificationRouter, "scanSubscribedTasks">;
@@ -76,6 +89,15 @@ type AnswerAiQuestionCandidateResolution =
   | { status: "single"; candidate: AnswerAiQuestionCandidate }
   | { status: "none" }
   | { status: "multiple" };
+
+interface AfterConversationLockOperation {
+  run(): Promise<void>;
+  runInBackground?: boolean;
+}
+
+interface MessageProcessingOptions {
+  drainAfterProjectTurn?: boolean;
+}
 
 export type ParsedTelegramCallbackData =
   | { kind: "confirm"; actionKind: string; id: string }
@@ -107,6 +129,9 @@ const CALLBACK_CREATING_TASK_MESSAGE = "Создаю задачу...";
 const CALLBACK_RECORDING_ANSWER_MESSAGE = "Записываю ответ...";
 const TASK_ANSWER_UNAVAILABLE_MESSAGE =
   "Не могу ответить на вопрос: task tracker недоступен.";
+const PROJECT_QA_UNAVAILABLE_MESSAGE = "Проектный Q&A сейчас недоступен.";
+const PROJECT_QA_NO_SOURCES_MESSAGE =
+  "Не нашел проектный контекст для ответа. Уточни репозиторий или добавь документацию.";
 const ANSWER_QUESTION_NOT_FOUND_MESSAGE =
   "Не нашел открытый вопрос AI. Уточни задачу или дождись вопроса.";
 const ANSWER_QUESTION_AMBIGUOUS_MESSAGE =
@@ -114,11 +139,21 @@ const ANSWER_QUESTION_AMBIGUOUS_MESSAGE =
 const ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE =
   "Не могу ответить на вопрос: не удалось определить сообщение или пользователя.";
 const ANSWER_RECORDED_MESSAGE = "Ответ записан. Задача продолжит работу.";
+const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md"];
+const MAX_PROJECT_SOURCE_FILES = 20;
+const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
+const MAX_TASK_SOURCE_COUNT = 5;
+const BUSINESS_CONNECTION_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
   private readonly config: TelegramAssistantConfig;
   private readonly taskTracker?: TaskTrackerClient;
+  private readonly assistantCodex?: Pick<
+    TelegramAssistantCodexService,
+    "answerProjectQuestion"
+  >;
+  private readonly projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   private readonly repositories: RepositoryProfile[];
   private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   private readonly notificationRouter?: Pick<
@@ -132,6 +167,8 @@ export class TelegramAssistantService {
     this.store = options.store;
     this.config = options.config;
     this.taskTracker = options.taskTracker;
+    this.assistantCodex = options.assistantCodex;
+    this.projectSourceProvider = options.projectSourceProvider;
     this.repositories = options.repositories;
     this.telegram = options.telegram;
     this.notificationRouter = options.notificationRouter;
@@ -146,6 +183,23 @@ export class TelegramAssistantService {
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
     if (await this.store.isUpdateProcessed(update.update_id)) {
       await this.saveOffsetAfter(update.update_id);
+      return;
+    }
+
+    if (update.business_connection) {
+      try {
+        await this.handleBusinessConnectionUpdate(
+          update.business_connection,
+          update.update_id,
+        );
+        await this.markProcessedAndAdvance(update.update_id);
+      } catch (error) {
+        this.logger?.warn("Telegram assistant failed to handle update.", redactSecrets({
+          updateId: update.update_id,
+          error: errorToMessage(error),
+        }));
+        throw error;
+      }
       return;
     }
 
@@ -170,105 +224,25 @@ export class TelegramAssistantService {
     }
 
     try {
+      let afterConversationLock: AfterConversationLockOperation | undefined;
       await this.store.withConversationLock(
         message.conversationKey,
         async () => {
-          if (!this.config.enabled) {
-            return;
-          }
-
-          if (
-            message.source === "group" &&
-            !shouldProcessGroupMessage({
-              text: message.text,
-              groupMode: this.config.groupMode,
-              botUsername: this.botUsername,
-              isReplyToBot: message.isReplyToBot,
-              replyToBotUsername: message.replyToBotUsername,
-            })
-          ) {
-            return;
-          }
-
-          const actor = resolveTelegramActor(this.config, message);
-          if (!actor.allowed) {
-            await this.telegram.sendMessage({
-              chatId: String(message.chatId),
-              text: UNAUTHORIZED_MESSAGE,
-              ...(message.businessConnectionId
-                ? { businessConnectionId: message.businessConnectionId }
-                : {}),
-            });
-            return;
-          }
-
-          await this.recordMessageRef(message);
-
-          const activeTurn = await this.store.getActiveAssistantTurn(
-            message.conversationKey,
+          afterConversationLock = await this.handleMessageUnderConversationLock(
+            message,
           );
-          if (activeTurn) {
-            await this.store.enqueueMessage(this.buildQueuedMessage(message));
-            return;
-          }
-
-          const intent = routeTelegramIntent(message.text, {
-            projectQaEnabled: this.config.projectQaEnabled,
-          });
-          if (
-            intent.safetyLevel === "confirm_write" &&
-            !canPerformTelegramWrite(actor)
-          ) {
-            await this.telegram.sendMessage({
-              chatId: String(message.chatId),
-              text: WRITE_ROLE_REQUIRED_MESSAGE,
-              ...(message.messageId
-                ? { replyToMessageId: message.messageId }
-                : {}),
-              ...(message.businessConnectionId
-                ? { businessConnectionId: message.businessConnectionId }
-                : {}),
-            });
-            return;
-          }
-
-          if (intent.name === "task_status") {
-            await this.handleTaskStatus(message, intent.rawText ?? message.text ?? "");
-            return;
-          }
-
-          if (intent.name === "create_task_draft") {
-            await this.handleCreateTaskDraft(
-              message,
-              intent,
-              intent.rawText ?? message.text ?? "",
-            );
-            return;
-          }
-
-          if (intent.name === "answer_ai_question") {
-            await this.handleAnswerAiQuestion(
-              message,
-              intent,
-              intent.rawText ?? message.text ?? "",
-            );
-            return;
-          }
-
-          if (intent.name === "approve_action") {
-            await this.handleApproveAction(message);
-            return;
-          }
-
-          if (intent.name === "reject_action") {
-            await this.handleRejectAction(message);
-            return;
-          }
-
-          await this.sendPlainMessage(message, `Intent: ${intent.name}`);
         },
       );
+      if (afterConversationLock && !afterConversationLock.runInBackground) {
+        await afterConversationLock.run();
+      }
       await this.markProcessedAndAdvance(update.update_id);
+      if (afterConversationLock?.runInBackground) {
+        this.runAfterConversationLockInBackground(
+          afterConversationLock,
+          update.update_id,
+        );
+      }
     } catch (error) {
       this.logger?.warn("Telegram assistant failed to handle update.", redactSecrets({
         updateId: update.update_id,
@@ -276,6 +250,122 @@ export class TelegramAssistantService {
       }));
       throw error;
     }
+  }
+
+  private async handleMessageUnderConversationLock(
+    message: TelegramInboundMessage,
+    options: MessageProcessingOptions = {},
+  ): Promise<AfterConversationLockOperation | undefined> {
+    if (!this.config.enabled) {
+      return undefined;
+    }
+
+    if (
+      message.source === "group" &&
+      !shouldProcessGroupMessage({
+        text: message.text,
+        groupMode: this.config.groupMode,
+        botUsername: this.botUsername,
+        isReplyToBot: message.isReplyToBot,
+        replyToBotUsername: message.replyToBotUsername,
+      })
+    ) {
+      return undefined;
+    }
+
+    const intent = routeTelegramIntent(message.text, {
+      projectQaEnabled: this.config.projectQaEnabled,
+    });
+    const actor = resolveTelegramActor(this.config, message);
+    const projectQuestionAllowedByProfile =
+      intent.name === "project_question" &&
+      message.source === "business" &&
+      (await this.isProjectQuestionAllowedForMessage(message));
+    if (!actor.allowed && !projectQuestionAllowedByProfile) {
+      await this.telegram.sendMessage({
+        chatId: String(message.chatId),
+        text: UNAUTHORIZED_MESSAGE,
+        ...(message.businessConnectionId
+          ? { businessConnectionId: message.businessConnectionId }
+          : {}),
+      });
+      return undefined;
+    }
+
+    await this.recordMessageRef(message);
+
+    const activeTurn = await this.store.getActiveAssistantTurn(
+      message.conversationKey,
+    );
+    if (activeTurn) {
+      if (intent.name === "reject_action") {
+        await this.cancelActiveAssistantTurn(message, activeTurn.id);
+        return undefined;
+      }
+      await this.store.enqueueMessage(this.buildQueuedMessage(message));
+      return undefined;
+    }
+
+    if (
+      intent.safetyLevel === "confirm_write" &&
+      !canPerformTelegramWrite(actor)
+    ) {
+      await this.telegram.sendMessage({
+        chatId: String(message.chatId),
+        text: WRITE_ROLE_REQUIRED_MESSAGE,
+        ...(message.messageId
+          ? { replyToMessageId: message.messageId }
+          : {}),
+        ...(message.businessConnectionId
+          ? { businessConnectionId: message.businessConnectionId }
+          : {}),
+      });
+      return undefined;
+    }
+
+    if (intent.name === "task_status") {
+      await this.handleTaskStatus(message, intent.rawText ?? message.text ?? "");
+      return undefined;
+    }
+
+    if (intent.name === "project_question") {
+      return this.prepareProjectQuestionTurn(
+        message,
+        intent.rawText ?? message.text ?? "",
+        options,
+      );
+    }
+
+    if (intent.name === "create_task_draft") {
+      await this.handleCreateTaskDraft(
+        message,
+        intent,
+        intent.rawText ?? message.text ?? "",
+      );
+      return undefined;
+    }
+
+    if (intent.name === "answer_ai_question") {
+      await this.handleAnswerAiQuestion(
+        message,
+        intent,
+        intent.rawText ?? message.text ?? "",
+      );
+      return undefined;
+    }
+
+    if (intent.name === "approve_action") {
+      await this.handleApproveAction(message);
+      return undefined;
+    }
+
+    if (intent.name === "reject_action") {
+      await this.handleRejectAction(message);
+      return undefined;
+    }
+
+    await this.sendPlainMessage(message, `Intent: ${intent.name}`);
+    return undefined;
   }
 
   private async handleCallbackUpdate(update: TelegramUpdate): Promise<void> {
@@ -438,6 +528,25 @@ export class TelegramAssistantService {
     await this.sendTelegramResponse(message, summarizeTaskForTelegram(task));
   }
 
+  private async handleBusinessConnectionUpdate(
+    connection: NonNullable<TelegramUpdate["business_connection"]>,
+    updateId: number,
+  ): Promise<void> {
+    const eventAt = new Date(connection.date * 1000).toISOString();
+    const existing = await this.store.getBusinessConnection(connection.id);
+    await this.store.upsertBusinessConnection({
+      id: connection.id,
+      userId: connection.user.id,
+      userChatId: connection.user_chat_id,
+      canReply: connection.can_reply,
+      isEnabled: connection.is_enabled,
+      createdAt: existing?.createdAt ?? eventAt,
+      updatedAt: eventAt,
+      lastSeenAt: eventAt,
+      updateId,
+    });
+  }
+
   private async handleCreateTaskDraft(
     message: TelegramInboundMessage,
     intent: TelegramIntent,
@@ -556,6 +665,400 @@ export class TelegramAssistantService {
         pendingAction.id,
       ),
     );
+  }
+
+  private async prepareProjectQuestionTurn(
+    message: TelegramInboundMessage,
+    text: string,
+    options: MessageProcessingOptions = {},
+  ): Promise<AfterConversationLockOperation | undefined> {
+    if (
+      !this.config.projectQaEnabled ||
+      !this.assistantCodex ||
+      !(await this.isProjectQuestionAllowedForMessage(message))
+    ) {
+      await this.sendPlainMessage(message, PROJECT_QA_UNAVAILABLE_MESSAGE);
+      return undefined;
+    }
+
+    const now = new Date().toISOString();
+    const turnId = buildAssistantTurnId(message);
+    await this.store.startAssistantTurn({
+      id: turnId,
+      conversationKey: message.conversationKey,
+      status: "running",
+      startedAt: now,
+      input: message,
+    });
+
+    return {
+      runInBackground: true,
+      run: async () => {
+        await this.runProjectQuestionTurn(
+          message,
+          turnId,
+          text,
+          options.drainAfterProjectTurn !== false,
+        );
+      },
+    };
+  }
+
+  private async runProjectQuestionTurn(
+    message: TelegramInboundMessage,
+    turnId: string,
+    text: string,
+    drainAfterCompletion: boolean,
+  ): Promise<void> {
+    try {
+      const question = redactSecrets(text.trim() || message.text?.trim() || "");
+      const sources = await this.collectProjectQuestionSources(question);
+      if (sources.length === 0) {
+        const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
+          status: "completed",
+          diagnostic: "No project sources were available.",
+        });
+        if (completed) {
+          await this.sendPlainMessage(message, PROJECT_QA_NO_SOURCES_MESSAGE);
+          if (drainAfterCompletion) {
+            await this.drainQueuedMessages(message.conversationKey);
+          }
+        }
+        return;
+      }
+
+      const result = await this.assistantCodex!.answerProjectQuestion({
+        question,
+        sources,
+      });
+      const completed = await this.completeProjectQuestionTurn(turnId, result);
+      if (!completed) {
+        return;
+      }
+
+      await this.sendPlainMessage(message, result.answer);
+      if (drainAfterCompletion) {
+        await this.drainQueuedMessages(message.conversationKey);
+      }
+    } catch (error) {
+      await this.store.completeAssistantTurnIfRunning(turnId, {
+        status: "failed",
+        diagnostic: redactSecrets(errorToMessage(error)),
+      });
+      throw error;
+    }
+  }
+
+  private async completeProjectQuestionTurn(
+    turnId: string,
+    result: AnswerProjectQuestionResult,
+  ): Promise<boolean> {
+    const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
+      status: result.timedOut === true ? "failed" : "completed",
+      ...(result.threadId ? { threadId: result.threadId } : {}),
+      ...(result.timedOut === true ? { diagnostic: "Assistant Codex timed out." } : {}),
+    });
+    return completed !== undefined;
+  }
+
+  private async cancelActiveAssistantTurn(
+    message: TelegramInboundMessage,
+    turnId: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const cancelled = await this.store.completeAssistantTurnIfRunning(turnId, {
+      status: "cancelled",
+      completedAt: now,
+    });
+    if (!cancelled) {
+      return;
+    }
+    await this.store.cancelQueuedMessages(message.conversationKey, {
+      cancelledAt: now,
+    });
+    await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+  }
+
+  private async isProjectQuestionAllowedForMessage(
+    message: TelegramInboundMessage,
+  ): Promise<boolean> {
+    if (message.source !== "business") {
+      return true;
+    }
+
+    const automation = this.config.profileAutomation;
+    if (
+      !automation.enabled ||
+      !automation.projectQaEnabled ||
+      !message.businessConnectionId
+    ) {
+      return false;
+    }
+
+    const connection = await this.store.getBusinessConnection(
+      message.businessConnectionId,
+    );
+    if (
+      !connection?.isEnabled ||
+      !connection.canReply ||
+      !isFreshBusinessConnection(connection)
+    ) {
+      return false;
+    }
+
+    const ownerAllowed = automation.allowedOwnerIds.includes(String(connection.userId));
+    const chatAllowed = automation.allowedChatIds.includes(String(message.chatId));
+    return ownerAllowed && chatAllowed;
+  }
+
+  private async collectProjectQuestionSources(
+    question: string,
+  ): Promise<AssistantSource[]> {
+    const repositorySources = await this.collectRepositorySources();
+    const taskSource = await this.collectTaskSource(question);
+    const taskSources = taskSource ? [taskSource] : [];
+    const providerSources = await this.collectProjectSourceProviderSources(question);
+    const reservedSourceCount = Math.min(
+      MAX_PROJECT_SOURCE_FILES,
+      taskSources.length + providerSources.length,
+    );
+    return [
+      ...repositorySources.slice(0, MAX_PROJECT_SOURCE_FILES - reservedSourceCount),
+      ...taskSources,
+      ...providerSources,
+    ].slice(0, MAX_PROJECT_SOURCE_FILES);
+  }
+
+  private async collectProjectSourceProviderSources(
+    question: string,
+  ): Promise<AssistantSource[]> {
+    if (!this.projectSourceProvider) {
+      return [];
+    }
+
+    try {
+      return (await this.projectSourceProvider.collectProjectSources({
+        question,
+        repositories: this.repositories,
+      }))
+        .map(sanitizeProjectSource)
+        .filter((source): source is AssistantSource => source !== undefined);
+    } catch (error) {
+      this.logger?.warn("Failed to collect Telegram project context sources.", redactSecrets({
+        error: errorToMessage(error),
+      }));
+      return [];
+    }
+  }
+
+  private async collectRepositorySources(): Promise<AssistantSource[]> {
+    const sources: AssistantSource[] = [];
+    for (const repository of this.repositories) {
+      if (sources.length >= MAX_PROJECT_SOURCE_FILES) {
+        break;
+      }
+
+      const root = resolve(repository.repoPath);
+      for (const fileName of PROJECT_SOURCE_ROOT_FILES) {
+        if (sources.length >= MAX_PROJECT_SOURCE_FILES) {
+          break;
+        }
+        const source = await this.readRepositorySource(
+          repository.name,
+          root,
+          join(root, fileName),
+        );
+        if (source) {
+          sources.push(source);
+        }
+      }
+
+      await this.collectRepositoryMarkdownSources(
+        repository.name,
+        root,
+        join(root, "docs"),
+        sources,
+      );
+    }
+    return sources;
+  }
+
+  private async collectRepositoryMarkdownSources(
+    repositoryName: string,
+    root: string,
+    directory: string,
+    sources: AssistantSource[],
+    depth = 0,
+  ): Promise<void> {
+    if (sources.length >= MAX_PROJECT_SOURCE_FILES || depth > 4) {
+      return;
+    }
+    const safeDirectory = await realPathWithinRoot(root, directory);
+    if (!safeDirectory) {
+      return;
+    }
+
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(safeDirectory.candidate, { withFileTypes: true });
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        this.logger?.warn("Failed to read Telegram project docs directory.", redactSecrets({
+          directory,
+          error: errorToMessage(error),
+        }));
+      }
+      return;
+    }
+
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (sources.length >= MAX_PROJECT_SOURCE_FILES) {
+        return;
+      }
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+
+      const entryPath = join(safeDirectory.candidate, entry.name);
+      if (entry.isDirectory()) {
+        await this.collectRepositoryMarkdownSources(
+          repositoryName,
+          root,
+          entryPath,
+          sources,
+          depth + 1,
+        );
+        continue;
+      }
+      if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") {
+        const source = await this.readRepositorySource(repositoryName, root, entryPath);
+        if (source) {
+          sources.push(source);
+        }
+      }
+    }
+  }
+
+  private async readRepositorySource(
+    repositoryName: string,
+    root: string,
+    filePath: string,
+  ): Promise<AssistantSource | undefined> {
+    const safePath = await realPathWithinRoot(root, filePath);
+    if (!safePath) {
+      return undefined;
+    }
+
+    try {
+      const content = await readFile(safePath.candidate, "utf8");
+      const relativePath = toPosixPath(relative(safePath.root, safePath.candidate));
+      return {
+        id: `${repositoryName}:${relativePath}`,
+        body: redactSecrets(content.slice(0, MAX_PROJECT_SOURCE_FILE_CHARS)),
+      };
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        this.logger?.warn("Failed to read Telegram project source.", redactSecrets({
+          path: safePath.candidate,
+          error: errorToMessage(error),
+        }));
+      }
+      return undefined;
+    }
+  }
+
+  private async collectTaskSource(
+    question: string,
+  ): Promise<AssistantSource | undefined> {
+    if (!this.taskTracker) {
+      return undefined;
+    }
+
+    try {
+      const tasks = await this.taskTracker.listTasks({ limit: 100 });
+      const selectedTasks = selectRelevantTasks(question, tasks);
+      if (selectedTasks.length === 0) {
+        return undefined;
+      }
+
+      return {
+        id: "task-tracker:recent-or-matching-tasks",
+        body: redactSecrets(selectedTasks.map(formatTaskSourceLine).join("\n")),
+      };
+    } catch (error) {
+      this.logger?.warn("Failed to collect Telegram project task context.", redactSecrets({
+        error: errorToMessage(error),
+      }));
+      return undefined;
+    }
+  }
+
+  private async drainQueuedMessages(conversationKey: string): Promise<void> {
+    const maxMessages = Math.max(1, this.config.maxQueuedMessagesPerChat);
+    for (let processed = 0; processed < maxMessages; processed += 1) {
+      const queuedMessage = await this.nextQueuedMessage(conversationKey);
+      if (!queuedMessage) {
+        return;
+      }
+
+      let afterConversationLock: AfterConversationLockOperation | undefined;
+      let acceptedQueuedMessage = false;
+      await this.store.withConversationLock(conversationKey, async () => {
+        const activeTurn = await this.store.getActiveAssistantTurn(conversationKey);
+        if (activeTurn) {
+          return;
+        }
+
+        const currentQueuedMessage = await this.getQueuedMessageById(
+          conversationKey,
+          queuedMessage.id,
+        );
+        if (!currentQueuedMessage) {
+          return;
+        }
+
+        afterConversationLock = await this.handleMessageUnderConversationLock(
+          currentQueuedMessage.message,
+          { drainAfterProjectTurn: false },
+        );
+        await this.store.deleteQueuedMessage(currentQueuedMessage.id);
+        acceptedQueuedMessage = true;
+      });
+
+      if (!acceptedQueuedMessage) {
+        return;
+      }
+      if (afterConversationLock) {
+        await afterConversationLock.run();
+      }
+    }
+  }
+
+  private runAfterConversationLockInBackground(
+    operation: AfterConversationLockOperation,
+    updateId: number,
+  ): void {
+    void operation.run().catch((error) => {
+      this.logger?.warn("Telegram assistant background operation failed.", redactSecrets({
+        updateId,
+        error: errorToMessage(error),
+      }));
+    });
+  }
+
+  private async nextQueuedMessage(
+    conversationKey: string,
+  ): Promise<TelegramQueuedMessage | undefined> {
+    const queuedMessages = await this.store.listQueuedMessages(conversationKey);
+    return queuedMessages.sort(compareQueuedMessagesOldestFirst)[0];
+  }
+
+  private async getQueuedMessageById(
+    conversationKey: string,
+    messageId: string,
+  ): Promise<TelegramQueuedMessage | undefined> {
+    const queuedMessages = await this.store.listQueuedMessages(conversationKey);
+    return queuedMessages.find((message) => message.id === messageId);
   }
 
   private async handleApproveAction(message: TelegramInboundMessage): Promise<void> {
@@ -990,6 +1493,24 @@ export class TelegramAssistantService {
   }
 }
 
+const isFreshBusinessConnection = (
+  connection: TelegramBusinessConnectionRecord,
+): boolean => {
+  const latestSeenAt = Math.max(
+    parseTimestamp(connection.lastSeenAt),
+    parseTimestamp(connection.updatedAt),
+  );
+  return (
+    Number.isFinite(latestSeenAt) &&
+    Date.now() - latestSeenAt <= BUSINESS_CONNECTION_REPLY_WINDOW_MS
+  );
+};
+
+const parseTimestamp = (value: string): number => {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+};
+
 const validateCallbackPendingAction = (
   action: TelegramPendingAction | undefined,
   message: TelegramInboundMessage,
@@ -1009,6 +1530,128 @@ const validateCallbackPendingAction = (
   }
   return undefined;
 };
+
+const buildAssistantTurnId = (message: TelegramInboundMessage): string => {
+  const messagePart = message.messageId !== undefined
+    ? message.messageId.toString(36)
+    : "no-message";
+  return `assistant-turn:${message.updateId.toString(36)}:${messagePart}`;
+};
+
+const isWithinRoot = (root: string, candidate: string): boolean => {
+  const resolvedRoot = resolve(root);
+  const resolvedCandidate = resolve(candidate);
+  const relativePath = relative(resolvedRoot, resolvedCandidate);
+  return (
+    relativePath === "" ||
+    (relativePath !== "" &&
+      !relativePath.startsWith("..") &&
+      !isAbsolute(relativePath))
+  );
+};
+
+const realPathWithinRoot = async (
+  root: string,
+  candidate: string,
+): Promise<{ root: string; candidate: string } | undefined> => {
+  try {
+    const realRoot = await realpath(root);
+    const realCandidate = await realpath(candidate);
+    if (!isWithinRoot(realRoot, realCandidate)) {
+      return undefined;
+    }
+    return { root: realRoot, candidate: realCandidate };
+  } catch {
+    return undefined;
+  }
+};
+
+const toPosixPath = (value: string): string => value.replace(/\\/g, "/");
+
+const isMissingFileError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: unknown }).code === "ENOENT";
+
+const selectRelevantTasks = (
+  question: string,
+  tasks: TaskRecord[],
+): TaskRecord[] => {
+  const terms = extractSearchTerms(question);
+  const scored = tasks.map((task) => ({
+    task,
+    score: scoreTaskForTerms(task, terms),
+  }));
+  const matching = scored
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) =>
+      right.score - left.score || compareTasksNewestFirst(left.task, right.task),
+    );
+  const selected = matching.length > 0
+    ? matching.map((candidate) => candidate.task)
+    : [...tasks].sort(compareTasksNewestFirst);
+
+  return selected.slice(0, MAX_TASK_SOURCE_COUNT);
+};
+
+const extractSearchTerms = (question: string): string[] =>
+  question
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 3)
+    .slice(0, 12);
+
+const scoreTaskForTerms = (task: TaskRecord, terms: string[]): number => {
+  if (terms.length === 0) {
+    return 0;
+  }
+  const haystack = [
+    task.id,
+    task.title,
+    task.description,
+    task.repositoryName,
+    ...task.tags,
+    ...task.components,
+  ].join(" ").toLowerCase();
+  return terms.reduce(
+    (score, term) => score + (haystack.includes(term) ? 1 : 0),
+    0,
+  );
+};
+
+const compareTasksNewestFirst = (left: TaskRecord, right: TaskRecord): number =>
+  right.updatedAt.localeCompare(left.updatedAt) ||
+  right.createdAt.localeCompare(left.createdAt) ||
+  right.id.localeCompare(left.id);
+
+const formatTaskSourceLine = (task: TaskRecord): string => {
+  const description = task.description.trim();
+  return [
+    `- ${task.id}: ${task.title}`,
+    `status=${task.status}`,
+    `repository=${task.repositoryName}`,
+    `updatedAt=${task.updatedAt}`,
+    description ? `description=${truncateSourceLine(description)}` : undefined,
+  ].filter(Boolean).join("; ");
+};
+
+const sanitizeProjectSource = (
+  source: AssistantSource,
+): AssistantSource | undefined => {
+  const body = redactSecrets(source.body, MAX_PROJECT_SOURCE_FILE_CHARS).trim();
+  if (!body) {
+    return undefined;
+  }
+  return {
+    id: redactSecrets(source.id, 512),
+    body,
+  };
+};
+
+const truncateSourceLine = (value: string, maxLength = 500): string =>
+  value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
 
 const validateCallbackConfirmAction = (
   action: TelegramPendingAction | undefined,
@@ -1267,6 +1910,13 @@ const comparePendingActionsNewestFirst = (
   right.updatedAt.localeCompare(left.updatedAt) ||
   right.createdAt.localeCompare(left.createdAt) ||
   right.id.localeCompare(left.id);
+
+const compareQueuedMessagesOldestFirst = (
+  left: TelegramQueuedMessage,
+  right: TelegramQueuedMessage,
+): number =>
+  left.createdAt.localeCompare(right.createdAt) ||
+  left.id.localeCompare(right.id);
 
 const isPendingActionUnexpired = (
   action: TelegramPendingAction,

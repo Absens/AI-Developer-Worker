@@ -5,6 +5,7 @@ import { assertCodexAuthenticated } from "./integrations/codex/auth.js";
 import { FleetOrchestrator } from "./domain/fleetOrchestrator.js";
 import { InternalWorkerOrchestrator } from "./domain/internalWorkerOrchestrator.js";
 import { NoopLockBackend, TrackerCommentLockBackend } from "./domain/lockBackend.js";
+import { FileMemoryStore } from "./domain/memoryStore.js";
 import { WorkerOrchestrator } from "./domain/orchestrator.js";
 import { PreflightService } from "./domain/preflight.js";
 import {
@@ -16,6 +17,8 @@ import { buildRepositoryContext } from "./domain/repositoryContext.js";
 import {
   InMemoryTelegramAssistantStore,
   PostgresTelegramAssistantStore,
+  TelegramAssistantCodexService,
+  TelegramAssistantProjectContextSourceProvider,
   TelegramAssistantService,
   TelegramNotificationRouter,
   type TelegramAssistantStore,
@@ -100,6 +103,19 @@ const noopTelegramAssistantController: TelegramAssistantController = {
   async start(): Promise<void> {},
   async stop(): Promise<void> {},
 };
+
+export const buildTelegramAssistantCodexRuntimeConfig = <
+  TConfig extends { codexTimeoutMs: number },
+>(
+  runtimeConfig: TConfig,
+  telegramConfig: { codexTimeoutSeconds: number },
+): TConfig => ({
+  ...runtimeConfig,
+  codexTimeoutMs: Math.min(
+    runtimeConfig.codexTimeoutMs,
+    telegramConfig.codexTimeoutSeconds * 1000,
+  ),
+});
 
 export const runApplicationRuntime = async (
   runtime: ApplicationRuntime,
@@ -347,6 +363,7 @@ const createTelegramAssistantController = (
   fleetConfig: ReturnType<typeof loadFleetConfig>,
   internalTaskTracker: ReturnType<typeof createInternalTaskTrackerClient>,
   logger: Logger,
+  projectManager?: ProjectManagerApiDependencies,
 ): TelegramAssistantController => {
   const config = fleetConfig.telegramAssistant;
   if (config?.enabled !== true) {
@@ -369,6 +386,31 @@ const createTelegramAssistantController = (
       : new InMemoryTelegramAssistantStore();
 
   const telegramClient = new TelegramClient({ botToken: config.botToken });
+  const primaryRepository = fleetConfig.repositories[0];
+  const assistantCodex = primaryRepository
+    ? new TelegramAssistantCodexService({
+        codex: new CliCodexRunner(
+          buildTelegramAssistantCodexRuntimeConfig(
+            buildRepositoryRuntimeConfig(fleetConfig, primaryRepository),
+            config,
+          ),
+          logger,
+        ),
+        maxContextChars: config.codexMaxContextChars,
+        timeoutSeconds: config.codexTimeoutSeconds,
+      })
+    : undefined;
+  const memoryStore = fleetConfig.memory?.enabled
+    ? new FileMemoryStore(fleetConfig.memory, logger)
+    : undefined;
+  const projectSourceProvider =
+    projectManager || memoryStore
+      ? new TelegramAssistantProjectContextSourceProvider({
+          ...(projectManager ? { projectManager: projectManager.store } : {}),
+          ...(memoryStore ? { memoryStore } : {}),
+          logger,
+        })
+      : undefined;
   const notificationRouter = internalTaskTracker
     ? new TelegramNotificationRouter({
         store,
@@ -381,6 +423,8 @@ const createTelegramAssistantController = (
     store,
     config,
     taskTracker: internalTaskTracker,
+    ...(assistantCodex ? { assistantCodex } : {}),
+    ...(projectSourceProvider ? { projectSourceProvider } : {}),
     repositories: fleetConfig.repositories,
     telegram: telegramClient,
     ...(notificationRouter ? { notificationRouter } : {}),
@@ -540,6 +584,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     fleetConfig,
     internalTaskTracker,
     logger,
+    projectManager.dependencies,
   );
   const primaryConfig = buildRepositoryRuntimeConfig(fleetConfig, primaryRepository);
   const yandexBridgeStore = createYandexBridgeStore(fleetConfig.taskTracker);

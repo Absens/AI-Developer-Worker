@@ -151,4 +151,5 @@ export interface TelegramBusinessConnectionRecord {
   createdAt: string;
   updatedAt: string;
   lastSeenAt: string;
+  updateId?: number;
 }
