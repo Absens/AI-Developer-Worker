@@ -374,6 +374,7 @@ const createTelegramAssistantController = (
     repositories: fleetConfig.repositories,
     telegram: telegramClient,
     logger,
+    botUsername: config.botUsername,
   });
 
   if (config.mode !== "polling") {

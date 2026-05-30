@@ -118,6 +118,7 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
 const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
   enabled: false,
   botToken: undefined,
+  botUsername: undefined,
   mode: "polling",
   pollIntervalSeconds: 2,
   confirmWriteActions: true,
@@ -1068,6 +1069,13 @@ const parseTelegramAssistantMode = (
 ): TelegramAssistantMode =>
   parseEnum(value, name, ["polling", "webhook"] as const);
 
+const normalizeTelegramBotUsername = (
+  username: string | undefined,
+): string | undefined => {
+  const normalized = username?.trim().replace(/^@/, "");
+  return normalized || undefined;
+};
+
 const parseTelegramAssistantGroupMode = (
   value: string,
   name: string,
@@ -1137,6 +1145,11 @@ const parseTelegramAssistantConfig = (
     botToken:
       firstEnv(env, "TELEGRAM_ASSISTANT_BOT_TOKEN") ||
       optionalString(rawValue?.botToken, `${path}.botToken`),
+    botUsername:
+      normalizeTelegramBotUsername(firstEnv(env, "TELEGRAM_ASSISTANT_BOT_USERNAME")) ||
+      normalizeTelegramBotUsername(
+        optionalString(rawValue?.botUsername, `${path}.botUsername`),
+      ),
     mode,
     pollIntervalSeconds: parsePositiveIntEnvOrConfig(
       firstEnv(env, "TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS"),

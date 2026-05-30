@@ -70,7 +70,12 @@ describe("TelegramAssistantService", () => {
     const store = new InMemoryTelegramAssistantStore();
     const service = new TelegramAssistantService({
       store,
-      config: { ...disabledButAllowedConfig(), enabled: true, allowedUserIds: ["99"] },
+      config: {
+        ...disabledButAllowedConfig(),
+        enabled: true,
+        allowedChatIds: ["2"],
+        allowedUserIds: ["99"],
+      },
       taskTracker: undefined,
       repositories: [],
       telegram: { sendMessage, answerCallbackQuery: vi.fn() },
@@ -110,6 +115,7 @@ describe("TelegramAssistantService", () => {
         ...baseTelegramAssistantConfig(),
         allowedChatIds: ["-100"],
         allowedUserIds: ["10"],
+        groupMode: "all_messages",
       },
       taskTracker: undefined,
       repositories: [],
@@ -143,7 +149,231 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(8);
   });
 
-  it("records a redacted user message reference before sending the skeleton response", async () => {
+  it("ignores unmentioned group chatter in mentions-and-replies mode", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        allowedChatIds: ["-100"],
+        allowedUserIds: ["10"],
+        groupMode: "mentions_and_replies",
+      },
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+      botUsername: "assistant_bot",
+    });
+
+    await service.handleUpdate({
+      update_id: 10,
+      message: {
+        message_id: 15,
+        date: 1,
+        chat: { id: -100, type: "supergroup" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "что там по проекту",
+      },
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(await store.isUpdateProcessed(10)).toBe(true);
+    expect(await store.getOffset("default")).toBe(11);
+  });
+
+  it("silently ignores unmentioned group chatter before access control denial", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        allowedChatIds: ["-200"],
+        allowedUserIds: ["99"],
+        developerUserIds: [],
+        operatorUserIds: [],
+        adminUserIds: [],
+        groupMode: "mentions_and_replies",
+      },
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+      botUsername: "assistant_bot",
+    });
+
+    await service.handleUpdate({
+      update_id: 15,
+      message: {
+        message_id: 20,
+        date: 1,
+        chat: { id: -100, type: "supergroup" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "что там по проекту",
+      },
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(await store.isUpdateProcessed(15)).toBe(true);
+    expect(await store.getOffset("default")).toBe(16);
+  });
+
+  it("ignores group replies to a different bot in mentions-and-replies mode", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        allowedChatIds: ["-100"],
+        allowedUserIds: ["10"],
+        groupMode: "mentions_and_replies",
+      },
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+      botUsername: "assistant_bot",
+    });
+
+    await service.handleUpdate({
+      update_id: 13,
+      message: {
+        message_id: 18,
+        date: 1,
+        chat: { id: -100, type: "supergroup" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        reply_to_message: {
+          message_id: 17,
+          date: 1,
+          chat: { id: -100, type: "supergroup" },
+          from: {
+            id: 777,
+            is_bot: true,
+            first_name: "Other",
+            username: "other_bot",
+          },
+          text: "previous bot answer",
+        },
+        text: "статус task_123",
+      },
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(await store.isUpdateProcessed(13)).toBe(true);
+    expect(await store.getOffset("default")).toBe(14);
+  });
+
+  it("processes group replies to the assistant bot username case-insensitively", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        allowedChatIds: ["-100"],
+        allowedUserIds: ["10"],
+        groupMode: "mentions_and_replies",
+      },
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+      botUsername: "assistant_bot",
+    });
+
+    await service.handleUpdate({
+      update_id: 14,
+      message: {
+        message_id: 19,
+        date: 1,
+        chat: { id: -100, type: "supergroup" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        reply_to_message: {
+          message_id: 18,
+          date: 1,
+          chat: { id: -100, type: "supergroup" },
+          from: {
+            id: 778,
+            is_bot: true,
+            first_name: "Assistant",
+            username: "Assistant_Bot",
+          },
+          text: "previous assistant answer",
+        },
+        text: "статус task_123",
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "-100",
+      text: expect.stringContaining("task_status"),
+    }));
+    expect(await store.getOffset("default")).toBe(15);
+  });
+
+  it("requires a write-capable actor for write intents", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...baseTelegramAssistantConfig(),
+        allowedChatIds: ["1"],
+        allowedUserIds: [],
+        developerUserIds: [],
+      },
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await service.handleUpdate({
+      update_id: 11,
+      message: {
+        message_id: 16,
+        date: 1,
+        chat: { id: 1, type: "private" },
+        from: { id: 99, is_bot: false, first_name: "Viewer" },
+        text: "создай задачу починить регистрацию",
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Для действий записи нужен allowlist developer/operator/admin пользователя.",
+    }));
+    expect(await store.listPendingActions()).toEqual([]);
+    expect(await store.getOffset("default")).toBe(12);
+  });
+
+  it("responds with the routed intent name for allowed read intents", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: baseTelegramAssistantConfig(),
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+
+    await service.handleUpdate({
+      update_id: 12,
+      message: {
+        message_id: 17,
+        date: 1,
+        chat: { id: 1, type: "private" },
+        from: { id: 10, is_bot: false, first_name: "User" },
+        text: "статус task_123",
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: expect.stringContaining("task_status"),
+    }));
+  });
+
+  it("records a redacted user message reference before sending the intent response", async () => {
     const store = new InMemoryTelegramAssistantStore({
       now: () => new Date("2026-05-30T08:00:00.000Z"),
     });

@@ -35,14 +35,21 @@ export interface TelegramInboundMessage {
   redactedText?: string;
   actor?: TelegramAssistantActor;
   businessConnectionId?: string;
+  isReplyToBot?: boolean;
+  replyToBotUsername?: string;
   receivedAt: string;
 }
+
+export type TelegramIntentSafetyLevel = "read_only" | "confirm_write";
 
 export interface TelegramIntent {
   name: TelegramIntentName;
   confidence: number;
   rawText?: string;
   entities?: Record<string, unknown>;
+  missingFields?: string[];
+  requiresConfirmation?: boolean;
+  safetyLevel?: TelegramIntentSafetyLevel;
 }
 
 export type TelegramPendingActionStatus =

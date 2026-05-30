@@ -18,6 +18,17 @@ export {
   normalizeTelegramUpdate,
   type TelegramAssistantServiceOptions,
 } from "./service.js";
+export {
+  canPerformTelegramWrite,
+  resolveTelegramActor,
+  shouldProcessGroupMessage,
+  type ShouldProcessGroupMessageInput,
+  type TelegramResolvedActor,
+} from "./accessControl.js";
+export {
+  routeTelegramIntent,
+  type RouteTelegramIntentOptions,
+} from "./intentRouter.js";
 export type {
   TelegramAssistantActor,
   TelegramAssistantRole,
@@ -28,6 +39,7 @@ export type {
   TelegramInboundMessage,
   TelegramIntent,
   TelegramIntentName,
+  TelegramIntentSafetyLevel,
   TelegramMessageRef,
   TelegramMessageRefSource,
   TelegramNotificationDelivery,

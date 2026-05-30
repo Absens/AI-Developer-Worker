@@ -269,6 +269,7 @@ export interface TelegramAssistantWebhookConfig {
 export interface TelegramAssistantConfig {
   enabled: boolean;
   botToken?: string;
+  botUsername?: string;
   mode: TelegramAssistantMode;
   pollIntervalSeconds: number;
   confirmWriteActions: boolean;

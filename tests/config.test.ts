@@ -184,6 +184,7 @@ describe("config", () => {
     expect(config.telegramAssistant).toEqual({
       enabled: false,
       botToken: undefined,
+      botUsername: undefined,
       mode: "polling",
       pollIntervalSeconds: 2,
       confirmWriteActions: true,
@@ -261,6 +262,18 @@ describe("config", () => {
       allowedOwnerIds: ["101"],
       allowedChatIds: ["-1001", "-1002"],
     });
+  });
+
+  it("parses Telegram assistant bot username for group mention routing", () => {
+    const config = loadFleetConfig({
+      ...baseFleetEnv(),
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+      TELEGRAM_ASSISTANT_BOT_USERNAME: "assistant_bot",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+    });
+
+    expect(config.telegramAssistant?.botUsername).toBe("assistant_bot");
   });
 
   it("parses Telegram assistant settings from config file values as well as env", () => {

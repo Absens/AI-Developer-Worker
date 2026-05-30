@@ -7,6 +7,13 @@ import type {
 } from "../../models/types.js";
 import { redactSecrets } from "../../observability/redaction.js";
 import type { Logger } from "../../utils/logger.js";
+import {
+  canPerformTelegramWrite,
+  resolveTelegramActor,
+  resolveTelegramRole,
+  shouldProcessGroupMessage,
+} from "./accessControl.js";
+import { routeTelegramIntent } from "./intentRouter.js";
 import type { TelegramAssistantStore } from "./store.js";
 import type {
   TelegramAssistantActor,
@@ -24,6 +31,7 @@ export interface TelegramAssistantServiceOptions {
   repositories: RepositoryProfile[];
   telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   logger?: TelegramAssistantLogger;
+  botUsername?: string;
 }
 
 interface NormalizedUpdateCandidate {
@@ -32,20 +40,23 @@ interface NormalizedUpdateCandidate {
 }
 
 const DEFAULT_OFFSET_SCOPE = "default";
-const SKELETON_MESSAGE = "Telegram Assistant пока включен только в режиме каркаса.";
-const UNAUTHORIZED_MESSAGE = "Telegram Assistant недоступен для этого чата или пользователя.";
+const UNAUTHORIZED_MESSAGE = "У меня нет доступа к этому чату/пользователю.";
+const WRITE_ROLE_REQUIRED_MESSAGE =
+  "Для действий записи нужен allowlist developer/operator/admin пользователя.";
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
   private readonly config: TelegramAssistantConfig;
   private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   private readonly logger?: TelegramAssistantLogger;
+  private readonly botUsername?: string;
 
   public constructor(options: TelegramAssistantServiceOptions) {
     this.store = options.store;
     this.config = options.config;
     this.telegram = options.telegram;
     this.logger = options.logger;
+    this.botUsername = options.botUsername ?? this.config.botUsername;
     void options.taskTracker;
     void options.repositories;
   }
@@ -70,7 +81,21 @@ export class TelegramAssistantService {
             return;
           }
 
-          if (!this.isAuthorized(message)) {
+          if (
+            message.source === "group" &&
+            !shouldProcessGroupMessage({
+              text: message.text,
+              groupMode: this.config.groupMode,
+              botUsername: this.botUsername,
+              isReplyToBot: message.isReplyToBot,
+              replyToBotUsername: message.replyToBotUsername,
+            })
+          ) {
+            return;
+          }
+
+          const actor = resolveTelegramActor(this.config, message);
+          if (!actor.allowed) {
             await this.telegram.sendMessage({
               chatId: String(message.chatId),
               text: UNAUTHORIZED_MESSAGE,
@@ -83,6 +108,26 @@ export class TelegramAssistantService {
 
           await this.recordMessageRef(message);
 
+          const intent = routeTelegramIntent(message.text, {
+            projectQaEnabled: this.config.projectQaEnabled,
+          });
+          if (
+            intent.safetyLevel === "confirm_write" &&
+            !canPerformTelegramWrite(actor)
+          ) {
+            await this.telegram.sendMessage({
+              chatId: String(message.chatId),
+              text: WRITE_ROLE_REQUIRED_MESSAGE,
+              ...(message.messageId
+                ? { replyToMessageId: message.messageId }
+                : {}),
+              ...(message.businessConnectionId
+                ? { businessConnectionId: message.businessConnectionId }
+                : {}),
+            });
+            return;
+          }
+
           const activeTurn = await this.store.getActiveAssistantTurn(
             message.conversationKey,
           );
@@ -93,7 +138,7 @@ export class TelegramAssistantService {
 
           await this.telegram.sendMessage({
             chatId: String(message.chatId),
-            text: SKELETON_MESSAGE,
+            text: `Intent: ${intent.name}`,
             ...(message.messageId
               ? { replyToMessageId: message.messageId }
               : {}),
@@ -111,16 +156,6 @@ export class TelegramAssistantService {
       }));
       throw error;
     }
-  }
-
-  private isAuthorized(message: TelegramInboundMessage): boolean {
-    if (!isAllowedId(this.config.allowedChatIds, message.chatId)) {
-      return false;
-    }
-    if (this.config.allowedUserIds.length === 0) {
-      return true;
-    }
-    return message.userId !== undefined && isAllowedId(this.config.allowedUserIds, message.userId);
   }
 
   private buildQueuedMessage(message: TelegramInboundMessage): TelegramQueuedMessage {
@@ -263,6 +298,7 @@ const normalizeMessage = (
   }
 
   const text = input.text;
+  const replyUsername = replyToBotUsername(input.message);
   const message: TelegramInboundMessage = {
     id: `telegram:${input.update.update_id}:${input.idSuffix}`,
     updateId: input.update.update_id,
@@ -274,6 +310,7 @@ const normalizeMessage = (
     ...(text !== undefined ? { text, redactedText: redactSecrets(text) } : {}),
     ...(input.user ? { actor: actorForUser(input.user, input.config) } : {}),
     ...(businessConnectionId ? { businessConnectionId } : {}),
+    ...(replyUsername ? { replyToBotUsername: replyUsername, isReplyToBot: true } : {}),
     receivedAt: new Date(input.message.date * 1000).toISOString(),
   };
 
@@ -324,20 +361,18 @@ const roleForUser = (
   userId: number,
   config: TelegramAssistantConfig,
 ): TelegramAssistantRole => {
-  if (isAllowedId(config.adminUserIds, userId)) {
-    return "admin";
-  }
-  if (isAllowedId(config.operatorUserIds, userId)) {
-    return "operator";
-  }
-  if (isAllowedId(config.developerUserIds, userId)) {
-    return "developer";
-  }
-  return "viewer";
+  return resolveTelegramRole(config, userId);
 };
 
-const isAllowedId = (allowedIds: string[], id: number): boolean =>
-  allowedIds.length === 0 || allowedIds.includes(String(id));
+const replyToBotUsername = (
+  message: NonNullable<TelegramUpdate["message"]>,
+): string | undefined => {
+  const replyToUser = message.reply_to_message?.from;
+  if (replyToUser?.is_bot !== true) {
+    return undefined;
+  }
+  return replyToUser.username;
+};
 
 const addDays = (isoDate: string, days: number): string => {
   const date = new Date(isoDate);
