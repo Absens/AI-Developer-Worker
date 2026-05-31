@@ -104,6 +104,43 @@ class BusyPollingLeasePool {
   }
 }
 
+class ProcessedUpdateProcessingClient {
+  public readonly queries: string[] = [];
+  public readonly values: unknown[][] = [];
+  public released = false;
+
+  public async query<R extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values: unknown[] = [],
+  ): Promise<QueryResult<R>> {
+    this.queries.push(text);
+    this.values.push(values);
+    if (text.includes("pg_advisory_lock") || text.includes("pg_advisory_unlock")) {
+      return queryResult([]);
+    }
+    if (text.includes("telegram_assistant_processed_updates")) {
+      return queryResult([{ update_id: 2000 } as unknown as R]);
+    }
+    throw new Error(`Unexpected SQL in update processing test: ${text}`);
+  }
+
+  public release(): void {
+    this.released = true;
+  }
+}
+
+class ProcessedUpdateProcessingPool {
+  public readonly client = new ProcessedUpdateProcessingClient();
+
+  public async query<R extends QueryResultRow = QueryResultRow>(): Promise<QueryResult<R>> {
+    throw new Error("Update processing test should use a dedicated client.");
+  }
+
+  public async connect(): Promise<ProcessedUpdateProcessingClient> {
+    return this.client;
+  }
+}
+
 const assertPollingLeaseResultIncludesUndefined = (): void => {
   const store = null as unknown as PostgresTelegramAssistantStore;
   const result = store.withPollingLease("telegram-polling", async () => "leased");
@@ -130,6 +167,29 @@ describe("PostgresTelegramAssistantStore polling leases", () => {
     expect(operationRan).toBe(false);
     expect(pool.client.released).toBe(true);
     expect(pool.client.queries).toHaveLength(1);
+  });
+
+  it("skips update processing operations after claiming an already processed update", async () => {
+    const pool = new ProcessedUpdateProcessingPool();
+    const store = new PostgresTelegramAssistantStore(pool);
+    let operationRan = false;
+
+    const result = await store.withUpdateProcessing(2000, async () => {
+      operationRan = true;
+    });
+
+    expect(result).toBe(false);
+    expect(operationRan).toBe(false);
+    expect(pool.client.queries.some((query) =>
+      query.includes("pg_advisory_lock"),
+    )).toBe(true);
+    expect(pool.client.queries.some((query) =>
+      query.includes("pg_advisory_unlock"),
+    )).toBe(true);
+    expect(pool.client.values.some((values) =>
+      values.includes("telegram-update:2000"),
+    )).toBe(true);
+    expect(pool.client.released).toBe(true);
   });
 });
 
@@ -219,6 +279,51 @@ describe("PostgresTelegramAssistantStore business connections", () => {
       canReply: true,
       rights: expect.not.objectContaining({ can_read_messages: true }),
     }));
+  });
+});
+
+describe("PostgresTelegramAssistantStore conversation purge", () => {
+  it("deletes pending actions with other conversation-scoped Telegram assistant data", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        const rowCount = text.includes("DELETE FROM telegram_assistant_")
+          ? 1
+          : null;
+        return {
+          command: "DELETE",
+          oid: 0,
+          fields: [],
+          rows: [],
+          rowCount,
+        };
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    await expect(
+      store.purgeTelegramConversationData({ conversationKey }),
+    ).resolves.toEqual({
+      messageRefs: 1,
+      queuedMessages: 1,
+      assistantTurns: 1,
+      pendingActions: 1,
+    });
+    expect(queries.map((query) => query.text)).toEqual(expect.arrayContaining([
+      expect.stringContaining("DELETE FROM telegram_assistant_pending_actions"),
+    ]));
+    expect(queries.filter((query) =>
+      query.text.includes("DELETE FROM telegram_assistant_")
+    ).map((query) => query.values)).toEqual([
+      [conversationKey],
+      [conversationKey],
+      [conversationKey],
+      [conversationKey],
+    ]);
   });
 });
 

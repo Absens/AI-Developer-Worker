@@ -140,6 +140,11 @@ ALERT_VALIDATION_FAILURE_THRESHOLD=3
 
 Supported channels are `webhook`, `slack`, and `telegram`. Slack uses `SLACK_WEBHOOK_URL`; Telegram uses `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 
+Alert Telegram delivery is not Telegram Assistant. Alert channels send one-way
+operator notifications and use `TELEGRAM_BOT_TOKEN`. Telegram Assistant uses
+`TELEGRAM_ASSISTANT_BOT_TOKEN`, stores conversation references with retention,
+and can create internal tracker writes only after role/confirmation checks.
+
 ## Fleet YAML
 
 ```yaml
@@ -193,6 +198,28 @@ Recommended first panels:
 - `ai_developer_task_tracker_cleanup_deleted_total`
 - `ai_developer_task_tracker_proposals`
 
+Telegram Assistant metrics are emitted without raw message text, issue keys, or
+chat content in labels:
+
+- `telegram_updates_received_total`
+- `telegram_updates_processed_total{outcome}`
+- `telegram_messages_sent_total{outcome}`
+- `telegram_intents_total{intent,outcome}`
+- `telegram_codex_turns_total{intent,outcome}`
+- `telegram_pending_actions_total{state}`
+- `telegram_rate_limited_total{direction}`
+- `telegram_processing_duration_seconds{intent}`
+- `telegram_queued_messages_total{outcome}`
+- `telegram_notification_delivery_total{outcome}`
+- `telegram_polling_lease_skipped_total`
+
+Use `telegram_updates_processed_total{outcome="failure"}` and
+`telegram_rate_limited_total` for Bot API health, and
+`telegram_pending_actions_total{state="pending"}` for stale confirmation
+backlog. `direction="inbound"` means getUpdates/webhook processing or user daily
+limits; `direction="outbound"` means sendMessage/callback delivery hit Telegram
+`retry_after`.
+
 Prometheus labels intentionally exclude issue keys, branch names, commands, local paths, and diagnostics.
 
 ## Task Timeline Mapping
@@ -242,6 +269,36 @@ readinessProbe:
   controls are only usability hints.
 - Event messages and details pass through secret redaction and diagnostic truncation.
 - Human API responses may show issue keys and MR URLs; metrics labels do not.
+- Telegram Assistant must use allowlists. Chat/user allowlists grant read access;
+  write actions require developer/operator/admin user IDs and confirmation.
+- Assistant conversation refs, queued messages, and pending actions are retained
+  for `TELEGRAM_CONVERSATION_RETENTION_DAYS` and purged on the assistant cleanup
+  cadence. Admin maintenance can purge those records plus assistant turns for one
+  conversation without deleting internal tracker tasks.
+- Profile automation must not expose internal project data to business chats
+  unless owner consent, `can_reply`, read rights, and project Q&A policy are all
+  configured. Keep `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL=true`
+  unless a production owner has approved auto-replies.
+
+## Telegram Assistant Operations
+
+Preflight adds a `telegram assistant` check when the assistant is enabled. It
+fails for missing assistant token, task creation without the internal tracker,
+webhook mode without an HTTP route, webhook mode without a public absolute
+`OBSERVABILITY_BASE_URL`, and accidental use of alert-only `TELEGRAM_BOT_TOKEN`.
+It warns for empty production allowlists, write-enabled configs with no
+developer/operator/admin users, `groupMode=all_messages`, profile automation
+auto-reply, project Q&A without readable repository docs/source roots, and
+profile Q&A without owner approval.
+
+Bot API references:
+
+- [getUpdates](https://core.telegram.org/bots/api#getupdates) for polling.
+- [setWebhook](https://core.telegram.org/bots/api#setwebhook) for webhook mode.
+- [sendMessage](https://core.telegram.org/bots/api#sendmessage) for replies and notifications.
+- [answerCallbackQuery](https://core.telegram.org/bots/api#answercallbackquery) for inline-button acknowledgements.
+- [Privacy mode](https://core.telegram.org/bots/features#privacy-mode) for group chats; prefer `mentions_and_replies`.
+- [Business/Secretary bot features](https://core.telegram.org/bots/features#business-users) for profile automation consent and `can_reply` behavior.
 
 ## Rollback
 

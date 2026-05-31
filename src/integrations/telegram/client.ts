@@ -50,6 +50,7 @@ export interface TelegramDeleteWebhookInput {
 }
 
 export class TelegramRetryAfterError extends Error {
+  readonly method: string;
   readonly retryAfterSeconds: number;
 
   constructor(
@@ -67,6 +68,7 @@ export class TelegramRetryAfterError extends Error {
       ),
     );
     this.name = "TelegramRetryAfterError";
+    this.method = method;
     this.retryAfterSeconds = retryAfterSeconds;
   }
 }

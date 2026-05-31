@@ -10,9 +10,12 @@ import type {
   CompleteNotificationDeliveryInput,
   CompletePendingActionInput,
   ConsumePendingActionInput,
+  CountTelegramUserActivityInput,
   ListPendingActionsInput,
   PurgeExpiredTelegramAssistantDataInput,
   PurgeExpiredTelegramAssistantDataResult,
+  PurgeTelegramConversationDataInput,
+  PurgeTelegramConversationDataResult,
   ReserveNotificationDeliveryInput,
   TelegramAssistantStore,
 } from "./store.js";
@@ -377,6 +380,44 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
       `,
       [updateId, this.nowIso()],
     );
+  }
+
+  public async withUpdateProcessing(
+    updateId: number,
+    operation: () => Promise<void>,
+  ): Promise<boolean> {
+    const client: TransactionClient = isPoolLike(this.db)
+      ? await this.db.connect()
+      : this.db;
+    let locked = false;
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtext($1))", [
+        `telegram-update:${updateId}`,
+      ]);
+      locked = true;
+      const result = await client.query(
+        `
+          SELECT 1
+          FROM telegram_assistant_processed_updates
+          WHERE update_id = $1
+        `,
+        [updateId],
+      );
+      if ((result.rowCount ?? 0) > 0) {
+        return false;
+      }
+      await operation();
+      return true;
+    } finally {
+      if (locked) {
+        await client
+          .query("SELECT pg_advisory_unlock(hashtext($1))", [
+            `telegram-update:${updateId}`,
+          ])
+          .catch(() => undefined);
+      }
+      client.release?.();
+    }
   }
 
   public async withPollingLease<T>(
@@ -1101,6 +1142,67 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         pendingActions:
           (deletedPendingActions.rowCount ?? 0) +
           (expiredPendingActions.rowCount ?? 0),
+      };
+    });
+  }
+
+  public async countTaskCreationActionsForUser(
+    input: CountTelegramUserActivityInput,
+  ): Promise<number> {
+    const result = await this.db.query<{ count: string }>(
+      `
+        SELECT count(*)::text AS count
+        FROM telegram_assistant_pending_actions
+        WHERE user_id = $1
+          AND intent->>'name' = 'create_task_draft'
+          AND created_at >= $2
+      `,
+      [input.userId, input.since],
+    );
+    return toNumber(result.rows[0]?.count ?? "0");
+  }
+
+  public async countAssistantTurnsForUser(
+    input: CountTelegramUserActivityInput,
+  ): Promise<number> {
+    const result = await this.db.query<{ count: string }>(
+      `
+        SELECT count(*)::text AS count
+        FROM telegram_assistant_turns
+        WHERE input->>'userId' = $1
+          AND started_at >= $2
+      `,
+      [String(input.userId), input.since],
+    );
+    return toNumber(result.rows[0]?.count ?? "0");
+  }
+
+  public async purgeTelegramConversationData(
+    input: PurgeTelegramConversationDataInput,
+  ): Promise<PurgeTelegramConversationDataResult> {
+    return this.withTransaction(async (client) => {
+      const messageRefs = await client.query(
+        "DELETE FROM telegram_assistant_message_refs WHERE conversation_key = $1",
+        [input.conversationKey],
+      );
+      const queuedMessages = await client.query(
+        "DELETE FROM telegram_assistant_queued_messages WHERE conversation_key = $1",
+        [input.conversationKey],
+      );
+      const assistantTurns = await client.query(
+        "DELETE FROM telegram_assistant_turns WHERE conversation_key = $1",
+        [input.conversationKey],
+      );
+      const pendingActions = await client.query(
+        "DELETE FROM telegram_assistant_pending_actions WHERE conversation_key = $1",
+        [input.conversationKey],
+      );
+
+      return {
+        messageRefs: messageRefs.rowCount ?? 0,
+        queuedMessages: queuedMessages.rowCount ?? 0,
+        assistantTurns: assistantTurns.rowCount ?? 0,
+        pendingActions: pendingActions.rowCount ?? 0,
       };
     });
   }

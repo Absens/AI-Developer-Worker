@@ -3,6 +3,11 @@ export {
   TelegramClient,
   TelegramRetryAfterError,
 } from "./client.js";
+export {
+  assertPublicHttpsTelegramWebhookBaseUrl,
+  isPublicHttpsTelegramWebhookBaseUrl,
+  TELEGRAM_WEBHOOK_PUBLIC_HTTPS_ERROR,
+} from "./webhook.js";
 export { TelegramUpdatePoller } from "./poller.js";
 export type {
   TelegramUpdateHandler,

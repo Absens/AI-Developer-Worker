@@ -112,6 +112,63 @@ embedded task UI is not present; if you enable the UI without a static bundle,
 a trusted proxy that injects user and role headers. Bearer mode is for service
 clients or proxy-injected `Authorization`, not for browser token storage.
 
+Optional Telegram Assistant local configuration:
+
+```env
+TASK_TRACKER_PROVIDER=internal
+TELEGRAM_ASSISTANT_ENABLED=true
+TELEGRAM_ASSISTANT_BOT_TOKEN=123456:assistant-token
+TELEGRAM_ASSISTANT_MODE=polling
+TELEGRAM_ALLOWED_USER_IDS=111111111
+TELEGRAM_DEVELOPER_USER_IDS=111111111
+TELEGRAM_ALLOWED_CHAT_IDS=
+TELEGRAM_PROJECT_QA_ENABLED=false
+TELEGRAM_TASK_CREATION_ENABLED=true
+TELEGRAM_CONVERSATION_RETENTION_DAYS=14
+```
+
+Do not rely on alert-channel `TELEGRAM_BOT_TOKEN` for the assistant. If alerts
+also use Telegram, set both `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_ASSISTANT_BOT_TOKEN` explicitly, even when they intentionally share
+the same value. Keep `.env`, Compose overrides, and shell history out of git.
+
+Webhook mode additionally needs a reachable HTTP server and public base URL:
+
+```env
+OBSERVABILITY_ENABLED=true
+OBSERVABILITY_HOST=0.0.0.0
+OBSERVABILITY_BASE_URL=https://worker.example.com
+TELEGRAM_ASSISTANT_MODE=webhook
+TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET_TOKEN=change-me
+```
+
+Preflight rejects webhook mode without a path and public absolute base URL.
+Polling mode uses Telegram
+[getUpdates](https://core.telegram.org/bots/api#getupdates); webhook mode uses
+[setWebhook](https://core.telegram.org/bots/api#setwebhook). Replies use
+[sendMessage](https://core.telegram.org/bots/api#sendmessage), inline buttons
+must be acknowledged with
+[answerCallbackQuery](https://core.telegram.org/bots/api#answercallbackquery),
+and group deployments should understand Telegram
+[privacy mode](https://core.telegram.org/bots/features#privacy-mode). Business
+profile automation follows Telegram
+[Business/Secretary bot](https://core.telegram.org/bots/features#business-users)
+rules and requires owner consent plus `can_reply`.
+
+Security defaults:
+
+- Chat/user allowlists allow read operations; developer/operator/admin user IDs
+  are required for write confirmations.
+- `groupMode=mentions_and_replies` is the safe group default. Avoid
+  `all_messages` unless the group explicitly agrees to full message processing.
+- Message refs are redacted before storage and retained according to
+  `TELEGRAM_CONVERSATION_RETENTION_DAYS`.
+- Profile automation blocks internal project data unless project Q&A is enabled
+  for that profile and owner approval policy allows it.
+- Task creation uses `externalRefs` and the internal tracker; it does not use
+  `idempotencyKey` or the human HTTP API.
+
 ### 3. Prepare the project mount
 
 The worker expects a real git clone of the target project at:

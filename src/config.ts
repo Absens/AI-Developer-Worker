@@ -1100,6 +1100,11 @@ const parseTelegramAssistantConfig = (
   rawValue?: Record<string, unknown>,
 ): TelegramAssistantConfig => {
   const path = "telegramAssistant";
+  const preflightOnly = parseBooleanFlag(
+    env.WORKER_PREFLIGHT_ONLY,
+    "WORKER_PREFLIGHT_ONLY",
+    false,
+  );
   const profileAutomation = optionalRecord(
     rawValue?.profileAutomation,
     `${path}.profileAutomation`,
@@ -1144,12 +1149,12 @@ const parseTelegramAssistantConfig = (
       "Telegram assistant webhook config is only supported when TELEGRAM_ASSISTANT_MODE=webhook.",
     );
   }
-  if (mode === "webhook" && !webhookPath) {
+  if (!preflightOnly && mode === "webhook" && !webhookPath) {
     throw new ConfigurationError(
       "TELEGRAM_WEBHOOK_PATH is required when TELEGRAM_ASSISTANT_MODE=webhook.",
     );
   }
-  if (mode === "webhook" && !webhookSecretToken) {
+  if (!preflightOnly && mode === "webhook" && !webhookSecretToken) {
     throw new ConfigurationError(
       "TELEGRAM_WEBHOOK_SECRET_TOKEN is required when TELEGRAM_ASSISTANT_MODE=webhook.",
     );
@@ -1347,13 +1352,14 @@ const parseTelegramAssistantConfig = (
     ];
   }
 
-  if (config.enabled && !config.botToken) {
+  if (!preflightOnly && config.enabled && !config.botToken) {
     throw new ConfigurationError(
       "TELEGRAM_ASSISTANT_BOT_TOKEN is required when TELEGRAM_ASSISTANT_ENABLED=true.",
     );
   }
 
   if (
+    !preflightOnly &&
     config.enabled &&
     env.NODE_ENV === "production" &&
     config.allowedChatIds.length === 0 &&

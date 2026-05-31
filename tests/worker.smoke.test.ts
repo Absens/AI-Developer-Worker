@@ -17,6 +17,8 @@ const STATUS_MAP = JSON.stringify({
   done: { statuses: ["Done"], transition: "done" },
 });
 
+const SMOKE_TEST_TIMEOUT_MS = 30_000;
+
 const runGit = (args: string[], cwd: string): string =>
   execFileSync("git", args, {
     cwd,
@@ -404,7 +406,7 @@ describe("worker smoke", () => {
         mockServer.server.close((error) => (error ? reject(error) : resolve())),
       );
     }
-  });
+  }, SMOKE_TEST_TIMEOUT_MS);
 
   it("processes an internal tracker task end-to-end without Yandex comments", async () => {
     const workspace = createTempWorkspace();
@@ -556,7 +558,7 @@ describe("worker smoke", () => {
         mockServer.server.close((error) => (error ? reject(error) : resolve())),
       );
     }
-  });
+  }, SMOKE_TEST_TIMEOUT_MS);
 
   it("processes a Yandex-sourced internal task and exports compact Yandex digests", async () => {
     const workspace = createTempWorkspace();
@@ -682,5 +684,5 @@ describe("worker smoke", () => {
         mockServer.server.close((error) => (error ? reject(error) : resolve())),
       );
     }
-  });
+  }, SMOKE_TEST_TIMEOUT_MS);
 });

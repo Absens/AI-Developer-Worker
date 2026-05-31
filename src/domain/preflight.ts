@@ -1,6 +1,10 @@
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+
 import { Pool } from "pg";
 
 import { assertInternalTrackerOperational } from "../integrations/internalTracker/index.js";
+import { isPublicHttpsTelegramWebhookBaseUrl } from "../integrations/telegram/index.js";
 import type {
   AppConfig,
   GitLabService,
@@ -71,6 +75,8 @@ const isLoopbackHost = (host: string): boolean =>
   host === "::1" ||
   host === "[::1]";
 
+const PROJECT_QA_SOURCE_ROOTS = ["README.md", "AGENTS.md", "docs", "src", "tests"];
+
 export const hasPreflightFailures = (checks: PreflightCheckResult[]): boolean =>
   checks.some((check) => check.status === "fail");
 
@@ -138,6 +144,7 @@ export class PreflightService {
       }
     }
 
+    await this.checkTelegramAssistant(checks);
     this.checkNotificationSinks(checks);
 
     await this.record(checks, "Codex auth", this.assertCodexAuthenticated, () =>
@@ -246,6 +253,155 @@ export class PreflightService {
           ? `Missing alert notification sink settings: ${missing.join(", ")}.`
           : "Configured alert notification sinks have required credentials.",
     });
+  }
+
+  private async checkTelegramAssistant(checks: PreflightCheckResult[]): Promise<void> {
+    const assistant = this.config.telegramAssistant;
+    if (assistant?.enabled !== true) {
+      return;
+    }
+
+    const failures: string[] = [];
+    const warnings: string[] = [];
+
+    if (!assistant.botToken) {
+      failures.push("Telegram assistant bot token is missing.");
+      if (this.hasTelegramAlertBotToken()) {
+        failures.push(
+          "TELEGRAM_BOT_TOKEN configures alert delivery only; set TELEGRAM_ASSISTANT_BOT_TOKEN or telegramAssistant.botToken for the assistant.",
+        );
+      }
+    }
+
+    if (
+      assistant.taskCreationEnabled &&
+      this.config.taskTracker?.provider !== "internal"
+    ) {
+      failures.push(
+        "Telegram task creation requires TASK_TRACKER_PROVIDER=internal.",
+      );
+    }
+
+    if (assistant.mode === "webhook") {
+      if (!assistant.webhook?.path) {
+        failures.push("Telegram webhook mode requires telegramAssistant.webhook.path.");
+      }
+      if (!assistant.webhook?.secretToken) {
+        failures.push("Telegram webhook mode requires a webhook secret token.");
+      }
+      if (!this.isObservabilityHttpServerEnabled()) {
+        failures.push("Telegram webhook mode requires an enabled HTTP server.");
+      }
+      if (!this.hasPublicWebhookBaseUrl()) {
+        failures.push(
+          "Telegram webhook mode requires a public https observability.baseUrl for setWebhook.",
+        );
+      }
+    }
+
+    if (this.telegramAllowlistsAreEmpty()) {
+      warnings.push(
+        "Production Telegram assistant should not run with an empty chat/user/role allowlist.",
+      );
+    }
+
+    if (
+      assistant.taskCreationEnabled &&
+      this.telegramIds(assistant.developerUserIds).length === 0 &&
+      this.telegramIds(assistant.operatorUserIds).length === 0 &&
+      this.telegramIds(assistant.adminUserIds).length === 0
+    ) {
+      warnings.push(
+        "Telegram task creation is enabled but no developer/operator/admin user ids are configured; chat allowlists and viewers cannot write.",
+      );
+    }
+
+    if (
+      assistant.profileAutomation?.enabled &&
+      assistant.profileAutomation.autoReplyEnabled
+    ) {
+      warnings.push(
+        "Telegram profile automation auto-reply is enabled; verify owner consent and can_reply rights.",
+      );
+    }
+
+    if (assistant.groupMode === "all_messages") {
+      warnings.push(
+        "Telegram groupMode=all_messages processes all group chatter; prefer mentions_and_replies unless intentional.",
+      );
+    }
+
+    if (
+      assistant.profileAutomation?.projectQaEnabled &&
+      !assistant.profileAutomation.requireOwnerApproval
+    ) {
+      warnings.push(
+        "Telegram profile automation project Q&A is enabled without owner approval.",
+      );
+    }
+
+    if (
+      (assistant.projectQaEnabled || assistant.profileAutomation?.projectQaEnabled) &&
+      !(await this.hasReadableProjectQaSources())
+    ) {
+      warnings.push(
+        "Telegram project Q&A is enabled but no repository docs/source roots were readable.",
+      );
+    }
+
+    checks.push({
+      name: "telegram assistant",
+      status: failures.length > 0 ? "fail" : warnings.length > 0 ? "warn" : "pass",
+      details:
+        failures.length > 0
+          ? failures.join(" ")
+          : warnings.length > 0
+            ? warnings.join(" ")
+            : "Telegram assistant configuration is operationally aligned.",
+    });
+  }
+
+  private hasTelegramAlertBotToken(): boolean {
+    return this.config.observability?.alerts.channels.some(
+      (channel) => channel.type === "telegram" && Boolean(channel.botToken),
+    ) === true;
+  }
+
+  private isObservabilityHttpServerEnabled(): boolean {
+    const observability = this.config.observability;
+    return observability?.enabled === true || observability?.taskTrackerUi.enabled === true;
+  }
+
+  private hasPublicWebhookBaseUrl(): boolean {
+    return isPublicHttpsTelegramWebhookBaseUrl(this.config.observability?.baseUrl);
+  }
+
+  private telegramAllowlistsAreEmpty(): boolean {
+    const assistant = this.config.telegramAssistant;
+    return (
+      assistant !== undefined &&
+      this.telegramIds(assistant.allowedChatIds).length === 0 &&
+      this.telegramIds(assistant.allowedUserIds).length === 0 &&
+      this.telegramIds(assistant.developerUserIds).length === 0 &&
+      this.telegramIds(assistant.operatorUserIds).length === 0 &&
+      this.telegramIds(assistant.adminUserIds).length === 0
+    );
+  }
+
+  private telegramIds(value: string[] | undefined): string[] {
+    return value ?? [];
+  }
+
+  private async hasReadableProjectQaSources(): Promise<boolean> {
+    for (const root of PROJECT_QA_SOURCE_ROOTS) {
+      try {
+        await access(join(this.config.repoPath, root));
+        return true;
+      } catch {
+        // Keep checking the remaining conventional docs/source roots.
+      }
+    }
+    return false;
   }
 
   private async record<T extends string | void>(

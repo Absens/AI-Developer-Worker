@@ -11,6 +11,7 @@ import {
   buildTelegramAssistantCodexRuntimeConfig,
   runApplicationRuntime,
 } from "../src/app.js";
+import { InMemoryTelegramAssistantStore } from "../src/domain/telegramAssistant/index.js";
 import { TELEGRAM_ALLOWED_UPDATES } from "../src/integrations/telegram/index.js";
 
 const cleanupPaths: string[] = [];
@@ -33,6 +34,7 @@ const listenOnEphemeralPort = async (server: Server): Promise<number> =>
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   while (blockingServers.length > 0) {
     const server = blockingServers.pop();
     if (server) {
@@ -97,6 +99,266 @@ describe("application wiring", () => {
       },
     });
     expect(app.taskTracker).toBeDefined();
+  });
+
+  it("builds preflight-only mode so Telegram assistant diagnostics can report config failures", () => {
+    const app = buildApplication({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "standalone",
+      YANDEX_SYNC_ENABLED: "false",
+      WORKER_PREFLIGHT_ONLY: "true",
+      NODE_ENV: "production",
+      TASK_TRACKER_LOCAL_SMOKE: "true",
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(app.config.telegramAssistant).toMatchObject({
+      enabled: true,
+      botToken: undefined,
+      allowedChatIds: [],
+      allowedUserIds: [],
+      developerUserIds: [],
+      operatorUserIds: [],
+      adminUserIds: [],
+    });
+    expect(app.telegramAssistant.webhook).toBeUndefined();
+  });
+
+  it("builds preflight-only production mode so empty Telegram allowlists can be reported as warnings", () => {
+    const app = buildApplication({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "standalone",
+      YANDEX_SYNC_ENABLED: "false",
+      WORKER_PREFLIGHT_ONLY: "true",
+      NODE_ENV: "production",
+      TASK_TRACKER_LOCAL_SMOKE: "true",
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "bot-token",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(app.config.telegramAssistant).toMatchObject({
+      enabled: true,
+      botToken: "bot-token",
+      allowedChatIds: [],
+      allowedUserIds: [],
+      developerUserIds: [],
+      operatorUserIds: [],
+      adminUserIds: [],
+    });
+  });
+
+  it("builds preflight-only webhook mode without an HTTP server so preflight can report it", () => {
+    const app = buildApplication({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "standalone",
+      YANDEX_SYNC_ENABLED: "false",
+      WORKER_PREFLIGHT_ONLY: "true",
+      NODE_ENV: "test",
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "bot-token",
+      TELEGRAM_ASSISTANT_MODE: "webhook",
+      TELEGRAM_WEBHOOK_PATH: "/telegram/webhook",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "hook-secret",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    expect(app.config.telegramAssistant).toMatchObject({
+      enabled: true,
+      mode: "webhook",
+      webhook: { path: "/telegram/webhook" },
+    });
+  });
+
+  it("reports a missing Telegram webhook secret in preflight-only mode", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-app-preflight-secret-"));
+    cleanupPaths.push(directory);
+    vi.stubEnv("CODEX_API_KEY", "codex-test-key");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (init?.method === "POST" && url.pathname.endsWith("/merge_requests")) {
+          return new Response(
+            JSON.stringify({
+              id: 1,
+              iid: 1,
+              web_url: "https://gitlab.example.com/project/-/merge_requests/1",
+              title: "[AI Preflight] preflight/worker-1",
+              source_branch: "preflight/worker-1",
+              target_branch: "main",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    const app = buildApplication({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "standalone",
+      YANDEX_SYNC_ENABLED: "false",
+      WORKER_PREFLIGHT_ONLY: "true",
+      NODE_ENV: "test",
+      PREFLIGHT_RUN_TARGET_COMMANDS: "false",
+      TRACKER_IMAGE_CONTEXT_ENABLED: "false",
+      REPO_PATH: directory,
+      OBSERVABILITY_ENABLED: "true",
+      OBSERVABILITY_BASE_URL: "https://worker.example.test",
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "bot-token",
+      TELEGRAM_ASSISTANT_MODE: "webhook",
+      TELEGRAM_WEBHOOK_PATH: "/telegram/webhook",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    const results = await app.preflight.run();
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram assistant",
+        status: "fail",
+        details: expect.stringContaining("webhook secret token"),
+      }),
+    ]));
+  });
+
+  it.each([
+    ["non-HTTPS", "http://worker.example.test"],
+    ["private HTTPS", "https://10.0.0.5"],
+    ["CGNAT HTTPS", "https://100.64.0.1"],
+    ["ULA IPv6 HTTPS", "https://[fc00::1]"],
+  ])("reports %s Telegram webhook base URLs in preflight-only mode", async (_label, baseUrl) => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-app-preflight-webhook-"));
+    cleanupPaths.push(directory);
+    vi.stubEnv("CODEX_API_KEY", "codex-test-key");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (init?.method === "POST" && url.pathname.endsWith("/merge_requests")) {
+          return new Response(
+            JSON.stringify({
+              id: 1,
+              iid: 1,
+              web_url: "https://gitlab.example.com/project/-/merge_requests/1",
+              title: "[AI Preflight] preflight/worker-1",
+              source_branch: "preflight/worker-1",
+              target_branch: "main",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    const app = buildApplication({
+      TASK_TRACKER_PROVIDER: "internal",
+      TASK_TRACKER_STORAGE: "memory",
+      TASK_INTAKE_MODE: "standalone",
+      YANDEX_SYNC_ENABLED: "false",
+      WORKER_PREFLIGHT_ONLY: "true",
+      NODE_ENV: "test",
+      PREFLIGHT_RUN_TARGET_COMMANDS: "false",
+      TRACKER_IMAGE_CONTEXT_ENABLED: "false",
+      REPO_PATH: directory,
+      OBSERVABILITY_ENABLED: "true",
+      OBSERVABILITY_BASE_URL: baseUrl,
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "bot-token",
+      TELEGRAM_ASSISTANT_MODE: "webhook",
+      TELEGRAM_WEBHOOK_PATH: "/telegram/webhook",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "hook-secret",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+    });
+
+    const results = await app.preflight.run();
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram assistant",
+        status: "fail",
+        details: expect.stringContaining("public https observability.baseUrl"),
+      }),
+    ]));
+  });
+
+  it("runs Telegram assistant retention cleanup on the task tracker cleanup cadence", async () => {
+    vi.useFakeTimers();
+    const purgeSpy = vi
+      .spyOn(InMemoryTelegramAssistantStore.prototype, "purgeExpiredTelegramAssistantData")
+      .mockResolvedValue({
+        messageRefs: 0,
+        queuedMessages: 0,
+        pendingActions: 0,
+      });
+    try {
+      const app = buildApplication({
+        TASK_TRACKER_PROVIDER: "internal",
+        TASK_TRACKER_STORAGE: "memory",
+        TASK_INTAKE_MODE: "standalone",
+        YANDEX_SYNC_ENABLED: "false",
+        TASK_TRACKER_CLEANUP_ENABLED: "true",
+        TASK_TRACKER_CLEANUP_INTERVAL_SECONDS: "1",
+        NODE_ENV: "test",
+        TELEGRAM_ASSISTANT_ENABLED: "true",
+        TELEGRAM_ASSISTANT_BOT_TOKEN: "bot-token",
+        TELEGRAM_ALLOWED_USER_IDS: "101",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+        GITLAB_PROJECT_ID: "123",
+        MAX_FIX_ATTEMPTS: "2",
+        WORKER_ID: "worker-1",
+      });
+
+      app.cleanup.start();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(purgeSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(purgeSpy).toHaveBeenCalledTimes(1);
+
+      await app.cleanup.stop();
+    } finally {
+      purgeSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("wires project manager API dependencies when only a repository enables project manager", async () => {
@@ -327,6 +589,98 @@ describe("application wiring", () => {
     ).toThrow(/Telegram assistant webhook mode requires an enabled HTTP server/);
   });
 
+  it("rejects non-HTTPS Telegram webhook base URLs in normal runtime mode", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-app-webhook-http-base-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        taskTracker: { provider: "internal", storage: "memory" },
+        observability: {
+          enabled: true,
+          host: "127.0.0.1",
+          port: 9464,
+          baseUrl: "http://worker.example.test",
+        },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "bot-token",
+          mode: "webhook",
+          allowedUserIds: ["101"],
+          webhook: { path: "/telegram/webhook", secretToken: "hook-secret" },
+        },
+        repositories: [
+          {
+            name: "developer",
+            repoPath: "/workspace/developer",
+            gitlabProjectId: "123",
+            queues: ["DEV"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      buildApplication({
+        WORKER_CONFIG_FILE: configFile,
+        NODE_ENV: "test",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/public https observability\.baseUrl/);
+  });
+
+  it.each([
+    ["private", "https://10.0.0.5"],
+    ["CGNAT", "https://100.64.0.1"],
+    ["ULA IPv6", "https://[fc00::1]"],
+  ])("rejects %s HTTPS Telegram webhook base URLs in normal runtime mode", (_label, baseUrl) => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-app-webhook-private-base-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        taskTracker: { provider: "internal", storage: "memory" },
+        observability: {
+          enabled: true,
+          host: "127.0.0.1",
+          port: 9464,
+          baseUrl,
+        },
+        telegramAssistant: {
+          enabled: true,
+          botToken: "bot-token",
+          mode: "webhook",
+          allowedUserIds: ["101"],
+          webhook: { path: "/telegram/webhook", secretToken: "hook-secret" },
+        },
+        repositories: [
+          {
+            name: "developer",
+            repoPath: "/workspace/developer",
+            gitlabProjectId: "123",
+            queues: ["DEV"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      buildApplication({
+        WORKER_CONFIG_FILE: configFile,
+        NODE_ENV: "test",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/public https observability\.baseUrl/);
+  });
+
   it("treats webhook HTTP server startup failure as fatal when observability startup is non-strict", async () => {
     const blocker = createServer((_request, response) => {
       response.end("busy");
@@ -402,8 +756,12 @@ describe("application wiring", () => {
             app.observability.setWorkerState(
               input as Parameters<typeof app.observability.setWorkerState>[0],
             ),
-          incrementCounter: (name, labels) =>
-            app.observability.incrementCounter(name, labels),
+          incrementCounter: (name, labels, value) =>
+            app.observability.incrementCounter(name, labels, value),
+          observeHistogram: (name, labels, value) =>
+            app.observability.observeHistogram(name, labels, value),
+          setGauge: (name, labels, value) =>
+            app.observability.setGauge(name, labels, value),
           markReady: () => app.observability.markReady(),
           stop: vi.fn(async () => {}),
         },

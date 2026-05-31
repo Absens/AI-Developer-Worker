@@ -122,6 +122,17 @@ const createStore = (): InMemoryTelegramAssistantStore =>
     now: () => new Date(baseTime),
   });
 
+const deferred = <T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+};
+
 describe("InMemoryTelegramAssistantStore", () => {
   it("saves polling offsets separately from processed update ids", async () => {
     const store = createStore();
@@ -147,6 +158,33 @@ describe("InMemoryTelegramAssistantStore", () => {
 
     expect(result).toBe("leased");
     await expect(store.getOffset("telegram-polling")).resolves.toBe(5);
+  });
+
+  it("serializes update processing claims and skips duplicates after completion", async () => {
+    const store = createStore();
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const calls: string[] = [];
+
+    const first = store.withUpdateProcessing(1001, async () => {
+      calls.push("first:start");
+      firstStarted.resolve();
+      await releaseFirst.promise;
+      await store.markUpdateProcessed(1001);
+      calls.push("first:end");
+    });
+    await firstStarted.promise;
+
+    const second = store.withUpdateProcessing(1001, async () => {
+      calls.push("second");
+    });
+    await Promise.resolve();
+
+    expect(calls).toEqual(["first:start"]);
+    releaseFirst.resolve();
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+    expect(calls).toEqual(["first:start", "first:end"]);
   });
 
   it("consumes only matching non-expired pending actions once and completes terminal statuses", async () => {
@@ -260,6 +298,54 @@ describe("InMemoryTelegramAssistantStore", () => {
       }),
     ).rejects.toThrow(/Cannot change telegram pending action action-1/);
     await expect(store.getPendingAction("action-1")).resolves.toEqual(completed);
+  });
+
+  it("purges conversation data including pending actions without touching other conversations", async () => {
+    const store = createStore();
+    await store.recordMessageRef({
+      id: "ref-1",
+      conversationKey,
+      chatId: 100,
+      messageId: 300,
+      source: "user",
+      redactedText: "approve",
+      createdAt: baseTime,
+      expiresAt: futureTime,
+    });
+    await store.enqueueMessage(queuedMessage());
+    await store.startAssistantTurn({
+      id: "turn-1",
+      conversationKey,
+      status: "running",
+      startedAt: baseTime,
+      input: inboundMessage(),
+    });
+    await store.upsertPendingAction(pendingAction());
+    await store.upsertPendingAction(
+      pendingAction({
+        id: "other-action",
+        conversationKey: "bot_private:101:201",
+        chatId: 101,
+        userId: 201,
+      }),
+    );
+
+    await expect(
+      store.purgeTelegramConversationData({ conversationKey }),
+    ).resolves.toEqual({
+      messageRefs: 1,
+      queuedMessages: 1,
+      assistantTurns: 1,
+      pendingActions: 1,
+    });
+
+    await expect(store.listMessageRefs(conversationKey)).resolves.toEqual([]);
+    await expect(store.listQueuedMessages(conversationKey)).resolves.toEqual([]);
+    await expect(store.getActiveAssistantTurn(conversationKey)).resolves.toBeUndefined();
+    await expect(store.listPendingActions({ conversationKey })).resolves.toEqual([]);
+    await expect(
+      store.listPendingActions({ conversationKey: "bot_private:101:201" }),
+    ).resolves.toEqual([expect.objectContaining({ id: "other-action" })]);
   });
 
   it("serializes work per conversation and manages queued messages", async () => {

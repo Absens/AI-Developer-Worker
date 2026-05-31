@@ -4,7 +4,9 @@ import {
   type TelegramResponse,
 } from "../../integrations/telegram/renderer.js";
 import { redactSecrets } from "../../observability/redaction.js";
+import type { ObservabilityTelemetry } from "../../observability/service.js";
 import type { Logger } from "../../utils/logger.js";
+import { TelegramRetryAfterError } from "../../integrations/telegram/index.js";
 import type {
   TaskEvent,
   TaskTrackerClient,
@@ -19,6 +21,7 @@ export interface TelegramNotificationRouterOptions {
   telegram: Pick<TelegramClient, "sendMessage">;
   taskTracker: Pick<TaskTrackerClient, "getTask">;
   logger?: TelegramNotificationLogger;
+  observability?: Pick<ObservabilityTelemetry, "incrementCounter">;
   clock?: () => Date;
   retryStaleMs?: number;
 }
@@ -30,6 +33,7 @@ export class TelegramNotificationRouter {
   private readonly telegram: Pick<TelegramClient, "sendMessage">;
   private readonly taskTracker: Pick<TaskTrackerClient, "getTask">;
   private readonly logger?: TelegramNotificationLogger;
+  private readonly observability?: Pick<ObservabilityTelemetry, "incrementCounter">;
   private readonly clock: () => Date;
   private readonly retryStaleMs: number;
 
@@ -38,6 +42,7 @@ export class TelegramNotificationRouter {
     this.telegram = options.telegram;
     this.taskTracker = options.taskTracker;
     this.logger = options.logger;
+    this.observability = options.observability;
     this.clock = options.clock ?? (() => new Date());
     this.retryStaleMs = options.retryStaleMs ?? DEFAULT_RETRY_STALE_MS;
   }
@@ -93,7 +98,21 @@ export class TelegramNotificationRouter {
         status: "sent",
         completedAt: this.clock().toISOString(),
       });
+      this.observability?.incrementCounter(
+        "telegram_notification_delivery_total",
+        { outcome: "sent" },
+      );
     } catch (error) {
+      this.observability?.incrementCounter(
+        "telegram_notification_delivery_total",
+        { outcome: "failed" },
+      );
+      if (error instanceof TelegramRetryAfterError) {
+        this.observability?.incrementCounter("telegram_rate_limited_total", {
+          direction: "outbound",
+        });
+        await waitForTelegramRetryAfter(error.retryAfterSeconds);
+      }
       this.logger?.warn("Telegram notification delivery failed.", redactSecrets({
         subscriptionId: subscription.id,
         taskId: event.taskId,
@@ -165,6 +184,14 @@ const addMilliseconds = (isoDate: string, milliseconds: number): string => {
   const date = new Date(isoDate);
   date.setTime(date.getTime() + Math.max(0, milliseconds));
   return date.toISOString();
+};
+
+const waitForTelegramRetryAfter = async (retryAfterSeconds: number): Promise<void> => {
+  const milliseconds = Math.min(Math.max(0, retryAfterSeconds), 60) * 1000;
+  if (milliseconds <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 };
 
 const errorToMessage = (error: unknown): string => {

@@ -1,4 +1,5 @@
 import { redactSecrets } from "../../observability/redaction.js";
+import type { ObservabilityTelemetry } from "../../observability/service.js";
 import type { Logger } from "../../utils/logger.js";
 import type { TelegramClient } from "./client.js";
 import { TelegramRetryAfterError } from "./client.js";
@@ -16,6 +17,7 @@ export interface TelegramUpdatePollerOptions {
   handler: TelegramUpdateHandler;
   intervalSeconds: number;
   withPollingLease: <T>(operation: () => Promise<T>) => Promise<T | undefined>;
+  observability?: Pick<ObservabilityTelemetry, "incrementCounter">;
   logger?: TelegramPollerLogger;
 }
 
@@ -27,6 +29,7 @@ export class TelegramUpdatePoller {
   private readonly withPollingLease: <T>(
     operation: () => Promise<T>,
   ) => Promise<T | undefined>;
+  private readonly observability?: Pick<ObservabilityTelemetry, "incrementCounter">;
   private readonly logger?: TelegramPollerLogger;
   private loopPromise?: Promise<void>;
   private stopping = false;
@@ -39,6 +42,7 @@ export class TelegramUpdatePoller {
     this.handler = options.handler;
     this.intervalSeconds = Math.max(Math.floor(options.intervalSeconds), 1);
     this.withPollingLease = options.withPollingLease;
+    this.observability = options.observability;
     this.logger = options.logger;
   }
 
@@ -69,7 +73,9 @@ export class TelegramUpdatePoller {
 
   public async runOnce(): Promise<void> {
     try {
+      let leaseAcquired = false;
       await this.withPollingLease(async () => {
+        leaseAcquired = true;
         const offset = await this.getOffset();
         const updates = await this.client.getUpdates({
           ...(offset !== undefined ? { offset } : {}),
@@ -82,8 +88,14 @@ export class TelegramUpdatePoller {
           await this.handler.handleUpdate(update);
         }
       });
+      if (!leaseAcquired) {
+        this.observability?.incrementCounter("telegram_polling_lease_skipped_total", {});
+      }
     } catch (error) {
-      if (error instanceof TelegramRetryAfterError) {
+      if (error instanceof TelegramRetryAfterError && error.method === "getUpdates") {
+        this.observability?.incrementCounter("telegram_rate_limited_total", {
+          direction: "inbound",
+        });
         this.logger?.warn("Telegram polling was rate limited.", {
           retryAfterSeconds: error.retryAfterSeconds,
         });

@@ -35,7 +35,11 @@ import {
   InternalTrackerCleanupScheduler,
   type InternalTrackerCleanupResult,
 } from "./integrations/internalTracker/cleanup.js";
-import { TelegramClient, TelegramUpdatePoller } from "./integrations/telegram/index.js";
+import {
+  assertPublicHttpsTelegramWebhookBaseUrl,
+  TelegramClient,
+  TelegramUpdatePoller,
+} from "./integrations/telegram/index.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
 import {
@@ -60,6 +64,7 @@ export interface CleanupController {
 export interface TelegramAssistantController {
   readonly webhook?: TelegramWebhookRoute;
   start(): Promise<void>;
+  runCleanupOnce?(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -77,10 +82,17 @@ interface RuntimeObservability {
   start(): Promise<void>;
   markNotReady(reason: string): void;
   setWorkerState(input: { workerId: string; state: string }): void;
-  incrementCounter(name: string, labels: Record<string, string>): void;
+  incrementCounter(name: string, labels: Record<string, string>, value?: number): void;
+  observeHistogram(name: string, labels: Record<string, string>, value: number): void;
+  setGauge(name: string, labels: Record<string, string>, value: number): void;
   markReady(): void;
   stop(): Promise<void>;
 }
+
+type TelegramAssistantTelemetry = Pick<
+  RuntimeObservability,
+  "incrementCounter" | "observeHistogram" | "setGauge"
+>;
 
 export interface ApplicationRuntime {
   config: RuntimeConfig;
@@ -107,6 +119,56 @@ const noopTelegramAssistantController: TelegramAssistantController = {
   async stop(): Promise<void> {},
 };
 
+const createTelegramAssistantCleanupController = (
+  telegramAssistant: TelegramAssistantController,
+  cleanup: { enabled: boolean; intervalSeconds: number } | undefined,
+  logger: Logger,
+): CleanupController => {
+  if (!cleanup || !telegramAssistant.runCleanupOnce) {
+    return noopCleanupController;
+  }
+
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let running = false;
+
+  const runOnce = async (): Promise<undefined> => {
+    if (!cleanup.enabled || running) {
+      return undefined;
+    }
+    running = true;
+    try {
+      await telegramAssistant.runCleanupOnce?.();
+    } finally {
+      running = false;
+    }
+    return undefined;
+  };
+
+  return {
+    start(): void {
+      if (!cleanup.enabled || timer) {
+        return;
+      }
+      timer = setInterval(() => {
+        runOnce().catch((error) => {
+          logger.warn("Telegram assistant retention cleanup failed.", redactSecrets({
+            error: errorToMessage(error),
+          }));
+        });
+      }, cleanup.intervalSeconds * 1000);
+      timer.unref?.();
+    },
+    runOnce,
+    async stop(): Promise<void> {
+      if (!timer) {
+        return;
+      }
+      clearInterval(timer);
+      timer = undefined;
+    },
+  };
+};
+
 export const buildTelegramAssistantCodexRuntimeConfig = <
   TConfig extends { codexTimeoutMs: number },
 >(
@@ -120,8 +182,10 @@ export const buildTelegramAssistantCodexRuntimeConfig = <
   ),
 });
 
-const buildTelegramWebhookUrl = (baseUrl: string, path: string): string =>
-  new URL(path, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+const buildTelegramWebhookUrl = (baseUrl: string, path: string): string => {
+  assertPublicHttpsTelegramWebhookBaseUrl(baseUrl);
+  return new URL(path, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+};
 
 const isObservabilityHttpServerEnabled = (
   config: ReturnType<typeof loadFleetConfig>["observability"],
@@ -143,6 +207,9 @@ const validateTelegramWebhookRouteConfig = (
   if (fleetConfig.telegramAssistant?.enabled !== true || !webhook) {
     return;
   }
+  if (fleetConfig.preflightOnly) {
+    return;
+  }
 
   const webhookPath = normalizeRoutePath(webhook.path);
   if (webhookPath === "/") {
@@ -153,6 +220,7 @@ const validateTelegramWebhookRouteConfig = (
   if (!observability) {
     throw new Error("Telegram assistant webhook mode requires an enabled HTTP server.");
   }
+  assertPublicHttpsTelegramWebhookBaseUrl(observability.baseUrl);
 
   const exactRoutes = [
     { label: "health route", path: observability.health.path },
@@ -440,19 +508,26 @@ const createTelegramAssistantController = (
   internalTaskTracker: ReturnType<typeof createInternalTaskTrackerClient>,
   logger: Logger,
   projectManager?: ProjectManagerApiDependencies,
+  observability?: TelegramAssistantTelemetry,
 ): TelegramAssistantController => {
   const config = fleetConfig.telegramAssistant;
   if (config?.enabled !== true) {
+    return noopTelegramAssistantController;
+  }
+  if (fleetConfig.preflightOnly && !config.botToken) {
     return noopTelegramAssistantController;
   }
   if (!config.botToken) {
     throw new Error("Telegram assistant requires a bot token when enabled.");
   }
   const webhook = config.mode === "webhook" ? config.webhook : undefined;
+  if (fleetConfig.preflightOnly && config.mode === "webhook" && !webhook) {
+    return noopTelegramAssistantController;
+  }
   if (config.mode === "webhook" && !webhook) {
     throw new Error("Telegram assistant webhook mode requires webhook config.");
   }
-  const webhookUrl = webhook
+  const webhookUrl = webhook && !fleetConfig.preflightOnly
     ? buildTelegramWebhookUrl(fleetConfig.observability?.baseUrl ?? "", webhook.path)
     : undefined;
 
@@ -500,6 +575,7 @@ const createTelegramAssistantController = (
         telegram: telegramClient,
         taskTracker: internalTaskTracker,
         logger,
+        ...(observability ? { observability } : {}),
       })
     : undefined;
   const service = new TelegramAssistantService({
@@ -511,6 +587,7 @@ const createTelegramAssistantController = (
     repositories: fleetConfig.repositories,
     telegram: telegramClient,
     ...(notificationRouter ? { notificationRouter } : {}),
+    ...(observability ? { observability } : {}),
     logger,
     botUsername: config.botUsername,
   });
@@ -523,6 +600,7 @@ const createTelegramAssistantController = (
         intervalSeconds: config.pollIntervalSeconds,
         withPollingLease: (operation) => store.withPollingLease("default", operation),
         logger,
+        ...(observability ? { observability } : {}),
       })
     : undefined;
   const notificationIntervalMs = Math.max(
@@ -531,6 +609,7 @@ const createTelegramAssistantController = (
   );
   let notificationInterval: ReturnType<typeof setInterval> | undefined;
   let notificationScanRunning = false;
+  let cleanupRunning = false;
   let started = false;
   let webhookRegistered = false;
 
@@ -566,6 +645,21 @@ const createTelegramAssistantController = (
     notificationInterval = undefined;
   };
 
+  const runCleanup = async (): Promise<void> => {
+    if (cleanupRunning) {
+      return;
+    }
+    cleanupRunning = true;
+    try {
+      const result = await store.purgeExpiredTelegramAssistantData({
+        now: new Date().toISOString(),
+      });
+      logger.info("Telegram assistant retention cleanup completed.", result);
+    } finally {
+      cleanupRunning = false;
+    }
+  };
+
   return {
     webhook: webhook
       ? {
@@ -594,6 +688,9 @@ const createTelegramAssistantController = (
       }
       startNotificationInterval();
       started = true;
+    },
+    async runCleanupOnce(): Promise<void> {
+      await runCleanup();
     },
     async stop(): Promise<void> {
       try {
@@ -628,6 +725,7 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     throw new Error("No repository profiles configured.");
   }
   if (
+    !fleetConfig.preflightOnly &&
     fleetConfig.telegramAssistant?.enabled === true &&
     fleetConfig.telegramAssistant.mode === "webhook" &&
     !isObservabilityHttpServerEnabled(fleetConfig.observability)
@@ -637,13 +735,26 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
     );
   }
   validateTelegramWebhookRouteConfig(fleetConfig);
+  let observability: ReturnType<typeof createObservabilityService> | undefined;
+  const telegramAssistantTelemetry: TelegramAssistantTelemetry = {
+    incrementCounter: (name, labels, value) => {
+      observability?.incrementCounter(name, labels, value);
+    },
+    observeHistogram: (name, labels, value) => {
+      observability?.observeHistogram(name, labels, value);
+    },
+    setGauge: (name, labels, value) => {
+      observability?.setGauge(name, labels, value);
+    },
+  };
   const telegramAssistant = createTelegramAssistantController(
     fleetConfig,
     internalTaskTracker,
     logger,
     projectManager.dependencies,
+    telegramAssistantTelemetry,
   );
-  const observability = createObservabilityService(
+  observability = createObservabilityService(
     fleetConfig.observability,
     logger,
     fleetConfig.repositories,
@@ -682,11 +793,26 @@ export const buildApplication = (env: NodeJS.ProcessEnv = process.env) => {
           } satisfies CleanupController;
         })()
       : noopCleanupController;
+  const telegramRetentionCleanup = createTelegramAssistantCleanupController(
+    telegramAssistant,
+    fleetConfig.taskTracker?.provider === "internal"
+      ? fleetConfig.taskTracker.internal.operational.cleanup
+      : undefined,
+    logger,
+  );
   const cleanup: CleanupController = {
-    start: () => internalCleanup.start(),
-    runOnce: () => internalCleanup.runOnce(),
+    start: () => {
+      internalCleanup.start();
+      telegramRetentionCleanup.start();
+    },
+    runOnce: async () => {
+      const result = await internalCleanup.runOnce();
+      await telegramRetentionCleanup.runOnce();
+      return result;
+    },
     stop: async () => {
       try {
+        await telegramRetentionCleanup.stop();
         await internalCleanup.stop();
       } finally {
         await projectManager.stop();

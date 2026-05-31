@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   InMemoryTelegramAssistantStore,
+  TelegramNotificationRouter,
   TelegramAssistantProjectContextSourceProvider,
   TelegramAssistantService,
   type TelegramAssistantProjectSourceProvider,
@@ -20,6 +21,7 @@ import type {
 import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
 import {
   TelegramUpdatePoller,
+  TelegramRetryAfterError,
   type TelegramUpdate,
 } from "../src/integrations/telegram/index.js";
 import { runApplicationRuntime } from "../src/app.js";
@@ -347,6 +349,7 @@ interface BuildAssistantInput {
   assistantCodex?: FakeAssistantCodexService;
   projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   logger?: TelegramAssistantServiceOptions["logger"];
+  observability?: FakeTelegramObservability;
   answerCallbackQuery?: TelegramAssistantServiceOptions["telegram"]["answerCallbackQuery"];
   sendMessage?: TelegramAssistantServiceOptions["telegram"]["sendMessage"];
   config?: Partial<TelegramAssistantConfig>;
@@ -359,6 +362,39 @@ interface FakeAssistantCodexService {
     sources: Array<{ id: string; body: string }>;
   }): Promise<{ answer: string; threadId?: string; timedOut?: boolean }>;
 }
+
+interface FakeTelegramObservability {
+  incrementCounter(name: string, labels?: Record<string, string>, value?: number): void;
+  observeHistogram(name: string, labels: Record<string, string>, value: number): void;
+  setGauge(name: string, labels: Record<string, string>, value: number): void;
+}
+
+const fakeObservability = (): {
+  telemetry: FakeTelegramObservability;
+  counters: Array<{ name: string; labels: Record<string, string>; value?: number }>;
+  histograms: Array<{ name: string; labels: Record<string, string>; value: number }>;
+  gauges: Array<{ name: string; labels: Record<string, string>; value: number }>;
+} => {
+  const counters: Array<{ name: string; labels: Record<string, string>; value?: number }> = [];
+  const histograms: Array<{ name: string; labels: Record<string, string>; value: number }> = [];
+  const gauges: Array<{ name: string; labels: Record<string, string>; value: number }> = [];
+  return {
+    counters,
+    histograms,
+    gauges,
+    telemetry: {
+      incrementCounter: vi.fn((name, labels = {}, value) => {
+        counters.push({ name, labels, value });
+      }),
+      observeHistogram: vi.fn((name, labels, value) => {
+        histograms.push({ name, labels, value });
+      }),
+      setGauge: vi.fn((name, labels, value) => {
+        gauges.push({ name, labels, value });
+      }),
+    },
+  };
+};
 
 const buildAssistant = (input: BuildAssistantInput): TelegramAssistantService =>
   new TelegramAssistantService({
@@ -379,7 +415,8 @@ const buildAssistant = (input: BuildAssistantInput): TelegramAssistantService =>
       answerCallbackQuery: input.answerCallbackQuery ?? vi.fn(),
     },
     ...(input.logger ? { logger: input.logger } : {}),
-  });
+    ...(input.observability ? { observability: input.observability } : {}),
+  } as TelegramAssistantServiceOptions & { observability?: FakeTelegramObservability });
 
 interface MessageUpdateOverrides {
   updateId?: number;
@@ -578,6 +615,33 @@ describe("TelegramAssistantService", () => {
     expect(await store.isUpdateProcessed(6)).toBe(true);
     expect(await store.getOffset("default")).toBe(7);
     expect(await store.listPendingActions()).toEqual([]);
+  });
+
+  it("serializes duplicate webhook deliveries by update id", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = new TelegramAssistantService({
+      store,
+      config: {
+        ...disabledButAllowedConfig(),
+        enabled: true,
+        allowedChatIds: ["2"],
+        allowedUserIds: ["99"],
+      },
+      taskTracker: undefined,
+      repositories: [],
+      telegram: { sendMessage, answerCallbackQuery: vi.fn() },
+    });
+    const update = messageUpdate("что там", { updateId: 106, messageId: 2 });
+
+    await Promise.all([
+      service.handleUpdate(update),
+      service.handleUpdate(update),
+    ]);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(await store.isUpdateProcessed(106)).toBe(true);
+    expect(await store.getOffset("default")).toBe(107);
   });
 
   it("ignores Telegram photos when the media mime allowlist excludes images", async () => {
@@ -3334,6 +3398,37 @@ describe("TelegramAssistantService", () => {
     });
   });
 
+  it("refreshes pending action gauges after cancelling a create-task callback", async () => {
+    const metrics = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      observability: metrics.telemetry,
+    });
+
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_cancel_gauge",
+    }));
+
+    await service.handleUpdate(callbackUpdate("cancel:tgpa_cancel_gauge", {
+      updateId: 49,
+      callbackQueryId: "cb_cancel_gauge",
+    }));
+
+    expect(metrics.gauges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram_pending_actions_total",
+        labels: { state: "pending" },
+        value: 0,
+      }),
+      expect.objectContaining({
+        name: "telegram_pending_actions_total",
+        labels: { state: "cancelled" },
+        value: 1,
+      }),
+    ]));
+  });
+
   it("handles select task callbacks and answers callback query", async () => {
     const answerCallbackQuery = vi.fn();
     const sendMessage = vi.fn();
@@ -4206,6 +4301,362 @@ describe("TelegramAssistantService", () => {
     ]);
   });
 
+  it("records Telegram assistant metrics without raw message text labels", async () => {
+    const metrics = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      taskTracker: fakeTaskTracker(),
+      observability: metrics.telemetry,
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу TOKEN=secret", {
+      updateId: 950,
+      messageId: 950,
+    }));
+
+    expect(metrics.counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "telegram_updates_received_total" }),
+      expect.objectContaining({
+        name: "telegram_updates_processed_total",
+        labels: { outcome: "success" },
+      }),
+      expect.objectContaining({
+        name: "telegram_intents_total",
+        labels: { intent: "create_task_draft", outcome: "success" },
+      }),
+      expect.objectContaining({
+        name: "telegram_messages_sent_total",
+        labels: { outcome: "success" },
+      }),
+    ]));
+    expect(metrics.histograms).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram_processing_duration_seconds",
+        labels: { intent: "create_task_draft" },
+      }),
+    ]));
+    expect(metrics.gauges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram_pending_actions_total",
+        labels: { state: "pending" },
+        value: 1,
+      }),
+    ]));
+    expect(JSON.stringify({
+      counters: metrics.counters,
+      histograms: metrics.histograms,
+      gauges: metrics.gauges,
+    })).not.toContain("TOKEN=secret");
+  });
+
+  it("enforces the daily task creation limit before creating pending actions", async () => {
+    const sendMessage = vi.fn();
+    const metrics = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker: fakeTaskTracker(),
+      observability: metrics.telemetry,
+      config: { userTaskCreationDailyLimit: 1 },
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу первую", {
+      updateId: 960,
+      messageId: 960,
+    }));
+    await service.handleUpdate(messageUpdate("создай задачу вторую", {
+      updateId: 961,
+      messageId: 961,
+    }));
+
+    await expect(store.listPendingActions()).resolves.toHaveLength(1);
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Дневной лимит создания задач исчерпан.",
+    }));
+    expect(metrics.counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram_rate_limited_total",
+        labels: { direction: "inbound" },
+      }),
+    ]));
+  });
+
+  it("enforces the daily task creation limit for business owner-approval pending actions", async () => {
+    const sendMessage = vi.fn();
+    const metrics = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore();
+    const connectionTime = new Date().toISOString();
+    await store.upsertBusinessConnection({
+      id: "business-task-limit",
+      userId: 10,
+      userChatId: 1000,
+      rights: { can_reply: true, can_read_messages: true },
+      isEnabled: true,
+      createdAt: connectionTime,
+      updatedAt: connectionTime,
+      lastSeenAt: connectionTime,
+    });
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker: fakeTaskTracker(),
+      observability: metrics.telemetry,
+      config: {
+        userTaskCreationDailyLimit: 1,
+        profileAutomation: {
+          ...baseTelegramAssistantConfig().profileAutomation,
+          enabled: true,
+          requireOwnerApproval: true,
+          allowedOwnerIds: ["10"],
+          allowedChatIds: ["1"],
+        },
+      },
+    });
+
+    await service.handleUpdate({
+      update_id: 982,
+      business_message: {
+        message_id: 982,
+        date: 1,
+        business_connection_id: "business-task-limit",
+        chat: { id: 1, type: "private" },
+        from: { id: 999, is_bot: false, first_name: "External User" },
+        text: "создай задачу первую",
+      },
+    });
+    await service.handleUpdate({
+      update_id: 983,
+      business_message: {
+        message_id: 983,
+        date: 2,
+        business_connection_id: "business-task-limit",
+        chat: { id: 1, type: "private" },
+        from: { id: 999, is_bot: false, first_name: "External User" },
+        text: "создай задачу вторую",
+      },
+    });
+
+    await expect(store.listPendingActions()).resolves.toHaveLength(1);
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1000",
+      text: "Дневной лимит создания задач исчерпан.",
+    }));
+    expect(metrics.counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram_rate_limited_total",
+        labels: { direction: "inbound" },
+      }),
+    ]));
+  });
+
+  it("enforces the daily Assistant Codex Q&A limit before starting a turn", async () => {
+    const sendMessage = vi.fn();
+    const metrics = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore();
+    const assistantCodex: FakeAssistantCodexService = {
+      answerProjectQuestion: vi.fn(async () => ({ answer: "Ответ проекта." })),
+    };
+    const projectSourceProvider: TelegramAssistantProjectSourceProvider = {
+      collectProjectSources: vi.fn(async () => [
+        { id: "README.md", body: "Project docs." },
+      ]),
+    };
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      assistantCodex,
+      projectSourceProvider,
+      observability: metrics.telemetry,
+      config: {
+        projectQaEnabled: true,
+        taskCreationEnabled: false,
+        userCodexQaDailyLimit: 1,
+      },
+    });
+
+    await service.handleUpdate(messageUpdate("как устроен проект?", {
+      updateId: 970,
+      messageId: 970,
+    }));
+    await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+      input.text === "Ответ проекта.",
+    ));
+    await service.handleUpdate(messageUpdate("а как запускать тесты?", {
+      updateId: 971,
+      messageId: 971,
+    }));
+
+    expect(assistantCodex.answerProjectQuestion).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Дневной лимит проектного Q&A исчерпан.",
+    }));
+    await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
+  });
+
+  it("backs off outbound Telegram retry_after before failing an assistant send", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(baseTime));
+    try {
+      const metrics = fakeObservability();
+      const store = new InMemoryTelegramAssistantStore();
+      const retryAfter = new TelegramRetryAfterError("sendMessage", 2);
+      const service = buildAssistant({
+        store,
+        observability: metrics.telemetry,
+        sendMessage: vi.fn().mockRejectedValue(retryAfter),
+        config: {
+          allowedChatIds: ["2"],
+          allowedUserIds: ["99"],
+        },
+      });
+      let settled = false;
+      let rejection: unknown;
+
+      const handled = service.handleUpdate(messageUpdate("hello", {
+        updateId: 980,
+        messageId: 980,
+      })).catch((error) => {
+        rejection = error;
+      }).finally(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      expect(await store.isUpdateProcessed(980)).toBe(false);
+      expect(metrics.counters).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "telegram_rate_limited_total",
+          labels: { direction: "outbound" },
+        }),
+      ]));
+
+      await vi.advanceTimersByTimeAsync(1);
+      await handled;
+
+      expect(settled).toBe(true);
+      expect(rejection).toBe(retryAfter);
+      expect(await store.isUpdateProcessed(980)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off outbound Telegram retry_after before failing a callback answer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(baseTime));
+    try {
+      const metrics = fakeObservability();
+      const store = new InMemoryTelegramAssistantStore();
+      const retryAfter = new TelegramRetryAfterError("answerCallbackQuery", 2);
+      const service = buildAssistant({
+        store,
+        observability: metrics.telemetry,
+        answerCallbackQuery: vi.fn().mockRejectedValue(retryAfter),
+      });
+      let settled = false;
+      let rejection: unknown;
+
+      const handled = service.handleUpdate(callbackUpdate("invalid", {
+        updateId: 981,
+        callbackQueryId: "callback_retry_after",
+      })).catch((error) => {
+        rejection = error;
+      }).finally(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      expect(await store.isUpdateProcessed(981)).toBe(false);
+      expect(metrics.counters).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "telegram_rate_limited_total",
+          labels: { direction: "outbound" },
+        }),
+      ]));
+
+      await vi.advanceTimersByTimeAsync(1);
+      await handled;
+
+      expect(settled).toBe(true);
+      expect(rejection).toBe(retryAfter);
+      expect(await store.isUpdateProcessed(981)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("purges Telegram conversation data through an admin-only maintenance helper", async () => {
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      config: {
+        adminUserIds: ["10"],
+      },
+    });
+    await store.recordMessageRef({
+      id: "message-ref:purge",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      messageId: 10,
+      source: "user",
+      redactedText: "redacted",
+      createdAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    await store.enqueueMessage({
+      id: "queued:purge",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      message: messageUpdate("queued").message as any,
+      status: "queued",
+      createdAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    await store.startAssistantTurn({
+      id: "assistant-turn:purge",
+      conversationKey: "bot_private:1",
+      status: "running",
+      startedAt: baseTime,
+    });
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "pending-action:purge",
+      conversationKey: "bot_private:1",
+    }));
+
+    const purged = await (service as TelegramAssistantService & {
+      purgeConversationData(input: {
+        conversationKey: string;
+        requestedByUserId: number;
+      }): Promise<{
+        messageRefs: number;
+        queuedMessages: number;
+        assistantTurns: number;
+        pendingActions: number;
+      }>;
+    }).purgeConversationData({
+      conversationKey: "bot_private:1",
+      requestedByUserId: 10,
+    });
+
+    expect(purged).toEqual({
+      messageRefs: 1,
+      queuedMessages: 1,
+      assistantTurns: 1,
+      pendingActions: 1,
+    });
+    await expect(store.listMessageRefs("bot_private:1")).resolves.toEqual([]);
+    await expect(store.listQueuedMessages("bot_private:1")).resolves.toEqual([]);
+    await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
+    await expect(store.listPendingActions({ conversationKey: "bot_private:1" })).resolves.toEqual([]);
+  });
+
   it("does not mark an update processed or advance offset when handling fails", async () => {
     const store = new InMemoryTelegramAssistantStore();
     const service = new TelegramAssistantService({
@@ -4271,6 +4722,153 @@ describe("TelegramUpdatePoller", () => {
     expect(handler.handleUpdate).toHaveBeenCalledTimes(2);
     expect(calls).toEqual(["lease:start", "handle:40", "handle:41", "lease:end"]);
   });
+
+  it("records skipped polling leases and inbound rate limits without advancing updates", async () => {
+    const metrics = fakeObservability();
+    const handler = { handleUpdate: vi.fn(async () => undefined) };
+    const getUpdates = vi.fn()
+      .mockRejectedValueOnce(new TelegramRetryAfterError("getUpdates", 0))
+      .mockResolvedValueOnce([{ update_id: 55 }]);
+    const poller = new TelegramUpdatePoller({
+      client: { getUpdates },
+      getOffset: vi.fn(async () => 55),
+      handler,
+      intervalSeconds: 1,
+      withPollingLease: vi.fn()
+        .mockResolvedValueOnce(undefined)
+        .mockImplementationOnce(async (operation: () => Promise<void>) => operation())
+        .mockImplementationOnce(async (operation: () => Promise<void>) => operation()),
+      observability: metrics.telemetry,
+    } as any);
+
+    await poller.runOnce();
+    await poller.runOnce();
+    await poller.runOnce();
+
+    expect(handler.handleUpdate).toHaveBeenCalledWith({ update_id: 55 });
+    expect(metrics.counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram_polling_lease_skipped_total",
+        labels: {},
+      }),
+      expect.objectContaining({
+        name: "telegram_rate_limited_total",
+        labels: { direction: "inbound" },
+      }),
+    ]));
+  });
+
+  it("does not classify outbound handler retry_after as inbound polling rate limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const metrics = fakeObservability();
+      const outboundRetryAfter = new TelegramRetryAfterError("sendMessage", 2);
+      const poller = new TelegramUpdatePoller({
+        client: {
+          getUpdates: vi.fn(async () => [{ update_id: 56 }]),
+        },
+        getOffset: vi.fn(async () => 56),
+        handler: {
+          handleUpdate: vi.fn(async () => {
+            throw outboundRetryAfter;
+          }),
+        },
+        intervalSeconds: 1,
+        withPollingLease: async <T>(operation: () => Promise<T>) => operation(),
+        observability: metrics.telemetry,
+      } as any);
+      let settled = false;
+
+      const handled = poller.runOnce().finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(settled).toBe(true);
+      expect(metrics.counters).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "telegram_rate_limited_total",
+          labels: { direction: "inbound" },
+        }),
+      ]));
+
+      await handled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("TelegramNotificationRouter", () => {
+  it("backs off outbound Telegram retry_after and records metrics during notification delivery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(baseTime));
+    try {
+      const metrics = fakeObservability();
+      const store = new InMemoryTelegramAssistantStore();
+      await store.upsertTaskSubscription({
+        id: "subscription_retry_after",
+        taskId: "task_notify",
+        conversationKey: "bot_private:1",
+        chatId: 1,
+        userId: 10,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      });
+      const retryAfter = new TelegramRetryAfterError("sendMessage", 2);
+      const router = new TelegramNotificationRouter({
+        store,
+        telegram: { sendMessage: vi.fn().mockRejectedValue(retryAfter) },
+        taskTracker: {
+          getTask: vi.fn(async () => taskFixture({
+            id: "task_notify",
+            events: [
+              {
+                id: "event_retry_after",
+                taskId: "task_notify",
+                kind: "status_changed",
+                source: "worker_agent",
+                message: "Task moved forward.",
+                createdAt: baseTime,
+              },
+            ],
+          })),
+        },
+        observability: metrics.telemetry,
+        logger: { warn: vi.fn() },
+        clock: () => new Date(Date.now()),
+      });
+      let settled = false;
+      let rejection: unknown;
+
+      const handled = router.scanSubscribedTasks().catch((error) => {
+        rejection = error;
+      }).finally(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      expect(metrics.counters).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "telegram_rate_limited_total",
+          labels: { direction: "outbound" },
+        }),
+        expect.objectContaining({
+          name: "telegram_notification_delivery_total",
+          labels: { outcome: "failed" },
+        }),
+      ]));
+
+      await vi.advanceTimersByTimeAsync(1);
+      await handled;
+
+      expect(settled).toBe(true);
+      expect(rejection).toBe(retryAfter);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Telegram assistant runtime lifecycle", () => {
@@ -4306,6 +4904,8 @@ describe("Telegram assistant runtime lifecycle", () => {
         incrementCounter: vi.fn((name: string, labels: Record<string, string>) => {
           events.push(`observability:counter:${name}:${labels.status}`);
         }),
+        observeHistogram: vi.fn(),
+        setGauge: vi.fn(),
         markReady: vi.fn(() => {
           events.push("observability:ready");
         }),

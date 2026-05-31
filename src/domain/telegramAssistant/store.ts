@@ -69,11 +69,31 @@ export interface PurgeExpiredTelegramAssistantDataResult {
   pendingActions: number;
 }
 
+export interface CountTelegramUserActivityInput {
+  userId: number;
+  since: string;
+}
+
+export interface PurgeTelegramConversationDataInput {
+  conversationKey: string;
+}
+
+export interface PurgeTelegramConversationDataResult {
+  messageRefs: number;
+  queuedMessages: number;
+  assistantTurns: number;
+  pendingActions: number;
+}
+
 export interface TelegramAssistantStore {
   getOffset(scope: string): Promise<number | undefined>;
   saveOffset(scope: string, offset: number): Promise<void>;
   isUpdateProcessed(updateId: number): Promise<boolean>;
   markUpdateProcessed(updateId: number): Promise<void>;
+  withUpdateProcessing(
+    updateId: number,
+    operation: () => Promise<void>,
+  ): Promise<boolean>;
   withPollingLease<T>(
     leaseKey: string,
     operation: () => Promise<T>,
@@ -140,6 +160,13 @@ export interface TelegramAssistantStore {
   purgeExpiredTelegramAssistantData(
     input?: PurgeExpiredTelegramAssistantDataInput,
   ): Promise<PurgeExpiredTelegramAssistantDataResult>;
+  countTaskCreationActionsForUser(
+    input: CountTelegramUserActivityInput,
+  ): Promise<number>;
+  countAssistantTurnsForUser(input: CountTelegramUserActivityInput): Promise<number>;
+  purgeTelegramConversationData(
+    input: PurgeTelegramConversationDataInput,
+  ): Promise<PurgeTelegramConversationDataResult>;
 }
 
 export interface InMemoryTelegramAssistantStoreOptions {
@@ -236,6 +263,7 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
   private readonly now: () => Date;
   private readonly offsets = new Map<string, number>();
   private readonly processedUpdates = new Set<number>();
+  private readonly updateLocks = new Map<number, Promise<void>>();
   private readonly conversationLocks = new Map<string, Promise<void>>();
   private readonly messageRefs = new Map<string, TelegramMessageRef>();
   private readonly assistantTurns = new Map<string, TelegramAssistantTurn>();
@@ -265,6 +293,38 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
 
   public async markUpdateProcessed(updateId: number): Promise<void> {
     this.processedUpdates.add(updateId);
+  }
+
+  public async withUpdateProcessing(
+    updateId: number,
+    operation: () => Promise<void>,
+  ): Promise<boolean> {
+    const previous = this.updateLocks.get(updateId);
+    let releaseCurrent = (): void => undefined;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const queued = previous
+      ? previous.catch(() => undefined).then(() => current)
+      : current;
+    this.updateLocks.set(updateId, queued);
+
+    if (previous) {
+      await previous.catch(() => undefined);
+    }
+
+    try {
+      if (this.processedUpdates.has(updateId)) {
+        return false;
+      }
+      await operation();
+      return true;
+    } finally {
+      releaseCurrent();
+      if (this.updateLocks.get(updateId) === queued) {
+        this.updateLocks.delete(updateId);
+      }
+    }
   }
 
   public async withPollingLease<T>(
@@ -666,6 +726,70 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
           completedAt: now,
           updatedAt: now,
         });
+        result.pendingActions += 1;
+      }
+    }
+
+    return result;
+  }
+
+  public async countTaskCreationActionsForUser(
+    input: CountTelegramUserActivityInput,
+  ): Promise<number> {
+    const since = Date.parse(input.since);
+    return [...this.pendingActions.values()].filter(
+      (action) =>
+        action.userId === input.userId &&
+        action.intent.name === "create_task_draft" &&
+        Date.parse(action.createdAt) >= since,
+    ).length;
+  }
+
+  public async countAssistantTurnsForUser(
+    input: CountTelegramUserActivityInput,
+  ): Promise<number> {
+    const since = Date.parse(input.since);
+    return [...this.assistantTurns.values()].filter(
+      (turn) =>
+        turn.input?.userId === input.userId &&
+        Date.parse(turn.startedAt) >= since,
+    ).length;
+  }
+
+  public async purgeTelegramConversationData(
+    input: PurgeTelegramConversationDataInput,
+  ): Promise<PurgeTelegramConversationDataResult> {
+    const result: PurgeTelegramConversationDataResult = {
+      messageRefs: 0,
+      queuedMessages: 0,
+      assistantTurns: 0,
+      pendingActions: 0,
+    };
+
+    for (const [id, ref] of this.messageRefs.entries()) {
+      if (ref.conversationKey === input.conversationKey) {
+        this.messageRefs.delete(id);
+        result.messageRefs += 1;
+      }
+    }
+
+    for (const [id, message] of this.queuedMessages.entries()) {
+      if (message.conversationKey === input.conversationKey) {
+        this.queuedMessages.delete(id);
+        result.queuedMessages += 1;
+      }
+    }
+
+    for (const [id, turn] of this.assistantTurns.entries()) {
+      if (turn.conversationKey === input.conversationKey) {
+        this.assistantTurns.delete(id);
+        result.assistantTurns += 1;
+      }
+    }
+
+    for (const [id, action] of this.pendingActions.entries()) {
+      if (action.conversationKey === input.conversationKey) {
+        this.pendingActions.delete(id);
         result.pendingActions += 1;
       }
     }

@@ -386,9 +386,9 @@ goal-to-task proposal generation.
 
 ## Telegram Assistant
 
-Telegram Assistant is disabled by default. This configuration only defines public
-settings for future assistant runtime slices; it does not start a Telegram client
-by itself.
+Telegram Assistant is disabled by default. When enabled, it starts a Bot API
+poller or webhook route, stores redacted conversation references, and talks to
+the internal task tracker through `TaskTrackerClient`.
 
 Use `TELEGRAM_ASSISTANT_BOT_TOKEN` for the assistant bot token. This is separate
 from alert-channel `TELEGRAM_BOT_TOKEN`; if alerts and the assistant use the same
@@ -405,8 +405,8 @@ All env values override the same fields in fleet config under
 | `TELEGRAM_ASSISTANT_MODE` | `polling` | Assistant delivery mode: `polling` or `webhook`. |
 | `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Polling interval when mode is `polling`. Positive integer. |
 | `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before write actions. |
-| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables future project QA commands in the base assistant. |
-| `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables future task creation commands. |
+| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands in the base assistant. Counts against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
+| `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables task creation drafts. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | Empty list | Comma-separated Telegram chat IDs allowed to use the assistant. |
 | `TELEGRAM_ALLOWED_USER_IDS` | Empty list | Comma-separated Telegram user IDs allowed to use the assistant. |
 | `TELEGRAM_DEVELOPER_USER_IDS` | Empty list | Comma-separated user IDs with developer role. |
@@ -416,19 +416,19 @@ All env values override the same fields in fleet config under
 | `TELEGRAM_DEFAULT_REPOSITORY` | Not set | Optional default repository name for assistant-created work. |
 | `TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT` | `20` | Per-user daily task creation limit. Positive integer. |
 | `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Per-user daily Codex QA limit. Positive integer. |
-| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for future assistant-triggered Codex QA runs. Positive integer. |
+| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for assistant-triggered Codex QA runs. Positive integer. |
 | `TELEGRAM_CODEX_MAX_CONTEXT_CHARS` | `12000` | Maximum context characters sent to Codex from assistant conversations. Positive integer. |
 | `TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT` | `20` | Maximum queued messages retained per chat. Positive integer. |
 | `TELEGRAM_CONVERSATION_RETENTION_DAYS` | `14` | Conversation retention window. Positive integer. |
 | `TELEGRAM_WEBHOOK_PATH` | Not set | Required when `TELEGRAM_ASSISTANT_MODE=webhook`. Webhook config is rejected in polling mode. |
-| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Not set | Optional Telegram webhook secret token. |
-| `TELEGRAM_MEDIA_ENABLED` | `false` | Enables future assistant media attachment handling. |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Not set | Required when `TELEGRAM_ASSISTANT_MODE=webhook`. Telegram sends it in `X-Telegram-Bot-Api-Secret-Token`; keep it separate from bot tokens. |
+| `TELEGRAM_MEDIA_ENABLED` | `false` | Enables assistant media attachment metadata handling. |
 | `TELEGRAM_MEDIA_MAX_BYTES` | `10485760` | Maximum accepted assistant media size. Positive integer. |
 | `TELEGRAM_MEDIA_ALLOWED_MIME_TYPES` | `image/png,image/jpeg,image/webp,text/plain` | Comma-separated allowed MIME types. |
 | `TELEGRAM_PROFILE_AUTOMATION_ENABLED` | `false` | Enables profile automation settings separately from the base assistant. |
-| `TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED` | `false` | Enables future profile automation auto-replies. |
+| `TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED` | `false` | Enables profile automation auto-replies when owner consent and Telegram business `can_reply` rights allow it. |
 | `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL` | `true` | Requires owner approval for profile automation actions. |
-| `TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED` | `false` | Enables future project QA in profile automation. |
+| `TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED` | `false` | Enables project Q&A in profile automation. Keep owner approval enabled unless production consent is documented. |
 | `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS` | Empty list | Comma-separated owner user IDs allowed for profile automation. |
 | `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS` | Empty list | Comma-separated chat IDs allowed for profile automation. |
 

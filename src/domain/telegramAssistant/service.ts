@@ -3,9 +3,12 @@ import { readdir, readFile, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 
 import type {
+  TelegramAnswerCallbackQueryInput,
   TelegramClient,
+  TelegramSendMessageInput,
   TelegramUpdate,
 } from "../../integrations/telegram/index.js";
+import { TelegramRetryAfterError } from "../../integrations/telegram/index.js";
 import type { TelegramPhotoSize } from "../../integrations/telegram/types.js";
 import {
   renderTelegramResponse,
@@ -20,6 +23,7 @@ import type {
 } from "../../models/types.js";
 import { redactSecrets } from "../../observability/redaction.js";
 import type { Logger } from "../../utils/logger.js";
+import type { ObservabilityTelemetry } from "../../observability/service.js";
 import {
   DuplicateExternalRefError,
   type ClarificationQuestionRecord,
@@ -75,6 +79,10 @@ export interface TelegramAssistantServiceOptions {
   repositories: RepositoryProfile[];
   telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   notificationRouter?: Pick<TelegramNotificationRouter, "scanSubscribedTasks">;
+  observability?: Pick<
+    ObservabilityTelemetry,
+    "incrementCounter" | "observeHistogram" | "setGauge"
+  >;
   logger?: TelegramAssistantLogger;
   botUsername?: string;
 }
@@ -145,6 +153,8 @@ const ANSWER_QUESTION_AMBIGUOUS_MESSAGE =
 const ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE =
   "Не могу ответить на вопрос: не удалось определить сообщение или пользователя.";
 const ANSWER_RECORDED_MESSAGE = "Ответ записан. Задача продолжит работу.";
+const TASK_CREATION_DAILY_LIMIT_MESSAGE = "Дневной лимит создания задач исчерпан.";
+const PROJECT_QA_DAILY_LIMIT_MESSAGE = "Дневной лимит проектного Q&A исчерпан.";
 const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md"];
 const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
@@ -165,6 +175,10 @@ export class TelegramAssistantService {
     TelegramNotificationRouter,
     "scanSubscribedTasks"
   >;
+  private readonly observability?: Pick<
+    ObservabilityTelemetry,
+    "incrementCounter" | "observeHistogram" | "setGauge"
+  >;
   private readonly logger?: TelegramAssistantLogger;
   private readonly botUsername?: string;
 
@@ -177,6 +191,7 @@ export class TelegramAssistantService {
     this.repositories = options.repositories;
     this.telegram = options.telegram;
     this.notificationRouter = options.notificationRouter;
+    this.observability = options.observability;
     this.logger = options.logger;
     this.botUsername = options.botUsername ?? this.config.botUsername;
   }
@@ -185,12 +200,60 @@ export class TelegramAssistantService {
     await this.notificationRouter?.scanSubscribedTasks();
   }
 
-  public async handleUpdate(update: TelegramUpdate): Promise<void> {
-    if (await this.store.isUpdateProcessed(update.update_id)) {
-      await this.saveOffsetAfter(update.update_id);
-      return;
+  public async purgeConversationData(input: {
+    conversationKey: string;
+    requestedByUserId: number;
+  }): Promise<{
+    messageRefs: number;
+    queuedMessages: number;
+    assistantTurns: number;
+    pendingActions: number;
+  }> {
+    if (resolveTelegramRole(this.config, input.requestedByUserId) !== "admin") {
+      throw new Error("Telegram assistant purge requires an admin user.");
     }
+    return this.store.purgeTelegramConversationData({
+      conversationKey: input.conversationKey,
+    });
+  }
 
+  public async handleUpdate(update: TelegramUpdate): Promise<void> {
+    const intent = this.intentNameForUpdate(update);
+    const startedAt = Date.now();
+    this.incrementMetric("telegram_updates_received_total");
+    try {
+      await this.handleUpdateInternal(update);
+      this.incrementMetric("telegram_updates_processed_total", { outcome: "success" });
+      this.incrementMetric("telegram_intents_total", {
+        intent,
+        outcome: "success",
+      });
+    } catch (error) {
+      this.incrementMetric("telegram_updates_processed_total", { outcome: "failure" });
+      this.incrementMetric("telegram_intents_total", {
+        intent,
+        outcome: "failure",
+      });
+      throw error;
+    } finally {
+      this.observability?.observeHistogram(
+        "telegram_processing_duration_seconds",
+        { intent },
+        Math.max(0, Date.now() - startedAt) / 1000,
+      );
+    }
+  }
+
+  private async handleUpdateInternal(update: TelegramUpdate): Promise<void> {
+    const processed = await this.store.withUpdateProcessing(update.update_id, async () => {
+      await this.handleUnprocessedUpdate(update);
+    });
+    if (!processed) {
+      await this.saveOffsetAfter(update.update_id);
+    }
+  }
+
+  private async handleUnprocessedUpdate(update: TelegramUpdate): Promise<void> {
     if (update.business_connection) {
       try {
         await this.handleBusinessConnectionUpdate(
@@ -355,7 +418,7 @@ export class TelegramAssistantService {
       !projectQuestionAllowedByProfile &&
       !profileOwnerApprovalAllowed
     ) {
-      await this.telegram.sendMessage({
+      await this.sendMessage({
         chatId: String(message.chatId),
         text: UNAUTHORIZED_MESSAGE,
         ...(message.businessConnectionId
@@ -375,7 +438,7 @@ export class TelegramAssistantService {
         await this.cancelActiveAssistantTurn(message, activeTurn.id);
         return undefined;
       }
-      await this.store.enqueueMessage(this.buildQueuedMessage(message));
+      await this.enqueueMessage(message);
       return undefined;
     }
 
@@ -384,7 +447,7 @@ export class TelegramAssistantService {
       !canPerformTelegramWrite(actor) &&
       !profileOwnerApprovalAllowed
     ) {
-      await this.telegram.sendMessage({
+      await this.sendMessage({
         chatId: String(message.chatId),
         text: WRITE_ROLE_REQUIRED_MESSAGE,
         ...(message.messageId
@@ -707,7 +770,7 @@ export class TelegramAssistantService {
         await this.cancelActiveAssistantTurn(message, activeTurn.id);
         return undefined;
       }
-      await this.store.enqueueMessage(this.buildQueuedMessage(message));
+      await this.enqueueMessage(message);
       return undefined;
     }
 
@@ -819,8 +882,13 @@ export class TelegramAssistantService {
       );
       return;
     }
-
     const ownerMessage = this.buildOwnerApprovalMessage(message, connection);
+    if (await this.isTaskCreationRateLimited(ownerMessage.userId!)) {
+      await this.sendOwnerPlainMessage(connection, TASK_CREATION_DAILY_LIMIT_MESSAGE);
+      this.incrementMetric("telegram_rate_limited_total", { direction: "inbound" });
+      return;
+    }
+
     const draft = buildHeuristicTaskDraft(
       text,
       this.repositories,
@@ -852,6 +920,7 @@ export class TelegramAssistantService {
     };
 
     await this.store.upsertPendingAction(pendingAction);
+    await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       ownerMessage,
       buildTaskDraftResponse(draft, pendingAction.id),
@@ -883,7 +952,7 @@ export class TelegramAssistantService {
     connection: TelegramBusinessConnectionRecord,
     text: string,
   ): Promise<void> {
-    await this.telegram.sendMessage({
+    await this.sendMessage({
       chatId: connection.ownerChatId,
       text,
     });
@@ -903,6 +972,11 @@ export class TelegramAssistantService {
         message,
         "Не могу создать задачу: не удалось определить сообщение или пользователя.",
       );
+      return;
+    }
+    if (await this.isTaskCreationRateLimited(message.userId)) {
+      await this.sendPlainMessage(message, TASK_CREATION_DAILY_LIMIT_MESSAGE);
+      this.incrementMetric("telegram_rate_limited_total", { direction: "inbound" });
       return;
     }
 
@@ -937,6 +1011,7 @@ export class TelegramAssistantService {
     };
 
     await this.store.upsertPendingAction(pendingAction);
+    await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       message,
       buildTaskDraftResponse(draft, pendingAction.id),
@@ -1002,6 +1077,7 @@ export class TelegramAssistantService {
     };
 
     await this.store.upsertPendingAction(pendingAction);
+    await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       message,
       buildAnswerAiQuestionResponse(
@@ -1023,6 +1099,14 @@ export class TelegramAssistantService {
       !(await this.isProjectQuestionAllowedForMessage(message))
     ) {
       await this.sendPlainMessage(message, PROJECT_QA_UNAVAILABLE_MESSAGE);
+      return undefined;
+    }
+    if (
+      message.userId !== undefined &&
+      await this.isCodexQaRateLimited(message.userId)
+    ) {
+      await this.sendPlainMessage(message, PROJECT_QA_DAILY_LIMIT_MESSAGE);
+      this.incrementMetric("telegram_rate_limited_total", { direction: "inbound" });
       return undefined;
     }
 
@@ -1080,6 +1164,10 @@ export class TelegramAssistantService {
       if (!completed) {
         return;
       }
+      this.incrementMetric("telegram_codex_turns_total", {
+        intent: "project_question",
+        outcome: result.timedOut === true ? "failed" : "success",
+      });
 
       await this.sendPlainMessage(message, result.answer);
       if (drainAfterCompletion) {
@@ -1089,6 +1177,10 @@ export class TelegramAssistantService {
       await this.store.completeAssistantTurnIfRunning(turnId, {
         status: "failed",
         diagnostic: redactSecrets(errorToMessage(error)),
+      });
+      this.incrementMetric("telegram_codex_turns_total", {
+        intent: "project_question",
+        outcome: "failure",
       });
       throw error;
     }
@@ -1118,9 +1210,20 @@ export class TelegramAssistantService {
     if (!cancelled) {
       return;
     }
-    await this.store.cancelQueuedMessages(message.conversationKey, {
+    this.incrementMetric("telegram_codex_turns_total", {
+      intent: "project_question",
+      outcome: "cancelled",
+    });
+    const cancelledQueued = await this.store.cancelQueuedMessages(message.conversationKey, {
       cancelledAt: now,
     });
+    if (cancelledQueued.length > 0) {
+      this.incrementMetric(
+        "telegram_queued_messages_total",
+        { outcome: "cancelled" },
+        cancelledQueued.length,
+      );
+    }
     await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
   }
 
@@ -1504,9 +1607,13 @@ export class TelegramAssistantService {
       return undefined;
     }
 
-    await this.store.cancelQueuedMessages(message.conversationKey, {
+    const cancelledQueued = await this.store.cancelQueuedMessages(message.conversationKey, {
       cancelledAt: now,
     });
+    if (cancelledQueued.length > 0) {
+      this.incrementMetric("telegram_queued_messages_total", { outcome: "cancelled" }, cancelledQueued.length);
+    }
+    await this.updatePendingActionGauges();
     return cancelled;
   }
 
@@ -1534,6 +1641,7 @@ export class TelegramAssistantService {
     await this.store.completePendingAction(executableAction.id, {
       status: "completed",
     });
+    await this.updatePendingActionGauges();
     await this.subscribeConversationToTask(message, task);
     await this.sendPlainMessage(message, `Задача создана: ${task.id}`);
   }
@@ -1559,6 +1667,7 @@ export class TelegramAssistantService {
     await this.store.completePendingAction(executableAction.id, {
       status: "completed",
     });
+    await this.updatePendingActionGauges();
     await this.sendPlainMessage(message, ANSWER_RECORDED_MESSAGE);
   }
 
@@ -1789,7 +1898,7 @@ export class TelegramAssistantService {
     message: TelegramInboundMessage,
     text: string,
   ): Promise<void> {
-    await this.telegram.sendMessage({
+    await this.sendMessage({
       chatId: String(message.chatId),
       text,
       ...(message.messageId
@@ -1805,10 +1914,22 @@ export class TelegramAssistantService {
     callbackQueryId: string,
     text?: string,
   ): Promise<void> {
-    await this.telegram.answerCallbackQuery({
+    await this.answerCallbackQuery({
       callbackQueryId,
       ...(text !== undefined ? { text } : {}),
     });
+  }
+
+  private async answerCallbackQuery(input: TelegramAnswerCallbackQueryInput): Promise<void> {
+    try {
+      await this.telegram.answerCallbackQuery(input);
+    } catch (error) {
+      if (error instanceof TelegramRetryAfterError) {
+        this.incrementMetric("telegram_rate_limited_total", { direction: "outbound" });
+        await waitForTelegramRetryAfter(error.retryAfterSeconds);
+      }
+      throw error;
+    }
   }
 
   private async sendTelegramResponse(
@@ -1823,7 +1944,7 @@ export class TelegramAssistantService {
         continue;
       }
 
-      await this.telegram.sendMessage({
+      await this.sendMessage({
         chatId: String(message.chatId),
         text,
         parseMode: rendered.parseMode,
@@ -1841,6 +1962,28 @@ export class TelegramAssistantService {
           : {}),
       });
     }
+  }
+
+  private async sendMessage(input: TelegramSendMessageInput): Promise<void> {
+    try {
+      await this.telegram.sendMessage(input);
+      this.incrementMetric("telegram_messages_sent_total", { outcome: "success" });
+    } catch (error) {
+      this.incrementMetric("telegram_messages_sent_total", { outcome: "failure" });
+      if (error instanceof TelegramRetryAfterError) {
+        this.incrementMetric("telegram_rate_limited_total", { direction: "outbound" });
+        await waitForTelegramRetryAfter(error.retryAfterSeconds);
+      }
+      throw error;
+    }
+  }
+
+  private async enqueueMessage(
+    message: TelegramInboundMessage,
+  ): Promise<TelegramQueuedMessage> {
+    const queued = await this.store.enqueueMessage(this.buildQueuedMessage(message));
+    this.incrementMetric("telegram_queued_messages_total", { outcome: "queued" });
+    return queued;
   }
 
   private buildQueuedMessage(message: TelegramInboundMessage): TelegramQueuedMessage {
@@ -1886,7 +2029,102 @@ export class TelegramAssistantService {
       await this.store.saveOffset(DEFAULT_OFFSET_SCOPE, nextOffset);
     }
   }
+
+  private async isTaskCreationRateLimited(userId: number): Promise<boolean> {
+    const limit = this.config.userTaskCreationDailyLimit;
+    if (limit <= 0) {
+      return true;
+    }
+    const count = await this.store.countTaskCreationActionsForUser({
+      userId,
+      since: startOfUtcDayIso(new Date()),
+    });
+    return count >= limit;
+  }
+
+  private async isCodexQaRateLimited(userId: number): Promise<boolean> {
+    const limit = this.config.userCodexQaDailyLimit;
+    if (limit <= 0) {
+      return true;
+    }
+    const count = await this.store.countAssistantTurnsForUser({
+      userId,
+      since: startOfUtcDayIso(new Date()),
+    });
+    return count >= limit;
+  }
+
+  private async updatePendingActionGauges(): Promise<void> {
+    if (!this.observability) {
+      return;
+    }
+    const actions = await this.store.listPendingActions();
+    const states: TelegramPendingAction["status"][] = [
+      "pending",
+      "executing",
+      "completed",
+      "cancelled",
+      "expired",
+    ];
+    for (const state of states) {
+      const count = actions.filter((action) => action.status === state).length;
+      this.observability.setGauge(
+        "telegram_pending_actions_total",
+        { state },
+        count,
+      );
+    }
+  }
+
+  private intentNameForUpdate(update: TelegramUpdate): string {
+    if (update.callback_query) {
+      const parsed = parseCallbackData(update.callback_query.data);
+      if (!parsed) {
+        return "callback";
+      }
+      if (parsed.kind === "cancel") {
+        return "reject_action";
+      }
+      if (parsed.kind === "select_task") {
+        return "task_status";
+      }
+      return parsed.actionKind === "answer_question"
+        ? "answer_ai_question"
+        : "approve_action";
+    }
+
+    const message = normalizeTelegramUpdate(update, this.config);
+    if (!message) {
+      return "unknown";
+    }
+    return routeTelegramIntent(message.text, {
+      projectQaEnabled: this.isProjectQaEnabledForMessage(message),
+    }).name;
+  }
+
+  private incrementMetric(
+    name: string,
+    labels: Record<string, string> = {},
+    value?: number,
+  ): void {
+    this.observability?.incrementCounter(name, labels, value);
+  }
 }
+
+const startOfUtcDayIso = (date: Date): string =>
+  new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  )).toISOString();
+
+const waitForTelegramRetryAfter = async (retryAfterSeconds: number): Promise<void> => {
+  const milliseconds = Math.min(Math.max(0, retryAfterSeconds), 60) * 1000;
+  if (milliseconds <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+};
 
 const toPersistableInboundMessage = (
   message: TelegramInboundMessage,

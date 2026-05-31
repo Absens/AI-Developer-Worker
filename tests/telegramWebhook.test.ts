@@ -3,7 +3,10 @@ import { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defaultObservabilityConfig } from "../src/observability/config.js";
-import type { TelegramUpdateHandler } from "../src/integrations/telegram/index.js";
+import {
+  isPublicHttpsTelegramWebhookBaseUrl,
+  type TelegramUpdateHandler,
+} from "../src/integrations/telegram/index.js";
 import { InMemoryMetricsRegistry } from "../src/observability/metrics.js";
 import { ObservabilityHttpServer } from "../src/observability/server.js";
 import { InMemoryWorkerStateRegistry } from "../src/observability/state.js";
@@ -151,5 +154,53 @@ describe("Telegram webhook route", () => {
     expect(missingUpdateIdResponse.status).toBe(400);
     expect(invalidUpdateIdResponse.status).toBe(400);
     expect(handler.handleUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("Telegram webhook public URL validation", () => {
+  it.each([
+    ["http://worker.example.test"],
+    ["https://localhost"],
+    ["https://127.0.0.1"],
+    ["https://0.0.0.0"],
+    ["https://10.0.0.5"],
+    ["https://172.16.0.5"],
+    ["https://172.31.255.255"],
+    ["https://192.168.1.5"],
+    ["https://169.254.10.20"],
+    ["https://100.64.0.1"],
+    ["https://198.18.0.1"],
+    ["https://192.0.0.1"],
+    ["https://192.0.2.1"],
+    ["https://192.88.99.1"],
+    ["https://198.51.100.1"],
+    ["https://203.0.113.1"],
+    ["https://224.0.0.1"],
+    ["https://240.0.0.1"],
+    ["https://255.255.255.255"],
+    ["https://[::]"],
+    ["https://[::1]"],
+    ["https://[100::1]"],
+    ["https://[2001:2::1]"],
+    ["https://[2001:db8::1]"],
+    ["https://[fc00::1]"],
+    ["https://[fd00::1]"],
+    ["https://[fe80::1]"],
+    ["https://[ff02::1]"],
+    ["https://[::ffff:10.0.0.5]"],
+    ["https://[::ffff:100.64.0.1]"],
+  ])("rejects non-public webhook base URL %s", (baseUrl) => {
+    expect(isPublicHttpsTelegramWebhookBaseUrl(baseUrl)).toBe(false);
+  });
+
+  it("accepts HTTPS DNS names because privacy cannot be determined without DNS resolution", () => {
+    expect(isPublicHttpsTelegramWebhookBaseUrl("https://worker.example.test")).toBe(true);
+  });
+
+  it.each([
+    ["https://8.8.8.8"],
+    ["https://[2001:4860:4860::8888]"],
+  ])("accepts globally routable IP literal webhook base URL %s", (baseUrl) => {
+    expect(isPublicHttpsTelegramWebhookBaseUrl(baseUrl)).toBe(true);
   });
 });
