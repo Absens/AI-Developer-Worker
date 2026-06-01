@@ -42,6 +42,7 @@ export interface TelegramInboundMessage {
   source: TelegramConversationSource;
   chatId: number;
   userId?: number;
+  senderIsBot?: boolean;
   messageId?: number;
   text?: string;
   redactedText?: string;

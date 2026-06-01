@@ -97,6 +97,7 @@ const businessMessageUpdate = (
     messageId?: number;
     chatId?: number;
     userId?: number;
+    senderIsBot?: boolean;
     businessConnectionId?: string;
     text: string;
   },
@@ -109,7 +110,7 @@ const businessMessageUpdate = (
     chat: { id: input.chatId ?? 777, type: "private" },
     from: {
       id: input.userId ?? 500,
-      is_bot: false,
+      is_bot: input.senderIsBot ?? false,
       first_name: "External",
     },
     text: input.text,
@@ -255,6 +256,82 @@ describe("profile automation", () => {
 
     await service.handleUpdate(
       businessMessageUpdate({ chatId: 777, text: "что там по проекту" }),
+    );
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(await store.getOffset("default")).toBe(3);
+  });
+
+  it("allows business messages from any chat when the profile chat allowlist is empty", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store, { canReply: false, ownerChatId: "99" });
+    const service = buildAssistant({
+      store,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: [],
+      }),
+      sendMessage,
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({ chatId: 777, text: "привет" }),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "99",
+      text: expect.any(String),
+    }));
+  });
+
+  it("does not automate business messages sent by bots", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+      }),
+      sendMessage,
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        chatId: 777,
+        userId: 500,
+        senderIsBot: true,
+        text: "Привет",
+      }),
+    );
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(await store.getOffset("default")).toBe(3);
+  });
+
+  it("does not automate outbound business messages sent by the profile owner", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store, { ownerUserId: "10" });
+    const service = buildAssistant({
+      store,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+      }),
+      sendMessage,
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({ chatId: 777, userId: 10, text: "Привет" }),
     );
 
     expect(sendMessage).not.toHaveBeenCalled();

@@ -1901,6 +1901,80 @@ describe("TelegramAssistantService", () => {
     }
   });
 
+  it("answers business task status from the internal task tracker", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const freshConnectionTime = new Date().toISOString();
+    await store.upsertBusinessConnection({
+      id: "business-task-status",
+      userId: 10,
+      userChatId: 1000,
+      rights: { can_reply: true, can_read_messages: true },
+      isEnabled: true,
+      createdAt: freshConnectionTime,
+      updatedAt: freshConnectionTime,
+      lastSeenAt: freshConnectionTime,
+    });
+    const taskTracker = readonlyTaskTracker([
+      taskFixture({
+        id: "task_123",
+        title: "Планы на неделю",
+        status: "review",
+        events: [
+          {
+            id: "event-business-status",
+            taskId: "task_123",
+            kind: "status_changed",
+            source: "worker_agent",
+            message: "Открыт MR и идет review",
+            createdAt: "2026-05-30T08:10:00.000Z",
+          },
+        ],
+      }),
+    ]);
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: {
+        profileAutomation: {
+          ...baseTelegramAssistantConfig().profileAutomation,
+          enabled: true,
+          autoReplyEnabled: true,
+          allowedOwnerIds: ["10"],
+          allowedChatIds: ["1"],
+        },
+      },
+    });
+
+    await service.handleUpdate({
+      update_id: 82,
+      business_message: {
+        message_id: 86,
+        date: 1,
+        business_connection_id: "business-task-status",
+        chat: { id: 1, type: "private" },
+        from: { id: 999, is_bot: false, first_name: "External User" },
+        text: "что там task_123",
+      },
+    });
+
+    expect(taskTracker.listTasks).toHaveBeenCalledWith({ limit: 500 });
+    expect(taskTracker.getTask).toHaveBeenCalledWith("task_123");
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      businessConnectionId: "business-task-status",
+      parseMode: "HTML",
+      disableWebPagePreview: true,
+      replyToMessageId: 86,
+      text: expect.stringContaining("<b>task_123: Планы на неделю</b>"),
+    }));
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: "Intent: task_status",
+    }));
+    expect(await store.getOffset("default")).toBe(83);
+  });
+
   it("queues a second business project Q&A while one is running using redacted payloads", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore({

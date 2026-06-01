@@ -76,6 +76,7 @@ export class TelegramRetryAfterError extends Error {
 export class TelegramApiError extends Error {
   readonly status: number;
   readonly isParseModeError: boolean;
+  readonly isReplyTargetMissingError: boolean;
 
   constructor(method: string, status: number, description?: string, secrets: string[] = []) {
     const safeDescription = redactTelegramText(
@@ -89,6 +90,9 @@ export class TelegramApiError extends Error {
       status === 400 &&
       (safeDescription.toLowerCase().includes("can't parse") ||
         safeDescription.toLowerCase().includes("parse entities"));
+    this.isReplyTargetMissingError =
+      status === 400 &&
+      safeDescription.toLowerCase().includes("message to be replied not found");
   }
 }
 
@@ -125,6 +129,16 @@ export class TelegramClient {
         return this.post<TelegramMessage>("sendMessage", this.buildSendMessageBody({
           ...input,
           parseMode: undefined,
+        }));
+      }
+      if (
+        input.replyToMessageId !== undefined &&
+        error instanceof TelegramApiError &&
+        error.isReplyTargetMissingError
+      ) {
+        return this.post<TelegramMessage>("sendMessage", this.buildSendMessageBody({
+          ...input,
+          replyToMessageId: undefined,
         }));
       }
 

@@ -50,7 +50,29 @@ export const canHandleBusinessMessage = (
       reason: "owner not allowlisted",
     };
   }
-  if (!config.profileAutomation.allowedChatIds.includes(String(message.chatId))) {
+  if (message.senderIsBot === true) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "business sender is bot",
+    };
+  }
+  if (
+    message.userId !== undefined &&
+    String(message.userId) === connection.ownerUserId
+  ) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "business owner outbound message",
+    };
+  }
+  if (
+    config.profileAutomation.allowedChatIds.length > 0 &&
+    !config.profileAutomation.allowedChatIds.includes(String(message.chatId))
+  ) {
     return {
       allowed: false,
       canReply: false,

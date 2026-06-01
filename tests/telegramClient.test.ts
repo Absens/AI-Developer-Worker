@@ -128,6 +128,50 @@ describe("TelegramClient", () => {
     });
   });
 
+  it("retries sendMessage without reply target when Telegram cannot find the replied message", async () => {
+    const calls: FetchCall[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      if (calls.length === 1) {
+        return jsonResponse(
+          {
+            ok: false,
+            error_code: 400,
+            description: "Bad Request: message to be replied not found",
+          },
+          { status: 400 },
+        );
+      }
+
+      return jsonResponse({
+        ok: true,
+        result: { message_id: 10, chat: { id: 123, type: "private" }, date: 1 },
+      });
+    };
+    const client = new TelegramClient({ botToken: "token", fetch: fetchImpl });
+
+    const message = await client.sendMessage({
+      chatId: 123,
+      text: "Hello",
+      replyToMessageId: 7,
+      businessConnectionId: "biz-1",
+    });
+
+    expect(message.message_id).toBe(10);
+    expect(calls).toHaveLength(2);
+    expect(readBody(calls[0]!)).toMatchObject({
+      chat_id: 123,
+      text: "Hello",
+      reply_to_message_id: 7,
+      business_connection_id: "biz-1",
+    });
+    expect(readBody(calls[1]!)).toEqual({
+      chat_id: 123,
+      text: "Hello",
+      business_connection_id: "biz-1",
+    });
+  });
+
   it("redacts fetch setup errors before rethrowing", async () => {
     const fetchImpl: typeof fetch = async (input) => {
       throw new Error(`failed to fetch ${String(input)}`);

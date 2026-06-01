@@ -774,6 +774,18 @@ export class TelegramAssistantService {
       return undefined;
     }
 
+    if (intent.name === "task_status") {
+      if (!policy.shouldAutoReply) {
+        return undefined;
+      }
+      if (!policy.canReply) {
+        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
+        return undefined;
+      }
+      await this.handleTaskStatus(message, intent.rawText ?? message.text ?? "");
+      return undefined;
+    }
+
     if (intent.name === "create_task_draft") {
       if (this.config.profileAutomation.requireOwnerApproval) {
         await this.handleBusinessCreateTaskDraftForOwnerApproval(
@@ -2791,6 +2803,7 @@ const normalizeMessage = (
     source,
     chatId: input.message.chat.id,
     ...(input.user?.id !== undefined ? { userId: input.user.id } : {}),
+    ...(input.user?.is_bot !== undefined ? { senderIsBot: input.user.is_bot } : {}),
     messageId: input.message.message_id,
     ...(text !== undefined ? { text, redactedText } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
