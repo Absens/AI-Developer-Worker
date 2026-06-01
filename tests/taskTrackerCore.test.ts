@@ -163,6 +163,35 @@ describe("internal task tracker core", () => {
     ]);
   });
 
+  it("appends a registration-key event only once across concurrent attempts", async () => {
+    const client = new InMemoryTaskTrackerClient({ now: createClock() });
+    const task = await client.createTask(baseTaskInput());
+
+    const results = await Promise.all([
+      client.appendEventOnce(task.id, {
+        kind: "attachments_registered",
+        source: "external_source",
+        message: "Telegram attachments registered.",
+        payload: { registrationKey: "telegram:1:99:attachments_registered" },
+      }),
+      client.appendEventOnce(task.id, {
+        kind: "attachments_registered",
+        source: "external_source",
+        message: "Telegram attachments registered.",
+        payload: { registrationKey: "telegram:1:99:attachments_registered" },
+      }),
+    ]);
+
+    const events = (await client.getTask(task.id)).events.filter((event) =>
+      event.kind === "attachments_registered",
+    );
+    expect(results.sort()).toEqual([false, true]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toMatchObject({
+      registrationKey: "telegram:1:99:attachments_registered",
+    });
+  });
+
   it("preserves canonical conversation message kinds", async () => {
     const client = new InMemoryTaskTrackerClient({ now: createClock() });
     const task = await client.createTask(baseTaskInput());

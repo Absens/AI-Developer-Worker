@@ -816,6 +816,7 @@ export interface TaskTrackerClient {
   findTaskByExternalRef(provider: string, externalKey: string): Promise<TaskRecord | null>;
   getAgentTaskContext(taskId: string): Promise<AgentTaskContext>;
   appendEvent(taskId: string, input: TaskEventInput): Promise<void>;
+  appendEventOnce(taskId: string, input: TaskEventInput): Promise<boolean>;
   appendComment(taskId: string, input: CommentInput): Promise<void>;
   setStatus(taskId: string, status: TaskStatus, reason?: string): Promise<void>;
   recordDecision(taskId: string, input: TaskDecisionInput): Promise<TaskDecision>;

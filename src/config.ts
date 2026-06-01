@@ -24,6 +24,9 @@ import type {
   RepositoryRuntimeConfig,
   TaskIntakeMode,
   TaskTrackerConfig,
+  TelegramAssistantConfig,
+  TelegramAssistantGroupMode,
+  TelegramAssistantMode,
   TrackerImageContextConfig,
   TrackerOrgHeader,
   TrackerStatusConfig,
@@ -111,6 +114,43 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
   enabled: true,
   maxCount: 5,
   maxBytes: 10 * 1024 * 1024,
+};
+const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
+  enabled: false,
+  botToken: undefined,
+  botUsername: undefined,
+  mode: "polling",
+  pollIntervalSeconds: 2,
+  confirmWriteActions: true,
+  projectQaEnabled: false,
+  taskCreationEnabled: true,
+  allowedChatIds: [],
+  allowedUserIds: [],
+  developerUserIds: [],
+  operatorUserIds: [],
+  adminUserIds: [],
+  groupMode: "mentions_and_replies",
+  defaultRepository: undefined,
+  userTaskCreationDailyLimit: 20,
+  userCodexQaDailyLimit: 50,
+  codexTimeoutSeconds: 120,
+  codexMaxContextChars: 12000,
+  maxQueuedMessagesPerChat: 20,
+  conversationRetentionDays: 14,
+  webhook: undefined,
+  media: {
+    enabled: false,
+    maxBytes: 10 * 1024 * 1024,
+    allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "text/plain"],
+  },
+  profileAutomation: {
+    enabled: false,
+    autoReplyEnabled: false,
+    requireOwnerApproval: true,
+    projectQaEnabled: false,
+    allowedOwnerIds: [],
+    allowedChatIds: [],
+  },
 };
 const DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS = 1;
 const PROJECT_MANAGER_MAX_GOALS_PER_RUN_LIMIT = 20;
@@ -956,6 +996,386 @@ const parseTrackerImageContextConfig = (
   };
 };
 
+const parseCsvStrings = (
+  envValue: string | undefined,
+  rawValue?: unknown,
+  path?: string,
+): string[] => {
+  if (envValue !== undefined) {
+    return envValue
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(rawValue)) {
+    return rawValue
+      .map((entry, index) => optionalString(entry, `${path ?? "value"}[${index}]`) ?? "")
+      .filter(Boolean);
+  }
+  if (rawValue !== undefined && rawValue !== null) {
+    throw new ConfigurationError(`${path ?? "value"} must be an array of strings.`);
+  }
+  return [];
+};
+
+const parseEnum = <T extends string>(
+  value: string,
+  name: string,
+  allowed: readonly T[],
+): T => {
+  if ((allowed as readonly string[]).includes(value)) return value as T;
+  throw new ConfigurationError(`${name} must be one of: ${allowed.join(", ")}.`);
+};
+
+const parseBooleanEnvOrConfig = (
+  envValue: string | undefined,
+  rawValue: unknown,
+  envName: string,
+  path: string,
+  defaultValue: boolean,
+): boolean =>
+  envValue !== undefined
+    ? parseBooleanFlag(envValue, envName, defaultValue)
+    : optionalBoolean(rawValue, path, defaultValue);
+
+const parsePositiveIntEnvOrConfig = (
+  envValue: string | undefined,
+  rawValue: unknown,
+  envName: string,
+  path: string,
+  defaultValue: number,
+): number =>
+  envValue !== undefined
+    ? parsePositiveInt(envValue, envName)
+    : optionalPositiveInt(rawValue, path, defaultValue);
+
+const firstEnv = (
+  env: NodeJS.ProcessEnv,
+  primaryName: string,
+  aliases: string[] = [],
+): string | undefined => {
+  for (const name of [primaryName, ...aliases]) {
+    const value = env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const parseTelegramAssistantMode = (
+  value: string,
+  name: string,
+): TelegramAssistantMode =>
+  parseEnum(value, name, ["polling", "webhook"] as const);
+
+const normalizeTelegramBotUsername = (
+  username: string | undefined,
+): string | undefined => {
+  const normalized = username?.trim().replace(/^@/, "");
+  return normalized || undefined;
+};
+
+const normalizeTelegramWebhookPath = (value: string, key: string): string => {
+  const withoutLeadingSlashes = value.trim().replace(/^\/+/, "");
+  const normalized = `/${withoutLeadingSlashes}`.replace(/\/+$/, "") || "/";
+  if (normalized === "/") {
+    throw new ConfigurationError(`${key} must be a non-root path.`);
+  }
+  return normalized;
+};
+
+const parseTelegramAssistantGroupMode = (
+  value: string,
+  name: string,
+): TelegramAssistantGroupMode =>
+  parseEnum(value, name, [
+    "private_only",
+    "mentions_and_replies",
+    "all_messages",
+  ] as const);
+
+const parseTelegramAssistantConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: Record<string, unknown>,
+): TelegramAssistantConfig => {
+  const path = "telegramAssistant";
+  const preflightOnly = parseBooleanFlag(
+    env.WORKER_PREFLIGHT_ONLY,
+    "WORKER_PREFLIGHT_ONLY",
+    false,
+  );
+  const profileAutomation = optionalRecord(
+    rawValue?.profileAutomation,
+    `${path}.profileAutomation`,
+  );
+  const webhook = optionalRecord(rawValue?.webhook, `${path}.webhook`);
+  const media = optionalRecord(rawValue?.media, `${path}.media`);
+  const modeEnvValue = firstEnv(env, "TELEGRAM_ASSISTANT_MODE");
+  const modeValue =
+    modeEnvValue ||
+    optionalString(rawValue?.mode, `${path}.mode`) ||
+    DEFAULT_TELEGRAM_ASSISTANT_CONFIG.mode;
+  const mode = parseTelegramAssistantMode(
+    modeValue,
+    modeEnvValue === undefined ? `${path}.mode` : "TELEGRAM_ASSISTANT_MODE",
+  );
+  const groupModeEnvValue = firstEnv(env, "TELEGRAM_GROUP_MODE");
+  const groupModeValue =
+    groupModeEnvValue ||
+    optionalString(rawValue?.groupMode, `${path}.groupMode`) ||
+    DEFAULT_TELEGRAM_ASSISTANT_CONFIG.groupMode;
+  const groupMode = parseTelegramAssistantGroupMode(
+    groupModeValue,
+    groupModeEnvValue === undefined ? `${path}.groupMode` : "TELEGRAM_GROUP_MODE",
+  );
+  const webhookPath =
+    firstEnv(env, "TELEGRAM_WEBHOOK_PATH") ||
+    optionalString(webhook?.path, `${path}.webhook.path`);
+  const webhookSecretToken =
+    firstEnv(env, "TELEGRAM_WEBHOOK_SECRET_TOKEN") ||
+    optionalString(webhook?.secretToken, `${path}.webhook.secretToken`);
+  const hasWebhookConfig = webhook !== undefined || webhookPath || webhookSecretToken;
+  const webhookPathKey =
+    firstEnv(env, "TELEGRAM_WEBHOOK_PATH") === undefined
+      ? `${path}.webhook.path`
+      : "TELEGRAM_WEBHOOK_PATH";
+  const normalizedWebhookPath = webhookPath
+    ? normalizeTelegramWebhookPath(webhookPath, webhookPathKey)
+    : undefined;
+
+  if (hasWebhookConfig && mode !== "webhook") {
+    throw new ConfigurationError(
+      "Telegram assistant webhook config is only supported when TELEGRAM_ASSISTANT_MODE=webhook.",
+    );
+  }
+  if (!preflightOnly && mode === "webhook" && !webhookPath) {
+    throw new ConfigurationError(
+      "TELEGRAM_WEBHOOK_PATH is required when TELEGRAM_ASSISTANT_MODE=webhook.",
+    );
+  }
+  if (!preflightOnly && mode === "webhook" && !webhookSecretToken) {
+    throw new ConfigurationError(
+      "TELEGRAM_WEBHOOK_SECRET_TOKEN is required when TELEGRAM_ASSISTANT_MODE=webhook.",
+    );
+  }
+
+  const config: TelegramAssistantConfig = {
+    enabled: parseBooleanEnvOrConfig(
+      firstEnv(env, "TELEGRAM_ASSISTANT_ENABLED"),
+      rawValue?.enabled,
+      "TELEGRAM_ASSISTANT_ENABLED",
+      `${path}.enabled`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.enabled,
+    ),
+    botToken:
+      firstEnv(env, "TELEGRAM_ASSISTANT_BOT_TOKEN") ||
+      optionalString(rawValue?.botToken, `${path}.botToken`),
+    botUsername:
+      normalizeTelegramBotUsername(firstEnv(env, "TELEGRAM_ASSISTANT_BOT_USERNAME")) ||
+      normalizeTelegramBotUsername(
+        optionalString(rawValue?.botUsername, `${path}.botUsername`),
+      ),
+    mode,
+    pollIntervalSeconds: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS"),
+      rawValue?.pollIntervalSeconds,
+      "TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS",
+      `${path}.pollIntervalSeconds`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.pollIntervalSeconds,
+    ),
+    confirmWriteActions: parseBooleanEnvOrConfig(
+      firstEnv(env, "TELEGRAM_CONFIRM_WRITE_ACTIONS"),
+      rawValue?.confirmWriteActions,
+      "TELEGRAM_CONFIRM_WRITE_ACTIONS",
+      `${path}.confirmWriteActions`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.confirmWriteActions,
+    ),
+    projectQaEnabled: parseBooleanEnvOrConfig(
+      firstEnv(env, "TELEGRAM_PROJECT_QA_ENABLED"),
+      rawValue?.projectQaEnabled,
+      "TELEGRAM_PROJECT_QA_ENABLED",
+      `${path}.projectQaEnabled`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.projectQaEnabled,
+    ),
+    taskCreationEnabled: parseBooleanEnvOrConfig(
+      firstEnv(env, "TELEGRAM_TASK_CREATION_ENABLED"),
+      rawValue?.taskCreationEnabled,
+      "TELEGRAM_TASK_CREATION_ENABLED",
+      `${path}.taskCreationEnabled`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.taskCreationEnabled,
+    ),
+    allowedChatIds: parseCsvStrings(
+      firstEnv(env, "TELEGRAM_ALLOWED_CHAT_IDS"),
+      rawValue?.allowedChatIds,
+      `${path}.allowedChatIds`,
+    ),
+    allowedUserIds: parseCsvStrings(
+      firstEnv(env, "TELEGRAM_ALLOWED_USER_IDS"),
+      rawValue?.allowedUserIds,
+      `${path}.allowedUserIds`,
+    ),
+    developerUserIds: parseCsvStrings(
+      firstEnv(env, "TELEGRAM_DEVELOPER_USER_IDS"),
+      rawValue?.developerUserIds,
+      `${path}.developerUserIds`,
+    ),
+    operatorUserIds: parseCsvStrings(
+      firstEnv(env, "TELEGRAM_OPERATOR_USER_IDS"),
+      rawValue?.operatorUserIds,
+      `${path}.operatorUserIds`,
+    ),
+    adminUserIds: parseCsvStrings(
+      firstEnv(env, "TELEGRAM_ADMIN_USER_IDS"),
+      rawValue?.adminUserIds,
+      `${path}.adminUserIds`,
+    ),
+    groupMode,
+    defaultRepository:
+      firstEnv(env, "TELEGRAM_DEFAULT_REPOSITORY") ||
+      optionalString(rawValue?.defaultRepository, `${path}.defaultRepository`),
+    userTaskCreationDailyLimit: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT"),
+      rawValue?.userTaskCreationDailyLimit,
+      "TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT",
+      `${path}.userTaskCreationDailyLimit`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.userTaskCreationDailyLimit,
+    ),
+    userCodexQaDailyLimit: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_USER_CODEX_QA_DAILY_LIMIT"),
+      rawValue?.userCodexQaDailyLimit,
+      "TELEGRAM_USER_CODEX_QA_DAILY_LIMIT",
+      `${path}.userCodexQaDailyLimit`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.userCodexQaDailyLimit,
+    ),
+    codexTimeoutSeconds: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_CODEX_TIMEOUT_SECONDS"),
+      rawValue?.codexTimeoutSeconds,
+      "TELEGRAM_CODEX_TIMEOUT_SECONDS",
+      `${path}.codexTimeoutSeconds`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.codexTimeoutSeconds,
+    ),
+    codexMaxContextChars: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_CODEX_MAX_CONTEXT_CHARS"),
+      rawValue?.codexMaxContextChars,
+      "TELEGRAM_CODEX_MAX_CONTEXT_CHARS",
+      `${path}.codexMaxContextChars`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.codexMaxContextChars,
+    ),
+    maxQueuedMessagesPerChat: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT"),
+      rawValue?.maxQueuedMessagesPerChat,
+      "TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT",
+      `${path}.maxQueuedMessagesPerChat`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.maxQueuedMessagesPerChat,
+    ),
+    conversationRetentionDays: parsePositiveIntEnvOrConfig(
+      firstEnv(env, "TELEGRAM_CONVERSATION_RETENTION_DAYS"),
+      rawValue?.conversationRetentionDays,
+      "TELEGRAM_CONVERSATION_RETENTION_DAYS",
+      `${path}.conversationRetentionDays`,
+      DEFAULT_TELEGRAM_ASSISTANT_CONFIG.conversationRetentionDays,
+    ),
+    webhook:
+      mode === "webhook" && normalizedWebhookPath
+        ? {
+            path: normalizedWebhookPath,
+            ...(webhookSecretToken ? { secretToken: webhookSecretToken } : {}),
+          }
+        : undefined,
+    media: {
+      enabled: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_MEDIA_ENABLED"),
+        media?.enabled,
+        "TELEGRAM_MEDIA_ENABLED",
+        `${path}.media.enabled`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.media.enabled,
+      ),
+      maxBytes: parsePositiveIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_MEDIA_MAX_BYTES"),
+        media?.maxBytes,
+        "TELEGRAM_MEDIA_MAX_BYTES",
+        `${path}.media.maxBytes`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.media.maxBytes,
+      ),
+      allowedMimeTypes: parseCsvStrings(
+        firstEnv(env, "TELEGRAM_MEDIA_ALLOWED_MIME_TYPES"),
+        media?.allowedMimeTypes,
+        `${path}.media.allowedMimeTypes`,
+      ),
+    },
+    profileAutomation: {
+      enabled: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_ENABLED"),
+        profileAutomation?.enabled,
+        "TELEGRAM_PROFILE_AUTOMATION_ENABLED",
+        `${path}.profileAutomation.enabled`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.profileAutomation.enabled,
+      ),
+      autoReplyEnabled: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED"),
+        profileAutomation?.autoReplyEnabled,
+        "TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED",
+        `${path}.profileAutomation.autoReplyEnabled`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.profileAutomation.autoReplyEnabled,
+      ),
+      requireOwnerApproval: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL"),
+        profileAutomation?.requireOwnerApproval,
+        "TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL",
+        `${path}.profileAutomation.requireOwnerApproval`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.profileAutomation.requireOwnerApproval,
+      ),
+      projectQaEnabled: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED"),
+        profileAutomation?.projectQaEnabled,
+        "TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED",
+        `${path}.profileAutomation.projectQaEnabled`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.profileAutomation.projectQaEnabled,
+      ),
+      allowedOwnerIds: parseCsvStrings(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS"),
+        profileAutomation?.allowedOwnerIds,
+        `${path}.profileAutomation.allowedOwnerIds`,
+      ),
+      allowedChatIds: parseCsvStrings(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS"),
+        profileAutomation?.allowedChatIds,
+        `${path}.profileAutomation.allowedChatIds`,
+      ),
+    },
+  };
+
+  if (config.media.allowedMimeTypes.length === 0) {
+    config.media.allowedMimeTypes = [
+      ...DEFAULT_TELEGRAM_ASSISTANT_CONFIG.media.allowedMimeTypes,
+    ];
+  }
+
+  if (!preflightOnly && config.enabled && !config.botToken) {
+    throw new ConfigurationError(
+      "TELEGRAM_ASSISTANT_BOT_TOKEN is required when TELEGRAM_ASSISTANT_ENABLED=true.",
+    );
+  }
+
+  if (
+    !preflightOnly &&
+    config.enabled &&
+    env.NODE_ENV === "production" &&
+    config.allowedChatIds.length === 0 &&
+    config.allowedUserIds.length === 0 &&
+    config.developerUserIds.length === 0 &&
+    config.operatorUserIds.length === 0 &&
+    config.adminUserIds.length === 0
+  ) {
+    throw new ConfigurationError(
+      "Enabled production Telegram assistant requires chat, user, or role-specific Telegram user ids allowlists.",
+    );
+  }
+
+  return config;
+};
+
 const optionalNumber = (
   value: unknown,
   key: string,
@@ -1631,6 +2051,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   const projectManager = parseProjectManagerConfig(env, undefined, taskTracker);
   assertProjectManagerProviderCompatibility(taskTracker, projectManager);
   const trackerImageContext = parseTrackerImageContextConfig(env);
+  const telegramAssistant = parseTelegramAssistantConfig(env);
 
   return {
     taskTracker,
@@ -1650,6 +2071,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       env.TRACKER_API_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://api.tracker.yandex.net/v3",
     trackerImageContext,
+    telegramAssistant,
     trackerParentLinkType:
       env.TRACKER_PARENT_LINK_TYPE?.trim() || DEFAULT_TRACKER_PARENT_LINK_TYPE,
     trackerBlockedByLinkType:
@@ -2015,6 +2437,7 @@ const buildSingleRepositoryFleetConfig = (
     maxFixAttempts: config.maxFixAttempts,
     maxReviewFixAttempts: config.maxReviewFixAttempts,
     trackerImageContext: config.trackerImageContext,
+    telegramAssistant: config.telegramAssistant,
     gitRepositoryToken: config.gitRepositoryToken,
     gitRepositoryUsername: config.gitRepositoryUsername,
     gitCommitNoVerify: config.gitCommitNoVerify,
@@ -2232,6 +2655,10 @@ const loadFleetConfigFromFile = (
   const alerts = optionalRecord(root.alerts, "alerts");
   const autonomyRoot = optionalRecord(root.autonomy, "autonomy");
   const projectManagerRoot = optionalRecord(root.projectManager, "projectManager");
+  const telegramAssistantRoot = optionalRecord(
+    root.telegramAssistant,
+    "telegramAssistant",
+  );
   const trackerImageContext = optionalRecord(
     root.trackerImageContext,
     "trackerImageContext",
@@ -2398,6 +2825,7 @@ const loadFleetConfigFromFile = (
           maxFixAttempts,
         ),
     trackerImageContext: parseTrackerImageContextConfig(env, trackerImageContext),
+    telegramAssistant: parseTelegramAssistantConfig(env, telegramAssistantRoot),
     gitRepositoryToken: env.GIT_REPOSITORY_TOKEN?.trim() || gitlabToken,
     gitRepositoryUsername: env.GIT_REPOSITORY_USERNAME?.trim() || "oauth2",
     gitCommitNoVerify: parseBooleanFlag(
@@ -2564,6 +2992,7 @@ export const buildRepositoryRuntimeConfig = (
   trackerStatusMap: globalConfig.tracker.statusMap,
   trackerApiBaseUrl: globalConfig.tracker.apiBaseUrl,
   trackerImageContext: globalConfig.trackerImageContext,
+  telegramAssistant: globalConfig.telegramAssistant,
   ...(globalConfig.trackerParentLinkType
     ? { trackerParentLinkType: globalConfig.trackerParentLinkType }
     : {}),

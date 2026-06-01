@@ -22,7 +22,7 @@ import {
   type MetricLabels,
   type MetricsRegistry,
 } from "./metrics.js";
-import { ObservabilityHttpServer } from "./server.js";
+import { ObservabilityHttpServer, type TelegramWebhookRoute } from "./server.js";
 import type { ProjectManagerApiDependencies } from "./taskTrackerHumanApi.js";
 import {
   InMemoryWorkerStateRegistry,
@@ -123,6 +123,7 @@ class RuntimeObservabilityService implements ObservabilityService {
   readonly state: WorkerStateRegistry;
   readonly alerts: AlertService;
   private readonly server: ObservabilityHttpServer;
+  private readonly requireHttpServer: boolean;
   private ready = false;
   private readinessReason = "startup pending";
   private started = false;
@@ -133,11 +134,13 @@ class RuntimeObservabilityService implements ObservabilityService {
     private readonly repositories: RepositoryProfile[],
     taskTracker?: TaskTrackerClient,
     projectManager?: ProjectManagerApiDependencies,
+    telegramWebhook?: TelegramWebhookRoute,
   ) {
     this.metrics = new InMemoryMetricsRegistry();
     this.events = new InMemoryEventStore(config, this.metrics, logger);
     this.state = new InMemoryWorkerStateRegistry();
     this.alerts = new BasicAlertService(config, this.metrics, logger);
+    this.requireHttpServer = telegramWebhook !== undefined;
     this.server = new ObservabilityHttpServer({
       config,
       metrics: this.metrics,
@@ -149,6 +152,7 @@ class RuntimeObservabilityService implements ObservabilityService {
       repositories: () => this.repositories.map((repository) => repository.name),
       taskTracker,
       projectManager,
+      telegramWebhook,
     });
     this.metrics.setGauge("ai_developer_build_info", {
       version: process.env.npm_package_version ?? "unknown",
@@ -170,7 +174,7 @@ class RuntimeObservabilityService implements ObservabilityService {
     } catch (error) {
       this.started = false;
       const message = `Observability server failed to start on ${this.config.host}:${this.config.port}. ${safeMessage(error)}`;
-      if (this.config.strictStartup) {
+      if (this.config.strictStartup || this.requireHttpServer) {
         throw new Error(message);
       }
       this.logger.warn(message);
@@ -458,6 +462,7 @@ export const createObservabilityService = (
   repositories: RepositoryProfile[],
   taskTracker?: TaskTrackerClient,
   projectManager?: ProjectManagerApiDependencies,
+  telegramWebhook?: TelegramWebhookRoute,
 ): ObservabilityService => {
   const resolved = config ?? defaultObservabilityConfig();
   if (!resolved.enabled && !resolved.taskTrackerUi.enabled) {
@@ -469,5 +474,6 @@ export const createObservabilityService = (
     repositories,
     taskTracker,
     projectManager,
+    telegramWebhook,
   );
 };

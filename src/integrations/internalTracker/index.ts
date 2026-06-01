@@ -8,6 +8,9 @@ export {
   PostgresProjectManagerStore,
 } from "./postgresProjectManagerStore.js";
 export {
+  PostgresTelegramAssistantStore,
+} from "../../domain/telegramAssistant/postgresStore.js";
+export {
   InternalTrackerRuntimeGuardClient,
 } from "./runtimeGuardTrackerClient.js";
 export {

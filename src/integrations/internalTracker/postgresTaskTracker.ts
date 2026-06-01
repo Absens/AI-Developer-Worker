@@ -286,6 +286,11 @@ type ProposalPolicyEvaluationRow = QueryResultRow & {
 
 const clone = <T>(value: T): T => structuredClone(value);
 
+const eventRegistrationKey = (input: TaskEventInput): string | undefined => {
+  const value = input.payload?.registrationKey;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
+
 const isPoolLike = (value: PostgresQueryable): value is PostgresPoolLike =>
   typeof (value as { connect?: unknown }).connect === "function";
 
@@ -1259,6 +1264,50 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         createdAt,
       });
       await this.touchTask(client, taskId, createdAt);
+    });
+  }
+
+  async appendEventOnce(taskId: string, input: TaskEventInput): Promise<boolean> {
+    const registrationKey = eventRegistrationKey(input);
+    if (!registrationKey) {
+      await this.appendEvent(taskId, input);
+      return true;
+    }
+
+    const createdAt = input.createdAt ?? this.nowIso();
+    return this.withTransaction(async (client) => {
+      await this.ensureTaskExists(client, taskId);
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [`${taskId}:${input.kind}:${registrationKey}`],
+      );
+      const existing = await client.query<{ exists: number }>(
+        `
+          SELECT 1 AS exists
+          FROM task_events
+          WHERE task_id = $1
+            AND kind = $2
+            AND payload->>'registrationKey' = $3
+          LIMIT 1
+        `,
+        [taskId, input.kind, registrationKey],
+      );
+      if (existing.rows.length > 0) {
+        return false;
+      }
+
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`,
+        taskId,
+        kind: input.kind,
+        source: input.source,
+        ...(input.actor ? { actor: clone(input.actor) } : {}),
+        ...(input.message ? { message: input.message } : {}),
+        ...(input.payload ? { payload: clone(input.payload) } : {}),
+        createdAt,
+      });
+      await this.touchTask(client, taskId, createdAt);
+      return true;
     });
   }
 

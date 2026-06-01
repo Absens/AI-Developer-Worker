@@ -213,6 +213,27 @@ WORKER_RUN_ONCE=true
 
 Обычный комментарий без slash-команды не возобновляет задачу. Это защищает воркер от случайного продолжения после обсуждений, не адресованных AI.
 
+## Telegram Assistant
+
+Telegram Assistant is an optional Bot API surface for internal tracker tasks. It
+can answer task status questions, collect write confirmations for task creation
+and AI question answers, run project Q&A through Codex, and deliver subscribed
+task notifications. It never calls the human TaskTracker API over HTTP; writes go
+through the internal `TaskTrackerClient`, and task creation requires
+`TASK_TRACKER_PROVIDER=internal`.
+
+Use `TELEGRAM_ASSISTANT_BOT_TOKEN` for the assistant. Alert delivery uses the
+separate `TELEGRAM_BOT_TOKEN`, even if both variables intentionally contain the
+same bot token. Keep allowlists tight: chat/user allowlists grant read access,
+while `TELEGRAM_DEVELOPER_USER_IDS`, `TELEGRAM_OPERATOR_USER_IDS`, and
+`TELEGRAM_ADMIN_USER_IDS` are required for write confirmations. Group mode
+defaults to mentions and replies to align with Telegram privacy mode.
+
+Operational details, metrics, Bot API links, retention behavior, webhook
+requirements, and business/profile automation consent rules are documented in
+[docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) and
+[docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md).
+
 ## Проверки качества
 
 Перед публикацией merge request воркер проверяет наличие изменений в целевом репозитории и запускает настроенные проверки качества в порядке:

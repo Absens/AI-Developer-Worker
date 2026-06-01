@@ -3,6 +3,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 
+import type {
+  TelegramUpdate,
+  TelegramUpdateHandler,
+} from "../integrations/telegram/index.js";
 import type { ObservabilityConfig, TaskTrackerClient } from "../models/types.js";
 import type { MetricsRegistry } from "./metrics.js";
 import type { WorkerStateRegistry } from "./state.js";
@@ -17,6 +21,12 @@ export interface ReadinessState {
   reason: string;
 }
 
+export interface TelegramWebhookRoute {
+  path: string;
+  secretToken?: string;
+  handler: TelegramUpdateHandler;
+}
+
 interface ObservabilityServerInput {
   config: ObservabilityConfig;
   metrics: MetricsRegistry;
@@ -25,6 +35,14 @@ interface ObservabilityServerInput {
   repositories: () => string[];
   taskTracker?: TaskTrackerClient;
   projectManager?: ProjectManagerApiDependencies;
+  telegramWebhook?: TelegramWebhookRoute;
+}
+
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("request body too large");
+    this.name = "RequestBodyTooLargeError";
+  }
 }
 
 const json = (response: ServerResponse, statusCode: number, body: unknown): void => {
@@ -129,6 +147,66 @@ const isInsideDirectory = (root: string, candidate: string): boolean => {
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 };
 
+const TELEGRAM_WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;
+
+const normalizeRoutePath = (path: string): string => {
+  const trimmed = path.trim();
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "") || "/";
+};
+
+const readRequestBody = async (
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+
+    request.on("data", (chunk: Buffer) => {
+      if (settled) {
+        return;
+      }
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        settled = true;
+        request.resume();
+        reject(new RequestBodyTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    request.on("end", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+
+    request.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
+  });
+
+const isTelegramUpdate = (value: unknown): value is TelegramUpdate => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const updateId = (value as { update_id?: unknown }).update_id;
+  return (
+    typeof updateId === "number" &&
+    Number.isFinite(updateId) &&
+    Number.isInteger(updateId)
+  );
+};
+
 export class ObservabilityHttpServer {
   private server: Server | undefined;
   private readonly taskTrackerHumanApi: TaskTrackerHumanApi;
@@ -201,7 +279,7 @@ export class ObservabilityHttpServer {
     response: ServerResponse,
   ): Promise<void> {
     const url = new URL(request.url ?? "/", this.input.config.baseUrl);
-    const path = url.pathname.replace(/\/+$/, "") || "/";
+    const path = normalizeRoutePath(url.pathname);
     const { config } = this.input;
 
     if (path === config.health.path) {
@@ -240,6 +318,12 @@ export class ObservabilityHttpServer {
       return;
     }
 
+    const telegramWebhook = this.input.telegramWebhook;
+    if (telegramWebhook && path === normalizeRoutePath(telegramWebhook.path)) {
+      await this.handleTelegramWebhook(request, response, telegramWebhook);
+      return;
+    }
+
     if (config.taskTrackerUi.enabled && this.taskTrackerHumanApi.isApiRoute(path)) {
       await this.taskTrackerHumanApi.handle(request, path, url, response);
       return;
@@ -255,6 +339,49 @@ export class ObservabilityHttpServer {
     }
 
     text(response, 404, "not found");
+  }
+
+  private async handleTelegramWebhook(
+    request: IncomingMessage,
+    response: ServerResponse,
+    webhook: TelegramWebhookRoute,
+  ): Promise<void> {
+    if (request.method !== "POST") {
+      text(response, 405, "method not allowed");
+      return;
+    }
+
+    if (
+      webhook.secretToken !== undefined &&
+      request.headers["x-telegram-bot-api-secret-token"] !== webhook.secretToken
+    ) {
+      text(response, 401, "unauthorized");
+      return;
+    }
+
+    let update: unknown;
+    try {
+      const body = await readRequestBody(request, TELEGRAM_WEBHOOK_BODY_LIMIT_BYTES);
+      update = JSON.parse(body) as unknown;
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        text(response, 413, "request body too large");
+        return;
+      }
+      if (error instanceof SyntaxError) {
+        text(response, 400, "invalid json");
+        return;
+      }
+      throw error;
+    }
+
+    if (!isTelegramUpdate(update)) {
+      text(response, 400, "invalid telegram update");
+      return;
+    }
+
+    await webhook.handler.handleUpdate(update);
+    json(response, 200, { ok: true });
   }
 
   private async assertStaticBundle(): Promise<void> {

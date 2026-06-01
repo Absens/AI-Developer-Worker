@@ -122,6 +122,11 @@ type RequiredExecutionField = (typeof REQUIRED_EXECUTION_FIELDS)[number];
 
 const clone = <T>(value: T): T => structuredClone(value);
 
+const eventRegistrationKey = (input: TaskEventInput): string | undefined => {
+  const value = input.payload?.registrationKey;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
+
 const normalizeStringArray = (values: readonly string[] | undefined): string[] =>
   [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 
@@ -937,6 +942,25 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
 
     task.events.push(event);
     task.updatedAt = createdAt;
+  }
+
+  async appendEventOnce(taskId: string, input: TaskEventInput): Promise<boolean> {
+    const registrationKey = eventRegistrationKey(input);
+    if (!registrationKey) {
+      await this.appendEvent(taskId, input);
+      return true;
+    }
+
+    const task = this.requireTask(taskId);
+    if (task.events.some((event) => (
+      event.kind === input.kind &&
+      event.payload?.registrationKey === registrationKey
+    ))) {
+      return false;
+    }
+
+    await this.appendEvent(taskId, input);
+    return true;
   }
 
   async appendComment(taskId: string, input: CommentInput): Promise<void> {

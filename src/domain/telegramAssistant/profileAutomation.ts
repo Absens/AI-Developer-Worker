@@ -1,0 +1,102 @@
+import type { TelegramAssistantConfig } from "../../models/types.js";
+import type {
+  TelegramBusinessConnectionRecord,
+  TelegramInboundMessage,
+} from "./types.js";
+
+export interface BusinessMessagePolicy {
+  allowed: boolean;
+  reason?: string;
+  canReply: boolean;
+  shouldAutoReply: boolean;
+}
+
+const BUSINESS_CONNECTION_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export const canHandleBusinessMessage = (
+  config: TelegramAssistantConfig,
+  message: TelegramInboundMessage,
+  connection: TelegramBusinessConnectionRecord | undefined,
+): BusinessMessagePolicy => {
+  if (!config.profileAutomation.enabled) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "profile automation disabled",
+    };
+  }
+  if (!message.businessConnectionId) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "missing business connection",
+    };
+  }
+  if (!connection?.isEnabled) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "business connection disabled",
+    };
+  }
+  if (!config.profileAutomation.allowedOwnerIds.includes(connection.ownerUserId)) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "owner not allowlisted",
+    };
+  }
+  if (!config.profileAutomation.allowedChatIds.includes(String(message.chatId))) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "chat not allowlisted",
+    };
+  }
+  if (connection.rights.can_read_messages !== true) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "business connection cannot read messages",
+    };
+  }
+  if (!isFreshBusinessConnection(connection)) {
+    return {
+      allowed: false,
+      canReply: false,
+      shouldAutoReply: false,
+      reason: "business connection stale",
+    };
+  }
+
+  const canReply = connection.rights.can_reply === true;
+  return {
+    allowed: true,
+    canReply,
+    shouldAutoReply: config.profileAutomation.autoReplyEnabled,
+  };
+};
+
+const isFreshBusinessConnection = (
+  connection: TelegramBusinessConnectionRecord,
+): boolean => {
+  const latestSeenAt = Math.max(
+    parseTimestamp(connection.lastSeenAt),
+    parseTimestamp(connection.updatedAt),
+  );
+  return (
+    Number.isFinite(latestSeenAt) &&
+    Date.now() - latestSeenAt <= BUSINESS_CONNECTION_REPLY_WINDOW_MS
+  );
+};
+
+const parseTimestamp = (value: string): number => {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+};

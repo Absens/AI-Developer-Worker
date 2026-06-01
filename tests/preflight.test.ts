@@ -230,6 +230,17 @@ const successfulCommand = async (): Promise<ProcessResult> => ({
   exitCode: 0,
 });
 
+const buildPreflightWithConfig = (overrides: Partial<AppConfig>): PreflightService =>
+  new PreflightService(
+    createConfig(overrides),
+    new FakeTrackerClient(),
+    new FakeGitService(),
+    new FakeGitLabService(),
+    async () => undefined,
+    new Logger(),
+    successfulCommand,
+  );
+
 describe("PreflightService", () => {
   it("returns a stable read-only report with warnings for omitted sandbox writes", async () => {
     const tracker = new FakeTrackerClient();
@@ -453,6 +464,135 @@ describe("PreflightService", () => {
     await service.run();
 
     expect(commands.some((command) => command.includes("exec resume --help"))).toBe(false);
+  });
+
+  it("reports Telegram assistant config failures when enabled without internal tracker", async () => {
+    const service = buildPreflightWithConfig({
+      telegramAssistant: {
+        enabled: true,
+        botToken: "secret",
+        taskCreationEnabled: true,
+        allowedUserIds: ["1"],
+        allowedChatIds: [],
+      },
+      taskTracker: { provider: "yandex" },
+    } as any);
+
+    const results = await service.run();
+
+    expect(results.some((result) => result.name === "telegram assistant" && result.status === "fail")).toBe(true);
+  });
+
+  it("fails Telegram assistant preflight for non-HTTPS public webhook URLs", async () => {
+    const service = buildPreflightWithConfig({
+      telegramAssistant: {
+        enabled: true,
+        botToken: "secret",
+        mode: "webhook",
+        taskCreationEnabled: false,
+        allowedUserIds: ["1"],
+        allowedChatIds: [],
+        webhook: { path: "/telegram/webhook", secretToken: "hook-secret" },
+      },
+      observability: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 9464,
+        baseUrl: "http://worker.example.test",
+        metrics: { enabled: true, path: "/metrics" },
+        health: { path: "/healthz", readinessPath: "/readyz" },
+        taskTrackerUi: {
+          enabled: false,
+          authMode: "localhost",
+        },
+      },
+    } as any);
+
+    const results = await service.run();
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram assistant",
+        status: "fail",
+        details: expect.stringContaining("https"),
+      }),
+    ]));
+  });
+
+  it.each([
+    ["private IPv4", "https://10.0.0.5"],
+    ["CGNAT IPv4", "https://100.64.0.1"],
+    ["ULA IPv6", "https://[fc00::1]"],
+  ])("fails Telegram assistant preflight for %s webhook URLs", async (_label, baseUrl) => {
+    const service = buildPreflightWithConfig({
+      telegramAssistant: {
+        enabled: true,
+        botToken: "secret",
+        mode: "webhook",
+        taskCreationEnabled: false,
+        allowedUserIds: ["1"],
+        allowedChatIds: [],
+        webhook: { path: "/telegram/webhook", secretToken: "hook-secret" },
+      },
+      observability: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 9464,
+        baseUrl,
+        metrics: { enabled: true, path: "/metrics" },
+        health: { path: "/healthz", readinessPath: "/readyz" },
+        taskTrackerUi: {
+          enabled: false,
+          authMode: "localhost",
+        },
+      },
+    } as any);
+
+    const results = await service.run();
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram assistant",
+        status: "fail",
+        details: expect.stringContaining("public https observability.baseUrl"),
+      }),
+    ]));
+  });
+
+  it("fails Telegram assistant preflight for webhook mode without a secret token", async () => {
+    const service = buildPreflightWithConfig({
+      telegramAssistant: {
+        enabled: true,
+        botToken: "secret",
+        mode: "webhook",
+        taskCreationEnabled: false,
+        allowedUserIds: ["1"],
+        allowedChatIds: [],
+        webhook: { path: "/telegram/webhook" },
+      },
+      observability: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 9464,
+        baseUrl: "https://worker.example.test",
+        metrics: { enabled: true, path: "/metrics" },
+        health: { path: "/healthz", readinessPath: "/readyz" },
+        taskTrackerUi: {
+          enabled: false,
+          authMode: "localhost",
+        },
+      },
+    } as any);
+
+    const results = await service.run();
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "telegram assistant",
+        status: "fail",
+        details: expect.stringContaining("webhook secret token"),
+      }),
+    ]));
   });
 
   it("checks codex exec review help when Codex self-review is enabled", async () => {
