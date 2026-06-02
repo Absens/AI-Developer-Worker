@@ -137,6 +137,7 @@ const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
   codexMaxContextChars: 12000,
   maxQueuedMessagesPerChat: 20,
   conversationRetentionDays: 14,
+  maxInboundMessageAgeSeconds: 300,
   webhook: undefined,
   media: {
     enabled: false,
@@ -150,6 +151,7 @@ const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
     projectQaEnabled: false,
     allowedOwnerIds: [],
     allowedChatIds: [],
+    maxMessageAgeSeconds: 300,
   },
 };
 const DEFAULT_CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS = 1;
@@ -181,6 +183,14 @@ const parsePositiveInt = (input: string, key: string): number => {
   const value = Number.parseInt(input, 10);
   if (!Number.isFinite(value) || value <= 0) {
     throw new ConfigurationError(`${key} must be a positive integer.`);
+  }
+  return value;
+};
+
+const parseNonNegativeInt = (input: string, key: string): number => {
+  const value = Number.parseInt(input, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new ConfigurationError(`${key} must be a non-negative integer.`);
   }
   return value;
 };
@@ -952,6 +962,22 @@ const optionalPositiveInt = (
   return value;
 };
 
+const optionalNonNegativeInt = (
+  value: unknown,
+  key: string,
+  defaultValue: number,
+): number => {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new ConfigurationError(`${key} must be a non-negative integer.`);
+  }
+
+  return value;
+};
+
 const parseTrackerImageContextConfig = (
   env: NodeJS.ProcessEnv,
   rawValue?: Record<string, unknown>,
@@ -1048,6 +1074,17 @@ const parsePositiveIntEnvOrConfig = (
   envValue !== undefined
     ? parsePositiveInt(envValue, envName)
     : optionalPositiveInt(rawValue, path, defaultValue);
+
+const parseNonNegativeIntEnvOrConfig = (
+  envValue: string | undefined,
+  rawValue: unknown,
+  envName: string,
+  path: string,
+  defaultValue: number,
+): number =>
+  envValue !== undefined
+    ? parseNonNegativeInt(envValue, envName)
+    : optionalNonNegativeInt(rawValue, path, defaultValue);
 
 const firstEnv = (
   env: NodeJS.ProcessEnv,
@@ -1159,6 +1196,14 @@ const parseTelegramAssistantConfig = (
       "TELEGRAM_WEBHOOK_SECRET_TOKEN is required when TELEGRAM_ASSISTANT_MODE=webhook.",
     );
   }
+
+  const maxInboundMessageAgeSeconds = parseNonNegativeIntEnvOrConfig(
+    firstEnv(env, "TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS"),
+    rawValue?.maxInboundMessageAgeSeconds,
+    "TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS",
+    `${path}.maxInboundMessageAgeSeconds`,
+    DEFAULT_TELEGRAM_ASSISTANT_CONFIG.maxInboundMessageAgeSeconds,
+  );
 
   const config: TelegramAssistantConfig = {
     enabled: parseBooleanEnvOrConfig(
@@ -1276,6 +1321,7 @@ const parseTelegramAssistantConfig = (
       `${path}.conversationRetentionDays`,
       DEFAULT_TELEGRAM_ASSISTANT_CONFIG.conversationRetentionDays,
     ),
+    maxInboundMessageAgeSeconds,
     webhook:
       mode === "webhook" && normalizedWebhookPath
         ? {
@@ -1342,6 +1388,13 @@ const parseTelegramAssistantConfig = (
         firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS"),
         profileAutomation?.allowedChatIds,
         `${path}.profileAutomation.allowedChatIds`,
+      ),
+      maxMessageAgeSeconds: parseNonNegativeIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS"),
+        profileAutomation?.maxMessageAgeSeconds,
+        "TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS",
+        `${path}.profileAutomation.maxMessageAgeSeconds`,
+        maxInboundMessageAgeSeconds,
       ),
     },
   };

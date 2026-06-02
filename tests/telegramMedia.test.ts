@@ -34,6 +34,7 @@ const baseTelegramAssistantConfig = (): TelegramAssistantConfig => ({
   codexMaxContextChars: 12000,
   maxQueuedMessagesPerChat: 20,
   conversationRetentionDays: 14,
+  maxInboundMessageAgeSeconds: 0,
   media: {
     enabled: true,
     maxBytes: 2000,
@@ -46,6 +47,7 @@ const baseTelegramAssistantConfig = (): TelegramAssistantConfig => ({
     projectQaEnabled: false,
     allowedOwnerIds: [],
     allowedChatIds: [],
+    maxMessageAgeSeconds: 0,
   },
 });
 

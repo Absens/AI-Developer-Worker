@@ -259,6 +259,7 @@ export interface TelegramProfileAutomationConfig {
   projectQaEnabled: boolean;
   allowedOwnerIds: string[];
   allowedChatIds: string[];
+  maxMessageAgeSeconds: number;
 }
 
 export interface TelegramAssistantWebhookConfig {
@@ -288,6 +289,7 @@ export interface TelegramAssistantConfig {
   codexMaxContextChars: number;
   maxQueuedMessagesPerChat: number;
   conversationRetentionDays: number;
+  maxInboundMessageAgeSeconds: number;
   webhook?: TelegramAssistantWebhookConfig;
   media: TelegramAssistantMediaConfig;
   profileAutomation: TelegramProfileAutomationConfig;

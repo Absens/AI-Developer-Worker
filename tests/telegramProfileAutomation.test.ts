@@ -40,6 +40,7 @@ const profileAutomationConfig = (
   codexMaxContextChars: 12000,
   maxQueuedMessagesPerChat: 20,
   conversationRetentionDays: 14,
+  maxInboundMessageAgeSeconds: 0,
   media: {
     enabled: false,
     maxBytes: 10485760,
@@ -52,6 +53,7 @@ const profileAutomationConfig = (
     projectQaEnabled: false,
     allowedOwnerIds: [],
     allowedChatIds: [],
+    maxMessageAgeSeconds: 0,
     ...overrides,
   },
 });
@@ -97,15 +99,16 @@ const businessMessageUpdate = (
     messageId?: number;
     chatId?: number;
     userId?: number;
-    senderIsBot?: boolean;
-    businessConnectionId?: string;
-    text: string;
+  senderIsBot?: boolean;
+  businessConnectionId?: string;
+  date?: number;
+  text: string;
   },
 ): TelegramUpdate => ({
   update_id: input.updateId ?? 2,
   business_message: {
     message_id: input.messageId ?? 10,
-    date: 1,
+    date: input.date ?? 1,
     business_connection_id: input.businessConnectionId ?? "bc_1",
     chat: { id: input.chatId ?? 777, type: "private" },
     from: {
@@ -336,6 +339,41 @@ describe("profile automation", () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(await store.getOffset("default")).toBe(3);
+  });
+
+  it("acks stale business messages without auto-replying or starting project Q&A", async () => {
+    const sendMessage = vi.fn();
+    const assistantCodex = { answerProjectQuestion: vi.fn() };
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const config = profileAutomationConfig({
+      enabled: true,
+      autoReplyEnabled: true,
+      projectQaEnabled: true,
+      allowedOwnerIds: ["10"],
+      allowedChatIds: ["777"],
+      maxMessageAgeSeconds: 300,
+    });
+    const service = buildAssistant({
+      store,
+      config,
+      sendMessage,
+      assistantCodex,
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 44,
+        chatId: 777,
+        date: Math.floor(Date.now() / 1000) - 600,
+        text: "как устроена авторизация в проекте?",
+      }),
+    );
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
+    expect(await store.getActiveAssistantTurn("business:bc_1:777")).toBeUndefined();
+    expect(await store.getOffset("default")).toBe(45);
   });
 
   it("uses the business connection in the conversation key", async () => {

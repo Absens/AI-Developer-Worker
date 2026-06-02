@@ -318,6 +318,11 @@ export class TelegramAssistantService {
       await this.markProcessedAndAdvance(update.update_id);
       return;
     }
+    if (this.isMessageStale(message)) {
+      this.logStaleMessageSkipped(message);
+      await this.markProcessedAndAdvance(update.update_id);
+      return;
+    }
 
     if (message.source === "business") {
       try {
@@ -1473,6 +1478,15 @@ export class TelegramAssistantService {
           return;
         }
 
+        if (this.isMessageStale(currentQueuedMessage.message)) {
+          this.logStaleMessageSkipped(currentQueuedMessage.message, {
+            queuedMessageId: currentQueuedMessage.id,
+          });
+          await this.store.deleteQueuedMessage(currentQueuedMessage.id);
+          acceptedQueuedMessage = true;
+          return;
+        }
+
         afterConversationLock = await this.handleQueuedMessageUnderConversationLock(
           currentQueuedMessage.message,
           { drainAfterProjectTurn: false },
@@ -1996,6 +2010,45 @@ export class TelegramAssistantService {
     const queued = await this.store.enqueueMessage(this.buildQueuedMessage(message));
     this.incrementMetric("telegram_queued_messages_total", { outcome: "queued" });
     return queued;
+  }
+
+  private isMessageStale(message: TelegramInboundMessage): boolean {
+    const maxAgeSeconds = this.maxMessageAgeSecondsFor(message);
+    if (maxAgeSeconds <= 0) {
+      return false;
+    }
+
+    const receivedAtMs = Date.parse(message.receivedAt);
+    if (!Number.isFinite(receivedAtMs)) {
+      return false;
+    }
+
+    return Date.now() - receivedAtMs > maxAgeSeconds * 1000;
+  }
+
+  private maxMessageAgeSecondsFor(message: TelegramInboundMessage): number {
+    const configuredMaxAgeSeconds = message.source === "business"
+      ? this.config.profileAutomation.maxMessageAgeSeconds
+      : this.config.maxInboundMessageAgeSeconds;
+    return Math.max(0, Math.floor(configuredMaxAgeSeconds));
+  }
+
+  private logStaleMessageSkipped(
+    message: TelegramInboundMessage,
+    extra: { queuedMessageId?: string } = {},
+  ): void {
+    const receivedAtMs = Date.parse(message.receivedAt);
+    const ageSeconds = Number.isFinite(receivedAtMs)
+      ? Math.max(0, Math.floor((Date.now() - receivedAtMs) / 1000))
+      : undefined;
+    this.logger?.info("Telegram stale message skipped.", {
+      updateId: message.updateId,
+      conversationKey: message.conversationKey,
+      source: message.source,
+      maxAgeSeconds: this.maxMessageAgeSecondsFor(message),
+      ...(ageSeconds !== undefined ? { ageSeconds } : {}),
+      ...extra,
+    });
   }
 
   private buildQueuedMessage(message: TelegramInboundMessage): TelegramQueuedMessage {

@@ -197,6 +197,7 @@ describe("config", () => {
         projectQaEnabled: false,
         allowedOwnerIds: [],
         allowedChatIds: [],
+        maxMessageAgeSeconds: 300,
       },
       allowedChatIds: [],
       allowedUserIds: [],
@@ -211,6 +212,7 @@ describe("config", () => {
       codexMaxContextChars: 12000,
       maxQueuedMessagesPerChat: 20,
       conversationRetentionDays: 14,
+      maxInboundMessageAgeSeconds: 300,
       webhook: undefined,
       media: {
         enabled: false,
@@ -251,6 +253,8 @@ describe("config", () => {
       TELEGRAM_PROFILE_AUTOMATION_ENABLED: "true",
       TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS: "101",
       TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS: "-1001,-1002",
+      TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS: "600",
+      TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS: "120",
     });
     expect(config.telegramAssistant).toMatchObject({
       allowedUserIds: ["101", "202"],
@@ -261,7 +265,9 @@ describe("config", () => {
       enabled: true,
       allowedOwnerIds: ["101"],
       allowedChatIds: ["-1001", "-1002"],
+      maxMessageAgeSeconds: 120,
     });
+    expect(config.telegramAssistant?.maxInboundMessageAgeSeconds).toBe(600);
   });
 
   it("parses Telegram assistant bot username for group mention routing", () => {

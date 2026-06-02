@@ -420,6 +420,7 @@ All env values override the same fields in fleet config under
 | `TELEGRAM_CODEX_MAX_CONTEXT_CHARS` | `12000` | Maximum context characters sent to Codex from assistant conversations. Positive integer. |
 | `TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT` | `20` | Maximum queued messages retained per chat. Positive integer. |
 | `TELEGRAM_CONVERSATION_RETENTION_DAYS` | `14` | Conversation retention window. Positive integer. |
+| `TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS` | `300` | Maximum age for inbound Telegram messages before they are acknowledged without automation. Use `0` to disable. |
 | `TELEGRAM_WEBHOOK_PATH` | Not set | Required when `TELEGRAM_ASSISTANT_MODE=webhook`. Webhook config is rejected in polling mode. |
 | `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Not set | Required when `TELEGRAM_ASSISTANT_MODE=webhook`. Telegram sends it in `X-Telegram-Bot-Api-Secret-Token`; keep it separate from bot tokens. |
 | `TELEGRAM_MEDIA_ENABLED` | `false` | Enables assistant media attachment metadata handling. |
@@ -431,6 +432,7 @@ All env values override the same fields in fleet config under
 | `TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED` | `false` | Enables project Q&A in profile automation. Keep owner approval enabled unless production consent is documented. |
 | `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS` | Empty list | Comma-separated owner user IDs allowed for profile automation. |
 | `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS` | Empty list | Comma-separated chat IDs allowed for profile automation. |
+| `TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS` | Inherits `TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS` | Maximum age for business/profile messages before they are saved as processed without auto-replying. Use `0` to disable. |
 
 ## Режим fleet
 

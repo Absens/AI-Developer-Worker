@@ -59,6 +59,7 @@ const baseTelegramAssistantConfig = (): TelegramAssistantConfig => ({
   codexMaxContextChars: 12000,
   maxQueuedMessagesPerChat: 20,
   conversationRetentionDays: 14,
+  maxInboundMessageAgeSeconds: 0,
   media: {
     enabled: false,
     maxBytes: 10485760,
@@ -71,6 +72,7 @@ const baseTelegramAssistantConfig = (): TelegramAssistantConfig => ({
     projectQaEnabled: false,
     allowedOwnerIds: [],
     allowedChatIds: [],
+    maxMessageAgeSeconds: 0,
   },
 });
 
@@ -1207,6 +1209,92 @@ describe("TelegramAssistantService", () => {
       );
       await waitForCondition(async () =>
         (await store.getActiveAssistantTurn("bot_private:1")) === undefined,
+      );
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops stale queued project questions instead of draining them", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
+    try {
+      await writeFile(join(repoDir, "README.md"), "Project overview.");
+      const answerProjectQuestion = vi.fn(async (
+        input: Parameters<FakeAssistantCodexService["answerProjectQuestion"]>[0],
+      ) => {
+        if (input.question === "Первый вопрос?") {
+          return { answer: "Первый ответ." };
+        }
+        return { answer: `Очередь: ${input.question}` };
+      });
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        assistantCodex: { answerProjectQuestion },
+        config: {
+          projectQaEnabled: true,
+          maxInboundMessageAgeSeconds: 300,
+        },
+        repositories: [repositoryFixture({ repoPath: repoDir })],
+      });
+      const staleReceivedAt = new Date(Date.now() - 600_000).toISOString();
+
+      await store.enqueueMessage({
+        id: "queued:old",
+        conversationKey: "bot_private:1",
+        chatId: 1,
+        userId: 10,
+        message: {
+          id: "telegram:old:message:82",
+          updateId: 78,
+          conversationKey: "bot_private:1",
+          source: "bot_private",
+          chatId: 1,
+          userId: 10,
+          messageId: 82,
+          text: "Старый вопрос?",
+          redactedText: "Старый вопрос?",
+          actor: {
+            role: "developer",
+            telegramUserId: 10,
+            displayName: "User",
+          },
+          receivedAt: staleReceivedAt,
+        },
+        status: "queued",
+        createdAt: staleReceivedAt,
+        expiresAt: "2026-06-13T07:50:00.000Z",
+      });
+
+      await service.handleUpdate(messageUpdate("Первый вопрос?", {
+        updateId: 77,
+        messageId: 81,
+        date: Math.floor(Date.now() / 1000),
+      }));
+
+      await waitForCondition(() => answerProjectQuestion.mock.calls.length === 1);
+      await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+        input.text === "Первый ответ.",
+      ));
+      await waitForCondition(async () =>
+        (await store.listQueuedMessages("bot_private:1")).length === 0,
+      );
+      await expect(
+        waitForCondition(() => answerProjectQuestion.mock.calls.length > 1, 200),
+      ).rejects.toThrow("Timed out waiting for condition.");
+      expect(answerProjectQuestion).toHaveBeenCalledTimes(1);
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        chatId: "1",
+        text: "Первый ответ.",
+      }));
+      expect(sendMessage.mock.calls).toEqual(
+        expect.not.arrayContaining([
+          [expect.objectContaining({ text: "Очередь: Старый вопрос?" })],
+        ]),
       );
     } finally {
       await rm(repoDir, { recursive: true, force: true });
