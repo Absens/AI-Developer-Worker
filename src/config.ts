@@ -119,6 +119,7 @@ const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
   enabled: false,
   botToken: undefined,
   botUsername: undefined,
+  codexModel: undefined,
   mode: "polling",
   pollIntervalSeconds: 2,
   confirmWriteActions: true,
@@ -1221,6 +1222,9 @@ const parseTelegramAssistantConfig = (
       normalizeTelegramBotUsername(
         optionalString(rawValue?.botUsername, `${path}.botUsername`),
       ),
+    codexModel:
+      firstEnv(env, "TELEGRAM_CODEX_MODEL") ||
+      optionalString(rawValue?.codexModel, `${path}.codexModel`),
     mode,
     pollIntervalSeconds: parsePositiveIntEnvOrConfig(
       firstEnv(env, "TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS"),

@@ -404,6 +404,7 @@ All env values override the same fields in fleet config under
 | `TELEGRAM_ASSISTANT_BOT_TOKEN` | Not set | Bot token for Telegram Assistant only. Do not confuse it with alert sink `TELEGRAM_BOT_TOKEN`. |
 | `TELEGRAM_ASSISTANT_MODE` | `polling` | Assistant delivery mode: `polling` or `webhook`. |
 | `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Polling interval when mode is `polling`. Positive integer. |
+| `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used only for Telegram project Q&A. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
 | `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before write actions. |
 | `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands in the base assistant. Counts against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
 | `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables task creation drafts. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. |

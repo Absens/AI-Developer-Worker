@@ -170,16 +170,17 @@ const createTelegramAssistantCleanupController = (
 };
 
 export const buildTelegramAssistantCodexRuntimeConfig = <
-  TConfig extends { codexTimeoutMs: number },
+  TConfig extends { codexTimeoutMs: number; codexModel?: string },
 >(
   runtimeConfig: TConfig,
-  telegramConfig: { codexTimeoutSeconds: number },
+  telegramConfig: { codexTimeoutSeconds: number; codexModel?: string },
 ): TConfig => ({
   ...runtimeConfig,
   codexTimeoutMs: Math.min(
     runtimeConfig.codexTimeoutMs,
     telegramConfig.codexTimeoutSeconds * 1000,
   ),
+  ...(telegramConfig.codexModel ? { codexModel: telegramConfig.codexModel } : {}),
 });
 
 const buildTelegramWebhookUrl = (baseUrl: string, path: string): string => {

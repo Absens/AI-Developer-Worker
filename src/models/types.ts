@@ -271,6 +271,7 @@ export interface TelegramAssistantConfig {
   enabled: boolean;
   botToken?: string;
   botUsername?: string;
+  codexModel?: string;
   mode: TelegramAssistantMode;
   pollIntervalSeconds: number;
   confirmWriteActions: boolean;

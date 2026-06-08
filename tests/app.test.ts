@@ -77,6 +77,28 @@ describe("application wiring", () => {
     ).toBe(45 * 1000);
   });
 
+  it("overrides the Codex model only for Telegram assistant runs", () => {
+    const workerRuntimeConfig = {
+      codexTimeoutMs: 30 * 60 * 1000,
+      codexModel: "gpt-5.5",
+    };
+    const telegramConfig = {
+      codexTimeoutSeconds: 120,
+      codexModel: "gpt-5.3-codex-spark",
+    };
+
+    expect(
+      buildTelegramAssistantCodexRuntimeConfig(
+        workerRuntimeConfig,
+        telegramConfig,
+      ),
+    ).toMatchObject({
+      codexTimeoutMs: 120 * 1000,
+      codexModel: "gpt-5.3-codex-spark",
+    });
+    expect(workerRuntimeConfig.codexModel).toBe("gpt-5.5");
+  });
+
   it("builds internal task tracker mode without Yandex direct config", () => {
     const app = buildApplication({
       TASK_TRACKER_PROVIDER: "internal",

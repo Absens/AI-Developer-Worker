@@ -11,8 +11,6 @@ export interface BusinessMessagePolicy {
   shouldAutoReply: boolean;
 }
 
-const BUSINESS_CONNECTION_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 export const canHandleBusinessMessage = (
   config: TelegramAssistantConfig,
   message: TelegramInboundMessage,
@@ -88,15 +86,6 @@ export const canHandleBusinessMessage = (
       reason: "business connection cannot read messages",
     };
   }
-  if (!isFreshBusinessConnection(connection)) {
-    return {
-      allowed: false,
-      canReply: false,
-      shouldAutoReply: false,
-      reason: "business connection stale",
-    };
-  }
-
   const canReply = connection.rights.can_reply === true;
   return {
     allowed: true,
@@ -105,20 +94,3 @@ export const canHandleBusinessMessage = (
   };
 };
 
-const isFreshBusinessConnection = (
-  connection: TelegramBusinessConnectionRecord,
-): boolean => {
-  const latestSeenAt = Math.max(
-    parseTimestamp(connection.lastSeenAt),
-    parseTimestamp(connection.updatedAt),
-  );
-  return (
-    Number.isFinite(latestSeenAt) &&
-    Date.now() - latestSeenAt <= BUSINESS_CONNECTION_REPLY_WINDOW_MS
-  );
-};
-
-const parseTimestamp = (value: string): number => {
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
-};

@@ -2460,7 +2460,7 @@ describe("TelegramAssistantService", () => {
     }
   });
 
-  it("denies business project Q&A when the stored connection is stale", async () => {
+  it("answers fresh business project Q&A when the stored connection update is old", async () => {
     const sendMessage = vi.fn();
     const assistantCodex: FakeAssistantCodexService = {
       answerProjectQuestion: vi.fn(async () => ({ answer: "Internal Q&A answer." })),
@@ -2469,16 +2469,16 @@ describe("TelegramAssistantService", () => {
     const repoDir = await mkdtemp(join(tmpdir(), "telegram-assistant-repo-"));
     try {
       await writeFile(join(repoDir, "README.md"), "Project overview.");
-      const staleConnectionTime = "2000-01-01T00:00:00.000Z";
+      const oldConnectionTime = "2000-01-01T00:00:00.000Z";
       await store.upsertBusinessConnection({
         id: "business-stale",
         userId: 10,
         userChatId: 1000,
-        canReply: true,
+        rights: { can_reply: true, can_read_messages: true },
         isEnabled: true,
-        createdAt: staleConnectionTime,
-        updatedAt: staleConnectionTime,
-        lastSeenAt: staleConnectionTime,
+        createdAt: oldConnectionTime,
+        updatedAt: oldConnectionTime,
+        lastSeenAt: oldConnectionTime,
       });
       const service = buildAssistant({
         store,
@@ -2502,7 +2502,7 @@ describe("TelegramAssistantService", () => {
         update_id: 86,
         business_message: {
           message_id: 90,
-          date: 1,
+          date: Math.floor(Date.now() / 1000),
           business_connection_id: "business-stale",
           chat: { id: 1, type: "private" },
           from: { id: 999, is_bot: false, first_name: "External User" },
@@ -2510,8 +2510,20 @@ describe("TelegramAssistantService", () => {
         },
       });
 
-      expect(assistantCodex.answerProjectQuestion).not.toHaveBeenCalled();
-      expect(sendMessage).not.toHaveBeenCalled();
+      await waitForCondition(() =>
+        vi.mocked(assistantCodex.answerProjectQuestion).mock.calls.length === 1,
+      );
+      await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+        input.text === "Internal Q&A answer.",
+      ));
+      expect(assistantCodex.answerProjectQuestion).toHaveBeenCalledWith(
+        expect.objectContaining({ question: "Какие цели проекта?" }),
+      );
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        businessConnectionId: "business-stale",
+        chatId: "1",
+        text: "Internal Q&A answer.",
+      }));
       expect(await store.getOffset("default")).toBe(87);
     } finally {
       await rm(repoDir, { recursive: true, force: true });

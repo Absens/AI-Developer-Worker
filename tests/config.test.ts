@@ -185,6 +185,7 @@ describe("config", () => {
       enabled: false,
       botToken: undefined,
       botUsername: undefined,
+      codexModel: undefined,
       mode: "polling",
       pollIntervalSeconds: 2,
       confirmWriteActions: true,
@@ -280,6 +281,22 @@ describe("config", () => {
     });
 
     expect(config.telegramAssistant?.botUsername).toBe("assistant_bot");
+  });
+
+  it("parses Telegram-specific Codex model separately from the worker model", () => {
+    const config = loadFleetConfig({
+      ...baseFleetEnv(),
+      CODEX_MODEL: "gpt-5.5",
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+      TELEGRAM_CODEX_MODEL: "gpt-5.3-codex-spark",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+    });
+
+    expect(config.codex.model).toBe("gpt-5.5");
+    expect(config.telegramAssistant?.codexModel).toBe(
+      "gpt-5.3-codex-spark",
+    );
   });
 
   it("parses Telegram assistant settings from config file values as well as env", () => {
