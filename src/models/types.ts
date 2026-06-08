@@ -318,6 +318,31 @@ export interface TaskAnalysisDecision {
   reasoning: string;
 }
 
+export type TaskIntakeReviewStatus =
+  | "ready"
+  | "needs_clarification"
+  | "needs_decomposition"
+  | "reject_as_invalid";
+
+export interface TaskIntakeReviewDecision {
+  status: TaskIntakeReviewStatus;
+  readinessScore: number;
+  summary: string;
+  rewrittenTitle?: string;
+  rewrittenDescription?: string;
+  acceptanceCriteria: string[];
+  clarificationQuestions: string[];
+  decompositionHints: string[];
+  riskFactors: string[];
+  reasoning: string;
+}
+
+export interface TaskIntakeReviewConfig {
+  enabled: boolean;
+  tag: string;
+  maxQuestions: number;
+}
+
 export interface PromptProfile {
   id: string;
   taskType: TaskType;
@@ -458,6 +483,7 @@ export type TrackerOrgHeader = "X-Org-ID" | "X-Cloud-Org-ID";
 
 export interface AppConfig {
   taskTracker?: TaskTrackerConfig;
+  taskIntakeReview?: TaskIntakeReviewConfig;
   trackerToken: string;
   trackerOrgHeader: TrackerOrgHeader;
   trackerOrgId: string;
@@ -613,6 +639,7 @@ export interface RepositoryProfile {
 
 export interface GlobalWorkerConfig {
   taskTracker?: TaskTrackerConfig;
+  taskIntakeReview?: TaskIntakeReviewConfig;
   workerId: string;
   pollIntervalMinutes: number;
   pollIntervalMs: number;
