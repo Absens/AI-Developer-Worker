@@ -6,9 +6,11 @@ import {
   findLatestHumanTaskCommandAfter,
   findLatestAnalysisDecision,
   findLatestDecompositionMetadata,
+  findLatestTaskIntakeReview,
   findLatestReviewMetadata,
   formatAnalysisComment,
   formatDecompositionComment,
+  formatTaskIntakeReviewComment,
   formatLeaseComment,
   formatMergeRequestComment,
   formatQuestionComment,
@@ -18,7 +20,12 @@ import {
   parseHumanTaskCommand,
   parseServiceComment,
 } from "../src/integrations/tracker/commentProtocol.js";
-import type { ClarificationQuestion, CommentWithMetadata, TaskLease } from "../src/models/types.js";
+import type {
+  ClarificationQuestion,
+  CommentWithMetadata,
+  TaskIntakeReviewDecision,
+  TaskLease,
+} from "../src/models/types.js";
 
 const clarification: ClarificationQuestion = {
   summary: "Need a decision about the API variant.",
@@ -318,6 +325,293 @@ describe("comment protocol", () => {
       parentIssueKey: "DEV-1",
       createdIssueKeys: ["DEV-2", "DEV-3"],
       dryRun: false,
+    });
+  });
+
+  it("formats, parses, and finds latest AI TASK REVIEW comments", () => {
+    const needsClarificationDecision: TaskIntakeReviewDecision = {
+      status: "needs_clarification",
+      readinessScore: 35,
+      summary: "The task needs more detail before implementation can start.",
+      rewrittenTitle: "Clarify profile form save behavior",
+      rewrittenDescription: "The author needs to identify the affected form and expected behavior.",
+      acceptanceCriteria: [],
+      clarificationQuestions: [
+        "Which form is affected?",
+        "What behavior is expected?",
+      ],
+      decompositionHints: [],
+      riskFactors: ["The screen is unknown."],
+      reasoning: "The issue lacks a target screen and expected outcome.",
+    };
+    const readyDecision: TaskIntakeReviewDecision = {
+      status: "ready",
+      readinessScore: 82,
+      summary: "The task is specific enough to implement.",
+      acceptanceCriteria: ["Saving the profile form persists the new name."],
+      clarificationQuestions: [],
+      decompositionHints: [],
+      riskFactors: [],
+      reasoning: "The requested persistence behavior is clear.",
+    };
+    const first = formatTaskIntakeReviewComment(
+      "worker-1",
+      "DEV-1",
+      needsClarificationDecision,
+      "fingerprint-1",
+    );
+    const second = formatTaskIntakeReviewComment(
+      "worker-1",
+      "DEV-1",
+      readyDecision,
+      "fingerprint-2",
+    );
+
+    expect(parseServiceComment(first)).toMatchObject({
+      kind: "AI TASK REVIEW",
+      worker: "worker-1",
+      issueKey: "DEV-1",
+      reviewStatus: "needs_clarification",
+      readinessScore: 35,
+      sourceFingerprint: "fingerprint-1",
+      clarificationQuestions: [
+        "Which form is affected?",
+        "What behavior is expected?",
+      ],
+    });
+
+    const comments: CommentWithMetadata[] = [
+      {
+        id: "1",
+        text: first,
+        createdAt: "2026-04-26T10:00:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(first),
+      },
+      {
+        id: "2",
+        text: second,
+        createdAt: "2026-04-26T10:05:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(second),
+      },
+    ];
+
+    expect(findLatestTaskIntakeReview(comments, "DEV-1")).toMatchObject({
+      reviewStatus: "ready",
+      sourceFingerprint: "fingerprint-2",
+    });
+  });
+
+  it("parses AI TASK REVIEW metadata when suggested description contains fenced JSON", () => {
+    const text = formatTaskIntakeReviewComment(
+      "worker-1",
+      "DEV-1",
+      {
+        status: "needs_clarification",
+        readinessScore: 45,
+        summary: "The task includes an example payload but still needs clarification.",
+        rewrittenDescription: [
+          "Use this payload shape as the reference:",
+          "",
+          "```json",
+          "{",
+          "  \"example\": true",
+          "}",
+          "```",
+        ].join("\n"),
+        acceptanceCriteria: [],
+        clarificationQuestions: ["Which endpoint accepts this payload?"],
+        decompositionHints: [],
+        riskFactors: [],
+        reasoning: "The human-readable description may contain code fences.",
+      },
+      "fingerprint-json-description",
+    );
+
+    expect(parseServiceComment(text)).toMatchObject({
+      kind: "AI TASK REVIEW",
+      reviewStatus: "needs_clarification",
+      sourceFingerprint: "fingerprint-json-description",
+    });
+  });
+
+  it("rejects AI TASK REVIEW when terminal metadata fence is truncated", () => {
+    const text = `AI TASK REVIEW:
+
+Task intake review: needs_clarification
+
+Readable body contains an example object:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "issueKey": "DEV-1",
+  "status": "ready",
+  "readinessScore": 95,
+  "sourceFingerprint": "body-fingerprint",
+  "summary": "This body example is not service metadata.",
+  "acceptanceCriteria": [],
+  "clarificationQuestions": [],
+  "decompositionHints": [],
+  "riskFactors": [],
+  "reasoning": "Do not parse readable body JSON as metadata."
+}
+\`\`\`
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "issueKey": "DEV-1",
+  "status": "needs_clarification",`;
+
+    expect(parseServiceComment(text)).toBeUndefined();
+  });
+
+  it("rejects invalid AI TASK REVIEW metadata", () => {
+    const invalidStatus = `AI TASK REVIEW:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "issueKey": "DEV-1",
+  "status": "blocked",
+  "readinessScore": 50,
+  "sourceFingerprint": "fingerprint-1"
+}
+\`\`\``;
+    const invalidReadinessScore = `AI TASK REVIEW:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "issueKey": "DEV-1",
+  "status": "ready",
+  "readinessScore": 101,
+  "sourceFingerprint": "fingerprint-1"
+}
+\`\`\``;
+    const missingSourceFingerprint = `AI TASK REVIEW:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "issueKey": "DEV-1",
+  "status": "ready",
+  "readinessScore": 50
+}
+\`\`\``;
+    const malformedJson = `AI TASK REVIEW:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+\`\`\``;
+
+    expect(parseServiceComment(invalidStatus)).toBeUndefined();
+    expect(parseServiceComment(invalidReadinessScore)).toBeUndefined();
+    expect(parseServiceComment(missingSourceFingerprint)).toBeUndefined();
+    expect(parseServiceComment(malformedJson)).toBeUndefined();
+  });
+
+  it("defaults missing AI TASK REVIEW optional arrays to empty arrays", () => {
+    const text = `AI TASK REVIEW:
+
+\`\`\`json
+{
+  "worker": "worker-1",
+  "issueKey": "DEV-1",
+  "status": "ready",
+  "readinessScore": 80,
+  "sourceFingerprint": "fingerprint-minimal",
+  "summary": "Ready to implement.",
+  "reasoning": "Required metadata is present."
+}
+\`\`\``;
+
+    expect(parseServiceComment(text)).toMatchObject({
+      kind: "AI TASK REVIEW",
+      acceptanceCriteria: [],
+      clarificationQuestions: [],
+      decompositionHints: [],
+      riskFactors: [],
+    });
+  });
+
+  it("finds latest AI TASK REVIEW for the requested issue only", () => {
+    const first = formatTaskIntakeReviewComment(
+      "worker-1",
+      "DEV-1",
+      {
+        status: "needs_clarification",
+        readinessScore: 35,
+        summary: "DEV-1 needs more context.",
+        acceptanceCriteria: [],
+        clarificationQuestions: ["What should change?"],
+        decompositionHints: [],
+        riskFactors: [],
+        reasoning: "The behavior is underspecified.",
+      },
+      "fingerprint-dev-1-old",
+    );
+    const second = formatTaskIntakeReviewComment(
+      "worker-1",
+      "DEV-1",
+      {
+        status: "ready",
+        readinessScore: 82,
+        summary: "DEV-1 is ready.",
+        acceptanceCriteria: ["The save action persists the new name."],
+        clarificationQuestions: [],
+        decompositionHints: [],
+        riskFactors: [],
+        reasoning: "The expected behavior is now clear.",
+      },
+      "fingerprint-dev-1-new",
+    );
+    const otherIssue = formatTaskIntakeReviewComment(
+      "worker-1",
+      "DEV-2",
+      {
+        status: "reject_as_invalid",
+        readinessScore: 10,
+        summary: "DEV-2 is not actionable.",
+        acceptanceCriteria: [],
+        clarificationQuestions: [],
+        decompositionHints: [],
+        riskFactors: ["No task request is present."],
+        reasoning: "The issue is invalid.",
+      },
+      "fingerprint-dev-2-newer",
+    );
+    const comments: CommentWithMetadata[] = [
+      {
+        id: "1",
+        text: first,
+        createdAt: "2026-04-26T10:00:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(first),
+      },
+      {
+        id: "2",
+        text: second,
+        createdAt: "2026-04-26T10:05:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(second),
+      },
+      {
+        id: "3",
+        text: otherIssue,
+        createdAt: "2026-04-26T10:10:00.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(otherIssue),
+      },
+    ];
+
+    expect(findLatestTaskIntakeReview(comments, "DEV-1")).toMatchObject({
+      issueKey: "DEV-1",
+      reviewStatus: "ready",
+      sourceFingerprint: "fingerprint-dev-1-new",
     });
   });
 

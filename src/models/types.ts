@@ -727,6 +727,7 @@ export type ServiceCommentKind =
   | "AI REVIEW"
   | "AI LEASE"
   | "AI ANALYSIS"
+  | "AI TASK REVIEW"
   | "AI DECOMPOSITION"
   | "AI DIGEST";
 export type ClarificationMode = "clarification";
@@ -781,6 +782,14 @@ export interface ParsedServiceComment {
   taskType?: TaskType;
   recommendedMode?: TaskExecutionMode;
   promptProfileId?: string;
+  reviewStatus?: TaskIntakeReviewStatus;
+  readinessScore?: number;
+  rewrittenTitle?: string;
+  rewrittenDescription?: string;
+  acceptanceCriteria?: string[];
+  clarificationQuestions?: string[];
+  decompositionHints?: string[];
+  sourceFingerprint?: string;
   expectedFiles?: string[];
   expectedSubsystems?: string[];
   riskFactors?: string[];
