@@ -18,6 +18,7 @@ import type {
   SubtaskDraft,
   TaskAnalysisDecision,
   TaskAnalysisResult,
+  TaskIntakeReviewDecision,
   TaskLease,
   TrackerClient,
   TrackerImageContextConfig,
@@ -32,12 +33,14 @@ import {
   findLatestQuestionComment,
   findLatestReviewMetadata,
   findLatestStatusComment,
+  findLatestTaskIntakeReview,
   formatAnalysisComment,
   formatDecompositionComment,
   formatReviewMetadataComment,
   formatMergeRequestComment,
   formatQuestionCommentWithThreadId,
   formatStatusComment,
+  formatTaskIntakeReviewComment,
 } from "../integrations/tracker/commentProtocol.js";
 import {
   buildAnalysisPrompt,
@@ -46,6 +49,7 @@ import {
   buildImplementationPrompt,
   buildReviewFixPrompt,
   buildResumePrompt,
+  buildTaskIntakeReviewPrompt,
 } from "./promptBuilder.js";
 import { buildCommitMessage } from "./commitMessage.js";
 import { buildMergeRequestDescription } from "./mergeRequestDescription.js";
@@ -71,6 +75,11 @@ import {
   createReadyAnalysisDecision,
   parseTaskAnalysisDecision,
 } from "./analysisDecision.js";
+import {
+  createTaskIntakeFingerprint,
+  limitTaskIntakeReviewQuestions,
+  parseTaskIntakeReviewDecision,
+} from "./taskIntakeReview.js";
 import {
   formatSubtaskDescription,
   parseDecompositionPlan,
@@ -307,6 +316,13 @@ export class WorkerOrchestrator {
       }
     }
 
+    if (this.config.taskIntakeReview?.enabled) {
+      const intakeOutcome = await this.runTaskIntakeReviewOnce();
+      if (intakeOutcome !== "idle") {
+        return intakeOutcome;
+      }
+    }
+
     const nextTask = await this.pickNextTask();
     if (!nextTask) {
       this.logger.info("No suitable tasks found.");
@@ -491,6 +507,255 @@ export class WorkerOrchestrator {
       message: "Task and repository leases acquired.",
     });
     return [taskLease, repositoryLease];
+  }
+
+  private async pickTaskIntakeReviewCandidate(): Promise<{
+    issue: TrackerIssue;
+    comments: CommentWithMetadata[];
+    fingerprint: string;
+  } | null> {
+    const reviewConfig = this.config.taskIntakeReview;
+    if (!reviewConfig?.enabled) {
+      return null;
+    }
+
+    const issues = await this.tracker.findCandidateIssues({
+      queue: this.config.trackerDefaultQueue,
+      tag: reviewConfig.tag,
+    });
+    const openIssues = issues.filter((issue) => issue.logicalStatus === "open");
+
+    for (const issue of openIssues) {
+      const comments = await this.tracker.getComments(issue.key);
+      const fingerprint = createTaskIntakeFingerprint(issue, comments);
+      const latestReview = findLatestTaskIntakeReview(comments, issue.key);
+      if (latestReview?.sourceFingerprint === fingerprint) {
+        this.logger.info("Skipping task intake review because source is unchanged.", {
+          issueKey: issue.key,
+          sourceFingerprint: fingerprint,
+        });
+        continue;
+      }
+
+      return { issue, comments, fingerprint };
+    }
+
+    return null;
+  }
+
+  private async acquireTaskIntakeReviewLease(
+    issue: TrackerIssue,
+  ): Promise<TaskLease[] | null> {
+    if (!this.lockBackend || !this.coordination) {
+      return [];
+    }
+
+    const repositoryName = this.repositoryName();
+    const taskLease = await this.lockBackend.acquireTaskLease({
+      issueKey: issue.key,
+      workerId: this.config.workerId,
+      repositoryName,
+      repoPath: this.config.repoPath,
+      ttlMs: this.coordination.lockTtlMs,
+    });
+    if (!taskLease) {
+      this.logger.info("Task intake review candidate is already leased by another worker.", {
+        issueKey: issue.key,
+      });
+      return null;
+    }
+
+    return [taskLease];
+  }
+
+  private async runTaskIntakeReviewOnce(): Promise<CycleOutcome> {
+    const selected = await this.pickTaskIntakeReviewCandidate();
+    if (!selected) {
+      return "idle";
+    }
+
+    const startedAt = Date.now();
+    const finish = (outcome: CycleOutcome, message?: string): CycleOutcome => {
+      if (outcome === "processed") {
+        this.telemetry.recordTaskFinished(
+          this.taskContext(selected.issue),
+          "processed",
+          Date.now() - startedAt,
+          message ?? "Task intake review processed.",
+        );
+      } else if (outcome === "waiting") {
+        this.telemetry.recordTaskFinished(
+          this.taskContext(selected.issue),
+          "waiting",
+          Date.now() - startedAt,
+          message ?? "Task intake review is waiting.",
+        );
+      }
+
+      this.telemetry.setWorkerState({
+        workerId: this.config.workerId,
+        state: outcome === "waiting" ? "waiting" : "idle",
+        repositoryName: this.repositoryName(),
+        ...(outcome === "waiting"
+          ? { issueKey: selected.issue.key, stage: "waiting" }
+          : {}),
+      });
+      return outcome;
+    };
+
+    const leases = await this.acquireTaskIntakeReviewLease(selected.issue);
+    if (!leases) {
+      return finish("waiting", "Task intake review is waiting for a lease.");
+    }
+
+    const run = async (): Promise<CycleOutcome> => {
+      const promptIssue = await this.tracker.getIssue(selected.issue.key);
+      const promptComments = await this.tracker.getComments(promptIssue.key);
+      const promptFingerprint = createTaskIntakeFingerprint(
+        promptIssue,
+        promptComments,
+      );
+      const latestReview = findLatestTaskIntakeReview(promptComments, promptIssue.key);
+      if (latestReview?.sourceFingerprint === promptFingerprint) {
+        this.logger.info("Skipping task intake review because source is unchanged.", {
+          issueKey: promptIssue.key,
+          sourceFingerprint: promptFingerprint,
+        });
+        return "idle";
+      }
+
+      const imageContext = await prepareTrackerImageContext({
+        issueKey: promptIssue.key,
+        tracker: this.tracker,
+        config: this.config.trackerImageContext ?? DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG,
+        logger: this.logger,
+      });
+
+      try {
+        this.markStage(promptIssue, "task_intake_review");
+        const memoryContext = await this.buildMemoryContext({
+          issue: promptIssue,
+          taskType: "unknown",
+          promptProfileId: "general",
+          expectedFiles: [],
+        });
+        const maxQuestions = this.config.taskIntakeReview?.maxQuestions ?? 5;
+        const execution = await this.runCodexStage(
+          promptIssue,
+          "task_intake_review",
+          () =>
+            this.codex.runInitial(
+              buildTaskIntakeReviewPrompt(
+                promptIssue,
+                promptComments,
+                memoryContext,
+                imageContext,
+                maxQuestions,
+              ),
+              undefined,
+              { imagePaths: imageContext.imagePaths, sandbox: "read-only" },
+            ),
+        );
+
+        let decision = parseTaskIntakeReviewDecision(execution.finalMessage?.trim());
+        if (!decision) {
+          this.logger.warn("Task intake review returned invalid structured output.", {
+            issueKey: promptIssue.key,
+            exitCode: execution.process.exitCode,
+          });
+          decision = {
+            status: "needs_clarification",
+            readinessScore: 0,
+            summary: "Task intake review did not return valid structured output.",
+            acceptanceCriteria: [],
+            clarificationQuestions: [
+              "Please clarify the task scope and expected outcome before implementation.",
+            ],
+            decompositionHints: [],
+            riskFactors: ["Invalid AI_TASK_REVIEW output."],
+            reasoning: "Codex returned invalid task intake review output.",
+          };
+        }
+
+        const limitedDecision: TaskIntakeReviewDecision = limitTaskIntakeReviewQuestions(
+          decision,
+          maxQuestions,
+        );
+        const currentIssue = await this.tracker.getIssue(promptIssue.key);
+        const currentComments = await this.tracker.getComments(currentIssue.key);
+        const reviewConfig = this.config.taskIntakeReview;
+        if (
+          currentIssue.logicalStatus !== "open" ||
+          currentIssue.queue !== this.config.trackerDefaultQueue ||
+          !reviewConfig?.enabled ||
+          !currentIssue.tags?.includes(reviewConfig.tag)
+        ) {
+          this.logger.info("Skipping task intake review because task is no longer eligible.", {
+            issueKey: currentIssue.key,
+            logicalStatus: currentIssue.logicalStatus,
+            queue: currentIssue.queue,
+          });
+          return "idle";
+        }
+        const currentFingerprint = createTaskIntakeFingerprint(
+          currentIssue,
+          currentComments,
+        );
+        const currentReview = findLatestTaskIntakeReview(
+          currentComments,
+          currentIssue.key,
+        );
+        if (currentReview?.sourceFingerprint === currentFingerprint) {
+          this.logger.info("Skipping task intake review because source is unchanged.", {
+            issueKey: currentIssue.key,
+            sourceFingerprint: currentFingerprint,
+          });
+          return "idle";
+        }
+        if (currentFingerprint !== promptFingerprint) {
+          this.logger.info("Skipping stale task intake review because source changed.", {
+            issueKey: currentIssue.key,
+            promptFingerprint,
+            currentFingerprint,
+          });
+          return "idle";
+        }
+
+        await this.tracker.addComment(
+          currentIssue.key,
+          formatTaskIntakeReviewComment(
+            this.config.workerId,
+            currentIssue.key,
+            limitedDecision,
+            currentFingerprint,
+          ),
+        );
+        return "processed";
+      } finally {
+        await imageContext.cleanup();
+      }
+    };
+
+    try {
+      if (this.lockBackend && leases.length > 0) {
+        const outcome = await withLeaseHeartbeat(
+          this.lockBackend,
+          leases,
+          this.coordination?.lockHeartbeatMs ?? 60 * 1000,
+          run,
+        );
+        return finish(outcome);
+      }
+
+      return finish(await run());
+    } catch (error) {
+      this.telemetry.setWorkerState({
+        workerId: this.config.workerId,
+        state: "idle",
+        repositoryName: this.repositoryName(),
+      });
+      throw error;
+    }
   }
 
   private async loadTargetIssue(issueKey: string): Promise<TrackerIssue> {
@@ -1616,7 +1881,13 @@ export class WorkerOrchestrator {
 
   private async runCodexStage(
     issue: TrackerIssue,
-    stage: "analysis" | "implementation" | "decomposition" | "review_fix" | "self_review",
+    stage:
+      | "analysis"
+      | "implementation"
+      | "decomposition"
+      | "review_fix"
+      | "self_review"
+      | "task_intake_review",
     run: () => Promise<CodexExecution>,
   ): Promise<CodexExecution> {
     this.telemetry.recordEvent({

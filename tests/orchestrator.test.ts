@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { WorkerOrchestrator } from "../src/domain/orchestrator.js";
 import {
+  formatTaskIntakeReviewComment,
   formatMergeRequestComment,
   formatQuestionCommentWithThreadId,
   formatStatusComment,
   parseServiceComment,
 } from "../src/integrations/tracker/commentProtocol.js";
+import { createTaskIntakeFingerprint } from "../src/domain/taskIntakeReview.js";
 import type {
   AppConfig,
   ClarificationQuestion,
@@ -22,9 +24,11 @@ import type {
   CommentWithMetadata,
   GitLabService,
   GitService,
+  LockBackend,
   LogicalStatus,
   MergeRequestDiscussion,
   MergeRequestInfo,
+  TaskLease,
   TrackerAttachment,
   TrackerClient,
   TrackerIssue,
@@ -99,6 +103,11 @@ const createConfig = (repoPath: string, overrides: Partial<AppConfig> = {}): App
 class FakeTrackerClient implements TrackerClient {
   readonly transitions: Array<{ issueKey: string; target: LogicalStatus }> = [];
   readonly addedComments: Array<{ issueKey: string; text: string }> = [];
+  readonly candidateInputs: Array<{
+    queue?: string;
+    tag?: string;
+    issueKey?: string;
+  } | undefined> = [];
   candidateIssueLookups = 0;
   ownedIssueLookups = 0;
   getIssueCalls: string[] = [];
@@ -115,9 +124,25 @@ class FakeTrackerClient implements TrackerClient {
     return;
   }
 
-  async findCandidateIssues(): Promise<TrackerIssue[]> {
+  async findCandidateIssues(input?: {
+    queue?: string;
+    tag?: string;
+    issueKey?: string;
+  }): Promise<TrackerIssue[]> {
+    this.candidateInputs.push(input);
     this.candidateIssueLookups += 1;
-    return this.issues;
+    return this.issues.filter((issue) => {
+      if (input?.queue && issue.queue !== input.queue) {
+        return false;
+      }
+      if (input?.tag && !issue.tags?.includes(input.tag)) {
+        return false;
+      }
+      if (!input?.tag && issue.tags?.includes("ai_task_analysis")) {
+        return false;
+      }
+      return true;
+    });
   }
 
   async findOwnedIssues(statuses: LogicalStatus[]): Promise<TrackerIssue[]> {
@@ -318,13 +343,16 @@ class FakeGitLabService implements GitLabService {
 
 class FakeObservability implements ObservabilityTelemetry {
   readonly events: Array<Parameters<ObservabilityTelemetry["recordEvent"]>[0]> = [];
+  readonly workerStates: Array<Parameters<ObservabilityTelemetry["setWorkerState"]>[0]> = [];
   readonly taskFinished: Array<{
     context: Parameters<ObservabilityTelemetry["recordTaskFinished"]>[0];
     outcome: Parameters<ObservabilityTelemetry["recordTaskFinished"]>[1];
     message?: string;
   }> = [];
 
-  setWorkerState(_input: Parameters<ObservabilityTelemetry["setWorkerState"]>[0]): void {}
+  setWorkerState(input: Parameters<ObservabilityTelemetry["setWorkerState"]>[0]): void {
+    this.workerStates.push(input);
+  }
 
   heartbeat(_workerId: string): void {}
 
@@ -376,8 +404,71 @@ class FakeObservability implements ObservabilityTelemetry {
   ): void {}
 }
 
+class FakeLockBackend implements LockBackend {
+  readonly taskLeaseCalls: Array<Parameters<LockBackend["acquireTaskLease"]>[0]> = [];
+  readonly repositoryLeaseCalls: Array<
+    Parameters<LockBackend["acquireRepositoryLease"]>[0]
+  > = [];
+  readonly releaseCalls: TaskLease[] = [];
+
+  constructor(
+    private readonly onAcquireTaskLease?: (
+      input: Parameters<LockBackend["acquireTaskLease"]>[0],
+    ) => void,
+  ) {}
+
+  async acquireTaskLease(
+    input: Parameters<LockBackend["acquireTaskLease"]>[0],
+  ): Promise<TaskLease | null> {
+    this.taskLeaseCalls.push(input);
+    this.onAcquireTaskLease?.(input);
+    return this.buildLease("task", input);
+  }
+
+  async acquireRepositoryLease(
+    input: Parameters<LockBackend["acquireRepositoryLease"]>[0],
+  ): Promise<TaskLease | null> {
+    this.repositoryLeaseCalls.push(input);
+    return this.buildLease("repository", input);
+  }
+
+  async renewTaskLease(lease: TaskLease): Promise<TaskLease> {
+    return lease;
+  }
+
+  async releaseTaskLease(lease: TaskLease): Promise<void> {
+    this.releaseCalls.push(lease);
+  }
+
+  async getActiveLease(): Promise<TaskLease | null> {
+    return null;
+  }
+
+  private buildLease(
+    kind: TaskLease["kind"],
+    input: Parameters<LockBackend["acquireTaskLease"]>[0],
+  ): TaskLease {
+    return {
+      kind,
+      leaseKey: `${kind}:${input.issueKey}`,
+      issueKey: input.issueKey,
+      workerId: input.workerId,
+      repositoryName: input.repositoryName,
+      repoPath: input.repoPath,
+      acquiredAt: "2026-03-10T10:00:00.000Z",
+      heartbeatAt: "2026-03-10T10:00:00.000Z",
+      expiresAt: "2026-03-10T10:01:00.000Z",
+      token: `${kind}-lease-token-${this.taskLeaseCalls.length}`,
+    };
+  }
+}
+
 class FakeCodexRunner implements CodexRunner {
-  readonly initialCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
+  readonly initialCalls: Array<{
+    prompt: string;
+    imagePaths: string[];
+    sandbox?: CodexRunOptions["sandbox"];
+  }> = [];
   readonly fixCalls: Array<{ prompt: string; imagePaths: string[] }> = [];
   readonly resumeCalls: Array<{ threadId: string; prompt: string; imagePaths: string[] }> = [];
   readonly reviewCalls: Array<{ prompt: string; baseBranch: string; title?: string }> = [];
@@ -398,7 +489,11 @@ class FakeCodexRunner implements CodexRunner {
     _observer?: CodexRunObserver,
     options?: CodexRunOptions,
   ): Promise<CodexExecution> {
-    this.initialCalls.push({ prompt, imagePaths: options?.imagePaths ?? [] });
+    this.initialCalls.push({
+      prompt,
+      imagePaths: options?.imagePaths ?? [],
+      ...(options?.sandbox ? { sandbox: options.sandbox } : {}),
+    });
     const next = this.initialQueue.shift();
     if (!next) {
       return Promise.resolve({ process: { stdout: "", stderr: "", exitCode: 0 } });
@@ -463,6 +558,534 @@ describe("WorkerOrchestrator", () => {
         rmSync(path, { recursive: true, force: true });
       }
     }
+  });
+
+  it("runs intake review for ai_task_analysis tasks without starting implementation", async () => {
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "wrong-queue",
+          key: "OPS-INTAKE",
+          title: "Wrong queue task",
+          description: "Should not be reviewed by the DEV worker",
+          queue: "OPS",
+          tags: ["ai_task_analysis"],
+          createdAt: "2026-03-10T10:00:00.000Z",
+          logicalStatus: "open",
+        },
+        {
+          id: "1",
+          key: "DEV-INTAKE",
+          title: "Сделать нормально",
+          description: "Плохо работает форма",
+          queue: "DEV",
+          tags: ["ai_task_analysis"],
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-INTAKE": [], "OPS-INTAKE": [] },
+    );
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner([
+      () => ({
+        process: { stdout: "", stderr: "", exitCode: 0 },
+        finalMessage:
+          'AI_TASK_REVIEW: {"status":"needs_clarification","readinessScore":30,"summary":"The task needs more detail before implementation.","rewrittenTitle":"Clarify broken form behavior","rewrittenDescription":"Identify the affected form, expected behavior, and reproduction steps.","acceptanceCriteria":[],"clarificationQuestions":["Which form is affected?","What should happen instead?","How can it be reproduced?"],"decompositionHints":[],"riskFactors":["The affected form is unknown."],"reasoning":"The issue lacks a specific form and expected outcome."}',
+        threadId: "thread-intake-review",
+      }),
+    ]);
+    const telemetry = new FakeObservability();
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      git,
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+      undefined,
+      undefined,
+      undefined,
+      telemetry,
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.candidateInputs[0]).toMatchObject({
+      queue: "DEV",
+      tag: "ai_task_analysis",
+    });
+    expect(tracker.transitions).toEqual([]);
+    expect(git.currentBranch).toBe("main");
+    expect(codex.resumeCalls).toEqual([]);
+    expect(codex.initialCalls[0]?.sandbox).toBe("read-only");
+    const reviewComment = tracker.addedComments.find((entry) =>
+      entry.text.startsWith("AI TASK REVIEW:"),
+    );
+    expect(reviewComment?.issueKey).toBe("DEV-INTAKE");
+    expect(parseServiceComment(reviewComment?.text ?? "")).toMatchObject({
+      clarificationQuestions: [
+        "Which form is affected?",
+        "What should happen instead?",
+      ],
+    });
+    expect(telemetry.taskFinished).toMatchObject([
+      {
+        context: {
+          issueKey: "DEV-INTAKE",
+          repositoryName: "default",
+          workerId: "worker-1",
+        },
+        outcome: "processed",
+      },
+    ]);
+    expect(telemetry.workerStates.at(-1)).toMatchObject({
+      repositoryName: "default",
+      state: "idle",
+      workerId: "worker-1",
+    });
+  });
+
+  it("intake review writes safe fallback text for malformed Codex output", async () => {
+    const rawFinalMessage = `RAW_MODEL_OUTPUT_${"x".repeat(120)}_SECRET_PAYLOAD`;
+    const rawStderr = `RAW_STDERR_${"y".repeat(120)}_STACKTRACE`;
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-INTAKE-MALFORMED",
+          title: "Broken task",
+          description: "Needs review",
+          queue: "DEV",
+          tags: ["ai_task_analysis"],
+          createdAt: "2026-03-10T10:03:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      { "DEV-INTAKE-MALFORMED": [] },
+    );
+    const codex = new FakeCodexRunner([
+      () => ({
+        process: { stdout: "", stderr: rawStderr, exitCode: 0 },
+        finalMessage: rawFinalMessage,
+        threadId: "thread-intake-malformed",
+      }),
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    const reviewComment = tracker.addedComments.find((entry) =>
+      entry.text.startsWith("AI TASK REVIEW:"),
+    );
+    expect(reviewComment?.text).not.toContain(rawFinalMessage);
+    expect(reviewComment?.text).not.toContain(rawStderr);
+    const parsed = parseServiceComment(reviewComment?.text ?? "");
+    expect(parsed).toMatchObject({
+      kind: "AI TASK REVIEW",
+      reviewStatus: "needs_clarification",
+      readinessScore: 0,
+      clarificationQuestions: [
+        "Please clarify the task scope and expected outcome before implementation.",
+      ],
+      riskFactors: ["Invalid AI_TASK_REVIEW output."],
+      reasoning: "Codex returned invalid task intake review output.",
+    });
+    expect(JSON.stringify(parsed?.riskFactors ?? [])).not.toContain(rawStderr);
+    expect(parsed?.reasoning).not.toContain(rawFinalMessage);
+  });
+
+  it("resumes owned tasks before scanning intake review candidates", async () => {
+    const statusComment = formatStatusComment(
+      "worker-1",
+      "in_progress",
+      "Started processing task.",
+    );
+    const tracker = new FakeTrackerClient(
+      [
+        {
+          id: "1",
+          key: "DEV-OWNED",
+          title: "Owned task",
+          description: "Analyze this first",
+          queue: "DEV",
+          tags: ["ai_dev"],
+          createdAt: "2026-03-10T10:01:00.000Z",
+          logicalStatus: "in_progress",
+        },
+        {
+          id: "2",
+          key: "DEV-INTAKE",
+          title: "Intake task",
+          description: "Needs review",
+          queue: "DEV",
+          tags: ["ai_task_analysis"],
+          createdAt: "2026-03-10T10:02:00.000Z",
+          logicalStatus: "open",
+        },
+      ],
+      {
+        "DEV-OWNED": [
+          {
+            id: "1",
+            text: statusComment,
+            createdAt: "2026-03-10T10:01:00.000Z",
+            isSystem: false,
+            metadata: parseServiceComment(statusComment),
+          },
+        ],
+        "DEV-INTAKE": [],
+      },
+    );
+    const codex = new FakeCodexRunner([
+      () => ({
+        process: { stdout: "", stderr: "", exitCode: 0 },
+        finalMessage: "READY_FOR_IMPLEMENTATION",
+        threadId: "thread-owned-analysis",
+      }),
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        taskMode: "analyze_only",
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("processed");
+    expect(tracker.candidateInputs).toEqual([]);
+    expect(codex.initialCalls).toHaveLength(1);
+    expect(codex.initialCalls[0]?.prompt).toContain("AI_ANALYSIS:");
+    expect(
+      tracker.addedComments.some((entry) => entry.text.startsWith("AI TASK REVIEW:")),
+    ).toBe(false);
+  });
+
+  it("skips intake review when the latest review matches the current fingerprint", async () => {
+    const issue: TrackerIssue = {
+      id: "1",
+      key: "DEV-INTAKE-SKIP",
+      title: "Clarified enough",
+      description: "Already reviewed",
+      queue: "DEV",
+      tags: ["ai_task_analysis"],
+      createdAt: "2026-03-10T10:01:00.000Z",
+      logicalStatus: "open",
+    };
+    const comments: CommentWithMetadata[] = [];
+    const fingerprint = createTaskIntakeFingerprint(issue, comments);
+    const reviewText = formatTaskIntakeReviewComment(
+      "worker-1",
+      issue.key,
+      {
+        status: "needs_clarification",
+        readinessScore: 30,
+        summary: "The task still needs clarification.",
+        acceptanceCriteria: [],
+        clarificationQuestions: ["Which form is affected?"],
+        decompositionHints: [],
+        riskFactors: ["The affected form is unknown."],
+        reasoning: "The source content is unchanged since the last review.",
+      },
+      fingerprint,
+    );
+    comments.push({
+      id: "1",
+      text: reviewText,
+      createdAt: "2026-03-10T10:02:00.000Z",
+      isSystem: false,
+      metadata: parseServiceComment(reviewText),
+    });
+    const tracker = new FakeTrackerClient([issue], { [issue.key]: comments });
+    const codex = new FakeCodexRunner([]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(outcome).toBe("idle");
+    expect(codex.initialCalls).toEqual([]);
+    expect(tracker.addedComments).toEqual([]);
+  });
+
+  it("skips intake review when another worker reviews after selection before lease acquisition", async () => {
+    const issue: TrackerIssue = {
+      id: "1",
+      key: "DEV-INTAKE-RACE",
+      title: "Race task",
+      description: "Needs intake review",
+      queue: "DEV",
+      tags: ["ai_task_analysis"],
+      createdAt: "2026-03-10T10:04:00.000Z",
+      logicalStatus: "open",
+    };
+    const tracker = new FakeTrackerClient([issue], { [issue.key]: [] });
+    const lockBackend = new FakeLockBackend(() => {
+      const latestComments = tracker.commentsByIssue[issue.key] ?? [];
+      const fingerprint = createTaskIntakeFingerprint(issue, latestComments);
+      const reviewText = formatTaskIntakeReviewComment(
+        "worker-2",
+        issue.key,
+        {
+          status: "needs_clarification",
+          readinessScore: 20,
+          summary: "Another worker reviewed this task first.",
+          acceptanceCriteria: [],
+          clarificationQuestions: ["Which workflow should be changed?"],
+          decompositionHints: [],
+          riskFactors: ["The target workflow is unclear."],
+          reasoning: "The task is not ready for implementation.",
+        },
+        fingerprint,
+      );
+      latestComments.push({
+        id: "race-review",
+        text: reviewText,
+        createdAt: "2026-03-10T10:04:30.000Z",
+        isSystem: false,
+        metadata: parseServiceComment(reviewText),
+      });
+      tracker.commentsByIssue[issue.key] = latestComments;
+    });
+    const codex = new FakeCodexRunner([
+      () => ({
+        process: { stdout: "", stderr: "", exitCode: 0 },
+        finalMessage:
+          'AI_TASK_REVIEW: {"status":"needs_clarification","readinessScore":30,"summary":"Duplicate review.","acceptanceCriteria":[],"clarificationQuestions":["Duplicate question?"],"decompositionHints":[],"riskFactors":[],"reasoning":"This should not run."}',
+        threadId: "thread-intake-race",
+      }),
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+      lockBackend,
+      {
+        lockBackend: "tracker",
+        lockTtlMs: 60_000,
+        lockHeartbeatMs: 60_000,
+      },
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(lockBackend.taskLeaseCalls).toHaveLength(1);
+    expect(lockBackend.repositoryLeaseCalls).toHaveLength(0);
+    expect(codex.initialCalls).toEqual([]);
+    expect(tracker.addedComments).toEqual([]);
+    expect(outcome).toBe("idle");
+  });
+
+  it("skips posting intake review when task issue fields change while Codex runs", async () => {
+    const issue: TrackerIssue = {
+      id: "1",
+      key: "DEV-INTAKE-SOURCE-CHANGED",
+      title: "Changing task",
+      description: "Needs intake review",
+      queue: "DEV",
+      tags: ["ai_task_analysis"],
+      createdAt: "2026-03-10T10:05:00.000Z",
+      logicalStatus: "open",
+    };
+    const tracker = new FakeTrackerClient([issue], { [issue.key]: [] });
+    const codex = new FakeCodexRunner([
+      () => {
+        tracker.issues[0] = {
+          ...issue,
+          description: "The affected workflow is the billing form.",
+        };
+        return {
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_TASK_REVIEW: {"status":"needs_clarification","readinessScore":30,"summary":"Review based on stale input.","acceptanceCriteria":[],"clarificationQuestions":["Which form is affected?"],"decompositionHints":[],"riskFactors":[],"reasoning":"The task looked unclear before the author update."}',
+          threadId: "thread-source-changed",
+        };
+      },
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(codex.initialCalls).toHaveLength(1);
+    expect(tracker.getIssueCalls).toContain("DEV-INTAKE-SOURCE-CHANGED");
+    expect(tracker.addedComments).toEqual([]);
+    expect(outcome).toBe("idle");
+  });
+
+  it("skips posting intake review when task status changes while Codex runs", async () => {
+    const issue: TrackerIssue = {
+      id: "1",
+      key: "DEV-INTAKE-STATUS-CHANGED",
+      title: "Status changing task",
+      description: "Needs intake review",
+      queue: "DEV",
+      tags: ["ai_task_analysis"],
+      createdAt: "2026-03-10T10:06:00.000Z",
+      logicalStatus: "open",
+    };
+    const tracker = new FakeTrackerClient([issue], { [issue.key]: [] });
+    const codex = new FakeCodexRunner([
+      () => {
+        tracker.issues[0] = {
+          ...issue,
+          logicalStatus: "in_progress",
+        };
+        return {
+          process: { stdout: "", stderr: "", exitCode: 0 },
+          finalMessage:
+            'AI_TASK_REVIEW: {"status":"needs_clarification","readinessScore":30,"summary":"Review based on stale status.","acceptanceCriteria":[],"clarificationQuestions":["Which form is affected?"],"decompositionHints":[],"riskFactors":[],"reasoning":"The task was open when the prompt was built."}',
+          threadId: "thread-status-changed",
+        };
+      },
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+    );
+
+    const outcome = await orchestrator.runOnce();
+
+    expect(codex.initialCalls).toHaveLength(1);
+    expect(tracker.addedComments).toEqual([]);
+    expect(outcome).toBe("idle");
+  });
+
+  it("resets worker state when intake review Codex throws after marking the stage", async () => {
+    const issue: TrackerIssue = {
+      id: "1",
+      key: "DEV-INTAKE-CODEX-ERROR",
+      title: "Throwing intake task",
+      description: "Codex fails during intake review",
+      queue: "DEV",
+      tags: ["ai_task_analysis"],
+      createdAt: "2026-03-10T10:07:00.000Z",
+      logicalStatus: "open",
+    };
+    const tracker = new FakeTrackerClient([issue], { [issue.key]: [] });
+    const telemetry = new FakeObservability();
+    const codex = new FakeCodexRunner([
+      () => {
+        throw new Error("codex exploded");
+      },
+    ]);
+    const orchestrator = new WorkerOrchestrator(
+      createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
+      }),
+      tracker,
+      new FakeGitService(),
+      new FakeGitLabService(),
+      codex,
+      new Logger(),
+      undefined,
+      undefined,
+      undefined,
+      telemetry,
+    );
+
+    await expect(orchestrator.runOnce()).rejects.toThrow("codex exploded");
+
+    expect(codex.initialCalls).toHaveLength(1);
+    expect(telemetry.workerStates).toContainEqual(
+      expect.objectContaining({
+        issueKey: "DEV-INTAKE-CODEX-ERROR",
+        stage: "task_intake_review",
+        state: "processing",
+      }),
+    );
+    expect(telemetry.workerStates.at(-1)).toMatchObject({
+      repositoryName: "default",
+      state: "idle",
+      workerId: "worker-1",
+    });
+    expect(tracker.addedComments).toEqual([]);
   });
 
   it("analyzes first, then resumes the same thread for implementation and creates a merge request", async () => {
@@ -1679,6 +2302,7 @@ Reply with /resume A or /resume B.
           key: "DEV-TARGET",
           title: "Target task",
           description: "Process only this issue",
+          queue: "DEV",
           createdAt: "2026-03-10T10:01:00.000Z",
           logicalStatus: "open",
         },
@@ -1687,11 +2311,22 @@ Reply with /resume A or /resume B.
           key: "DEV-QUEUE",
           title: "Queue task",
           description: "Should not be scanned",
+          queue: "DEV",
           createdAt: "2026-03-10T10:02:00.000Z",
           logicalStatus: "open",
         },
+        {
+          id: "3",
+          key: "DEV-INTAKE",
+          title: "Intake task",
+          description: "Should not be reviewed while target mode is active",
+          queue: "DEV",
+          tags: ["ai_task_analysis"],
+          createdAt: "2026-03-10T10:03:00.000Z",
+          logicalStatus: "open",
+        },
       ],
-      { "DEV-TARGET": [] },
+      { "DEV-TARGET": [], "DEV-INTAKE": [] },
     );
     const git = new FakeGitService();
     const codex = new FakeCodexRunner(
@@ -1716,7 +2351,13 @@ Reply with /resume A or /resume B.
     );
     const orchestrator = new WorkerOrchestrator(
       createConfig(process.cwd(), {
+        trackerDefaultQueue: "DEV",
         targetIssueKey: "DEV-TARGET",
+        taskIntakeReview: {
+          enabled: true,
+          tag: "ai_task_analysis",
+          maxQuestions: 2,
+        },
         runOnce: true,
       }),
       tracker,
@@ -1731,6 +2372,9 @@ Reply with /resume A or /resume B.
     expect(outcome).toBe("processed");
     expect(tracker.getIssueCalls).toEqual(["DEV-TARGET"]);
     expect(tracker.candidateIssueLookups).toBe(0);
+    expect(tracker.addedComments.some((entry) =>
+      entry.text.startsWith("AI TASK REVIEW:"),
+    )).toBe(false);
     expect(tracker.ownedIssueLookups).toBe(0);
     expect(git.commits).toEqual(["feat: implement DEV-TARGET"]);
   });

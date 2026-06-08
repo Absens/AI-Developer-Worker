@@ -17,6 +17,8 @@ export type TaskEventType =
   | "task_picked"
   | "task_lease_acquired"
   | "task_lease_blocked"
+  | "task_intake_review_started"
+  | "task_intake_review_completed"
   | "analysis_started"
   | "analysis_completed"
   | "clarification_requested"
