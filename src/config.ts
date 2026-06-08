@@ -23,6 +23,7 @@ import type {
   RepositoryProjectManagerConfig,
   RepositoryRuntimeConfig,
   TaskIntakeMode,
+  TaskIntakeReviewConfig,
   TaskTrackerConfig,
   TelegramAssistantConfig,
   TelegramAssistantGroupMode,
@@ -115,6 +116,11 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
   maxCount: 5,
   maxBytes: 10 * 1024 * 1024,
 };
+const DEFAULT_TASK_INTAKE_REVIEW_CONFIG: TaskIntakeReviewConfig = {
+  enabled: false,
+  tag: "ai_task_analysis",
+  maxQuestions: 5,
+};
 const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
   enabled: false,
   botToken: undefined,
@@ -201,6 +207,9 @@ const assertPositiveIntAtMost = (
   key: string,
   maxValue: number,
 ): number => {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ConfigurationError(`${key} must be a positive integer.`);
+  }
   if (value > maxValue) {
     throw new ConfigurationError(`${key} must be at most ${maxValue}.`);
   }
@@ -212,6 +221,19 @@ const parsePositiveIntAtMost = (
   key: string,
   maxValue: number,
 ): number => assertPositiveIntAtMost(parsePositiveInt(input, key), key, maxValue);
+
+const parseStrictPositiveIntAtMost = (
+  input: string,
+  key: string,
+  maxValue: number,
+): number => {
+  const trimmed = input.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new ConfigurationError(`${key} must be a positive integer.`);
+  }
+
+  return assertPositiveIntAtMost(Number(trimmed), key, maxValue);
+};
 
 const parseOptionalPercent = (
   input: string | undefined,
@@ -1020,6 +1042,46 @@ const parseTrackerImageContextConfig = (
           DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG.maxBytes,
         ),
     ...(tempDir ? { tempDir } : {}),
+  };
+};
+
+const parseTaskIntakeReviewConfig = (
+  env: NodeJS.ProcessEnv,
+  rawValue?: unknown,
+): TaskIntakeReviewConfig => {
+  const configured = optionalRecord(rawValue, "taskIntakeReview") ?? {};
+
+  return {
+    enabled: env.TASK_INTAKE_REVIEW_ENABLED?.trim()
+      ? parseBooleanFlag(
+          env.TASK_INTAKE_REVIEW_ENABLED,
+          "TASK_INTAKE_REVIEW_ENABLED",
+          DEFAULT_TASK_INTAKE_REVIEW_CONFIG.enabled,
+        )
+      : optionalBoolean(
+          configured.enabled,
+          "taskIntakeReview.enabled",
+          DEFAULT_TASK_INTAKE_REVIEW_CONFIG.enabled,
+        ),
+    tag:
+      env.TASK_INTAKE_REVIEW_TAG?.trim() ||
+      optionalString(configured.tag, "taskIntakeReview.tag") ||
+      DEFAULT_TASK_INTAKE_REVIEW_CONFIG.tag,
+    maxQuestions: env.TASK_INTAKE_REVIEW_MAX_QUESTIONS?.trim()
+      ? parseStrictPositiveIntAtMost(
+          env.TASK_INTAKE_REVIEW_MAX_QUESTIONS,
+          "TASK_INTAKE_REVIEW_MAX_QUESTIONS",
+          10,
+        )
+      : assertPositiveIntAtMost(
+          optionalNumber(
+            configured.maxQuestions,
+            "taskIntakeReview.maxQuestions",
+            DEFAULT_TASK_INTAKE_REVIEW_CONFIG.maxQuestions,
+          ),
+          "taskIntakeReview.maxQuestions",
+          10,
+        ),
   };
 };
 
@@ -2108,10 +2170,12 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
   const projectManager = parseProjectManagerConfig(env, undefined, taskTracker);
   assertProjectManagerProviderCompatibility(taskTracker, projectManager);
   const trackerImageContext = parseTrackerImageContextConfig(env);
+  const taskIntakeReview = parseTaskIntakeReviewConfig(env);
   const telegramAssistant = parseTelegramAssistantConfig(env);
 
   return {
     taskTracker,
+    taskIntakeReview,
     trackerToken: usesYandex
       ? requireEnv(env, "TRACKER_TOKEN")
       : env.TRACKER_TOKEN?.trim() || "",
@@ -2444,6 +2508,7 @@ const buildSingleRepositoryFleetConfig = (
 
   return {
     taskTracker: config.taskTracker,
+    taskIntakeReview: config.taskIntakeReview,
     workerId: config.workerId,
     pollIntervalMinutes: config.pollIntervalMinutes,
     pollIntervalMs: config.pollIntervalMs,
@@ -2720,6 +2785,7 @@ const loadFleetConfigFromFile = (
     root.trackerImageContext,
     "trackerImageContext",
   );
+  const taskIntakeReview = parseTaskIntakeReviewConfig(env, root.taskIntakeReview);
   if (!Array.isArray(root.repositories) || root.repositories.length === 0) {
     throw new ConfigurationError("repositories must be a non-empty array.");
   }
@@ -2757,6 +2823,7 @@ const loadFleetConfigFromFile = (
 
   return {
     taskTracker,
+    taskIntakeReview,
     workerId,
     pollIntervalMinutes,
     pollIntervalMs: pollIntervalMinutes * 60 * 1000,
@@ -3040,6 +3107,7 @@ export const buildRepositoryRuntimeConfig = (
   repository: RepositoryProfile,
 ): RepositoryRuntimeConfig => ({
   ...(globalConfig.taskTracker ? { taskTracker: globalConfig.taskTracker } : {}),
+  taskIntakeReview: globalConfig.taskIntakeReview,
   repositoryName: repository.name,
   trackerToken: globalConfig.tracker.token,
   trackerOrgHeader: globalConfig.tracker.orgHeader,
