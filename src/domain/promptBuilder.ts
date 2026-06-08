@@ -280,6 +280,56 @@ Required JSON schema:
   "reasoning": "Localized UI fix with clear acceptance criteria."
 }`;
 
+export const buildTaskIntakeReviewPrompt = (
+  issue: TrackerIssue,
+  comments: CommentWithMetadata[],
+  memoryContext?: PromptContextBundle,
+  imageContext?: PromptImageContext,
+  maxQuestions = 5,
+): string => `Task: ${issue.key}
+Title: ${issue.title}
+
+Description:
+${issue.description || "No description."}
+
+Additional context:
+${formatHumanComments(comments)}
+${formatRepositoryContext(memoryContext)}${formatImageContext(imageContext)}
+
+Mode: task-intake-review
+
+Requirements:
+1. Review the task specification quality only.
+2. Do not modify files, do not create files, do not run commands, and do not perform implementation work.
+3. Decide whether the task is ready for development, needs clarification, needs decomposition, or is invalid for an AI development worker.
+4. Do not invent missing business requirements. If information is missing, ask for it explicitly.
+5. When suggesting a rewritten title or description, preserve only facts present in the task, human comments, attachments, or repository context.
+6. readinessScore must be an integer from 0 to 100.
+7. Use [] when no acceptance criteria are directly supported by the task, human comments, attachments, or repository context.
+8. Ask at most ${maxQuestions} clarification questions.
+9. Reply with exactly one line that starts with AI_TASK_REVIEW: followed by one compact JSON object.
+10. Do not add markdown fences, explanations, or any extra text around that one-line response.
+
+Required JSON schema:
+{
+  "status": "needs_clarification",
+  "readinessScore": 35,
+  "summary": "The task lacks observable acceptance criteria.",
+  "rewrittenTitle": "Clarify form submission failure",
+  "rewrittenDescription": "Only include known facts; state that missing facts must be answered by the author.",
+  "acceptanceCriteria": [],
+  "clarificationQuestions": ["Which screen or workflow is affected?"],
+  "decompositionHints": [],
+  "riskFactors": ["The affected subsystem is unclear."],
+  "reasoning": "The task describes a symptom but not the expected behavior."
+}
+
+Allowed status values:
+- ready
+- needs_clarification
+- needs_decomposition
+- reject_as_invalid`;
+
 export const buildImplementationPrompt = (
   issue: TrackerIssue,
   comments: CommentWithMetadata[],

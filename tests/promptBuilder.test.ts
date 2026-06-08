@@ -3,12 +3,17 @@ import { describe, expect, it } from "vitest";
 import {
   buildAnalysisPrompt,
   buildImplementationPrompt,
+  buildTaskIntakeReviewPrompt,
 } from "../src/domain/promptBuilder.js";
 import { getPromptProfile } from "../src/domain/promptProfiles.js";
 import type {
   PromptContextBundle,
 } from "../src/domain/promptContext.js";
-import type { TaskAnalysisDecision, TrackerIssue } from "../src/models/types.js";
+import type {
+  CommentWithMetadata,
+  TaskAnalysisDecision,
+  TrackerIssue,
+} from "../src/models/types.js";
 
 const issue: TrackerIssue = {
   id: "1",
@@ -126,5 +131,57 @@ describe("prompt builder", () => {
     expect(prompt).toContain("Tracker image attachments passed to Codex:");
     expect(prompt).toContain("screen.png");
     expect(prompt).toContain("Use these attached images as task context");
+  });
+
+  it("builds a task intake review prompt with the AI_TASK_REVIEW contract", () => {
+    const prompt = buildTaskIntakeReviewPrompt(
+      {
+        id: "1",
+        key: "DEV-10",
+        title: "Сделать красиво",
+        description: "Нужно улучшить экран",
+        queue: "DEV",
+        tags: ["ai_task_analysis"],
+        logicalStatus: "open",
+      },
+      [],
+      undefined,
+      undefined,
+      4,
+    );
+
+    expect(prompt).toContain("Mode: task-intake-review");
+    expect(prompt).toContain("AI_TASK_REVIEW:");
+    expect(prompt).toContain("Do not modify files");
+    expect(prompt).toContain("Do not invent missing business requirements");
+    expect(prompt).toContain("readinessScore must be an integer from 0 to 100");
+    expect(prompt).toContain("Use [] when no acceptance criteria are directly supported");
+    expect(prompt).toContain('"clarificationQuestions"');
+    expect(prompt).toContain("at most 4 clarification questions");
+  });
+
+  it("includes task intake review context from comments, memory, and images", () => {
+    const comments: CommentWithMetadata[] = [
+      {
+        id: "comment-1",
+        text: "Human comment: the checkout screen is affected.",
+        createdAt: "2026-06-01T10:00:00.000Z",
+        author: "alice",
+        isSystem: false,
+      },
+    ];
+
+    const prompt = buildTaskIntakeReviewPrompt(
+      issue,
+      comments,
+      memoryContext,
+      imageContext,
+    );
+
+    expect(prompt).toContain("[alice] Human comment: the checkout screen is affected.");
+    expect(prompt).toContain("Repository context:");
+    expect(prompt).toContain("[arch-ui] UI architecture");
+    expect(prompt).toContain("Tracker image attachments passed to Codex:");
+    expect(prompt).toContain("screen.png");
   });
 });
