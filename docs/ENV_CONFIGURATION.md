@@ -73,6 +73,9 @@ Copy-Item .env.example .env
 | `CODEX_LOG_FULL_EVENTS` | Нет | `false` | Если `true`, воркер логирует каждое сырое JSONL-событие, которое выводит `codex exec --json`. Включайте это для отладки на уровне контейнера, если сводок по умолчанию недостаточно. |
 | `CODEX_QUESTION_MARKER` | Нет | `AI_QUESTION:` | Оставьте значение по умолчанию, если намеренно не меняли протокол комментариев воркера. |
 | `TASK_MODE` | Нет | `auto` | Режим маршрутизации Phase 4. `auto` следует структурированному `AI_ANALYSIS`; `implement` принудительно запускает реализацию; `decompose` запускает декомпозицию; `analyze_only` записывает метаданные анализа и останавливается; `human` переводит задачи в ручное удержание. |
+| `TASK_INTAKE_REVIEW_ENABLED` | Нет | `false` | Включает предварительную проверку постановки задач. Когда включено, воркер перед выбором новой задачи на реализацию ищет открытые задачи с `TASK_INTAKE_REVIEW_TAG` и пишет structured comment `AI TASK REVIEW:` без запуска реализации. |
+| `TASK_INTAKE_REVIEW_TAG` | Нет | `ai_task_analysis` | Тег Yandex Tracker задач, которые нужно проверить на полноту постановки до добавления в обычный `ai_dev` flow. |
+| `TASK_INTAKE_REVIEW_MAX_QUESTIONS` | Нет | `5` | Максимальное количество вопросов к автору задачи в одном `AI TASK REVIEW:` комментарии. Допустимые значения: 1-10. |
 | `CONFIDENCE_IMPLEMENT_THRESHOLD` | Нет | `70` | Минимальная confidence из анализа для автоматической реализации в `TASK_MODE=auto`. |
 | `CONFIDENCE_HUMAN_THRESHOLD` | Нет | `40` | Если confidence анализа ниже этого значения, задача направляется в ручное удержание. |
 | `CONFIDENCE_PRIORITY_WEIGHT` | Нет | `2` | Множитель, используемый fleet priority scoring, когда у задачи уже есть комментарий `AI ANALYSIS`. |
@@ -255,6 +258,10 @@ WORKER_RUN_ONCE=true
 ```
 
 Когда `TARGET_ISSUE_KEY` задан, воркер не вызывает обычный queue/tag candidate search. Он загружает целевую задачу напрямую, проверяет structured `AI STATUS` locks, возобновляет только подходящие `/resume` clarification flows и обрабатывает unresolved GitLab review discussions, если целевая задача уже находится в `review`.
+
+## Предварительная проверка постановки
+
+Этот режим предназначен для intake очереди. Он не заменяет `TASK_MODE=analyze_only`: `analyze_only` применяется уже внутри dev-flow, а `TASK_INTAKE_REVIEW_ENABLED` проверяет задачи до начала работы. Повторный комментарий не создается, если учитываемые входные данные задачи не изменились после последнего `AI TASK REVIEW:`: заголовок, описание, очередь, теги, приоритет, дедлайн, компоненты и человеческие комментарии.
 
 ## Phase 4: маршрутизация задач
 

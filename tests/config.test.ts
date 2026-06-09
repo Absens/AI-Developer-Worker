@@ -113,6 +113,11 @@ describe("config", () => {
     expect(config.trackerBlockedByLinkType).toBe("is blocked by");
     expect(config.dependencyEnforcement).toBe(true);
     expect(config.dependencyUnknownStatusPolicy).toBe("block");
+    expect(config.taskIntakeReview).toEqual({
+      enabled: false,
+      tag: "ai_task_analysis",
+      maxQuestions: 5,
+    });
     expect(config.codexHome).toBe(join(homedir(), ".codex"));
     expect(config.codexCliCommand).toBe("codex");
     expect(config.codexCliArgs).toEqual([]);
@@ -1772,6 +1777,177 @@ describe("config", () => {
     expect(config.preflightRunTargetCommands).toBe(false);
     expect(config.targetIssueKey).toBe("DEV-2");
     expect(config.runOnce).toBe(true);
+  });
+
+  it("parses task intake review settings", () => {
+    const env = {
+      TRACKER_TOKEN: "tracker-token",
+      TRACKER_ORG_ID: "org-id",
+      TRACKER_STATUS_MAP_FILE: createStatusMapFile(),
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      GITLAB_PROJECT_ID: "123",
+      MAX_FIX_ATTEMPTS: "2",
+      WORKER_ID: "worker-1",
+      TASK_INTAKE_REVIEW_ENABLED: "true",
+      TASK_INTAKE_REVIEW_TAG: "needs_ai_review",
+      TASK_INTAKE_REVIEW_MAX_QUESTIONS: "3",
+    };
+
+    const config = loadConfig(env);
+    const fleetConfig = loadFleetConfig(env);
+    const runtimeConfig = buildRepositoryRuntimeConfig(
+      fleetConfig,
+      fleetConfig.repositories[0]!,
+    );
+
+    expect(config.taskIntakeReview).toEqual({
+      enabled: true,
+      tag: "needs_ai_review",
+      maxQuestions: 3,
+    });
+    expect(fleetConfig.taskIntakeReview).toEqual(config.taskIntakeReview);
+    expect(runtimeConfig.taskIntakeReview).toEqual(config.taskIntakeReview);
+  });
+
+  it.each(["3.5", "3abc"])(
+    "rejects non-integer task intake review max questions env value %s",
+    (maxQuestions) => {
+      expect(() =>
+        loadConfig({
+          TRACKER_TOKEN: "tracker-token",
+          TRACKER_ORG_ID: "org-id",
+          TRACKER_STATUS_MAP_FILE: createStatusMapFile(),
+          GITLAB_URL: "https://gitlab.example.com/",
+          GITLAB_TOKEN: "gitlab-token",
+          GITLAB_PROJECT_ID: "123",
+          MAX_FIX_ATTEMPTS: "2",
+          WORKER_ID: "worker-1",
+          TASK_INTAKE_REVIEW_MAX_QUESTIONS: maxQuestions,
+        }),
+      ).toThrow(/TASK_INTAKE_REVIEW_MAX_QUESTIONS/);
+    },
+  );
+
+  it("parses task intake review settings from fleet config file values", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        taskTracker: { provider: "internal", storage: "memory" },
+        taskIntakeReview: {
+          enabled: true,
+          tag: "file_review",
+          maxQuestions: 4,
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+            tags: ["ai_dev"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      NODE_ENV: "test",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    });
+    const runtimeConfig = buildRepositoryRuntimeConfig(
+      config,
+      config.repositories[0]!,
+    );
+
+    expect(config.taskIntakeReview).toEqual({
+      enabled: true,
+      tag: "file_review",
+      maxQuestions: 4,
+    });
+    expect(runtimeConfig.taskIntakeReview).toEqual(config.taskIntakeReview);
+  });
+
+  it("lets task intake review env values override fleet config file values", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        taskTracker: { provider: "internal", storage: "memory" },
+        taskIntakeReview: {
+          enabled: false,
+          tag: "file_review",
+          maxQuestions: 4,
+        },
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const config = loadFleetConfig({
+      WORKER_CONFIG_FILE: configFile,
+      NODE_ENV: "test",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+      TASK_INTAKE_REVIEW_ENABLED: "true",
+      TASK_INTAKE_REVIEW_TAG: "env_review",
+      TASK_INTAKE_REVIEW_MAX_QUESTIONS: "2",
+    });
+
+    expect(config.taskIntakeReview).toEqual({
+      enabled: true,
+      tag: "env_review",
+      maxQuestions: 2,
+    });
+  });
+
+  it("rejects non-object task intake review fleet config file values", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-worker-fleet-config-"));
+    cleanupPaths.push(directory);
+    const configFile = join(directory, "worker.config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        worker: { id: "worker-1" },
+        taskTracker: { provider: "internal", storage: "memory" },
+        taskIntakeReview: true,
+        repositories: [
+          {
+            name: "repo",
+            repoPath: "/workspace/repo",
+            gitlabProjectId: "42",
+            queues: ["DEV"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(() =>
+      loadFleetConfig({
+        WORKER_CONFIG_FILE: configFile,
+        NODE_ENV: "test",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      }),
+    ).toThrow(/taskIntakeReview/);
   });
 
   it("accepts explicit MAX_REVIEW_FIX_ATTEMPTS", () => {

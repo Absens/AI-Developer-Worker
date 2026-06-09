@@ -7,6 +7,7 @@ import type {
   ParsedServiceComment,
   ReviewMetadata,
   TaskAnalysisDecision,
+  TaskIntakeReviewDecision,
   TaskLease,
   TrackerComment,
   WaitingReason,
@@ -18,6 +19,7 @@ const MR_PREFIX = "AI MR:";
 const REVIEW_PREFIX = "AI REVIEW:";
 const LEASE_PREFIX = "AI LEASE:";
 const ANALYSIS_PREFIX = "AI ANALYSIS:";
+const TASK_REVIEW_PREFIX = "AI TASK REVIEW:";
 const DECOMPOSITION_PREFIX = "AI DECOMPOSITION:";
 const DIGEST_PREFIX = "AI DIGEST:";
 const JSON_BLOCK_START = "```json";
@@ -49,8 +51,22 @@ const escapeJsonForCodeFence = (payload: Record<string, unknown>): string =>
   JSON.stringify(payload, null, 2);
 
 const extractJsonPayload = (body: string): Record<string, unknown> | undefined => {
-  const fencedMatch = body.match(/```json\s*([\s\S]*?)\s*```/i);
-  const candidate = fencedMatch?.[1]?.trim() ?? body.trim();
+  const fencedOpenMatches = Array.from(
+    body.matchAll(/^[ \t]*```json[ \t]*(?:\r?\n|$)/gim),
+  );
+  const lastFenceStart = fencedOpenMatches.at(-1)?.index;
+  const fencedMatch =
+    lastFenceStart === undefined
+      ? undefined
+      : body
+          .slice(lastFenceStart)
+          .match(/^[ \t]*```json[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```[ \t]*(?:\r?\n[ \t]*)*$/i);
+  const candidate =
+    lastFenceStart === undefined ? body.trim() : fencedMatch?.[1]?.trim();
+  if (!candidate) {
+    return undefined;
+  }
+
   if (!candidate.startsWith("{")) {
     return undefined;
   }
@@ -176,6 +192,21 @@ const parseRecommendedMode = (
     value === "ask_clarification" ||
     value === "decompose" ||
     value === "human"
+  ) {
+    return value;
+  }
+
+  return undefined;
+};
+
+const parseTaskIntakeReviewStatus = (
+  value: unknown,
+): ParsedServiceComment["reviewStatus"] | undefined => {
+  if (
+    value === "ready" ||
+    value === "needs_clarification" ||
+    value === "needs_decomposition" ||
+    value === "reject_as_invalid"
   ) {
     return value;
   }
@@ -402,6 +433,41 @@ const parseStructuredServiceComment = (
       };
     }
 
+    if (kind === "AI TASK REVIEW") {
+      const issueKey = normalizeString(jsonPayload.issueKey);
+      const reviewStatus = parseTaskIntakeReviewStatus(jsonPayload.status);
+      const readinessScore = normalizeNumber(jsonPayload.readinessScore);
+      const sourceFingerprint = normalizeString(jsonPayload.sourceFingerprint);
+      if (
+        !issueKey ||
+        !reviewStatus ||
+        readinessScore === undefined ||
+        readinessScore < 0 ||
+        readinessScore > 100 ||
+        !sourceFingerprint
+      ) {
+        return undefined;
+      }
+
+      return {
+        kind,
+        worker,
+        issueKey,
+        reviewStatus,
+        readinessScore,
+        sourceFingerprint,
+        summary: normalizeString(jsonPayload.summary),
+        rewrittenTitle: normalizeString(jsonPayload.rewrittenTitle),
+        rewrittenDescription: normalizeString(jsonPayload.rewrittenDescription),
+        acceptanceCriteria: normalizeStringArray(jsonPayload.acceptanceCriteria) ?? [],
+        clarificationQuestions:
+          normalizeStringArray(jsonPayload.clarificationQuestions) ?? [],
+        decompositionHints: normalizeStringArray(jsonPayload.decompositionHints) ?? [],
+        riskFactors: normalizeStringArray(jsonPayload.riskFactors) ?? [],
+        reasoning: normalizeString(jsonPayload.reasoning),
+      };
+    }
+
     if (kind === "AI DECOMPOSITION") {
       const parentIssueKey = normalizeString(jsonPayload.parentIssueKey);
       const createdIssueKeys = normalizeStringArray(jsonPayload.createdIssueKeys) ?? [];
@@ -610,6 +676,79 @@ export const formatAnalysisComment = (
     ].join("\n"),
   );
 
+const appendBulletSection = (
+  lines: string[],
+  title: string,
+  items: string[],
+): void => {
+  if (items.length === 0) {
+    return;
+  }
+
+  lines.push("", `${title}:`);
+  for (const item of items) {
+    lines.push(`- ${item}`);
+  }
+};
+
+const formatTaskIntakeReviewBody = (
+  decision: TaskIntakeReviewDecision,
+): string => {
+  const lines = [
+    `Task intake review: ${decision.status}`,
+    `Readiness score: ${decision.readinessScore}`,
+    "",
+    decision.summary,
+  ];
+
+  if (decision.rewrittenTitle) {
+    lines.push("", "Suggested title:", decision.rewrittenTitle);
+  }
+
+  if (decision.rewrittenDescription) {
+    lines.push("", "Suggested description:", decision.rewrittenDescription);
+  }
+
+  appendBulletSection(lines, "Acceptance criteria", decision.acceptanceCriteria);
+  appendBulletSection(
+    lines,
+    "Questions for the task author",
+    decision.clarificationQuestions,
+  );
+  appendBulletSection(lines, "Decomposition hints", decision.decompositionHints);
+  appendBulletSection(lines, "Risk factors", decision.riskFactors);
+
+  return lines.join("\n");
+};
+
+export const formatTaskIntakeReviewComment = (
+  worker: string,
+  issueKey: string,
+  decision: TaskIntakeReviewDecision,
+  sourceFingerprint: string,
+): string =>
+  buildStructuredComment(
+    TASK_REVIEW_PREFIX,
+    {
+      worker,
+      issueKey,
+      status: decision.status,
+      readinessScore: decision.readinessScore,
+      sourceFingerprint,
+      summary: decision.summary,
+      ...(decision.rewrittenTitle ? { rewrittenTitle: decision.rewrittenTitle } : {}),
+      ...(decision.rewrittenDescription
+        ? { rewrittenDescription: decision.rewrittenDescription }
+        : {}),
+      acceptanceCriteria: decision.acceptanceCriteria,
+      clarificationQuestions: decision.clarificationQuestions,
+      decompositionHints: decision.decompositionHints,
+      riskFactors: decision.riskFactors,
+      reasoning: decision.reasoning,
+    },
+    formatTaskIntakeReviewBody(decision),
+  );
+
 export const formatDecompositionComment = (
   worker: string,
   input: {
@@ -704,6 +843,7 @@ export const parseServiceComment = (
   parseStructuredServiceComment(REVIEW_PREFIX, "AI REVIEW", text) ??
   parseStructuredServiceComment(LEASE_PREFIX, "AI LEASE", text) ??
   parseStructuredServiceComment(ANALYSIS_PREFIX, "AI ANALYSIS", text) ??
+  parseStructuredServiceComment(TASK_REVIEW_PREFIX, "AI TASK REVIEW", text) ??
   parseStructuredServiceComment(DECOMPOSITION_PREFIX, "AI DECOMPOSITION", text) ??
   parseStructuredServiceComment(DIGEST_PREFIX, "AI DIGEST", text);
 
@@ -815,6 +955,19 @@ export const findLatestAnalysisDecision = (
     reasoning: metadata.reasoning ?? "Analysis decision restored from Tracker comment.",
   };
 };
+
+export const findLatestTaskIntakeReview = (
+  comments: CommentWithMetadata[],
+  issueKey?: string,
+): ParsedServiceComment | undefined =>
+  comments
+    .filter(
+      (comment): comment is CommentWithMetadata & { metadata: ParsedServiceComment } =>
+        comment.metadata?.kind === "AI TASK REVIEW" &&
+        (issueKey === undefined || comment.metadata.issueKey === issueKey),
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .at(-1)?.metadata;
 
 export const findLatestDecompositionMetadata = (
   comments: CommentWithMetadata[],
