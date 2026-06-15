@@ -3,6 +3,11 @@ import type {
   TelegramAssistantTurnStatus,
   TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
+  TelegramDigitalTwinDeliveryStatus,
+  TelegramDigitalTwinMessage,
+  TelegramDigitalTwinSession,
+  TelegramDigitalTwinTurn,
+  TelegramDigitalTwinTurnStatus,
   TelegramMessageRef,
   TelegramNotificationDelivery,
   TelegramNotificationDeliveryStatus,
@@ -38,6 +43,47 @@ export interface CompleteAssistantTurnInput {
   completedAt?: string;
   threadId?: string;
   diagnostic?: string;
+}
+
+export interface ReserveDigitalTwinMessageResult {
+  inserted: boolean;
+  message: TelegramDigitalTwinMessage;
+}
+
+export interface UpdateDigitalTwinMessageDeliveryInput {
+  messageKey: string;
+  deliveryStatus: TelegramDigitalTwinDeliveryStatus;
+  deliveryAttemptedAt?: string;
+  deliveredAt?: string;
+  deliveryError?: string;
+  sentTelegramMessageId?: number;
+  redactedText?: string;
+  fullTextEncrypted?: string;
+  codexThreadId?: string;
+  codexTurnId?: string;
+}
+
+export interface CompleteDigitalTwinTurnInput {
+  status: Exclude<TelegramDigitalTwinTurnStatus, "running">;
+  completedAt?: string;
+  codexThreadId?: string;
+  error?: string;
+}
+
+export interface PurgeDigitalTwinSessionDataResult {
+  sessions: number;
+  messages: number;
+  turns: number;
+}
+
+export interface PruneDigitalTwinAuditDataInput {
+  redactedBefore?: string;
+  fullTextBefore?: string;
+}
+
+export interface PruneDigitalTwinAuditDataResult {
+  redactedTextsCleared: number;
+  fullTextsCleared: number;
 }
 
 export interface CancelQueuedMessagesInput {
@@ -102,6 +148,42 @@ export interface TelegramAssistantStore {
     conversationKey: string,
     operation: () => Promise<T>,
   ): Promise<T>;
+  withDigitalTwinSessionLock<T>(
+    sessionKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T>;
+  getDigitalTwinSession(
+    sessionKey: string,
+  ): Promise<TelegramDigitalTwinSession | undefined>;
+  upsertDigitalTwinSession(
+    session: TelegramDigitalTwinSession,
+  ): Promise<TelegramDigitalTwinSession>;
+  reserveDigitalTwinMessage(
+    message: TelegramDigitalTwinMessage,
+  ): Promise<ReserveDigitalTwinMessageResult>;
+  updateDigitalTwinMessageDelivery(
+    input: UpdateDigitalTwinMessageDeliveryInput,
+  ): Promise<TelegramDigitalTwinMessage>;
+  listDigitalTwinMessages(
+    sessionKey: string,
+    input?: { limit?: number },
+  ): Promise<TelegramDigitalTwinMessage[]>;
+  startDigitalTwinTurn(
+    turn: TelegramDigitalTwinTurn,
+  ): Promise<TelegramDigitalTwinTurn | undefined>;
+  getActiveDigitalTwinTurn(
+    sessionKey: string,
+  ): Promise<TelegramDigitalTwinTurn | undefined>;
+  completeDigitalTwinTurnIfRunning(
+    turnId: string,
+    input: CompleteDigitalTwinTurnInput,
+  ): Promise<TelegramDigitalTwinTurn | undefined>;
+  purgeDigitalTwinSessionData(
+    sessionKey: string,
+  ): Promise<PurgeDigitalTwinSessionDataResult>;
+  pruneDigitalTwinAuditData(
+    input: PruneDigitalTwinAuditDataInput,
+  ): Promise<PruneDigitalTwinAuditDataResult>;
   recordMessageRef(ref: TelegramMessageRef): Promise<TelegramMessageRef>;
   listMessageRefs(conversationKey: string): Promise<TelegramMessageRef[]>;
   startAssistantTurn(turn: TelegramAssistantTurn): Promise<TelegramAssistantTurn>;
@@ -274,6 +356,11 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
     new Map<string, TelegramNotificationDelivery>();
   private readonly businessConnections =
     new Map<string, TelegramBusinessConnectionRecord>();
+  private readonly digitalTwinSessions =
+    new Map<string, TelegramDigitalTwinSession>();
+  private readonly digitalTwinMessages =
+    new Map<string, TelegramDigitalTwinMessage>();
+  private readonly digitalTwinTurns = new Map<string, TelegramDigitalTwinTurn>();
 
   public constructor(options: InMemoryTelegramAssistantStoreOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -360,6 +447,223 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
         this.conversationLocks.delete(conversationKey);
       }
     }
+  }
+
+  public async withDigitalTwinSessionLock<T>(
+    sessionKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.withConversationLock(`digital-twin:${sessionKey}`, operation);
+  }
+
+  public async getDigitalTwinSession(
+    sessionKey: string,
+  ): Promise<TelegramDigitalTwinSession | undefined> {
+    const session = this.digitalTwinSessions.get(sessionKey);
+    return session ? clone(session) : undefined;
+  }
+
+  public async upsertDigitalTwinSession(
+    session: TelegramDigitalTwinSession,
+  ): Promise<TelegramDigitalTwinSession> {
+    this.digitalTwinSessions.set(session.sessionKey, clone(session));
+    return clone(session);
+  }
+
+  public async reserveDigitalTwinMessage(
+    message: TelegramDigitalTwinMessage,
+  ): Promise<ReserveDigitalTwinMessageResult> {
+    const existing = [...this.digitalTwinMessages.values()].find(
+      (candidate) => candidate.messageKey === message.messageKey,
+    );
+    if (existing) {
+      return {
+        inserted: false,
+        message: clone(existing),
+      };
+    }
+
+    this.digitalTwinMessages.set(message.id, clone(message));
+    return {
+      inserted: true,
+      message: clone(message),
+    };
+  }
+
+  public async updateDigitalTwinMessageDelivery(
+    input: UpdateDigitalTwinMessageDeliveryInput,
+  ): Promise<TelegramDigitalTwinMessage> {
+    const existing = [...this.digitalTwinMessages.values()].find(
+      (candidate) => candidate.messageKey === input.messageKey,
+    );
+    if (!existing) {
+      throw new Error(`Telegram digital twin message not found: ${input.messageKey}`);
+    }
+
+    const updated: TelegramDigitalTwinMessage = {
+      ...existing,
+      deliveryStatus: input.deliveryStatus,
+      ...(input.deliveryAttemptedAt !== undefined
+        ? { deliveryAttemptedAt: input.deliveryAttemptedAt }
+        : {}),
+      ...(input.deliveredAt !== undefined ? { deliveredAt: input.deliveredAt } : {}),
+      ...(input.deliveryError !== undefined
+        ? { deliveryError: input.deliveryError }
+        : {}),
+      ...(input.sentTelegramMessageId !== undefined
+        ? { sentTelegramMessageId: input.sentTelegramMessageId }
+        : {}),
+      ...(input.redactedText !== undefined ? { redactedText: input.redactedText } : {}),
+      ...(input.fullTextEncrypted !== undefined
+        ? { fullTextEncrypted: input.fullTextEncrypted }
+        : {}),
+      ...(input.codexThreadId !== undefined
+        ? { codexThreadId: input.codexThreadId }
+        : {}),
+      ...(input.codexTurnId !== undefined ? { codexTurnId: input.codexTurnId } : {}),
+    };
+    this.digitalTwinMessages.set(existing.id, clone(updated));
+    return clone(updated);
+  }
+
+  public async listDigitalTwinMessages(
+    sessionKey: string,
+    input: { limit?: number } = {},
+  ): Promise<TelegramDigitalTwinMessage[]> {
+    const messages = [...this.digitalTwinMessages.values()]
+      .filter((message) => message.sessionKey === sessionKey)
+      .sort((left, right) => {
+        const byCreatedAt = left.createdAt.localeCompare(right.createdAt);
+        return byCreatedAt !== 0 ? byCreatedAt : left.id.localeCompare(right.id);
+      });
+    if (input.limit !== undefined && input.limit <= 0) {
+      return [];
+    }
+    return clone(input.limit === undefined ? messages : messages.slice(-input.limit));
+  }
+
+  public async startDigitalTwinTurn(
+    turn: TelegramDigitalTwinTurn,
+  ): Promise<TelegramDigitalTwinTurn | undefined> {
+    const active = [...this.digitalTwinTurns.values()].find(
+      (candidate) =>
+        candidate.sessionKey === turn.sessionKey && candidate.status === "running",
+    );
+    if (active) {
+      return undefined;
+    }
+
+    this.digitalTwinTurns.set(turn.id, clone(turn));
+    return clone(turn);
+  }
+
+  public async getActiveDigitalTwinTurn(
+    sessionKey: string,
+  ): Promise<TelegramDigitalTwinTurn | undefined> {
+    const turn = [...this.digitalTwinTurns.values()].find(
+      (candidate) =>
+        candidate.sessionKey === sessionKey && candidate.status === "running",
+    );
+    return turn ? clone(turn) : undefined;
+  }
+
+  public async completeDigitalTwinTurnIfRunning(
+    turnId: string,
+    input: CompleteDigitalTwinTurnInput,
+  ): Promise<TelegramDigitalTwinTurn | undefined> {
+    const existing = this.digitalTwinTurns.get(turnId);
+    if (!existing || existing.status !== "running") {
+      return undefined;
+    }
+
+    const completed: TelegramDigitalTwinTurn = {
+      ...existing,
+      status: input.status,
+      completedAt: input.completedAt ?? this.nowIso(),
+      ...(input.codexThreadId !== undefined
+        ? { codexThreadId: input.codexThreadId }
+        : {}),
+      ...(input.error !== undefined ? { error: input.error } : {}),
+    };
+    this.digitalTwinTurns.set(turnId, clone(completed));
+    return clone(completed);
+  }
+
+  public async purgeDigitalTwinSessionData(
+    sessionKey: string,
+  ): Promise<PurgeDigitalTwinSessionDataResult> {
+    const result: PurgeDigitalTwinSessionDataResult = {
+      sessions: 0,
+      messages: 0,
+      turns: 0,
+    };
+
+    if (this.digitalTwinSessions.delete(sessionKey)) {
+      result.sessions += 1;
+    }
+
+    for (const [id, message] of this.digitalTwinMessages.entries()) {
+      if (message.sessionKey === sessionKey) {
+        this.digitalTwinMessages.delete(id);
+        result.messages += 1;
+      }
+    }
+
+    for (const [id, turn] of this.digitalTwinTurns.entries()) {
+      if (turn.sessionKey === sessionKey) {
+        this.digitalTwinTurns.delete(id);
+        result.turns += 1;
+      }
+    }
+
+    return result;
+  }
+
+  public async pruneDigitalTwinAuditData(
+    input: PruneDigitalTwinAuditDataInput,
+  ): Promise<PruneDigitalTwinAuditDataResult> {
+    const result: PruneDigitalTwinAuditDataResult = {
+      redactedTextsCleared: 0,
+      fullTextsCleared: 0,
+    };
+    const redactedCutoff = input.redactedBefore
+      ? Date.parse(input.redactedBefore)
+      : undefined;
+    const fullTextCutoff = input.fullTextBefore
+      ? Date.parse(input.fullTextBefore)
+      : undefined;
+
+    for (const [id, message] of this.digitalTwinMessages.entries()) {
+      const createdAt = Date.parse(message.createdAt);
+      const updated: TelegramDigitalTwinMessage = { ...message };
+      let changed = false;
+
+      if (
+        redactedCutoff !== undefined &&
+        createdAt < redactedCutoff &&
+        updated.redactedText !== undefined
+      ) {
+        delete updated.redactedText;
+        result.redactedTextsCleared += 1;
+        changed = true;
+      }
+
+      if (
+        fullTextCutoff !== undefined &&
+        createdAt < fullTextCutoff &&
+        updated.fullTextEncrypted !== undefined
+      ) {
+        delete updated.fullTextEncrypted;
+        result.fullTextsCleared += 1;
+        changed = true;
+      }
+
+      if (changed) {
+        this.digitalTwinMessages.set(id, clone(updated));
+      }
+    }
+
+    return result;
   }
 
   public async recordMessageRef(

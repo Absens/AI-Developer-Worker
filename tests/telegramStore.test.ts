@@ -1041,3 +1041,195 @@ describe("InMemoryTelegramAssistantStore", () => {
     );
   });
 });
+
+describe("InMemoryTelegramAssistantStore digital twin state", () => {
+  const sessionKey = "business:bc_1:777";
+  const inboundKey = "telegram-business:bc_1:777:10";
+  const outboundKey = "telegram-business-reply:bc_1:777:10";
+
+  it("reserves digital twin messages idempotently and tracks delivery", async () => {
+    const store = createStore();
+    await store.upsertDigitalTwinSession({
+      sessionKey,
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      ownerUserId: "10",
+      ownerChatId: "99",
+      status: "active",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+
+    const first = await store.reserveDigitalTwinMessage({
+      id: "dtm-in-1",
+      sessionKey,
+      messageKey: inboundKey,
+      telegramUpdateId: 2,
+      direction: "inbound",
+      telegramMessageId: 10,
+      deliveryStatus: "received",
+      redactedText: "привет",
+      createdAt: baseTime,
+      metadata: {},
+    });
+    const duplicate = await store.reserveDigitalTwinMessage({
+      id: "dtm-in-dup",
+      sessionKey,
+      messageKey: inboundKey,
+      telegramUpdateId: 2,
+      direction: "inbound",
+      telegramMessageId: 10,
+      deliveryStatus: "received",
+      redactedText: "привет again",
+      createdAt: laterTime,
+      metadata: {},
+    });
+
+    expect(first.inserted).toBe(true);
+    expect(duplicate.inserted).toBe(false);
+    expect(duplicate.message.id).toBe("dtm-in-1");
+
+    await store.reserveDigitalTwinMessage({
+      id: "dtm-out-1",
+      sessionKey,
+      messageKey: outboundKey,
+      direction: "outbound",
+      deliveryStatus: "generating",
+      createdAt: baseTime,
+      metadata: {},
+    });
+    await expect(
+      store.updateDigitalTwinMessageDelivery({
+        messageKey: outboundKey,
+        deliveryStatus: "sent",
+        sentTelegramMessageId: 55,
+        deliveredAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      messageKey: outboundKey,
+      deliveryStatus: "sent",
+      sentTelegramMessageId: 55,
+    }));
+  });
+
+  it("prunes redacted and encrypted audit text by independent cutoffs", async () => {
+    const store = createStore();
+    await store.upsertDigitalTwinSession({
+      sessionKey,
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      status: "active",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    await store.reserveDigitalTwinMessage({
+      id: "dtm-retention",
+      sessionKey,
+      messageKey: "telegram-business:bc_1:777:12",
+      direction: "inbound",
+      deliveryStatus: "received",
+      redactedText: "redacted",
+      fullTextEncrypted: "v1:key:nonce:tag:cipher",
+      createdAt: baseTime,
+      metadata: {},
+    });
+
+    await expect(store.pruneDigitalTwinAuditData({
+      redactedBefore: laterTime,
+      fullTextBefore: laterTime,
+    })).resolves.toEqual({
+      redactedTextsCleared: 1,
+      fullTextsCleared: 1,
+    });
+    await expect(store.listDigitalTwinMessages(sessionKey)).resolves.toEqual([
+      expect.not.objectContaining({
+        redactedText: expect.any(String),
+        fullTextEncrypted: expect.any(String),
+      }),
+    ]);
+  });
+
+  it("allows only one running digital twin turn per session", async () => {
+    const store = createStore();
+    await store.upsertDigitalTwinSession({
+      sessionKey,
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      status: "active",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+
+    const first = await store.startDigitalTwinTurn({
+      id: "dtt-1",
+      sessionKey,
+      inboundMessageKey: inboundKey,
+      outboundMessageKey: outboundKey,
+      status: "running",
+      startedAt: baseTime,
+      metadata: {},
+    });
+    const second = await store.startDigitalTwinTurn({
+      id: "dtt-2",
+      sessionKey,
+      inboundMessageKey: "telegram-business:bc_1:777:11",
+      outboundMessageKey: "telegram-business-reply:bc_1:777:11",
+      status: "running",
+      startedAt: baseTime,
+      metadata: {},
+    });
+
+    expect(first).toEqual(expect.objectContaining({ id: "dtt-1" }));
+    expect(second).toBeUndefined();
+    await expect(store.getActiveDigitalTwinTurn(sessionKey)).resolves.toEqual(
+      expect.objectContaining({ id: "dtt-1" }),
+    );
+    await expect(
+      store.completeDigitalTwinTurnIfRunning("dtt-1", {
+        status: "completed",
+        completedAt: laterTime,
+        codexThreadId: "thread_1",
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      status: "completed",
+      codexThreadId: "thread_1",
+    }));
+  });
+
+  it("returns no digital twin messages when the recent-message limit is zero", async () => {
+    const store = createStore();
+    await store.upsertDigitalTwinSession({
+      sessionKey,
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      status: "active",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    await store.reserveDigitalTwinMessage({
+      id: "dtm-limit",
+      sessionKey,
+      messageKey: inboundKey,
+      direction: "inbound",
+      deliveryStatus: "received",
+      createdAt: baseTime,
+      metadata: {},
+    });
+
+    await expect(
+      store.listDigitalTwinMessages(sessionKey, { limit: 0 }),
+    ).resolves.toEqual([]);
+  });
+});

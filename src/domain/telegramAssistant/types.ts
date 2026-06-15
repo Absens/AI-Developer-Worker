@@ -4,6 +4,89 @@ export type { TelegramAssistantRole } from "../../models/types.js";
 
 export type TelegramConversationSource = "bot_private" | "group" | "business";
 
+export type TelegramDigitalTwinSessionStatus =
+  | "active"
+  | "paused"
+  | "reset_requested"
+  | "disabled_by_connection"
+  | "failed";
+
+export type TelegramDigitalTwinMessageDirection =
+  | "inbound"
+  | "outbound"
+  | "system";
+
+export type TelegramDigitalTwinDeliveryStatus =
+  | "received"
+  | "generating"
+  | "generated"
+  | "sending"
+  | "sent"
+  | "send_failed"
+  | "unknown_after_send_attempt"
+  | "skipped"
+  | "duplicate";
+
+export type TelegramDigitalTwinTurnStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface TelegramDigitalTwinSession {
+  sessionKey: string;
+  source: "business";
+  chatId: number;
+  businessConnectionId: string;
+  ownerUserId?: string;
+  ownerChatId?: string;
+  status: TelegramDigitalTwinSessionStatus;
+  statusReason?: string;
+  codexThreadId?: string;
+  personaProfileVersion: string;
+  summary?: string;
+  summaryUpdatedAt?: string;
+  summaryNeedsRefresh: boolean;
+  lastInboundAt?: string;
+  lastOutboundAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TelegramDigitalTwinMessage {
+  id: string;
+  sessionKey: string;
+  messageKey: string;
+  telegramUpdateId?: number;
+  direction: TelegramDigitalTwinMessageDirection;
+  telegramMessageId?: number;
+  sentTelegramMessageId?: number;
+  deliveryStatus: TelegramDigitalTwinDeliveryStatus;
+  deliveryAttemptedAt?: string;
+  deliveredAt?: string;
+  deliveryError?: string;
+  redactedText?: string;
+  fullTextEncrypted?: string;
+  codexThreadId?: string;
+  codexTurnId?: string;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface TelegramDigitalTwinTurn {
+  id: string;
+  sessionKey: string;
+  inboundMessageKey: string;
+  outboundMessageKey: string;
+  status: TelegramDigitalTwinTurnStatus;
+  codexThreadId?: string;
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+  metadata: Record<string, unknown>;
+}
+
 export type TelegramIntentName =
   | "task_status"
   | "project_question"
