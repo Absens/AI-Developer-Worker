@@ -7,22 +7,31 @@ import type {
 import type {
   CancelQueuedMessagesInput,
   CompleteAssistantTurnInput,
+  CompleteDigitalTwinTurnInput,
   CompleteNotificationDeliveryInput,
   CompletePendingActionInput,
   ConsumePendingActionInput,
   CountTelegramUserActivityInput,
   ListPendingActionsInput,
+  PruneDigitalTwinAuditDataInput,
+  PruneDigitalTwinAuditDataResult,
+  PurgeDigitalTwinSessionDataResult,
   PurgeExpiredTelegramAssistantDataInput,
   PurgeExpiredTelegramAssistantDataResult,
   PurgeTelegramConversationDataInput,
   PurgeTelegramConversationDataResult,
+  ReserveDigitalTwinMessageResult,
   ReserveNotificationDeliveryInput,
   TelegramAssistantStore,
+  UpdateDigitalTwinMessageDeliveryInput,
 } from "./store.js";
 import type {
   TelegramAssistantTurn,
   TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
+  TelegramDigitalTwinMessage,
+  TelegramDigitalTwinSession,
+  TelegramDigitalTwinTurn,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramMessageRef,
@@ -126,6 +135,60 @@ type BusinessConnectionRow = QueryResultRow & {
   updated_at: Date | string;
   last_seen_at: Date | string;
   update_id: number | string | null;
+};
+
+type DigitalTwinSessionRow = QueryResultRow & {
+  session_key: string;
+  source: TelegramDigitalTwinSession["source"];
+  chat_id: number | string;
+  business_connection_id: string;
+  owner_user_id: string | null;
+  owner_chat_id: string | null;
+  status: TelegramDigitalTwinSession["status"];
+  status_reason: string | null;
+  codex_thread_id: string | null;
+  persona_profile_version: string;
+  summary: string | null;
+  summary_updated_at: Date | string | null;
+  summary_needs_refresh: boolean;
+  last_inbound_at: Date | string | null;
+  last_outbound_at: Date | string | null;
+  last_error: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type DigitalTwinMessageRow = QueryResultRow & {
+  id: string;
+  session_key: string;
+  message_key: string;
+  telegram_update_id: number | string | null;
+  direction: TelegramDigitalTwinMessage["direction"];
+  telegram_message_id: number | string | null;
+  sent_telegram_message_id: number | string | null;
+  delivery_status: TelegramDigitalTwinMessage["deliveryStatus"];
+  delivery_attempted_at: Date | string | null;
+  delivered_at: Date | string | null;
+  delivery_error: string | null;
+  redacted_text: string | null;
+  full_text_encrypted: string | null;
+  codex_thread_id: string | null;
+  codex_turn_id: string | null;
+  created_at: Date | string;
+  metadata: unknown;
+};
+
+type DigitalTwinTurnRow = QueryResultRow & {
+  id: string;
+  session_key: string;
+  inbound_message_key: string;
+  outbound_message_key: string;
+  status: TelegramDigitalTwinTurn["status"];
+  codex_thread_id: string | null;
+  started_at: Date | string;
+  completed_at: Date | string | null;
+  error: string | null;
+  metadata: unknown;
 };
 
 const TERMINAL_PENDING_ACTION_STATUSES = new Set<TelegramPendingActionStatus>([
@@ -283,6 +346,84 @@ const mapBusinessConnectionRow = (
     ...(row.update_id !== null ? { updateId: toNumber(row.update_id) } : {}),
   };
 };
+
+const mapDigitalTwinSessionRow = (
+  row: DigitalTwinSessionRow,
+): TelegramDigitalTwinSession => ({
+  sessionKey: row.session_key,
+  source: row.source,
+  chatId: toNumber(row.chat_id),
+  businessConnectionId: row.business_connection_id,
+  ...(row.owner_user_id ? { ownerUserId: row.owner_user_id } : {}),
+  ...(row.owner_chat_id ? { ownerChatId: row.owner_chat_id } : {}),
+  status: row.status,
+  ...(row.status_reason ? { statusReason: row.status_reason } : {}),
+  ...(row.codex_thread_id ? { codexThreadId: row.codex_thread_id } : {}),
+  personaProfileVersion: row.persona_profile_version,
+  ...(row.summary ? { summary: row.summary } : {}),
+  ...(optionalIso(row.summary_updated_at)
+    ? { summaryUpdatedAt: optionalIso(row.summary_updated_at) }
+    : {}),
+  summaryNeedsRefresh: row.summary_needs_refresh,
+  ...(optionalIso(row.last_inbound_at)
+    ? { lastInboundAt: optionalIso(row.last_inbound_at) }
+    : {}),
+  ...(optionalIso(row.last_outbound_at)
+    ? { lastOutboundAt: optionalIso(row.last_outbound_at) }
+    : {}),
+  ...(row.last_error ? { lastError: row.last_error } : {}),
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+});
+
+const mapDigitalTwinMessageRow = (
+  row: DigitalTwinMessageRow,
+): TelegramDigitalTwinMessage => ({
+  id: row.id,
+  sessionKey: row.session_key,
+  messageKey: row.message_key,
+  ...(row.telegram_update_id !== null
+    ? { telegramUpdateId: toNumber(row.telegram_update_id) }
+    : {}),
+  direction: row.direction,
+  ...(row.telegram_message_id !== null
+    ? { telegramMessageId: toNumber(row.telegram_message_id) }
+    : {}),
+  ...(row.sent_telegram_message_id !== null
+    ? { sentTelegramMessageId: toNumber(row.sent_telegram_message_id) }
+    : {}),
+  deliveryStatus: row.delivery_status,
+  ...(optionalIso(row.delivery_attempted_at)
+    ? { deliveryAttemptedAt: optionalIso(row.delivery_attempted_at) }
+    : {}),
+  ...(optionalIso(row.delivered_at)
+    ? { deliveredAt: optionalIso(row.delivered_at) }
+    : {}),
+  ...(row.delivery_error ? { deliveryError: row.delivery_error } : {}),
+  ...(row.redacted_text ? { redactedText: row.redacted_text } : {}),
+  ...(row.full_text_encrypted ? { fullTextEncrypted: row.full_text_encrypted } : {}),
+  ...(row.codex_thread_id ? { codexThreadId: row.codex_thread_id } : {}),
+  ...(row.codex_turn_id ? { codexTurnId: row.codex_turn_id } : {}),
+  createdAt: toIso(row.created_at),
+  metadata: jsonValue<Record<string, unknown>>(row.metadata, {}),
+});
+
+const mapDigitalTwinTurnRow = (
+  row: DigitalTwinTurnRow,
+): TelegramDigitalTwinTurn => ({
+  id: row.id,
+  sessionKey: row.session_key,
+  inboundMessageKey: row.inbound_message_key,
+  outboundMessageKey: row.outbound_message_key,
+  status: row.status,
+  ...(row.codex_thread_id ? { codexThreadId: row.codex_thread_id } : {}),
+  startedAt: toIso(row.started_at),
+  ...(optionalIso(row.completed_at)
+    ? { completedAt: optionalIso(row.completed_at) }
+    : {}),
+  ...(row.error ? { error: row.error } : {}),
+  metadata: jsonValue<Record<string, unknown>>(row.metadata, {}),
+});
 
 const normalizeBusinessConnectionInput = (
   record: TelegramBusinessConnectionInput,
@@ -458,6 +599,369 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
       ]);
       return operation();
     });
+  }
+
+  public async withDigitalTwinSessionLock<T>(
+    sessionKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `telegram-digital-twin:${sessionKey}`,
+      ]);
+      return operation();
+    });
+  }
+
+  public async getDigitalTwinSession(
+    sessionKey: string,
+  ): Promise<TelegramDigitalTwinSession | undefined> {
+    const result = await this.db.query<DigitalTwinSessionRow>(
+      `
+        SELECT *
+        FROM telegram_digital_twin_sessions
+        WHERE session_key = $1
+      `,
+      [sessionKey],
+    );
+    const row = result.rows[0];
+    return row ? mapDigitalTwinSessionRow(row) : undefined;
+  }
+
+  public async upsertDigitalTwinSession(
+    session: TelegramDigitalTwinSession,
+  ): Promise<TelegramDigitalTwinSession> {
+    const result = await this.db.query<DigitalTwinSessionRow>(
+      `
+        INSERT INTO telegram_digital_twin_sessions (
+          session_key, source, chat_id, business_connection_id,
+          owner_user_id, owner_chat_id, status, status_reason,
+          codex_thread_id, persona_profile_version, summary,
+          summary_updated_at, summary_needs_refresh, last_inbound_at,
+          last_outbound_at, last_error, created_at, updated_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          $10, $11, $12, $13, $14, $15, $16, $17, $18
+        )
+        ON CONFLICT (session_key)
+        DO UPDATE SET
+          source = EXCLUDED.source,
+          chat_id = EXCLUDED.chat_id,
+          business_connection_id = EXCLUDED.business_connection_id,
+          owner_user_id = EXCLUDED.owner_user_id,
+          owner_chat_id = EXCLUDED.owner_chat_id,
+          status = EXCLUDED.status,
+          status_reason = EXCLUDED.status_reason,
+          codex_thread_id = EXCLUDED.codex_thread_id,
+          persona_profile_version = EXCLUDED.persona_profile_version,
+          summary = EXCLUDED.summary,
+          summary_updated_at = EXCLUDED.summary_updated_at,
+          summary_needs_refresh = EXCLUDED.summary_needs_refresh,
+          last_inbound_at = EXCLUDED.last_inbound_at,
+          last_outbound_at = EXCLUDED.last_outbound_at,
+          last_error = EXCLUDED.last_error,
+          created_at = EXCLUDED.created_at,
+          updated_at = EXCLUDED.updated_at
+        RETURNING *
+      `,
+      [
+        session.sessionKey,
+        session.source,
+        session.chatId,
+        session.businessConnectionId,
+        session.ownerUserId ?? null,
+        session.ownerChatId ?? null,
+        session.status,
+        session.statusReason ?? null,
+        session.codexThreadId ?? null,
+        session.personaProfileVersion,
+        session.summary ?? null,
+        session.summaryUpdatedAt ?? null,
+        session.summaryNeedsRefresh,
+        session.lastInboundAt ?? null,
+        session.lastOutboundAt ?? null,
+        session.lastError ?? null,
+        session.createdAt,
+        session.updatedAt,
+      ],
+    );
+    return mapDigitalTwinSessionRow(result.rows[0]!);
+  }
+
+  public async reserveDigitalTwinMessage(
+    message: TelegramDigitalTwinMessage,
+  ): Promise<ReserveDigitalTwinMessageResult> {
+    const inserted = await this.db.query<DigitalTwinMessageRow>(
+      `
+        INSERT INTO telegram_digital_twin_messages (
+          id, session_key, message_key, telegram_update_id, direction,
+          telegram_message_id, sent_telegram_message_id, delivery_status,
+          delivery_attempted_at, delivered_at, delivery_error,
+          redacted_text, full_text_encrypted, codex_thread_id,
+          codex_turn_id, created_at, metadata
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          $10, $11, $12, $13, $14, $15, $16, $17::jsonb
+        )
+        ON CONFLICT (message_key) DO NOTHING
+        RETURNING *
+      `,
+      [
+        message.id,
+        message.sessionKey,
+        message.messageKey,
+        message.telegramUpdateId ?? null,
+        message.direction,
+        message.telegramMessageId ?? null,
+        message.sentTelegramMessageId ?? null,
+        message.deliveryStatus,
+        message.deliveryAttemptedAt ?? null,
+        message.deliveredAt ?? null,
+        message.deliveryError ?? null,
+        message.redactedText ?? null,
+        message.fullTextEncrypted ?? null,
+        message.codexThreadId ?? null,
+        message.codexTurnId ?? null,
+        message.createdAt,
+        JSON.stringify(message.metadata),
+      ],
+    );
+    const insertedRow = inserted.rows[0];
+    if (insertedRow) {
+      return {
+        inserted: true,
+        message: mapDigitalTwinMessageRow(insertedRow),
+      };
+    }
+
+    const existing = await this.db.query<DigitalTwinMessageRow>(
+      `
+        SELECT *
+        FROM telegram_digital_twin_messages
+        WHERE message_key = $1
+      `,
+      [message.messageKey],
+    );
+    return {
+      inserted: false,
+      message: mapDigitalTwinMessageRow(existing.rows[0]!),
+    };
+  }
+
+  public async updateDigitalTwinMessageDelivery(
+    input: UpdateDigitalTwinMessageDeliveryInput,
+  ): Promise<TelegramDigitalTwinMessage> {
+    const assignments = ["delivery_status = $2"];
+    const values: unknown[] = [input.messageKey, input.deliveryStatus];
+    const addAssignment = (column: string, value: unknown): void => {
+      values.push(value);
+      assignments.push(`${column} = $${values.length}`);
+    };
+
+    if (input.deliveryAttemptedAt !== undefined) {
+      addAssignment("delivery_attempted_at", input.deliveryAttemptedAt);
+    }
+    if (input.deliveredAt !== undefined) {
+      addAssignment("delivered_at", input.deliveredAt);
+    }
+    if (input.deliveryError !== undefined) {
+      addAssignment("delivery_error", input.deliveryError);
+    }
+    if (input.sentTelegramMessageId !== undefined) {
+      addAssignment("sent_telegram_message_id", input.sentTelegramMessageId);
+    }
+    if (input.redactedText !== undefined) {
+      addAssignment("redacted_text", input.redactedText);
+    }
+    if (input.fullTextEncrypted !== undefined) {
+      addAssignment("full_text_encrypted", input.fullTextEncrypted);
+    }
+    if (input.codexThreadId !== undefined) {
+      addAssignment("codex_thread_id", input.codexThreadId);
+    }
+    if (input.codexTurnId !== undefined) {
+      addAssignment("codex_turn_id", input.codexTurnId);
+    }
+
+    const result = await this.db.query<DigitalTwinMessageRow>(
+      `
+        UPDATE telegram_digital_twin_messages
+        SET ${assignments.join(", ")}
+        WHERE message_key = $1
+        RETURNING *
+      `,
+      values,
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Telegram digital twin message not found: ${input.messageKey}`);
+    }
+    return mapDigitalTwinMessageRow(row);
+  }
+
+  public async listDigitalTwinMessages(
+    sessionKey: string,
+    input: { limit?: number } = {},
+  ): Promise<TelegramDigitalTwinMessage[]> {
+    if (input.limit !== undefined && input.limit <= 0) {
+      return [];
+    }
+
+    const result = await this.db.query<DigitalTwinMessageRow>(
+      input.limit === undefined
+        ? `
+          SELECT *
+          FROM telegram_digital_twin_messages
+          WHERE session_key = $1
+          ORDER BY created_at, id
+        `
+        : `
+          SELECT *
+          FROM (
+            SELECT *
+            FROM telegram_digital_twin_messages
+            WHERE session_key = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2
+          ) AS recent_messages
+          ORDER BY created_at, id
+        `,
+      input.limit === undefined ? [sessionKey] : [sessionKey, input.limit],
+    );
+    return result.rows.map(mapDigitalTwinMessageRow);
+  }
+
+  public async startDigitalTwinTurn(
+    turn: TelegramDigitalTwinTurn,
+  ): Promise<TelegramDigitalTwinTurn | undefined> {
+    const result = await this.db.query<DigitalTwinTurnRow>(
+      `
+        INSERT INTO telegram_digital_twin_turns (
+          id, session_key, inbound_message_key, outbound_message_key,
+          status, codex_thread_id, started_at, completed_at, error, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+        ON CONFLICT DO NOTHING
+        RETURNING *
+      `,
+      [
+        turn.id,
+        turn.sessionKey,
+        turn.inboundMessageKey,
+        turn.outboundMessageKey,
+        turn.status,
+        turn.codexThreadId ?? null,
+        turn.startedAt,
+        turn.completedAt ?? null,
+        turn.error ?? null,
+        JSON.stringify(turn.metadata),
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapDigitalTwinTurnRow(row) : undefined;
+  }
+
+  public async getActiveDigitalTwinTurn(
+    sessionKey: string,
+  ): Promise<TelegramDigitalTwinTurn | undefined> {
+    const result = await this.db.query<DigitalTwinTurnRow>(
+      `
+        SELECT *
+        FROM telegram_digital_twin_turns
+        WHERE session_key = $1
+          AND status = 'running'
+        ORDER BY started_at DESC, id
+        LIMIT 1
+      `,
+      [sessionKey],
+    );
+    const row = result.rows[0];
+    return row ? mapDigitalTwinTurnRow(row) : undefined;
+  }
+
+  public async completeDigitalTwinTurnIfRunning(
+    turnId: string,
+    input: CompleteDigitalTwinTurnInput,
+  ): Promise<TelegramDigitalTwinTurn | undefined> {
+    const completedAt = input.completedAt ?? this.nowIso();
+    const result = await this.db.query<DigitalTwinTurnRow>(
+      `
+        UPDATE telegram_digital_twin_turns
+        SET status = $2,
+            completed_at = $3,
+            codex_thread_id = COALESCE($4, codex_thread_id),
+            error = COALESCE($5, error)
+        WHERE id = $1
+          AND status = 'running'
+        RETURNING *
+      `,
+      [
+        turnId,
+        input.status,
+        completedAt,
+        input.codexThreadId ?? null,
+        input.error ?? null,
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapDigitalTwinTurnRow(row) : undefined;
+  }
+
+  public async purgeDigitalTwinSessionData(
+    sessionKey: string,
+  ): Promise<PurgeDigitalTwinSessionDataResult> {
+    return this.withTransaction(async (client) => {
+      const messages = await client.query(
+        "DELETE FROM telegram_digital_twin_messages WHERE session_key = $1",
+        [sessionKey],
+      );
+      const turns = await client.query(
+        "DELETE FROM telegram_digital_twin_turns WHERE session_key = $1",
+        [sessionKey],
+      );
+      const sessions = await client.query(
+        "DELETE FROM telegram_digital_twin_sessions WHERE session_key = $1",
+        [sessionKey],
+      );
+
+      return {
+        sessions: sessions.rowCount ?? 0,
+        messages: messages.rowCount ?? 0,
+        turns: turns.rowCount ?? 0,
+      };
+    });
+  }
+
+  public async pruneDigitalTwinAuditData(
+    input: PruneDigitalTwinAuditDataInput,
+  ): Promise<PruneDigitalTwinAuditDataResult> {
+    const redactedTexts = await this.db.query(
+      `
+        UPDATE telegram_digital_twin_messages
+        SET redacted_text = NULL
+        WHERE $1::timestamptz IS NOT NULL
+          AND created_at < $1
+          AND redacted_text IS NOT NULL
+      `,
+      [input.redactedBefore ?? null],
+    );
+    const fullTexts = await this.db.query(
+      `
+        UPDATE telegram_digital_twin_messages
+        SET full_text_encrypted = NULL
+        WHERE $1::timestamptz IS NOT NULL
+          AND created_at < $1
+          AND full_text_encrypted IS NOT NULL
+      `,
+      [input.fullTextBefore ?? null],
+    );
+
+    return {
+      redactedTextsCleared: redactedTexts.rowCount ?? 0,
+      fullTextsCleared: fullTexts.rowCount ?? 0,
+    };
   }
 
   public async recordMessageRef(

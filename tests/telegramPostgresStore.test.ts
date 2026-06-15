@@ -327,6 +327,33 @@ describe("PostgresTelegramAssistantStore conversation purge", () => {
   });
 });
 
+describe("PostgresTelegramAssistantStore digital twin sessions", () => {
+  it("uses a transaction advisory lock for digital twin sessions", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        return queryResult([]);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    await store.withDigitalTwinSessionLock("business:bc_1:777", async () => "ok");
+
+    expect(queries.map((query) => query.text)).toEqual(expect.arrayContaining([
+      "BEGIN",
+      expect.stringContaining("pg_advisory_xact_lock"),
+      "COMMIT",
+    ]));
+    expect(queries.some((query) =>
+      query.values?.includes("telegram-digital-twin:business:bc_1:777")
+    )).toBe(true);
+  });
+});
+
 describe("telegram assistant internal tracker migrations", () => {
   it("lists migration 0011 without introducing a duplicate 0010 migration", () => {
     const migrations = listInternalTrackerMigrations();
@@ -387,6 +414,19 @@ describe("telegram assistant internal tracker migrations", () => {
     expect(readRightsMigration?.sql).not.toMatch(
       /can_read_messages boolean[^\n;]*DEFAULT true/i,
     );
+  });
+
+  it("adds Telegram digital twin tables in migration 0014", () => {
+    const migrations = listInternalTrackerMigrations();
+    const migration = migrations.find((candidate) =>
+      candidate.filename === "0014_telegram_digital_twin.sql"
+    );
+
+    expect(migration?.version).toBe("0014");
+    expect(migration?.sql).toContain("CREATE TABLE IF NOT EXISTS telegram_digital_twin_sessions");
+    expect(migration?.sql).toContain("CREATE TABLE IF NOT EXISTS telegram_digital_twin_messages");
+    expect(migration?.sql).toContain("CREATE TABLE IF NOT EXISTS telegram_digital_twin_turns");
+    expect(migration?.sql).toContain("telegram_digital_twin_turns_running_unique_idx");
   });
 });
 
@@ -806,6 +846,93 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
       canReply: true,
       rights: expect.not.objectContaining({ can_read_messages: true }),
     }));
+  });
+
+  it("persists digital twin sessions, messages, turns, and purge", async () => {
+    await runInternalTrackerMigrations(pool);
+    const store = new PostgresTelegramAssistantStore(pool, {
+      now: () => new Date(baseTime),
+    });
+    const sessionKey = "business:bc_1:777";
+
+    await store.upsertDigitalTwinSession({
+      sessionKey,
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      ownerUserId: "10",
+      ownerChatId: "99",
+      status: "active",
+      codexThreadId: "thread_1",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const reserved = await store.reserveDigitalTwinMessage({
+      id: "dtm-1",
+      sessionKey,
+      messageKey: "telegram-business:bc_1:777:10",
+      telegramUpdateId: 2,
+      direction: "inbound",
+      telegramMessageId: 10,
+      deliveryStatus: "received",
+      redactedText: "hello",
+      createdAt: baseTime,
+      metadata: {},
+    });
+    const duplicate = await store.reserveDigitalTwinMessage({
+      id: "dtm-duplicate",
+      sessionKey,
+      messageKey: "telegram-business:bc_1:777:10",
+      telegramUpdateId: 2,
+      direction: "inbound",
+      telegramMessageId: 10,
+      deliveryStatus: "received",
+      redactedText: "hello",
+      createdAt: baseTime,
+      metadata: {},
+    });
+    const turn = await store.startDigitalTwinTurn({
+      id: "dtt-1",
+      sessionKey,
+      inboundMessageKey: "telegram-business:bc_1:777:10",
+      outboundMessageKey: "telegram-business-reply:bc_1:777:10",
+      status: "running",
+      codexThreadId: "thread_1",
+      startedAt: baseTime,
+      metadata: {},
+    });
+    const competingTurn = await store.startDigitalTwinTurn({
+      id: "dtt-2",
+      sessionKey,
+      inboundMessageKey: "telegram-business:bc_1:777:11",
+      outboundMessageKey: "telegram-business-reply:bc_1:777:11",
+      status: "running",
+      startedAt: baseTime,
+      metadata: {},
+    });
+
+    expect(reserved.inserted).toBe(true);
+    expect(duplicate.inserted).toBe(false);
+    expect(turn).toEqual(expect.objectContaining({ id: "dtt-1" }));
+    expect(competingTurn).toBeUndefined();
+    await expect(store.getDigitalTwinSession(sessionKey)).resolves.toEqual(
+      expect.objectContaining({ codexThreadId: "thread_1" }),
+    );
+    await expect(store.listDigitalTwinMessages(sessionKey)).resolves.toHaveLength(1);
+    await expect(store.pruneDigitalTwinAuditData({
+      redactedBefore: laterTime,
+      fullTextBefore: laterTime,
+    })).resolves.toEqual({
+      redactedTextsCleared: 1,
+      fullTextsCleared: 0,
+    });
+    await expect(store.purgeDigitalTwinSessionData(sessionKey)).resolves.toEqual({
+      sessions: 1,
+      messages: 1,
+      turns: 1,
+    });
   });
 
   it("does not overwrite newer business connection records with same-second stale update ids", async () => {
