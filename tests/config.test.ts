@@ -1600,7 +1600,7 @@ describe("config", () => {
       CODEX_MODEL: "gpt-5-codex",
       CODEX_PROFILE: "ci",
       CODEX_SANDBOX: "danger-full-access",
-      CODEX_EXEC_ARGS_JSON: "[\"--search\",\"--add-dir\",\"/tmp/shared\"]",
+      CODEX_EXEC_ARGS_JSON: "[\"--ignore-rules\",\"--add-dir\",\"/tmp/shared\"]",
       CODEX_TIMEOUT_SECONDS: "45",
       MAX_FIX_ATTEMPTS: "2",
       WORKER_ID: "worker-1",
@@ -1612,7 +1612,7 @@ describe("config", () => {
     expect(config.codexModel).toBe("gpt-5-codex");
     expect(config.codexProfile).toBe("ci");
     expect(config.codexSandbox).toBe("danger-full-access");
-    expect(config.codexExecArgs).toEqual(["--search", "--add-dir", "/tmp/shared"]);
+    expect(config.codexExecArgs).toEqual(["--ignore-rules", "--add-dir", "/tmp/shared"]);
     expect(config.codexTimeoutMs).toBe(45 * 1000);
     expect(config.codexLogFullEvents).toBe(false);
     expect(config.trackerDefaultQueue).toBe("FRONTEND");

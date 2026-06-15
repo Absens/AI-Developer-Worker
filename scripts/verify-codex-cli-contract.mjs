@@ -5,7 +5,28 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const codexCommand = process.env.CODEX_COMMAND || "codex";
+const codexCommand = process.env.CODEX_CLI_COMMAND || process.env.CODEX_COMMAND || "codex";
+
+const parseStringArrayEnv = (key) => {
+  const rawValue = process.env[key]?.trim();
+  if (!rawValue) {
+    return [];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawValue);
+  } catch (error) {
+    throw new Error(`${key} must be valid JSON. ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
+    throw new Error(`${key} must be a JSON array of strings.`);
+  }
+  return parsed;
+};
+
+const codexCliArgs = parseStringArrayEnv("CODEX_CLI_ARGS_JSON");
 
 const staticChecks = [
   {
@@ -60,7 +81,7 @@ const staticChecks = [
 ];
 
 const runCodex = (args, input) => {
-  const result = spawnSync(codexCommand, args, {
+  const result = spawnSync(codexCommand, [...codexCliArgs, ...args], {
     encoding: "utf8",
     env: process.env,
     input,

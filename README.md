@@ -149,7 +149,7 @@ docker compose up --build
 - `WORKER_RUN_ONCE=true|false`
 - `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` для fleet mode.
 
-Для Codex CLI `0.130.0` глобальные флаги вроде `--search` и `--ask-for-approval never` должны находиться в `CODEX_CLI_ARGS_JSON`, например:
+Для Codex CLI `0.139.0` глобальные флаги вроде `--search` и `--ask-for-approval never` должны находиться в `CODEX_CLI_ARGS_JSON`, например:
 
 ```json
 ["--search", "--ask-for-approval", "never"]
@@ -307,5 +307,5 @@ Docker по умолчанию собирает Angular console в image и за
 - Если remote целевого репозитория использует SSH, воркер может переписать `origin` на HTTPS и использовать `GIT_REPOSITORY_TOKEN` или `GITLAB_TOKEN`.
 - Для commit внутри Docker задайте `GIT_AUTHOR_NAME` и `GIT_AUTHOR_EMAIL` либо настройте `user.name` и `user.email` в целевом checkout.
 - Не открывайте `TASK_TRACKER_UI_BIND_HOST=0.0.0.0` без trusted reverse proxy или bearer/system tokens; `localhost` auth mode предназначен только для локальной разработки.
-- Dockerfile устанавливает `git`, `curl`, `jq`, `ripgrep`, `openssh-client` и зафиксированную версию `@openai/codex@0.130.0`.
+- Dockerfile устанавливает `git`, `curl`, `jq`, `ripgrep`, `openssh-client` и зафиксированную версию `@openai/codex@0.139.0`.
 - `CODEX_API_KEY` можно использовать как прямой источник неинтерактивной аутентификации. Если есть только `OPENAI_API_KEY`, заранее сохраните его в `CODEX_HOME` через `printenv OPENAI_API_KEY | codex login --with-api-key`.

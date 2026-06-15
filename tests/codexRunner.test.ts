@@ -321,7 +321,7 @@ describe("CliCodexRunner", () => {
           "--config",
           "sandbox_mode=\"danger-full-access\"",
           "-c=sandbox_mode=\"workspace-write\"",
-          "--search",
+          "--ignore-rules",
         ],
       },
       new Logger(),
@@ -342,7 +342,7 @@ describe("CliCodexRunner", () => {
       throw new Error("Expected sandbox argument to be present.");
     }
     expect(args.slice(sandboxIndex, sandboxIndex + 2)).toEqual(["--sandbox", "read-only"]);
-    expect(args).toContain("--search");
+    expect(args).toContain("--ignore-rules");
     expect(args.join(" ")).not.toContain("danger-full-access");
     expect(args).not.toContain("-s");
     expect(args.some((arg) => arg.startsWith("-s="))).toBe(false);
@@ -498,7 +498,7 @@ describe("CliCodexRunner", () => {
         codexSandbox: "danger-full-access",
         codexModel: "gpt-5.2",
         codexProfile: "visual-worker",
-        codexExecArgs: ["--search"],
+        codexExecArgs: ["--ignore-rules"],
       },
       new Logger(),
     );
@@ -523,7 +523,7 @@ describe("CliCodexRunner", () => {
       "gpt-5.2",
       "--profile",
       "visual-worker",
-      "--search",
+      "--ignore-rules",
       "resume",
       "--image",
       imagePath,

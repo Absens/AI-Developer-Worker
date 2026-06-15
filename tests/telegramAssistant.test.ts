@@ -1267,7 +1267,7 @@ describe("TelegramAssistantService", () => {
         },
         status: "queued",
         createdAt: staleReceivedAt,
-        expiresAt: "2026-06-13T07:50:00.000Z",
+        expiresAt: "2099-01-13T07:50:00.000Z",
       });
 
       await service.handleUpdate(messageUpdate("Первый вопрос?", {
@@ -1814,7 +1814,7 @@ describe("TelegramAssistantService", () => {
       },
       status: "queued",
       createdAt: "2026-05-30T08:00:00.000Z",
-      expiresAt: "2026-06-13T08:00:00.000Z",
+      expiresAt: "2099-01-13T08:00:00.000Z",
     });
     const service = buildAssistant({
       store,
@@ -2244,7 +2244,7 @@ describe("TelegramAssistantService", () => {
         },
         status: "queued",
         createdAt: "2026-05-30T08:00:00.000Z",
-        expiresAt: "2026-06-13T08:00:00.000Z",
+        expiresAt: "2099-01-13T08:00:00.000Z",
       });
 
       await service.handleUpdate({
@@ -3552,7 +3552,7 @@ describe("TelegramAssistantService", () => {
       },
       status: "queued",
       createdAt: "2026-05-30T08:00:00.000Z",
-      expiresAt: "2026-06-13T08:00:00.000Z",
+      expiresAt: "2099-01-13T08:00:00.000Z",
     });
     const cancelQueuedMessages = vi.spyOn(store, "cancelQueuedMessages");
 
@@ -3711,7 +3711,7 @@ describe("TelegramAssistantService", () => {
       status: "pending",
       createdAt: "2026-05-30T08:00:00.000Z",
       updatedAt: "2026-05-30T08:00:00.000Z",
-      expiresAt: "2026-06-13T08:00:00.000Z",
+      expiresAt: "2099-01-13T08:00:00.000Z",
     });
     await service.handleUpdate({
       update_id: 38,
@@ -3754,7 +3754,7 @@ describe("TelegramAssistantService", () => {
       status: "pending",
       createdAt: "2026-05-30T08:01:00.000Z",
       updatedAt: "2026-05-30T08:01:00.000Z",
-      expiresAt: "2026-06-13T08:01:00.000Z",
+      expiresAt: "2099-01-13T08:01:00.000Z",
     });
     await service.handleUpdate({
       update_id: 39,

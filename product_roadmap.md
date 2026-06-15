@@ -36,7 +36,7 @@ _Актуально на 2026-04-27._
 - Dependency enforcement: `blockedBy` / `blocks`, link-based blockers and unknown-status policy.
 - Project memory: file-backed knowledge base, failure memory, review learning, prompt rules and dynamic prompt context.
 - Observability: Prometheus-compatible `/metrics`, `/healthz`, `/readyz`, event store, alerts.
-- Docker image on Node 22 with pinned `@openai/codex@0.124.0`, Compose bootstrap writable `CODEX_HOME`.
+- Docker image on Node 22 with pinned `@openai/codex@0.139.0`, Compose bootstrap writable `CODEX_HOME`.
 - Unit and smoke tests across config, Codex auth/runner, Tracker, GitLab, Git, orchestration, quality gates, memory and observability.
 
 ### Follow-ups / пока не реализовано полностью
