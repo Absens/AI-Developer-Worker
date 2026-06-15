@@ -57,6 +57,8 @@ export {
 } from "./media.js";
 export {
   TelegramAssistantCodexService,
+  type AnswerAsDigitalTwinInput,
+  type AnswerAsDigitalTwinResult,
   type AnswerProjectQuestionInput,
   type AnswerProjectQuestionResult,
   type AssistantSource,
