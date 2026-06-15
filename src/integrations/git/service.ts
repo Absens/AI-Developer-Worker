@@ -204,7 +204,10 @@ export class RepositoryGitService implements GitService {
 
   async push(branch: string): Promise<void> {
     await this.ensureRepositoryPrepared();
-    await this.ensureSuccess(`git push -u origin ${branch}`);
+    const pushCommand = this.config.gitCommitNoVerify
+      ? `git push --no-verify -u origin ${branch}`
+      : `git push -u origin ${branch}`;
+    await this.ensureSuccess(pushCommand);
   }
 
   private async ensureSuccess(command: string): Promise<void> {

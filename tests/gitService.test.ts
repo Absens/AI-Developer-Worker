@@ -302,4 +302,29 @@ describe("RepositoryGitService", () => {
       /GIT_COMMIT_NO_VERIFY=true|Repository hooks were enabled/,
     );
   });
+
+  it("skips pre-push hooks when no-verify mode is enabled", async () => {
+    hoisted.runShellCommand
+      .mockResolvedValueOnce({
+        stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "/tmp/remote.git\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+
+    const service = new RepositoryGitService(createConfig(), new Logger());
+
+    await service.push("feature/task-1");
+
+    expect(hoisted.runShellCommand).toHaveBeenNthCalledWith(
+      3,
+      "git push --no-verify -u origin feature/task-1",
+      expect.objectContaining({ cwd: "/workspace/project" }),
+    );
+  });
 });

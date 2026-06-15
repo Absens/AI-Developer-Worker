@@ -218,7 +218,7 @@ This is less safe than the dedicated `codex-home` volume because the container w
    the mounted repo does not have working remote credentials.
 3. tests or lint fail immediately:
    `TEST_COMMAND` or `LINT_COMMAND` do not match the target project.
-4. `git commit` fails on `husky` / `lint-staged`:
+4. `git commit` or `git push` fails on `husky` / `lint-staged`:
    keep `GIT_COMMIT_NO_VERIFY=true` unless those hooks are intentionally supported in the container.
 4. Tracker/GitLab HTTP errors:
    `.env` contains wrong credentials or wrong URLs.

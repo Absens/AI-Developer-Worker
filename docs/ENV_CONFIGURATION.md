@@ -50,7 +50,7 @@ Copy-Item .env.example .env
 | `GITLAB_PROJECT_ID` | Да | Не задано | Используйте числовой или URL-encoded project ID, который принимает GitLab REST API. Его можно скопировать со страницы проекта или получить через GitLab API, если известен project path. |
 | `GIT_AUTHOR_NAME` | Нет | Не задано | Необязательное имя автора git commit для процесса воркера. Используйте в Docker, если в смонтированном репозитории еще не задано `git config user.name`. |
 | `GIT_AUTHOR_EMAIL` | Нет | Не задано | Необязательный email автора git commit для процесса воркера. Используйте в Docker, если в смонтированном репозитории еще не задано `git config user.email`. |
-| `GIT_COMMIT_NO_VERIFY` | Нет | `true` | Управляет тем, использует ли воркер `git commit --no-verify` при создании commit. Оставьте значение по умолчанию, если намеренно не хотите запускать git hooks целевого репозитория, например `husky` или `lint-staged`. |
+| `GIT_COMMIT_NO_VERIFY` | Нет | `true` | Управляет тем, использует ли воркер `--no-verify` для `git commit` и `git push`. Оставьте значение по умолчанию, если намеренно не хотите запускать git hooks целевого репозитория, например `husky` или `lint-staged`. |
 | `REPO_PATH` | Нет | `/workspace/project` | Оставьте значение по умолчанию в Docker. Переопределяйте только если воркер должен использовать другой локальный путь checkout. |
 | `BASE_BRANCH` | Нет | `main` | Задайте ветку, в которую должны целиться feature branches и merge requests. |
 | `POLL_INTERVAL_MINUTES` | Нет | `30` | Выберите частоту опроса Tracker воркером. Значение должно быть положительным целым числом. |
@@ -599,9 +599,9 @@ GIT_AUTHOR_EMAIL=ai-worker@example.com
 
 Теперь startup воркера проверяет `git var GIT_AUTHOR_IDENT`, поэтому такая misconfiguration должна fail fast до начала обработки задач.
 
-## Git hooks на commit воркера
+## Git hooks на commit и push воркера
 
-Воркер уже проверяет состояние репозитория через `TEST_COMMAND` и `LINT_COMMAND`. Чтобы избежать failures из-за developer-local hook stacks внутри смонтированных репозиториев, commit воркера по умолчанию использует `git commit --no-verify`.
+Воркер уже проверяет состояние репозитория через `TEST_COMMAND` и `LINT_COMMAND`. Чтобы избежать failures из-за developer-local hook stacks внутри смонтированных репозиториев, commit и push воркера по умолчанию используют `--no-verify`.
 
 Используйте это значение по умолчанию, если не хотите намеренно запускать repository hooks внутри воркера:
 
