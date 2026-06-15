@@ -63,6 +63,11 @@ export {
   type TelegramAssistantCodexServiceOptions,
 } from "./assistantCodex.js";
 export {
+  decryptTelegramAuditText,
+  encryptTelegramAuditText,
+  type TelegramAuditCryptoOptions,
+} from "./auditCrypto.js";
+export {
   TelegramAssistantProjectContextSourceProvider,
   type TelegramAssistantProjectContextSourceProviderOptions,
   type TelegramAssistantProjectSourceInput,
