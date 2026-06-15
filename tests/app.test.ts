@@ -343,12 +343,19 @@ describe("application wiring", () => {
 
   it("runs Telegram assistant retention cleanup on the task tracker cleanup cadence", async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T11:59:59.000Z"));
     const purgeSpy = vi
       .spyOn(InMemoryTelegramAssistantStore.prototype, "purgeExpiredTelegramAssistantData")
       .mockResolvedValue({
         messageRefs: 0,
         queuedMessages: 0,
         pendingActions: 0,
+      });
+    const pruneDigitalTwinAuditSpy = vi
+      .spyOn(InMemoryTelegramAssistantStore.prototype, "pruneDigitalTwinAuditData")
+      .mockResolvedValue({
+        redactedTextsCleared: 0,
+        fullTextsCleared: 0,
       });
     try {
       const app = buildApplication({
@@ -362,6 +369,9 @@ describe("application wiring", () => {
         TELEGRAM_ASSISTANT_ENABLED: "true",
         TELEGRAM_ASSISTANT_BOT_TOKEN: "bot-token",
         TELEGRAM_ALLOWED_USER_IDS: "101",
+        TELEGRAM_DIGITAL_TWIN_ENABLED: "true",
+        TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS: "7",
+        TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS: "2",
         GITLAB_URL: "https://gitlab.example.com/",
         GITLAB_TOKEN: "gitlab-token",
         GITLAB_PROJECT_ID: "123",
@@ -375,9 +385,14 @@ describe("application wiring", () => {
 
       await vi.advanceTimersByTimeAsync(1);
       expect(purgeSpy).toHaveBeenCalledTimes(1);
+      expect(pruneDigitalTwinAuditSpy).toHaveBeenCalledWith({
+        redactedBefore: "2026-06-08T12:00:00.000Z",
+        fullTextBefore: "2026-06-13T12:00:00.000Z",
+      });
 
       await app.cleanup.stop();
     } finally {
+      pruneDigitalTwinAuditSpy.mockRestore();
       purgeSpy.mockRestore();
       vi.useRealTimers();
     }

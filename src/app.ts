@@ -119,6 +119,9 @@ const noopTelegramAssistantController: TelegramAssistantController = {
   async stop(): Promise<void> {},
 };
 
+const subtractDays = (isoDate: string, days: number): string =>
+  new Date(Date.parse(isoDate) - days * 24 * 60 * 60 * 1000).toISOString();
+
 const createTelegramAssistantCleanupController = (
   telegramAssistant: TelegramAssistantController,
   cleanup: { enabled: boolean; intervalSeconds: number } | undefined,
@@ -652,10 +655,31 @@ const createTelegramAssistantController = (
     }
     cleanupRunning = true;
     try {
-      const result = await store.purgeExpiredTelegramAssistantData({
-        now: new Date().toISOString(),
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const expiredAssistantData = await store.purgeExpiredTelegramAssistantData({
+        now: nowIso,
       });
-      logger.info("Telegram assistant retention cleanup completed.", result);
+      const digitalTwinAudit = config.digitalTwin.enabled
+        ? await store.pruneDigitalTwinAuditData({
+            redactedBefore: subtractDays(
+              nowIso,
+              config.digitalTwin.redactedRetentionDays,
+            ),
+            ...(config.digitalTwin.fullTextRetentionDays > 0
+              ? {
+                  fullTextBefore: subtractDays(
+                    nowIso,
+                    config.digitalTwin.fullTextRetentionDays,
+                  ),
+                }
+              : {}),
+          })
+        : { redactedTextsCleared: 0, fullTextsCleared: 0 };
+      logger.info("Telegram assistant retention cleanup completed.", {
+        ...expiredAssistantData,
+        digitalTwinAudit,
+      });
     } finally {
       cleanupRunning = false;
     }

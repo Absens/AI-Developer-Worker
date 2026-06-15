@@ -434,6 +434,18 @@ All env values override the same fields in fleet config under
 | `TELEGRAM_MEDIA_ENABLED` | `false` | Enables assistant media attachment metadata handling. |
 | `TELEGRAM_MEDIA_MAX_BYTES` | `10485760` | Maximum accepted assistant media size. Positive integer. |
 | `TELEGRAM_MEDIA_ALLOWED_MIME_TYPES` | `image/png,image/jpeg,image/webp,text/plain` | Comma-separated allowed MIME types. |
+| `TELEGRAM_DIGITAL_TWIN_ENABLED` | `false` | Enables full-access per-contact digital twin sessions for Telegram Business/Secretary chats. |
+| `TELEGRAM_DIGITAL_TWIN_AUTO_REPLY_ENABLED` | `true` | When enabled, allowed business messages receive immediate automatic digital twin replies. |
+| `TELEGRAM_DIGITAL_TWIN_FULL_ACCESS` | `true` | Documents that the digital twin may use full configured project context after access gates pass. |
+| `TELEGRAM_DIGITAL_TWIN_SESSION_TTL_DAYS` | `0` | Forced session reset age in days. `0` means no forced reset; Codex compaction is allowed to preserve long-running threads. |
+| `TELEGRAM_DIGITAL_TWIN_SUMMARY_REFRESH_MESSAGE_INTERVAL` | `20` | Number of messages after which the session is marked for summary refresh. |
+| `TELEGRAM_DIGITAL_TWIN_MAX_RECENT_MESSAGES` | `20` | Recent audit messages included when bootstrapping or recovering a digital twin thread. |
+| `TELEGRAM_DIGITAL_TWIN_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for a digital twin Codex turn. |
+| `TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` | `30` | Retention for redacted digital twin audit text. |
+| `TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS` | `0` | Retention for encrypted full text. `0` disables full text persistence. |
+| `TELEGRAM_DIGITAL_TWIN_AUDIT_ENCRYPTION_KEY_ENV` | Empty | Name of an environment variable containing a base64 32-byte AES key for encrypted full audit text. |
+| `TELEGRAM_DIGITAL_TWIN_PERSONA_PROFILE_VERSION` | `default` | Version marker for the owner persona/style prompt. Changing it starts a fresh thread with recovery context. |
+| `TELEGRAM_DIGITAL_TWIN_OWNER_STYLE_PROMPT` | Empty | Owner style instructions included in new digital twin sessions. |
 | `TELEGRAM_PROFILE_AUTOMATION_ENABLED` | `false` | Enables profile automation settings separately from the base assistant. |
 | `TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED` | `false` | Enables profile automation auto-replies when owner consent and Telegram business `can_reply` rights allow it. |
 | `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL` | `true` | Requires owner approval for profile automation actions. |
