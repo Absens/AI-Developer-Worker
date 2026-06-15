@@ -4,7 +4,7 @@
 
 **Goal:** Build full-access Telegram Business digital twin sessions that reply immediately per allowed contact, persist durable session/audit/delivery state, and continue Codex threads with `runResume`.
 
-**Architecture:** Add a durable digital twin layer inside `src/domain/telegramAssistant/` rather than mixing it with one-shot project Q&A turns. Telegram business messages reserve idempotent inbound/outbound audit rows, acquire a per-session durable running-turn guard, call Codex through `runInitial` or `runResume`, persist delivery state, and send Telegram replies through the existing client with `business_connection_id`.
+**Architecture:** Add a durable digital twin layer inside `src/domain/telegramAssistant/` rather than mixing it with one-shot project Q&A turns. Telegram business messages check durable active-turn state before reserving inbound audit for queued work, reserve idempotent inbound/outbound audit rows only for the turn being handled, acquire a per-session durable running-turn guard, call Codex through `runInitial` or `runResume` with resume recovery fallback, persist delivery state including Telegram's sent message id, and send replies through the existing client with `business_connection_id`.
 
 **Tech Stack:** TypeScript ES modules, Vitest, PostgreSQL migrations, existing Telegram Bot API client, existing `CodexRunner`, existing Telegram assistant service/store patterns.
 
@@ -14,7 +14,7 @@
 
 This plan implements the core digital twin feature described in `docs/superpowers/specs/2026-06-15-telegram-digital-twin-sessions-design.md`. It covers configuration, persistence, Codex resume behavior, business-message routing, idempotency, delivery state, multi-worker guards, purge/reset primitives, and focused tests.
 
-Summary refresh is wired through state fields and counters, but background summary generation is limited to marking `summaryNeedsRefresh`. The implementation must not call a summarizer in this plan.
+Session TTL, persona profile version changes, and `reset_requested` are implemented as fresh-thread triggers that preserve recovery summary and recent audit context. Summary refresh is wired through inbound-message interval checks, but background summary generation is limited to marking `summaryNeedsRefresh`. The implementation must not call a summarizer in this plan.
 
 ## File Structure
 
@@ -35,6 +35,7 @@ Summary refresh is wired through state fields and counters, but background summa
 - Modify `tests/telegramAssistantCodex.test.ts`: Codex initial/resume digital twin behavior.
 - Modify `tests/telegramProfileAutomation.test.ts`: business routing integration tests.
 - Modify `tests/telegramAssistant.test.ts`: owner purge/control behavior where shared helpers already exist.
+- Modify `tests/app.test.ts`: retention cleanup includes digital twin redacted/encrypted audit pruning.
 - Modify `docs/ENV_CONFIGURATION.md`: document new env vars.
 
 ## Task 1: Config Model and Parsing
@@ -369,6 +370,46 @@ describe("InMemoryTelegramAssistantStore digital twin state", () => {
     }));
   });
 
+  it("prunes redacted and encrypted audit text by independent cutoffs", async () => {
+    const store = createStore();
+    await store.upsertDigitalTwinSession({
+      sessionKey,
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      status: "active",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    await store.reserveDigitalTwinMessage({
+      id: "dtm-retention",
+      sessionKey,
+      messageKey: "telegram-business:bc_1:777:12",
+      direction: "inbound",
+      deliveryStatus: "received",
+      redactedText: "redacted",
+      fullTextEncrypted: "v1:key:nonce:tag:cipher",
+      createdAt: baseTime,
+      metadata: {},
+    });
+
+    await expect(store.pruneDigitalTwinAuditData({
+      redactedBefore: laterTime,
+      fullTextBefore: laterTime,
+    })).resolves.toEqual({
+      redactedTextsCleared: 1,
+      fullTextsCleared: 1,
+    });
+    await expect(store.listDigitalTwinMessages(sessionKey)).resolves.toEqual([
+      expect.not.objectContaining({
+        redactedText: expect.any(String),
+        fullTextEncrypted: expect.any(String),
+      }),
+    ]);
+  });
+
   it("allows only one running digital twin turn per session", async () => {
     const store = createStore();
     await store.upsertDigitalTwinSession({
@@ -535,6 +576,7 @@ export interface UpdateDigitalTwinMessageDeliveryInput {
   deliveryError?: string;
   sentTelegramMessageId?: number;
   redactedText?: string;
+  fullTextEncrypted?: string;
   codexThreadId?: string;
   codexTurnId?: string;
 }
@@ -550,6 +592,16 @@ export interface PurgeDigitalTwinSessionDataResult {
   sessions: number;
   messages: number;
   turns: number;
+}
+
+export interface PruneDigitalTwinAuditDataInput {
+  redactedBefore?: string;
+  fullTextBefore?: string;
+}
+
+export interface PruneDigitalTwinAuditDataResult {
+  redactedTextsCleared: number;
+  fullTextsCleared: number;
 }
 ```
 
@@ -589,6 +641,9 @@ completeDigitalTwinTurnIfRunning(
 purgeDigitalTwinSessionData(
   sessionKey: string,
 ): Promise<PurgeDigitalTwinSessionDataResult>;
+pruneDigitalTwinAuditData(
+  input: PruneDigitalTwinAuditDataInput,
+): Promise<PruneDigitalTwinAuditDataResult>;
 ```
 
 - [ ] **Step 5: Implement in-memory methods**
@@ -661,6 +716,9 @@ public async updateDigitalTwinMessageDelivery(
       ? { sentTelegramMessageId: input.sentTelegramMessageId }
       : {}),
     ...(input.redactedText !== undefined ? { redactedText: input.redactedText } : {}),
+    ...(input.fullTextEncrypted !== undefined
+      ? { fullTextEncrypted: input.fullTextEncrypted }
+      : {}),
     ...(input.codexThreadId !== undefined ? { codexThreadId: input.codexThreadId } : {}),
     ...(input.codexTurnId !== undefined ? { codexTurnId: input.codexTurnId } : {}),
   };
@@ -748,6 +806,37 @@ public async purgeDigitalTwinSessionData(
     }
   }
   return { sessions, messages, turns };
+}
+
+public async pruneDigitalTwinAuditData(
+  input: PruneDigitalTwinAuditDataInput,
+): Promise<PruneDigitalTwinAuditDataResult> {
+  let redactedTextsCleared = 0;
+  let fullTextsCleared = 0;
+  for (const [id, message] of this.digitalTwinMessages.entries()) {
+    const shouldClearRedacted =
+      input.redactedBefore !== undefined &&
+      message.redactedText !== undefined &&
+      message.createdAt < input.redactedBefore;
+    const shouldClearFullText =
+      input.fullTextBefore !== undefined &&
+      message.fullTextEncrypted !== undefined &&
+      message.createdAt < input.fullTextBefore;
+    if (!shouldClearRedacted && !shouldClearFullText) {
+      continue;
+    }
+    const updated = clone(message);
+    if (shouldClearRedacted) {
+      delete updated.redactedText;
+    }
+    if (shouldClearFullText) {
+      delete updated.fullTextEncrypted;
+    }
+    this.digitalTwinMessages.set(id, updated);
+    redactedTextsCleared += shouldClearRedacted ? 1 : 0;
+    fullTextsCleared += shouldClearFullText ? 1 : 0;
+  }
+  return { redactedTextsCleared, fullTextsCleared };
 }
 ```
 
@@ -907,6 +996,13 @@ it("persists digital twin sessions, messages, turns, and purge", async () => {
     expect.objectContaining({ codexThreadId: "thread_1" }),
   );
   await expect(store.listDigitalTwinMessages(sessionKey)).resolves.toHaveLength(1);
+  await expect(store.pruneDigitalTwinAuditData({
+    redactedBefore: laterTime,
+    fullTextBefore: laterTime,
+  })).resolves.toEqual({
+    redactedTextsCleared: 1,
+    fullTextsCleared: 0,
+  });
   await expect(store.purgeDigitalTwinSessionData(sessionKey)).resolves.toEqual({
     sessions: 1,
     messages: 1,
@@ -1051,6 +1147,8 @@ public async withDigitalTwinSessionLock<T>(
 
 Implement `reserveDigitalTwinMessage` with `ON CONFLICT (message_key) DO NOTHING`, followed by `SELECT * FROM telegram_digital_twin_messages WHERE message_key = $1` when insert returns no row.
 
+Implement `updateDigitalTwinMessageDelivery` so it can update `full_text_encrypted` whenever `input.fullTextEncrypted !== undefined`, in addition to `redacted_text`, delivery timestamps, `sent_telegram_message_id`, Codex ids, and errors.
+
 Implement `startDigitalTwinTurn` with `ON CONFLICT ON CONSTRAINT` avoided by using:
 
 ```sql
@@ -1061,6 +1159,28 @@ RETURNING *
 ```
 
 If no row returns, return `undefined`.
+
+Implement `pruneDigitalTwinAuditData` with two independent updates:
+
+```sql
+UPDATE telegram_digital_twin_messages
+SET redacted_text = NULL
+WHERE $1::timestamptz IS NOT NULL
+  AND created_at < $1::timestamptz
+  AND redacted_text IS NOT NULL
+```
+
+and:
+
+```sql
+UPDATE telegram_digital_twin_messages
+SET full_text_encrypted = NULL
+WHERE $1::timestamptz IS NOT NULL
+  AND created_at < $1::timestamptz
+  AND full_text_encrypted IS NOT NULL
+```
+
+Return `rowCount` from each query as `redactedTextsCleared` and `fullTextsCleared`.
 
 - [ ] **Step 7: Run Postgres tests**
 
@@ -1311,6 +1431,49 @@ it("resumes an existing digital twin thread", async () => {
   );
   expect(runInitial).not.toHaveBeenCalled();
 });
+
+it("falls back to a fresh digital twin thread when resume fails", async () => {
+  const runResume = vi.fn(async () => {
+    throw new Error("thread not found");
+  });
+  const runInitial = vi.fn(async () => ({
+    process: { stdout: "", stderr: "", exitCode: 0 },
+    finalMessage: "Продолжу с восстановленным контекстом.",
+    threadId: "thread_dt_2",
+  }));
+  const service = new TelegramAssistantCodexService({
+    codex: { runInitial, runResume },
+    maxContextChars: 2000,
+    timeoutSeconds: 30,
+  });
+
+  await expect(service.answerAsDigitalTwin({
+    sessionKey: "business:bc_1:777",
+    threadId: "thread_dt_missing",
+    inboundText: "вернемся к теме",
+    ownerStylePrompt: "Пиши коротко.",
+    personaProfileVersion: "default",
+    summary: "Earlier topic summary.",
+    sources: [],
+    recentMessages: [
+      { direction: "inbound", redactedText: "прошлый вопрос" },
+      { direction: "outbound", redactedText: "прошлый ответ" },
+    ],
+    now: "2026-06-15T00:00:00.000Z",
+  })).resolves.toEqual({
+    answer: "Продолжу с восстановленным контекстом.",
+    threadId: "thread_dt_2",
+    startedNewThread: true,
+    resumedThreadFailed: true,
+  });
+
+  expect(runResume).toHaveBeenCalledOnce();
+  expect(runInitial).toHaveBeenCalledWith(
+    expect.stringContaining("Recovery summary"),
+    undefined,
+    { sandbox: "danger-full-access" },
+  );
+});
 ```
 
 - [ ] **Step 2: Run Codex tests and verify failure**
@@ -1354,6 +1517,7 @@ export interface AnswerAsDigitalTwinResult {
   answer: string;
   threadId?: string;
   startedNewThread: boolean;
+  resumedThreadFailed?: boolean;
   timedOut?: boolean;
 }
 ```
@@ -1366,31 +1530,66 @@ Add method:
 public async answerAsDigitalTwin(
   input: AnswerAsDigitalTwinInput,
 ): Promise<AnswerAsDigitalTwinResult> {
-  const startedNewThread = !input.threadId;
-  const prompt = startedNewThread
-    ? buildDigitalTwinInitialPrompt(input, this.maxContextChars)
-    : buildDigitalTwinResumePrompt(input, this.maxContextChars);
-  const execution = await withTimeout(
-    startedNewThread
-      ? this.codex.runInitial(prompt, undefined, { sandbox: "danger-full-access" })
-      : this.codex.runResume(input.threadId!, prompt, undefined, {
-          sandbox: "danger-full-access",
-        }),
-    this.timeoutMs,
-  );
+  const runInitial = async (
+    resumedThreadFailed = false,
+  ): Promise<AnswerAsDigitalTwinResult> => {
+    const execution = await withTimeout(
+      this.codex.runInitial(
+        buildDigitalTwinInitialPrompt(input, this.maxContextChars),
+        undefined,
+        { sandbox: "danger-full-access" },
+      ),
+      this.timeoutMs,
+    );
+
+    if (execution === TIMEOUT) {
+      return {
+        answer: TIMEOUT_ANSWER,
+        startedNewThread: true,
+        resumedThreadFailed,
+        timedOut: true,
+      };
+    }
+
+    return {
+      answer: execution.finalMessage?.trim() || EMPTY_ANSWER,
+      ...(execution.threadId ? { threadId: execution.threadId } : {}),
+      startedNewThread: true,
+      ...(resumedThreadFailed ? { resumedThreadFailed: true } : {}),
+    };
+  };
+
+  if (!input.threadId) {
+    return runInitial();
+  }
+
+  let execution: Awaited<ReturnType<CodexRunner["runResume"]>> | typeof TIMEOUT;
+  try {
+    execution = await withTimeout(
+      this.codex.runResume(
+        input.threadId,
+        buildDigitalTwinResumePrompt(input, this.maxContextChars),
+        undefined,
+        { sandbox: "danger-full-access" },
+      ),
+      this.timeoutMs,
+    );
+  } catch (_error) {
+    return runInitial(true);
+  }
 
   if (execution === TIMEOUT) {
     return {
       answer: TIMEOUT_ANSWER,
-      startedNewThread,
+      startedNewThread: false,
       timedOut: true,
     };
   }
 
   return {
     answer: execution.finalMessage?.trim() || EMPTY_ANSWER,
-    ...(execution.threadId ? { threadId: execution.threadId } : input.threadId ? { threadId: input.threadId } : {}),
-    startedNewThread,
+    ...(execution.threadId ? { threadId: execution.threadId } : { threadId: input.threadId }),
+    startedNewThread: false,
   };
 }
 ```
@@ -1520,7 +1719,7 @@ const profileAutomationConfig = (
 
 ```ts
 it("auto-replies to allowed business chats through a durable digital twin session", async () => {
-  const sendMessage = vi.fn(async () => ({ messageId: 66 }));
+  const sendMessage = vi.fn(async () => ({ message_id: 66 } as any));
   const answerAsDigitalTwin = vi.fn(async () => ({
     answer: "Привет, я на связи.",
     threadId: "thread_dt_1",
@@ -1542,7 +1741,7 @@ it("auto-replies to allowed business chats through a durable digital twin sessio
         autoReplyEnabled: true,
         fullAccess: true,
         sessionTtlDays: 0,
-        summaryRefreshMessageInterval: 20,
+        summaryRefreshMessageInterval: 1,
         maxRecentMessages: 20,
         codexTimeoutSeconds: 120,
         redactedRetentionDays: 30,
@@ -1568,7 +1767,19 @@ it("auto-replies to allowed business chats through a durable digital twin sessio
     text: "Привет, я на связи.",
   }));
   await expect(store.getDigitalTwinSession("business:bc_1:777")).resolves.toEqual(
-    expect.objectContaining({ codexThreadId: "thread_dt_1" }),
+    expect.objectContaining({
+      codexThreadId: "thread_dt_1",
+      summaryNeedsRefresh: true,
+    }),
+  );
+  await expect(store.listDigitalTwinMessages("business:bc_1:777")).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        direction: "outbound",
+        deliveryStatus: "sent",
+        sentTelegramMessageId: 66,
+      }),
+    ]),
   );
 });
 ```
@@ -1579,7 +1790,7 @@ Add:
 
 ```ts
 it("does not generate a second digital twin reply for duplicate business messages", async () => {
-  const sendMessage = vi.fn(async () => ({ messageId: 66 }));
+  const sendMessage = vi.fn(async () => ({ message_id: 66 } as any));
   const answerAsDigitalTwin = vi.fn(async () => ({
     answer: "Один ответ.",
     threadId: "thread_dt_1",
@@ -1626,7 +1837,269 @@ it("does not generate a second digital twin reply for duplicate business message
 });
 ```
 
-- [ ] **Step 3: Run profile automation tests and verify failure**
+- [ ] **Step 3: Write queue, paused-audit, and lifecycle tests**
+
+Add these tests before implementing the routing:
+
+```ts
+it("queues a second digital twin message without pre-reserving inbound audit", async () => {
+  let resolveFirst!: (value: {
+    answer: string;
+    threadId: string;
+    startedNewThread: boolean;
+  }) => void;
+  const firstAnswer = new Promise<{
+    answer: string;
+    threadId: string;
+    startedNewThread: boolean;
+  }>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const sendMessage = vi.fn(async () => ({ message_id: 66 } as any));
+  const answerAsDigitalTwin = vi
+    .fn()
+    .mockImplementationOnce(async () => firstAnswer)
+    .mockResolvedValueOnce({
+      answer: "Второй ответ.",
+      threadId: "thread_dt_1",
+      startedNewThread: false,
+    });
+  const store = new InMemoryTelegramAssistantStore();
+  await upsertBusinessConnection(store);
+  const service = buildAssistant({
+    store,
+    sendMessage,
+    assistantCodex: { answerProjectQuestion: vi.fn(), answerAsDigitalTwin } as any,
+    config: profileAutomationConfig({
+      enabled: true,
+      autoReplyEnabled: true,
+      allowedOwnerIds: ["10"],
+      allowedChatIds: ["777"],
+      digitalTwin: {
+        enabled: true,
+        autoReplyEnabled: true,
+        fullAccess: true,
+        sessionTtlDays: 0,
+        summaryRefreshMessageInterval: 20,
+        maxRecentMessages: 20,
+        codexTimeoutSeconds: 120,
+        redactedRetentionDays: 30,
+        fullTextRetentionDays: 0,
+        personaProfileVersion: "default",
+        ownerStylePrompt: "",
+      },
+    }),
+  });
+
+  const firstHandle = service.handleUpdate(
+    businessMessageUpdate({ updateId: 60, messageId: 10, chatId: 777, text: "первое" }),
+  );
+  await vi.waitFor(() => expect(answerAsDigitalTwin).toHaveBeenCalledTimes(1));
+  await service.handleUpdate(
+    businessMessageUpdate({ updateId: 61, messageId: 11, chatId: 777, text: "второе" }),
+  );
+  expect(answerAsDigitalTwin).toHaveBeenCalledTimes(1);
+
+  resolveFirst({
+    answer: "Первый ответ.",
+    threadId: "thread_dt_1",
+    startedNewThread: true,
+  });
+  await firstHandle;
+  await vi.waitFor(() => expect(answerAsDigitalTwin).toHaveBeenCalledTimes(2));
+  expect(sendMessage).toHaveBeenCalledTimes(2);
+  await expect(store.listDigitalTwinMessages("business:bc_1:777")).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ messageKey: "telegram-business:bc_1:777:10" }),
+      expect.objectContaining({ messageKey: "telegram-business:bc_1:777:11" }),
+    ]),
+  );
+});
+
+it("records inbound audit but does not answer a paused digital twin session", async () => {
+  const sendMessage = vi.fn();
+  const answerAsDigitalTwin = vi.fn();
+  const store = new InMemoryTelegramAssistantStore();
+  await upsertBusinessConnection(store);
+  await store.upsertDigitalTwinSession({
+    sessionKey: "business:bc_1:777",
+    source: "business",
+    chatId: 777,
+    businessConnectionId: "bc_1",
+    status: "paused",
+    personaProfileVersion: "default",
+    summaryNeedsRefresh: false,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  });
+  const service = buildAssistant({
+    store,
+    sendMessage,
+    assistantCodex: { answerProjectQuestion: vi.fn(), answerAsDigitalTwin } as any,
+    config: profileAutomationConfig({
+      enabled: true,
+      autoReplyEnabled: true,
+      allowedOwnerIds: ["10"],
+      allowedChatIds: ["777"],
+      digitalTwin: {
+        enabled: true,
+        autoReplyEnabled: true,
+        fullAccess: true,
+        sessionTtlDays: 0,
+        summaryRefreshMessageInterval: 20,
+        maxRecentMessages: 20,
+        codexTimeoutSeconds: 120,
+        redactedRetentionDays: 30,
+        fullTextRetentionDays: 0,
+        personaProfileVersion: "default",
+        ownerStylePrompt: "",
+      },
+    }),
+  });
+
+  await service.handleUpdate(
+    businessMessageUpdate({ updateId: 62, messageId: 12, chatId: 777, text: "ты тут?" }),
+  );
+
+  expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+  expect(sendMessage).not.toHaveBeenCalled();
+  await expect(store.listDigitalTwinMessages("business:bc_1:777")).resolves.toEqual([
+    expect.objectContaining({
+      direction: "inbound",
+      deliveryStatus: "received",
+      messageKey: "telegram-business:bc_1:777:12",
+    }),
+  ]);
+});
+
+it("stores encrypted full-text audit when the digital twin key is configured", async () => {
+  const previousKey = process.env.TG_AUDIT_KEY_TEST;
+  process.env.TG_AUDIT_KEY_TEST = Buffer.alloc(32, 7).toString("base64");
+  try {
+    const sendMessage = vi.fn(async () => ({ message_id: 66 } as any));
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "Ответ с деталями.",
+      threadId: "thread_dt_1",
+      startedNewThread: true,
+    }));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      assistantCodex: { answerProjectQuestion: vi.fn(), answerAsDigitalTwin } as any,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 7,
+          auditEncryptionKeyEnv: "TG_AUDIT_KEY_TEST",
+          personaProfileVersion: "default",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({ updateId: 64, messageId: 14, chatId: 777, text: "секретный текст" }),
+    );
+
+    const messages = await store.listDigitalTwinMessages("business:bc_1:777");
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        direction: "inbound",
+        fullTextEncrypted: expect.stringContaining("v1:TG_AUDIT_KEY_TEST:"),
+      }),
+      expect.objectContaining({
+        direction: "outbound",
+        fullTextEncrypted: expect.stringContaining("v1:TG_AUDIT_KEY_TEST:"),
+      }),
+    ]));
+    expect(messages.map((item) => item.fullTextEncrypted).join("\n")).not.toContain("секретный текст");
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.TG_AUDIT_KEY_TEST;
+    } else {
+      process.env.TG_AUDIT_KEY_TEST = previousKey;
+    }
+  }
+});
+
+it("starts a fresh thread when persona version changed, ttl expired, or reset was requested", async () => {
+  const sendMessage = vi.fn(async () => ({ message_id: 66 } as any));
+  const answerAsDigitalTwin = vi.fn(async () => ({
+    answer: "Новый контекст.",
+    threadId: "thread_dt_2",
+    startedNewThread: true,
+  }));
+  const store = new InMemoryTelegramAssistantStore();
+  await upsertBusinessConnection(store);
+  await store.upsertDigitalTwinSession({
+    sessionKey: "business:bc_1:777",
+    source: "business",
+    chatId: 777,
+    businessConnectionId: "bc_1",
+    status: "reset_requested",
+    codexThreadId: "thread_old",
+    personaProfileVersion: "old",
+    summary: "Recovery context.",
+    summaryNeedsRefresh: false,
+    createdAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const service = buildAssistant({
+    store,
+    sendMessage,
+    assistantCodex: { answerProjectQuestion: vi.fn(), answerAsDigitalTwin } as any,
+    config: profileAutomationConfig({
+      enabled: true,
+      autoReplyEnabled: true,
+      allowedOwnerIds: ["10"],
+      allowedChatIds: ["777"],
+      digitalTwin: {
+        enabled: true,
+        autoReplyEnabled: true,
+        fullAccess: true,
+        sessionTtlDays: 1,
+        summaryRefreshMessageInterval: 20,
+        maxRecentMessages: 20,
+        codexTimeoutSeconds: 120,
+        redactedRetentionDays: 30,
+        fullTextRetentionDays: 0,
+        personaProfileVersion: "new",
+        ownerStylePrompt: "",
+      },
+    }),
+  });
+
+  await service.handleUpdate(
+    businessMessageUpdate({ updateId: 63, messageId: 13, chatId: 777, text: "привет" }),
+  );
+
+  expect(answerAsDigitalTwin).toHaveBeenCalledWith(expect.not.objectContaining({
+    threadId: "thread_old",
+  }));
+  await expect(store.getDigitalTwinSession("business:bc_1:777")).resolves.toEqual(
+    expect.objectContaining({
+      status: "active",
+      codexThreadId: "thread_dt_2",
+      personaProfileVersion: "new",
+    }),
+  );
+});
+```
+
+- [ ] **Step 4: Run profile automation tests and verify failure**
 
 Run:
 
@@ -1636,7 +2109,7 @@ npm test -- tests/telegramProfileAutomation.test.ts
 
 Expected: FAIL because business messages still route through existing intent logic.
 
-- [ ] **Step 4: Extend service option type**
+- [ ] **Step 5: Extend service option type**
 
 In `src/domain/telegramAssistant/service.ts`, change the `assistantCodex` pick to include the new method:
 
@@ -1647,7 +2120,7 @@ assistantCodex?: Pick<
 >;
 ```
 
-- [ ] **Step 5: Add digital twin routing before intent routing**
+- [ ] **Step 6: Add digital twin routing before intent routing**
 
 Inside `handleBusinessMessageUnderPolicy`, after active turn handling and before existing `intent.name` branches, add:
 
@@ -1677,7 +2150,7 @@ private shouldUseDigitalTwinForBusinessMessage(
 }
 ```
 
-- [ ] **Step 6: Implement message keys and turn preparation**
+- [ ] **Step 7: Implement message keys and turn preparation**
 
 Add functions near `buildTelegramExternalKey`:
 
@@ -1716,49 +2189,39 @@ private async prepareDigitalTwinTurn(
     sessionKey,
     async () => {
       const existing = await this.store.getDigitalTwinSession(sessionKey);
-      const session = existing ?? await this.store.upsertDigitalTwinSession({
+      const session = await this.prepareDigitalTwinSessionForInbound({
+        existing,
         sessionKey,
-        source: "business",
-        chatId: message.chatId,
-        businessConnectionId: message.businessConnectionId!,
-        ownerUserId: connection.ownerUserId,
-        ownerChatId: connection.ownerChatId,
-        status: "active",
-        personaProfileVersion: this.config.digitalTwin.personaProfileVersion,
-        summaryNeedsRefresh: false,
-        createdAt: now,
-        updatedAt: now,
+        message,
+        connection,
+        now,
       });
+
       if (session.status === "paused") {
+        const inbound = await this.store.reserveDigitalTwinMessage({
+          id: `dtm_in_${message.updateId.toString(36)}_${message.messageId!.toString(36)}`,
+          sessionKey,
+          messageKey: inboundMessageKey,
+          telegramUpdateId: message.updateId,
+          direction: "inbound",
+          telegramMessageId: message.messageId,
+          deliveryStatus: "received",
+          redactedText: message.redactedText,
+          fullTextEncrypted: this.encryptDigitalTwinAuditText(message.text),
+          createdAt: message.receivedAt,
+          metadata: { paused: true },
+        });
+        if (!inbound.inserted) {
+          return { status: "duplicate" as const };
+        }
         return { status: "paused" as const };
       }
 
-      const inbound = await this.store.reserveDigitalTwinMessage({
-        id: `dtm_in_${message.updateId.toString(36)}_${message.messageId!.toString(36)}`,
-        sessionKey,
-        messageKey: inboundMessageKey,
-        telegramUpdateId: message.updateId,
-        direction: "inbound",
-        telegramMessageId: message.messageId,
-        deliveryStatus: "received",
-        redactedText: message.redactedText,
-        createdAt: message.receivedAt,
-        metadata: {},
-      });
-      if (!inbound.inserted) {
-        return { status: "duplicate" as const };
+      const activeTurn = await this.store.getActiveDigitalTwinTurn(sessionKey);
+      if (activeTurn) {
+        await this.enqueueMessage(message);
+        return { status: "queued" as const };
       }
-
-      await this.store.reserveDigitalTwinMessage({
-        id: `dtm_out_${message.updateId.toString(36)}_${message.messageId!.toString(36)}`,
-        sessionKey,
-        messageKey: outboundMessageKey,
-        telegramUpdateId: message.updateId,
-        direction: "outbound",
-        deliveryStatus: "generating",
-        createdAt: now,
-        metadata: {},
-      });
 
       const turn = await this.store.startDigitalTwinTurn({
         id: buildDigitalTwinTurnId(message),
@@ -1775,6 +2238,39 @@ private async prepareDigitalTwinTurn(
         return { status: "queued" as const };
       }
       turnId = turn.id;
+
+      const inbound = await this.store.reserveDigitalTwinMessage({
+        id: `dtm_in_${message.updateId.toString(36)}_${message.messageId!.toString(36)}`,
+        sessionKey,
+        messageKey: inboundMessageKey,
+        telegramUpdateId: message.updateId,
+        direction: "inbound",
+        telegramMessageId: message.messageId,
+        deliveryStatus: "received",
+        redactedText: message.redactedText,
+        fullTextEncrypted: this.encryptDigitalTwinAuditText(message.text),
+        createdAt: message.receivedAt,
+        metadata: {},
+      });
+      if (!inbound.inserted) {
+        await this.store.completeDigitalTwinTurnIfRunning(turn.id, {
+          status: "cancelled",
+          completedAt: now,
+          error: "Duplicate inbound digital twin message.",
+        });
+        return { status: "duplicate" as const };
+      }
+
+      await this.store.reserveDigitalTwinMessage({
+        id: `dtm_out_${message.updateId.toString(36)}_${message.messageId!.toString(36)}`,
+        sessionKey,
+        messageKey: outboundMessageKey,
+        telegramUpdateId: message.updateId,
+        direction: "outbound",
+        deliveryStatus: "generating",
+        createdAt: now,
+        metadata: {},
+      });
       return { status: "reserved" as const };
     },
   );
@@ -1799,7 +2295,100 @@ private async prepareDigitalTwinTurn(
 }
 ```
 
-- [ ] **Step 7: Implement run and delivery state**
+Add the session lifecycle helper used above:
+
+```ts
+private async prepareDigitalTwinSessionForInbound(input: {
+  existing?: TelegramDigitalTwinSession;
+  sessionKey: string;
+  message: TelegramInboundMessage;
+  connection: TelegramBusinessConnectionRecord;
+  now: string;
+}): Promise<TelegramDigitalTwinSession> {
+  const ttlDays = this.config.digitalTwin.sessionTtlDays;
+  const ttlExpired =
+    input.existing !== undefined &&
+    ttlDays > 0 &&
+    Date.parse(input.now) - Date.parse(input.existing.updatedAt) >
+      ttlDays * 24 * 60 * 60 * 1000;
+  const personaChanged =
+    input.existing !== undefined &&
+    input.existing.personaProfileVersion !==
+      this.config.digitalTwin.personaProfileVersion;
+  const resetRequested = input.existing?.status === "reset_requested";
+
+  if (!input.existing) {
+    return this.store.upsertDigitalTwinSession({
+      sessionKey: input.sessionKey,
+      source: "business",
+      chatId: input.message.chatId,
+      businessConnectionId: input.message.businessConnectionId!,
+      ownerUserId: input.connection.ownerUserId,
+      ownerChatId: input.connection.ownerChatId,
+      status: "active",
+      personaProfileVersion: this.config.digitalTwin.personaProfileVersion,
+      summaryNeedsRefresh: false,
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+  }
+
+  if (ttlExpired || personaChanged || resetRequested) {
+    const refreshed: TelegramDigitalTwinSession = {
+      ...input.existing,
+      status: "active",
+      statusReason: resetRequested
+        ? "Reset requested; starting a new Codex thread."
+        : ttlExpired
+          ? "Session TTL expired; starting a new Codex thread."
+          : "Persona profile version changed; starting a new Codex thread.",
+      personaProfileVersion: this.config.digitalTwin.personaProfileVersion,
+      summaryNeedsRefresh: true,
+      updatedAt: input.now,
+    };
+    delete refreshed.codexThreadId;
+    return this.store.upsertDigitalTwinSession(refreshed);
+  }
+
+  return input.existing;
+}
+```
+
+Import `encryptTelegramAuditText` and add the service helper used by inbound and outbound audit writes:
+
+```ts
+private encryptDigitalTwinAuditText(value: string | undefined): string | undefined {
+  if (
+    !value ||
+    this.config.digitalTwin.fullTextRetentionDays <= 0 ||
+    !this.config.digitalTwin.auditEncryptionKeyEnv
+  ) {
+    return undefined;
+  }
+  const key = process.env[this.config.digitalTwin.auditEncryptionKeyEnv];
+  if (!key) {
+    throw new Error(
+      `Telegram digital twin audit encryption key is not set: ${this.config.digitalTwin.auditEncryptionKeyEnv}`,
+    );
+  }
+  return encryptTelegramAuditText(value, {
+    key,
+    keyId: this.config.digitalTwin.auditEncryptionKeyEnv,
+  });
+}
+```
+
+- [ ] **Step 8: Implement run and delivery state**
+
+First change the private send wrapper to preserve the Telegram API return value. Import `TelegramMessage` from `src/integrations/telegram/index.ts`, then update:
+
+```ts
+private async sendMessage(input: TelegramSendMessageInput): Promise<TelegramMessage> {
+  return this.telegram.sendMessage(input);
+}
+```
+
+Keep every existing call site valid by leaving its `await this.sendMessage(...)` usage unchanged when the return value is not needed. The digital twin path must use the returned `message_id` for `sentTelegramMessageId`.
 
 Add `runDigitalTwinTurn` with this structure:
 
@@ -1848,6 +2437,7 @@ private async runDigitalTwinTurn(
       messageKey: outboundMessageKey,
       deliveryStatus: "generated",
       redactedText: redactSecrets(result.answer),
+      fullTextEncrypted: this.encryptDigitalTwinAuditText(result.answer),
       ...(result.threadId ? { codexThreadId: result.threadId } : {}),
       codexTurnId: turnId,
     });
@@ -1874,17 +2464,24 @@ private async runDigitalTwinTurn(
       deliveryStatus: "sending",
       deliveryAttemptedAt: new Date().toISOString(),
     });
-    await this.sendMessage({
+    const sentMessage = await this.sendMessage({
       chatId: String(message.chatId),
       text: result.answer,
       ...(message.messageId ? { replyToMessageId: message.messageId } : {}),
       businessConnectionId,
     });
     const completedAt = new Date().toISOString();
+    const allMessages = await this.store.listDigitalTwinMessages(message.conversationKey);
+    const inboundCount = allMessages.filter((item) => item.direction === "inbound").length;
+    const summaryNeedsRefresh =
+      this.config.digitalTwin.summaryRefreshMessageInterval > 0 &&
+      inboundCount > 0 &&
+      inboundCount % this.config.digitalTwin.summaryRefreshMessageInterval === 0;
     await this.store.updateDigitalTwinMessageDelivery({
       messageKey: outboundMessageKey,
       deliveryStatus: "sent",
       deliveredAt: completedAt,
+      sentTelegramMessageId: sentMessage.message_id,
       ...(result.threadId ? { codexThreadId: result.threadId } : {}),
       codexTurnId: turnId,
     });
@@ -1899,7 +2496,7 @@ private async runDigitalTwinTurn(
       ...(result.threadId ? { codexThreadId: result.threadId } : {}),
       lastInboundAt: message.receivedAt,
       lastOutboundAt: completedAt,
-      summaryNeedsRefresh: true,
+      summaryNeedsRefresh: session.summaryNeedsRefresh || summaryNeedsRefresh,
       updatedAt: completedAt,
     });
     if (drainAfterCompletion) {
@@ -1920,10 +2517,10 @@ private async runDigitalTwinTurn(
 }
 ```
 
-The send call must include:
+The send call must include business context and preserve Telegram's returned message id:
 
 ```ts
-await this.sendMessage({
+const sentMessage = await this.sendMessage({
   chatId: String(message.chatId),
   text: result.answer,
   ...(message.messageId ? { replyToMessageId: message.messageId } : {}),
@@ -1931,9 +2528,14 @@ await this.sendMessage({
     ? { businessConnectionId: message.businessConnectionId }
     : {}),
 });
+await this.store.updateDigitalTwinMessageDelivery({
+  messageKey: outboundMessageKey,
+  deliveryStatus: "sent",
+  sentTelegramMessageId: sentMessage.message_id,
+});
 ```
 
-- [ ] **Step 8: Run profile automation tests**
+- [ ] **Step 9: Run profile automation tests**
 
 Run:
 
@@ -1943,7 +2545,7 @@ npm test -- tests/telegramProfileAutomation.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit service routing**
+- [ ] **Step 10: Commit service routing**
 
 ```powershell
 git add src/domain/telegramAssistant/service.ts tests/telegramProfileAutomation.test.ts
@@ -2098,12 +2700,46 @@ git commit -m "Add Telegram digital twin controls"
 **Files:**
 - Modify: `src/app.ts`
 - Modify: `docs/ENV_CONFIGURATION.md`
+- Test: `tests/app.test.ts`
 - Test: `tests/telegramAssistant.test.ts`
 - Test: `tests/config.test.ts`
 
 - [ ] **Step 1: Verify app wiring compiles**
 
 After Task 5, `TelegramAssistantCodexService` requires `runResume`. `new CliCodexRunner(...)` already implements it. `src/app.ts` should compile without a behavior change, and no local type should narrow `assistantCodex` to only `answerProjectQuestion`.
+
+Also update the existing Telegram assistant cleanup runner in `src/app.ts` so digital twin audit retention is applied on the same cadence:
+
+```ts
+const now = new Date();
+const expiredAssistantData = await store.purgeExpiredTelegramAssistantData({
+  now: now.toISOString(),
+});
+const digitalTwinAudit = config.digitalTwin.enabled
+  ? await store.pruneDigitalTwinAuditData({
+      redactedBefore: subtractDays(
+        now.toISOString(),
+        config.digitalTwin.redactedRetentionDays,
+      ),
+      ...(config.digitalTwin.fullTextRetentionDays > 0
+        ? {
+            fullTextBefore: subtractDays(
+              now.toISOString(),
+              config.digitalTwin.fullTextRetentionDays,
+            ),
+          }
+        : {}),
+    })
+  : { redactedTextsCleared: 0, fullTextsCleared: 0 };
+logger.info("Telegram assistant retention cleanup completed.", {
+  ...expiredAssistantData,
+  digitalTwinAudit,
+});
+```
+
+Use the repo's existing date helper if one is already available in `src/app.ts`; otherwise add a small local `subtractDays` helper near the cleanup code.
+
+Extend `tests/app.test.ts` around the existing cleanup-cadence test to spy on `InMemoryTelegramAssistantStore.prototype.pruneDigitalTwinAuditData`, enable `telegramAssistant.digitalTwin.enabled`, set distinct `redactedRetentionDays` and `fullTextRetentionDays`, and assert the spy receives both cutoff timestamps.
 
 Run:
 
@@ -2137,7 +2773,7 @@ In `docs/ENV_CONFIGURATION.md`, add rows to the Telegram Assistant section:
 Run:
 
 ```powershell
-npm test -- tests/config.test.ts tests/telegramStore.test.ts tests/telegramPostgresStore.test.ts tests/telegramAssistantCodex.test.ts tests/telegramProfileAutomation.test.ts tests/telegramAssistant.test.ts
+npm test -- tests/config.test.ts tests/telegramStore.test.ts tests/telegramPostgresStore.test.ts tests/telegramAssistantCodex.test.ts tests/telegramProfileAutomation.test.ts tests/telegramAssistant.test.ts tests/app.test.ts
 ```
 
 Expected: PASS. Real Postgres tests remain skipped unless `TEST_DATABASE_URL` is set.
@@ -2157,7 +2793,7 @@ Expected: all commands PASS.
 - [ ] **Step 5: Commit docs and final wiring**
 
 ```powershell
-git add src/app.ts docs/ENV_CONFIGURATION.md tests/config.test.ts tests/telegramAssistant.test.ts
+git add src/app.ts docs/ENV_CONFIGURATION.md tests/config.test.ts tests/telegramAssistant.test.ts tests/app.test.ts
 git commit -m "Document Telegram digital twin configuration"
 ```
 
@@ -2167,6 +2803,9 @@ git commit -m "Document Telegram digital twin configuration"
 - Do not change existing project Q&A behavior for private/group chats.
 - Digital twin routing applies only to `message.source === "business"` and only when `telegramAssistant.digitalTwin.enabled === true`.
 - Preserve existing owner-approval task creation behavior when digital twin is disabled.
+- For digital twin queueing, check `getActiveDigitalTwinTurn` before inbound audit reservation; queued messages must be audited only when they are drained into their own turn.
+- Paused digital twin sessions still reserve inbound audit rows, but they must not reserve outbound rows or call Codex.
+- `reset_requested`, TTL expiry, and persona profile version changes must all clear `codexThreadId`, reactivate the session, and start the next turn through `runInitial` with recovery context.
 - Do not advance update processing on failed sends unless the digital twin delivery state has enough information to prevent duplicate replies on retry.
 - For the ambiguous crash window after Telegram accepted a send but before local `sent` commit, prefer `unknown_after_send_attempt` and owner inspection over blind resend.
 
@@ -2175,13 +2814,16 @@ git commit -m "Document Telegram digital twin configuration"
 Spec coverage:
 
 - Durable session/message/turn state: Tasks 2 and 3.
-- Idempotency and delivery state: Tasks 2, 3, and 6.
+- Idempotency and delivery state: Tasks 2, 3, and 6; queued work checks active turns before inbound audit reservation, and duplicate drained messages cancel their transient turn before replying.
 - Multi-worker locking: Task 3 and service usage in Task 6.
-- Codex `runResume`: Task 5.
+- Codex `runResume`: Task 5, including fallback to `runInitial` with summary/recent recovery context when resume fails.
 - Immediate business auto-reply: Task 6.
 - Permission checks and mid-turn revoke: Task 6.
 - Owner controls and purge: Task 7.
-- Encryption and retention: Task 4 plus docs in Task 8.
+- Paused inbound audit: Task 6 records inbound audit before skipping paused sessions.
+- Delivery sent ids: Task 6 changes the service send wrapper to return Telegram `message_id` and stores it as `sentTelegramMessageId`.
+- Session lifecycle: Task 6 handles TTL expiry, persona profile version changes, `reset_requested -> active`, and interval-based `summaryNeedsRefresh`.
+- Encryption and retention: Task 4 adds crypto; Task 6 writes inbound/outbound `fullTextEncrypted`; Tasks 2, 3, and 8 prune redacted and encrypted audit text according to configured retention.
 - Config and docs: Tasks 1 and 8.
 
 Type consistency:
