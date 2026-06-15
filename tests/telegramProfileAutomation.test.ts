@@ -1,11 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  decryptTelegramAuditText,
   InMemoryTelegramAssistantStore,
   TelegramAssistantService,
   type TelegramAssistantServiceOptions,
 } from "../src/domain/telegramAssistant/index.js";
-import type { TelegramUpdate } from "../src/integrations/telegram/index.js";
+import type {
+  TelegramMessage,
+  TelegramUpdate,
+} from "../src/integrations/telegram/index.js";
 import type {
   RepositoryProfile,
   TelegramAssistantConfig,
@@ -18,9 +22,17 @@ import type {
 
 const baseTime = new Date().toISOString();
 
+type ProfileAutomationConfigOverrides =
+  Partial<TelegramAssistantConfig["profileAutomation"]> & {
+    digitalTwin?: Partial<TelegramAssistantConfig["digitalTwin"]>;
+  };
+
 const profileAutomationConfig = (
-  overrides: Partial<TelegramAssistantConfig["profileAutomation"]> = {},
-): TelegramAssistantConfig => ({
+  overrides: ProfileAutomationConfigOverrides = {},
+): TelegramAssistantConfig => {
+  const { digitalTwin, ...profileAutomationOverrides } = overrides;
+
+  return {
   enabled: true,
   botToken: "test-token",
   mode: "polling",
@@ -58,6 +70,7 @@ const profileAutomationConfig = (
     fullTextRetentionDays: 0,
     personaProfileVersion: "default",
     ownerStylePrompt: "",
+    ...digitalTwin,
   },
   profileAutomation: {
     enabled: false,
@@ -67,9 +80,47 @@ const profileAutomationConfig = (
     allowedOwnerIds: [],
     allowedChatIds: [],
     maxMessageAgeSeconds: 0,
-    ...overrides,
+    ...profileAutomationOverrides,
   },
+  };
+};
+
+const telegramMessage = (messageId: number, chatId = 777): TelegramMessage => ({
+  message_id: messageId,
+  date: 2,
+  chat: { id: chatId, type: "private" },
+  text: "sent",
 });
+
+const waitForExpect = async (
+  assertion: () => void | Promise<void>,
+): Promise<void> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+  throw lastError;
+};
+
+const deferred = <T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} => {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+};
 
 interface BuildAssistantInput {
   store: InMemoryTelegramAssistantStore;
@@ -79,6 +130,7 @@ interface BuildAssistantInput {
   assistantCodex?: TelegramAssistantServiceOptions["assistantCodex"];
   taskTracker?: TaskTrackerClient;
   repositories?: RepositoryProfile[];
+  logger?: TelegramAssistantServiceOptions["logger"];
 }
 
 const repositoryFixture = (): RepositoryProfile => ({
@@ -104,6 +156,7 @@ const buildAssistant = (input: BuildAssistantInput): TelegramAssistantService =>
       sendMessage: input.sendMessage ?? vi.fn(),
       answerCallbackQuery: input.answerCallbackQuery ?? vi.fn(),
     },
+    ...(input.logger ? { logger: input.logger } : {}),
   });
 
 const businessMessageUpdate = (
@@ -230,6 +283,10 @@ const taskFixture = (overrides: Partial<TaskRecord> = {}): TaskRecord => ({
 });
 
 describe("profile automation", () => {
+  afterEach(() => {
+    delete process.env.TG_DIGITAL_TWIN_AUDIT_KEY;
+  });
+
   it("persists business connections", async () => {
     const store = new InMemoryTelegramAssistantStore();
     const service = buildAssistant({ store, config: profileAutomationConfig() });
@@ -927,4 +984,852 @@ describe("profile automation", () => {
     ]);
     expect(await store.getOffset("default")).toBe(9);
   });
+
+  it("auto-replies to allowed business chats through a durable digital twin session", async () => {
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "Да, беру в работу.",
+      threadId: "thread-dt-1",
+      startedNewThread: true,
+    }));
+    const sendMessage = vi.fn(async () => telegramMessage(9001));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 1,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "Answer in the owner's concise style.",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 101,
+        messageId: 21,
+        chatId: 777,
+        text: "Привет, есть новости?",
+      }),
+    );
+
+    await waitForExpect(() => expect(sendMessage).toHaveBeenCalledOnce());
+
+    expect(answerAsDigitalTwin).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: "business:bc_1:777",
+      inboundText: "Привет, есть новости?",
+      ownerStylePrompt: "Answer in the owner's concise style.",
+      personaProfileVersion: "v1",
+    }));
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "777",
+      text: "Да, беру в работу.",
+      replyToMessageId: 21,
+      businessConnectionId: "bc_1",
+    }));
+    await expect(store.getDigitalTwinSession("business:bc_1:777")).resolves.toMatchObject({
+      codexThreadId: "thread-dt-1",
+      summaryNeedsRefresh: true,
+      status: "active",
+    });
+    await expect(store.listDigitalTwinMessages("business:bc_1:777")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          direction: "inbound",
+          messageKey: "telegram-business:bc_1:777:21",
+          deliveryStatus: "received",
+        }),
+        expect.objectContaining({
+          direction: "outbound",
+          messageKey: "telegram-business-reply:bc_1:777:21",
+          deliveryStatus: "sent",
+          sentTelegramMessageId: 9001,
+        }),
+      ]),
+    );
+  });
+
+  it("does not generate or send a second digital twin reply for a duplicate business message", async () => {
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "Первый ответ.",
+      threadId: "thread-dup",
+      startedNewThread: true,
+    }));
+    const sendMessage = vi.fn(async () => telegramMessage(9002));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 110,
+        messageId: 30,
+        chatId: 777,
+        text: "Повтори статус",
+      }),
+    );
+    await waitForExpect(() => expect(sendMessage).toHaveBeenCalledOnce());
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 111,
+        messageId: 30,
+        chatId: 777,
+        text: "Повтори статус",
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(answerAsDigitalTwin).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledOnce();
+    const messages = await store.listDigitalTwinMessages("business:bc_1:777");
+    expect(messages.filter((message) => message.direction === "outbound")).toHaveLength(1);
+  });
+
+  it("queues a second digital twin message while a turn is running and audits it only when drained", async () => {
+    const firstAnswer = deferred<{
+      answer: string;
+      threadId: string;
+      startedNewThread: boolean;
+    }>();
+    const answerAsDigitalTwin = vi.fn()
+      .mockReturnValueOnce(firstAnswer.promise)
+      .mockResolvedValueOnce({
+        answer: "Второй ответ.",
+        threadId: "thread-queue",
+        startedNewThread: false,
+      });
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce(telegramMessage(9101))
+      .mockResolvedValueOnce(telegramMessage(9102));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 120,
+        messageId: 40,
+        chatId: 777,
+        text: "Первое сообщение",
+      }),
+    );
+    await waitForExpect(() => expect(answerAsDigitalTwin).toHaveBeenCalledOnce());
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 121,
+        messageId: 41,
+        chatId: 777,
+        text: "Второе сообщение",
+      }),
+    );
+
+    expect(answerAsDigitalTwin).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(store.listQueuedMessages("business:bc_1:777")).resolves.toHaveLength(1);
+    expect(
+      (await store.listDigitalTwinMessages("business:bc_1:777"))
+        .map((message) => message.messageKey),
+    ).not.toContain("telegram-business:bc_1:777:41");
+
+    firstAnswer.resolve({
+      answer: "Первый ответ.",
+      threadId: "thread-queue",
+      startedNewThread: true,
+    });
+
+    await waitForExpect(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+    await expect(store.listQueuedMessages("business:bc_1:777")).resolves.toHaveLength(0);
+    expect(
+      (await store.listDigitalTwinMessages("business:bc_1:777"))
+        .map((message) => message.messageKey),
+    ).toEqual(expect.arrayContaining([
+      "telegram-business:bc_1:777:40",
+      "telegram-business:bc_1:777:41",
+    ]));
+  });
+
+  it("queues digital twin business messages behind an existing assistant turn", async () => {
+    const answerAsDigitalTwin = vi.fn();
+    const sendMessage = vi.fn(async () => telegramMessage(9151));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    await store.startAssistantTurn({
+      id: "assistant-turn-running",
+      conversationKey: "business:bc_1:777",
+      status: "running",
+      startedAt: baseTime,
+    });
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 122,
+        messageId: 42,
+        chatId: 777,
+        text: "Пока не отвечай",
+      }),
+    );
+
+    expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(store.getActiveDigitalTwinTurn("business:bc_1:777"))
+      .resolves.toBeUndefined();
+    await expect(store.listDigitalTwinMessages("business:bc_1:777"))
+      .resolves.toEqual([]);
+    await expect(store.listQueuedMessages("business:bc_1:777")).resolves.toEqual([
+      expect.objectContaining({
+        id: "queued:122",
+        message: expect.objectContaining({
+          conversationKey: "business:bc_1:777",
+          text: "Пока не отвечай",
+        }),
+      }),
+    ]);
+  });
+
+  it("does not leave a running digital twin turn when inbound audit encryption fails", async () => {
+    const answerAsDigitalTwin = vi.fn();
+    const sendMessage = vi.fn(async () => telegramMessage(9152));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 7,
+          auditEncryptionKeyEnv: "TG_DIGITAL_TWIN_AUDIT_KEY",
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await expect(service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 123,
+        messageId: 43,
+        chatId: 777,
+        text: "Сохрани полный аудит",
+      }),
+    )).rejects.toThrow(
+      "Telegram audit encryption key env var is missing: TG_DIGITAL_TWIN_AUDIT_KEY",
+    );
+
+    expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(store.getActiveDigitalTwinTurn("business:bc_1:777"))
+      .resolves.toBeUndefined();
+    await expect(store.listQueuedMessages("business:bc_1:777"))
+      .resolves.toHaveLength(0);
+  });
+
+  it("keeps sent delivery state when draining a queued digital twin message fails", async () => {
+    const firstAnswer = deferred<{
+      answer: string;
+      threadId: string;
+      startedNewThread: boolean;
+    }>();
+    const answerAsDigitalTwin = vi.fn()
+      .mockReturnValueOnce(firstAnswer.promise)
+      .mockRejectedValueOnce(new Error("queued digital twin failed"));
+    const sendMessage = vi.fn(async () => telegramMessage(9153));
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      logger,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 124,
+        messageId: 44,
+        chatId: 777,
+        text: "Первый ответ",
+      }),
+    );
+    await waitForExpect(() => expect(answerAsDigitalTwin).toHaveBeenCalledOnce());
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 125,
+        messageId: 45,
+        chatId: 777,
+        text: "Второй ответ падает",
+      }),
+    );
+
+    firstAnswer.resolve({
+      answer: "Первый отправлен.",
+      threadId: "thread-drain-failure",
+      startedNewThread: true,
+    });
+
+    await waitForExpect(() => expect(logger.warn).toHaveBeenCalledWith(
+      "Telegram assistant background operation failed.",
+      expect.objectContaining({
+        updateId: 124,
+        error: "queued digital twin failed",
+      }),
+    ));
+
+    const messages = await store.listDigitalTwinMessages("business:bc_1:777");
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        messageKey: "telegram-business-reply:bc_1:777:44",
+        deliveryStatus: "sent",
+        sentTelegramMessageId: 9153,
+      }),
+      expect.objectContaining({
+        messageKey: "telegram-business-reply:bc_1:777:45",
+        deliveryStatus: "send_failed",
+        deliveryError: "queued digital twin failed",
+      }),
+    ]));
+  });
+
+  it("records only inbound digital twin audit for a paused session", async () => {
+    const answerAsDigitalTwin = vi.fn();
+    const sendMessage = vi.fn(async () => telegramMessage(9201));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    await store.upsertDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      ownerUserId: "10",
+      ownerChatId: "99",
+      status: "paused",
+      statusReason: "manual_pause",
+      personaProfileVersion: "v1",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 130,
+        messageId: 50,
+        chatId: 777,
+        text: "Пауза?",
+      }),
+    );
+
+    expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(store.listDigitalTwinMessages("business:bc_1:777")).resolves.toEqual([
+      expect.objectContaining({
+        id: "dtm_in_3m_1e",
+        direction: "inbound",
+        deliveryStatus: "received",
+        metadata: { paused: true },
+      }),
+    ]);
+  });
+
+  it("keeps paused digital twin sessions audit-only across TTL and persona changes", async () => {
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "Не должен отвечать.",
+      threadId: "thread-paused-reactivated",
+      startedNewThread: true,
+    }));
+    const sendMessage = vi.fn(async () => telegramMessage(9202));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    await store.upsertDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      ownerUserId: "10",
+      ownerChatId: "99",
+      status: "paused",
+      statusReason: "manual_pause",
+      codexThreadId: "old-thread",
+      personaProfileVersion: "v1",
+      summaryNeedsRefresh: false,
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 1,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v2",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 131,
+        messageId: 51,
+        chatId: 777,
+        text: "Пауза еще действует?",
+      }),
+    );
+
+    expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(store.getDigitalTwinSession("business:bc_1:777")).resolves
+      .toMatchObject({
+        status: "paused",
+        codexThreadId: "old-thread",
+        personaProfileVersion: "v1",
+      });
+    await expect(store.listDigitalTwinMessages("business:bc_1:777")).resolves
+      .toEqual([
+        expect.objectContaining({
+          messageKey: "telegram-business:bc_1:777:51",
+          direction: "inbound",
+          deliveryStatus: "received",
+          metadata: { paused: true },
+        }),
+      ]);
+  });
+
+  it("keeps a queued digital twin message queued if another turn becomes active while draining", async () => {
+    const firstAnswer = deferred<{
+      answer: string;
+      threadId: string;
+      startedNewThread: boolean;
+    }>();
+    const answerAsDigitalTwin = vi.fn()
+      .mockReturnValueOnce(firstAnswer.promise)
+      .mockResolvedValueOnce({
+        answer: "Не должен стартовать.",
+        threadId: "thread-race",
+        startedNewThread: false,
+      });
+    const sendMessage = vi.fn(async () => telegramMessage(9203));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const completeDigitalTwinTurnIfRunning = store.completeDigitalTwinTurnIfRunning
+      .bind(store);
+    vi.spyOn(store, "completeDigitalTwinTurnIfRunning").mockImplementation(
+      async (turnId, input) => {
+        const completed = await completeDigitalTwinTurnIfRunning(turnId, input);
+        if (
+          completed?.inboundMessageKey === "telegram-business:bc_1:777:52" &&
+          input.status === "completed"
+        ) {
+          await store.startDigitalTwinTurn({
+            id: "external-running-digital-twin-turn",
+            sessionKey: "business:bc_1:777",
+            inboundMessageKey: "telegram-business:bc_1:777:external",
+            outboundMessageKey: "telegram-business-reply:bc_1:777:external",
+            status: "running",
+            startedAt: baseTime,
+            metadata: {},
+          });
+        }
+        return completed;
+      },
+    );
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 0,
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 132,
+        messageId: 52,
+        chatId: 777,
+        text: "Первое",
+      }),
+    );
+    await waitForExpect(() => expect(answerAsDigitalTwin).toHaveBeenCalledOnce());
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 133,
+        messageId: 53,
+        chatId: 777,
+        text: "Останься в очереди",
+      }),
+    );
+
+    firstAnswer.resolve({
+      answer: "Первый ответ.",
+      threadId: "thread-race",
+      startedNewThread: true,
+    });
+
+    await waitForExpect(() => expect(sendMessage).toHaveBeenCalledOnce());
+    expect(answerAsDigitalTwin).toHaveBeenCalledOnce();
+    await expect(store.listQueuedMessages("business:bc_1:777")).resolves.toEqual([
+      expect.objectContaining({
+        id: "queued:133",
+        message: expect.objectContaining({
+          messageId: 53,
+          text: "Останься в очереди",
+        }),
+      }),
+    ]);
+    expect(
+      (await store.listDigitalTwinMessages("business:bc_1:777"))
+        .map((message) => message.messageKey),
+    ).not.toContain("telegram-business:bc_1:777:53");
+  });
+
+  it("writes encrypted full-text audit for inbound and outbound digital twin messages", async () => {
+    const auditKey = Buffer.alloc(32, 7).toString("base64");
+    process.env.TG_DIGITAL_TWIN_AUDIT_KEY = auditKey;
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "секретный ответ",
+      threadId: "thread-encrypted",
+      startedNewThread: true,
+    }));
+    const sendMessage = vi.fn(async () => telegramMessage(9301));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    const service = buildAssistant({
+      store,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+          fullAccess: true,
+          sessionTtlDays: 0,
+          summaryRefreshMessageInterval: 20,
+          maxRecentMessages: 20,
+          codexTimeoutSeconds: 120,
+          redactedRetentionDays: 30,
+          fullTextRetentionDays: 7,
+          auditEncryptionKeyEnv: "TG_DIGITAL_TWIN_AUDIT_KEY",
+          personaProfileVersion: "v1",
+          ownerStylePrompt: "",
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 140,
+        messageId: 60,
+        chatId: 777,
+        text: "секретный вход",
+      }),
+    );
+    await waitForExpect(() => expect(sendMessage).toHaveBeenCalledOnce());
+
+    const messages = await store.listDigitalTwinMessages("business:bc_1:777");
+    const inbound = messages.find((message) => message.direction === "inbound");
+    const outbound = messages.find((message) => message.direction === "outbound");
+    expect(inbound?.fullTextEncrypted).toBeDefined();
+    expect(outbound?.fullTextEncrypted).toBeDefined();
+    expect(inbound?.fullTextEncrypted).not.toContain("секретный вход");
+    expect(outbound?.fullTextEncrypted).not.toContain("секретный ответ");
+    expect(decryptTelegramAuditText(inbound!.fullTextEncrypted!, { key: auditKey }))
+      .toBe("секретный вход");
+    expect(decryptTelegramAuditText(outbound!.fullTextEncrypted!, { key: auditKey }))
+      .toBe("секретный ответ");
+  });
+
+  it.each([
+    {
+      label: "reset_requested",
+      sessionStatus: "reset_requested" as const,
+      updatedAt: new Date().toISOString(),
+      configTtlDays: 0,
+      sessionPersonaVersion: "v2",
+      configPersonaVersion: "v2",
+      statusReason: "reset_requested",
+    },
+    {
+      label: "TTL expired",
+      sessionStatus: "active" as const,
+      updatedAt: "2020-01-01T00:00:00.000Z",
+      configTtlDays: 1,
+      sessionPersonaVersion: "v2",
+      configPersonaVersion: "v2",
+      statusReason: "ttl_expired",
+    },
+    {
+      label: "persona version changed",
+      sessionStatus: "active" as const,
+      updatedAt: new Date().toISOString(),
+      configTtlDays: 0,
+      sessionPersonaVersion: "v1",
+      configPersonaVersion: "v2",
+      statusReason: "persona_changed",
+    },
+  ])(
+    "starts a fresh digital twin thread when $label",
+    async ({
+      sessionStatus,
+      updatedAt,
+      configTtlDays,
+      sessionPersonaVersion,
+      configPersonaVersion,
+      statusReason,
+    }) => {
+      const answerAsDigitalTwin = vi.fn(async () => ({
+        answer: "Свежий ответ.",
+        threadId: "new-thread",
+        startedNewThread: true,
+      }));
+      const sendMessage = vi.fn(async () => telegramMessage(9401));
+      const store = new InMemoryTelegramAssistantStore();
+      await upsertBusinessConnection(store);
+      await store.upsertDigitalTwinSession({
+        sessionKey: "business:bc_1:777",
+        source: "business",
+        chatId: 777,
+        businessConnectionId: "bc_1",
+        ownerUserId: "10",
+        ownerChatId: "99",
+        status: sessionStatus,
+        codexThreadId: "old-thread",
+        personaProfileVersion: sessionPersonaVersion,
+        summary: "old recovery summary",
+        summaryNeedsRefresh: false,
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt,
+      });
+      const service = buildAssistant({
+        store,
+        assistantCodex: { answerAsDigitalTwin },
+        sendMessage,
+        config: profileAutomationConfig({
+          enabled: true,
+          autoReplyEnabled: true,
+          allowedOwnerIds: ["10"],
+          allowedChatIds: ["777"],
+          digitalTwin: {
+            enabled: true,
+            autoReplyEnabled: true,
+            fullAccess: true,
+            sessionTtlDays: configTtlDays,
+            summaryRefreshMessageInterval: 20,
+            maxRecentMessages: 20,
+            codexTimeoutSeconds: 120,
+            redactedRetentionDays: 30,
+            fullTextRetentionDays: 0,
+            personaProfileVersion: configPersonaVersion,
+            ownerStylePrompt: "",
+          },
+        }),
+      });
+
+      await service.handleUpdate(
+        businessMessageUpdate({
+          updateId: 150,
+          messageId: 70,
+          chatId: 777,
+          text: "Новый заход",
+        }),
+      );
+      await waitForExpect(() => expect(sendMessage).toHaveBeenCalledOnce());
+
+      expect(answerAsDigitalTwin).toHaveBeenCalledWith(expect.not.objectContaining({
+        threadId: "old-thread",
+      }));
+      expect(answerAsDigitalTwin).toHaveBeenCalledWith(expect.objectContaining({
+        summary: "old recovery summary",
+      }));
+      await expect(store.getDigitalTwinSession("business:bc_1:777")).resolves.toMatchObject({
+        status: "active",
+        statusReason,
+        codexThreadId: "new-thread",
+        personaProfileVersion: configPersonaVersion,
+        summaryNeedsRefresh: true,
+      });
+    },
+  );
 });

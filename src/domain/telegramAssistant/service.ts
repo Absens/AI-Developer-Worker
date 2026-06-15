@@ -5,6 +5,7 @@ import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   TelegramAnswerCallbackQueryInput,
   TelegramClient,
+  TelegramMessage,
   TelegramSendMessageInput,
   TelegramUpdate,
 } from "../../integrations/telegram/index.js";
@@ -50,6 +51,7 @@ import type {
   AssistantSource,
   TelegramAssistantCodexService,
 } from "./assistantCodex.js";
+import { encryptTelegramAuditText } from "./auditCrypto.js";
 import type { TelegramAssistantProjectSourceProvider } from "./projectSources.js";
 import type { TelegramAssistantStore } from "./store.js";
 import {
@@ -62,6 +64,7 @@ import type {
   TelegramAttachmentMetadata,
   TelegramBusinessConnectionRecord,
   TelegramConversationSource,
+  TelegramDigitalTwinSession,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramPendingAction,
@@ -74,7 +77,10 @@ export interface TelegramAssistantServiceOptions {
   store: TelegramAssistantStore;
   config: TelegramAssistantConfig;
   taskTracker?: TaskTrackerClient;
-  assistantCodex?: Pick<TelegramAssistantCodexService, "answerProjectQuestion">;
+  assistantCodex?: Partial<Pick<
+    TelegramAssistantCodexService,
+    "answerProjectQuestion" | "answerAsDigitalTwin"
+  >>;
   projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   repositories: RepositoryProfile[];
   telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
@@ -105,10 +111,12 @@ type AnswerAiQuestionCandidateResolution =
 interface AfterConversationLockOperation {
   run(): Promise<void>;
   runInBackground?: boolean;
+  preserveQueuedMessage?: boolean;
 }
 
 interface MessageProcessingOptions {
   drainAfterProjectTurn?: boolean;
+  fromQueuedMessage?: boolean;
 }
 
 export type ParsedTelegramCallbackData =
@@ -164,10 +172,10 @@ export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
   private readonly config: TelegramAssistantConfig;
   private readonly taskTracker?: TaskTrackerClient;
-  private readonly assistantCodex?: Pick<
+  private readonly assistantCodex?: Partial<Pick<
     TelegramAssistantCodexService,
-    "answerProjectQuestion"
-  >;
+    "answerProjectQuestion" | "answerAsDigitalTwin"
+  >>;
   private readonly projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   private readonly repositories: RepositoryProfile[];
   private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
@@ -779,6 +787,17 @@ export class TelegramAssistantService {
       return undefined;
     }
 
+    if (
+      message.source === "business" &&
+      this.config.digitalTwin.enabled &&
+      this.config.digitalTwin.autoReplyEnabled &&
+      policy.shouldAutoReply &&
+      policy.canReply &&
+      this.assistantCodex?.answerAsDigitalTwin
+    ) {
+      return this.prepareDigitalTwinTurn(message, connection, options);
+    }
+
     if (intent.name === "task_status") {
       if (!policy.shouldAutoReply) {
         return undefined;
@@ -1112,7 +1131,7 @@ export class TelegramAssistantService {
   ): Promise<AfterConversationLockOperation | undefined> {
     if (
       !this.isProjectQaEnabledForMessage(message) ||
-      !this.assistantCodex ||
+      !this.assistantCodex?.answerProjectQuestion ||
       !(await this.isProjectQuestionAllowedForMessage(message))
     ) {
       await this.sendPlainMessage(message, PROJECT_QA_UNAVAILABLE_MESSAGE);
@@ -1173,10 +1192,20 @@ export class TelegramAssistantService {
         return;
       }
 
-      const result = await this.assistantCodex!.answerProjectQuestion({
+      const result = await this.assistantCodex?.answerProjectQuestion?.({
         question,
         sources,
       });
+      if (!result) {
+        const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
+          status: "failed",
+          diagnostic: PROJECT_QA_UNAVAILABLE_MESSAGE,
+        });
+        if (completed) {
+          await this.sendPlainMessage(message, PROJECT_QA_UNAVAILABLE_MESSAGE);
+        }
+        return;
+      }
       const completed = await this.completeProjectQuestionTurn(turnId, result);
       if (!completed) {
         return;
@@ -1213,6 +1242,395 @@ export class TelegramAssistantService {
       ...(result.timedOut === true ? { diagnostic: "Assistant Codex timed out." } : {}),
     });
     return completed !== undefined;
+  }
+
+  private async prepareDigitalTwinTurn(
+    message: TelegramInboundMessage,
+    connection: TelegramBusinessConnectionRecord,
+    options: MessageProcessingOptions = {},
+  ): Promise<AfterConversationLockOperation | undefined> {
+    if (!message.businessConnectionId || message.messageId === undefined) {
+      return undefined;
+    }
+
+    const sessionKey = message.conversationKey;
+    return this.store.withDigitalTwinSessionLock(sessionKey, async () => {
+      const now = new Date().toISOString();
+      const session = await this.prepareDigitalTwinSessionForInbound({
+        message,
+        connection,
+        now,
+      });
+      const inboundMessageKey = buildDigitalTwinInboundMessageKey(message);
+      const outboundMessageKey = buildDigitalTwinOutboundMessageKey(message);
+
+      if (session.status === "paused") {
+        const inboundFullTextEncrypted = this.encryptDigitalTwinAuditText(
+          message.text,
+        );
+        await this.store.reserveDigitalTwinMessage({
+          id: buildDigitalTwinInboundMessageId(message),
+          sessionKey,
+          messageKey: inboundMessageKey,
+          telegramUpdateId: message.updateId,
+          direction: "inbound",
+          telegramMessageId: message.messageId,
+          deliveryStatus: "received",
+          redactedText: message.redactedText,
+          fullTextEncrypted: inboundFullTextEncrypted,
+          createdAt: now,
+          metadata: { paused: true },
+        });
+        return undefined;
+      }
+
+      const activeTurn = await this.store.getActiveDigitalTwinTurn(sessionKey);
+      if (activeTurn) {
+        if (options.fromQueuedMessage === true) {
+          return {
+            preserveQueuedMessage: true,
+            run: async () => undefined,
+          };
+        }
+        await this.enqueueMessage(message);
+        return undefined;
+      }
+
+      const inboundFullTextEncrypted = this.encryptDigitalTwinAuditText(
+        message.text,
+      );
+      const turnId = buildDigitalTwinTurnId(message);
+      const turn = await this.store.startDigitalTwinTurn({
+        id: turnId,
+        sessionKey,
+        inboundMessageKey,
+        outboundMessageKey,
+        status: "running",
+        ...(session.codexThreadId ? { codexThreadId: session.codexThreadId } : {}),
+        startedAt: now,
+        metadata: {
+          telegramUpdateId: message.updateId,
+          telegramMessageId: message.messageId,
+        },
+      });
+      if (!turn) {
+        if (options.fromQueuedMessage === true) {
+          return {
+            preserveQueuedMessage: true,
+            run: async () => undefined,
+          };
+        }
+        await this.enqueueMessage(message);
+        return undefined;
+      }
+
+      const inbound = await this.store.reserveDigitalTwinMessage({
+        id: buildDigitalTwinInboundMessageId(message),
+        sessionKey,
+        messageKey: inboundMessageKey,
+        telegramUpdateId: message.updateId,
+        direction: "inbound",
+        telegramMessageId: message.messageId,
+        deliveryStatus: "received",
+        redactedText: message.redactedText,
+        fullTextEncrypted: inboundFullTextEncrypted,
+        createdAt: now,
+        metadata: {},
+      });
+      if (!inbound.inserted) {
+        await this.store.completeDigitalTwinTurnIfRunning(turnId, {
+          status: "cancelled",
+          completedAt: new Date().toISOString(),
+          error: "Duplicate inbound digital twin message.",
+        });
+        return undefined;
+      }
+
+      const outbound = await this.store.reserveDigitalTwinMessage({
+        id: buildDigitalTwinOutboundMessageId(message),
+        sessionKey,
+        messageKey: outboundMessageKey,
+        telegramUpdateId: message.updateId,
+        direction: "outbound",
+        telegramMessageId: message.messageId,
+        deliveryStatus: "generating",
+        createdAt: now,
+        metadata: {},
+      });
+      if (!outbound.inserted) {
+        await this.store.completeDigitalTwinTurnIfRunning(turnId, {
+          status: "cancelled",
+          completedAt: new Date().toISOString(),
+          error: "Duplicate outbound digital twin message.",
+        });
+        return undefined;
+      }
+
+      return {
+        runInBackground: true,
+        run: async () => {
+          await this.runDigitalTwinTurn(
+            message,
+            turnId,
+            options.drainAfterProjectTurn !== false,
+          );
+        },
+      };
+    });
+  }
+
+  private async prepareDigitalTwinSessionForInbound(input: {
+    message: TelegramInboundMessage;
+    connection: TelegramBusinessConnectionRecord;
+    now: string;
+  }): Promise<TelegramDigitalTwinSession> {
+    const existing = await this.store.getDigitalTwinSession(
+      input.message.conversationKey,
+    );
+    if (!existing) {
+      return this.store.upsertDigitalTwinSession({
+        sessionKey: input.message.conversationKey,
+        source: "business",
+        chatId: input.message.chatId,
+        businessConnectionId: input.connection.businessConnectionId,
+        ownerUserId: input.connection.ownerUserId,
+        ownerChatId: input.connection.ownerChatId,
+        status: "active",
+        personaProfileVersion: this.config.digitalTwin.personaProfileVersion,
+        summaryNeedsRefresh: false,
+        createdAt: input.now,
+        updatedAt: input.now,
+      });
+    }
+
+    if (existing.status === "paused") {
+      return existing;
+    }
+
+    const ttlExpired = this.isDigitalTwinSessionTtlExpired(existing, input.now);
+    const personaChanged =
+      existing.personaProfileVersion !== this.config.digitalTwin.personaProfileVersion;
+    const statusReason = existing.status === "reset_requested"
+      ? "reset_requested"
+      : ttlExpired
+        ? "ttl_expired"
+        : personaChanged
+          ? "persona_changed"
+          : undefined;
+
+    if (!statusReason) {
+      return existing;
+    }
+
+    const updated: TelegramDigitalTwinSession = {
+      sessionKey: existing.sessionKey,
+      source: "business",
+      chatId: input.message.chatId,
+      businessConnectionId: input.connection.businessConnectionId,
+      ownerUserId: input.connection.ownerUserId,
+      ownerChatId: input.connection.ownerChatId,
+      status: "active",
+      statusReason,
+      personaProfileVersion: this.config.digitalTwin.personaProfileVersion,
+      ...(existing.summary !== undefined ? { summary: existing.summary } : {}),
+      ...(existing.summaryUpdatedAt !== undefined
+        ? { summaryUpdatedAt: existing.summaryUpdatedAt }
+        : {}),
+      summaryNeedsRefresh: true,
+      ...(existing.lastInboundAt !== undefined
+        ? { lastInboundAt: existing.lastInboundAt }
+        : {}),
+      ...(existing.lastOutboundAt !== undefined
+        ? { lastOutboundAt: existing.lastOutboundAt }
+        : {}),
+      ...(existing.lastError !== undefined ? { lastError: existing.lastError } : {}),
+      createdAt: existing.createdAt,
+      updatedAt: input.now,
+    };
+    return this.store.upsertDigitalTwinSession(updated);
+  }
+
+  private isDigitalTwinSessionTtlExpired(
+    session: TelegramDigitalTwinSession,
+    now: string,
+  ): boolean {
+    const ttlDays = Math.max(0, this.config.digitalTwin.sessionTtlDays);
+    if (ttlDays <= 0) {
+      return false;
+    }
+    const updatedAtMs = Date.parse(session.updatedAt);
+    const nowMs = Date.parse(now);
+    if (!Number.isFinite(updatedAtMs) || !Number.isFinite(nowMs)) {
+      return false;
+    }
+    return nowMs - updatedAtMs > ttlDays * 24 * 60 * 60 * 1000;
+  }
+
+  private async runDigitalTwinTurn(
+    message: TelegramInboundMessage,
+    turnId: string,
+    drainAfterCompletion: boolean,
+  ): Promise<void> {
+    const sessionKey = message.conversationKey;
+    const outboundMessageKey = buildDigitalTwinOutboundMessageKey(message);
+    let sendAttempted = false;
+    let deliveryCommitted = false;
+    let shouldDrainQueuedMessages = false;
+
+    try {
+      const session = await this.store.getDigitalTwinSession(sessionKey);
+      if (!session || !this.assistantCodex?.answerAsDigitalTwin) {
+        await this.store.updateDigitalTwinMessageDelivery({
+          messageKey: outboundMessageKey,
+          deliveryStatus: "send_failed",
+          deliveryError: "Digital twin session or Codex adapter is unavailable.",
+        });
+        await this.store.completeDigitalTwinTurnIfRunning(turnId, {
+          status: "failed",
+          completedAt: new Date().toISOString(),
+          error: "Digital twin session or Codex adapter is unavailable.",
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const inboundText = redactSecrets(message.text?.trim() ?? "");
+      const sources = await this.collectProjectQuestionSources(inboundText);
+      const recentMessages = await this.store.listDigitalTwinMessages(sessionKey, {
+        limit: this.config.digitalTwin.maxRecentMessages,
+      });
+      const result = await this.assistantCodex.answerAsDigitalTwin({
+        sessionKey,
+        ...(session.codexThreadId ? { threadId: session.codexThreadId } : {}),
+        inboundText,
+        ownerStylePrompt: this.config.digitalTwin.ownerStylePrompt,
+        personaProfileVersion: session.personaProfileVersion,
+        ...(session.summary ? { summary: session.summary } : {}),
+        sources,
+        recentMessages: recentMessages.map((recentMessage) => ({
+          direction: recentMessage.direction,
+          ...(recentMessage.redactedText !== undefined
+            ? { redactedText: recentMessage.redactedText }
+            : {}),
+        })),
+        now,
+      });
+
+      const answer = result.answer.trim();
+      const redactedAnswer = redactSecrets(answer);
+      const codexThreadId = result.threadId ?? session.codexThreadId;
+      await this.store.updateDigitalTwinMessageDelivery({
+        messageKey: outboundMessageKey,
+        deliveryStatus: "generated",
+        redactedText: redactedAnswer,
+        fullTextEncrypted: this.encryptDigitalTwinAuditText(answer),
+        ...(codexThreadId ? { codexThreadId } : {}),
+      });
+
+      const latestConnection = message.businessConnectionId
+        ? await this.store.getBusinessConnection(message.businessConnectionId)
+        : undefined;
+      const latestPolicy = canHandleBusinessMessage(
+        this.config,
+        message,
+        latestConnection,
+      );
+      if (!latestConnection || !latestPolicy.allowed || !latestPolicy.shouldAutoReply || !latestPolicy.canReply) {
+        await this.store.updateDigitalTwinMessageDelivery({
+          messageKey: outboundMessageKey,
+          deliveryStatus: "skipped",
+          deliveryError: latestPolicy.reason ?? "business replies unavailable",
+          ...(codexThreadId ? { codexThreadId } : {}),
+        });
+        await this.store.completeDigitalTwinTurnIfRunning(turnId, {
+          status: "cancelled",
+          completedAt: new Date().toISOString(),
+          ...(codexThreadId ? { codexThreadId } : {}),
+          error: latestPolicy.reason ?? "business replies unavailable",
+        });
+        return;
+      }
+
+      const deliveryAttemptedAt = new Date().toISOString();
+      await this.store.updateDigitalTwinMessageDelivery({
+        messageKey: outboundMessageKey,
+        deliveryStatus: "sending",
+        deliveryAttemptedAt,
+        ...(codexThreadId ? { codexThreadId } : {}),
+      });
+      sendAttempted = true;
+      const sent = await this.sendMessage({
+        chatId: String(message.chatId),
+        text: answer,
+        ...(message.messageId ? { replyToMessageId: message.messageId } : {}),
+        businessConnectionId: message.businessConnectionId,
+      });
+
+      const deliveredAt = new Date().toISOString();
+      const allMessages = await this.store.listDigitalTwinMessages(sessionKey);
+      const inboundCount = allMessages.filter(
+        (digitalTwinMessage) => digitalTwinMessage.direction === "inbound",
+      ).length;
+      const refreshInterval = Math.max(
+        0,
+        Math.floor(this.config.digitalTwin.summaryRefreshMessageInterval),
+      );
+      const summaryNeedsRefresh =
+        refreshInterval > 0 && inboundCount % refreshInterval === 0;
+
+      await this.store.updateDigitalTwinMessageDelivery({
+        messageKey: outboundMessageKey,
+        deliveryStatus: "sent",
+        deliveredAt,
+        sentTelegramMessageId: sent.message_id,
+        ...(codexThreadId ? { codexThreadId } : {}),
+      });
+      deliveryCommitted = true;
+
+      const completed = await this.store.completeDigitalTwinTurnIfRunning(turnId, {
+        status: result.timedOut === true ? "failed" : "completed",
+        completedAt: deliveredAt,
+        ...(codexThreadId ? { codexThreadId } : {}),
+        ...(result.timedOut === true ? { error: "Assistant Codex timed out." } : {}),
+      });
+      if (!completed) {
+        return;
+      }
+
+      await this.store.upsertDigitalTwinSession({
+        ...session,
+        status: "active",
+        ...(codexThreadId ? { codexThreadId } : {}),
+        lastInboundAt: message.receivedAt,
+        lastOutboundAt: deliveredAt,
+        summaryNeedsRefresh: session.summaryNeedsRefresh || summaryNeedsRefresh,
+        updatedAt: deliveredAt,
+      });
+
+      shouldDrainQueuedMessages = drainAfterCompletion;
+    } catch (error) {
+      const deliveryStatus = sendAttempted
+        ? "unknown_after_send_attempt"
+        : "send_failed";
+      const diagnostic = redactSecrets(errorToMessage(error));
+      if (!deliveryCommitted) {
+        await this.store.updateDigitalTwinMessageDelivery({
+          messageKey: outboundMessageKey,
+          deliveryStatus,
+          deliveryError: diagnostic,
+        });
+      }
+      await this.store.completeDigitalTwinTurnIfRunning(turnId, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        error: diagnostic,
+      });
+      throw error;
+    }
+
+    if (shouldDrainQueuedMessages) {
+      await this.drainQueuedMessages(message.conversationKey);
+    }
   }
 
   private async cancelActiveAssistantTurn(
@@ -1489,8 +1907,11 @@ export class TelegramAssistantService {
 
         afterConversationLock = await this.handleQueuedMessageUnderConversationLock(
           currentQueuedMessage.message,
-          { drainAfterProjectTurn: false },
+          { drainAfterProjectTurn: false, fromQueuedMessage: true },
         );
+        if (afterConversationLock?.preserveQueuedMessage === true) {
+          return;
+        }
         await this.store.deleteQueuedMessage(currentQueuedMessage.id);
         acceptedQueuedMessage = true;
       });
@@ -1990,10 +2411,31 @@ export class TelegramAssistantService {
     }
   }
 
-  private async sendMessage(input: TelegramSendMessageInput): Promise<void> {
+  private encryptDigitalTwinAuditText(value: string | undefined): string | undefined {
+    if (
+      !value ||
+      this.config.digitalTwin.fullTextRetentionDays <= 0 ||
+      !this.config.digitalTwin.auditEncryptionKeyEnv
+    ) {
+      return undefined;
+    }
+
+    const keyId = this.config.digitalTwin.auditEncryptionKeyEnv;
+    const key = process.env[keyId];
+    if (!key) {
+      throw new Error(`Telegram audit encryption key env var is missing: ${keyId}`);
+    }
+
+    return encryptTelegramAuditText(value, { key, keyId });
+  }
+
+  private async sendMessage(
+    input: TelegramSendMessageInput,
+  ): Promise<TelegramMessage> {
     try {
-      await this.telegram.sendMessage(input);
+      const sent = await this.telegram.sendMessage(input);
       this.incrementMetric("telegram_messages_sent_total", { outcome: "success" });
+      return sent;
     } catch (error) {
       this.incrementMetric("telegram_messages_sent_total", { outcome: "failure" });
       if (error instanceof TelegramRetryAfterError) {
@@ -2247,6 +2689,29 @@ const buildAssistantTurnId = (message: TelegramInboundMessage): string => {
     : "no-message";
   return `assistant-turn:${message.updateId.toString(36)}:${messagePart}`;
 };
+
+const buildDigitalTwinInboundMessageKey = (
+  message: TelegramInboundMessage,
+): string =>
+  `telegram-business:${message.businessConnectionId}:${message.chatId}:${message.messageId}`;
+
+const buildDigitalTwinOutboundMessageKey = (
+  message: TelegramInboundMessage,
+): string =>
+  `telegram-business-reply:${message.businessConnectionId}:${message.chatId}:${message.messageId}`;
+
+const buildDigitalTwinTurnId = (message: TelegramInboundMessage): string =>
+  `tgdt_${message.updateId.toString(36)}_${(message.messageId ?? 0).toString(36)}`;
+
+const buildDigitalTwinInboundMessageId = (
+  message: TelegramInboundMessage,
+): string =>
+  `dtm_in_${message.updateId.toString(36)}_${(message.messageId ?? 0).toString(36)}`;
+
+const buildDigitalTwinOutboundMessageId = (
+  message: TelegramInboundMessage,
+): string =>
+  `dtm_out_${message.updateId.toString(36)}_${(message.messageId ?? 0).toString(36)}`;
 
 const isWithinRoot = (root: string, candidate: string): boolean => {
   const resolvedRoot = resolve(root);
