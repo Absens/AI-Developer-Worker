@@ -53,7 +53,10 @@ import type {
 } from "./assistantCodex.js";
 import { encryptTelegramAuditText } from "./auditCrypto.js";
 import type { TelegramAssistantProjectSourceProvider } from "./projectSources.js";
-import type { TelegramAssistantStore } from "./store.js";
+import type {
+  PurgeDigitalTwinSessionDataResult,
+  TelegramAssistantStore,
+} from "./store.js";
 import {
   buildHeuristicTaskDraft,
   type TelegramTaskDraft,
@@ -216,12 +219,51 @@ export class TelegramAssistantService {
     queuedMessages: number;
     assistantTurns: number;
     pendingActions: number;
+    digitalTwin: PurgeDigitalTwinSessionDataResult;
   }> {
-    if (resolveTelegramRole(this.config, input.requestedByUserId) !== "admin") {
-      throw new Error("Telegram assistant purge requires an admin user.");
+    this.assertTelegramAdmin(input.requestedByUserId, "purge");
+    const [assistant, digitalTwin] = await Promise.all([
+      this.store.purgeTelegramConversationData({
+        conversationKey: input.conversationKey,
+      }),
+      this.store.purgeDigitalTwinSessionData(input.conversationKey),
+    ]);
+    return { ...assistant, digitalTwin };
+  }
+
+  public async pauseDigitalTwinSession(input: {
+    sessionKey: string;
+    requestedByUserId: number;
+    reason?: string;
+  }): Promise<void> {
+    this.assertTelegramAdmin(input.requestedByUserId, "pause digital twin session");
+    const existing = await this.store.getDigitalTwinSession(input.sessionKey);
+    if (!existing) {
+      return;
     }
-    return this.store.purgeTelegramConversationData({
-      conversationKey: input.conversationKey,
+    await this.store.upsertDigitalTwinSession({
+      ...existing,
+      status: "paused",
+      statusReason: input.reason ?? "Paused by owner/admin.",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  public async resetDigitalTwinSession(input: {
+    sessionKey: string;
+    requestedByUserId: number;
+  }): Promise<void> {
+    this.assertTelegramAdmin(input.requestedByUserId, "reset digital twin session");
+    const existing = await this.store.getDigitalTwinSession(input.sessionKey);
+    if (!existing) {
+      return;
+    }
+    const { codexThreadId: _codexThreadId, ...sessionWithoutThread } = existing;
+    await this.store.upsertDigitalTwinSession({
+      ...sessionWithoutThread,
+      status: "reset_requested",
+      statusReason: "Reset by owner/admin.",
+      updatedAt: new Date().toISOString(),
     });
   }
 
@@ -249,6 +291,12 @@ export class TelegramAssistantService {
         { intent },
         Math.max(0, Date.now() - startedAt) / 1000,
       );
+    }
+  }
+
+  private assertTelegramAdmin(userId: number, action: string): void {
+    if (resolveTelegramRole(this.config, userId) !== "admin") {
+      throw new Error(`Telegram assistant ${action} requires an admin user.`);
     }
   }
 

@@ -4812,6 +4812,26 @@ describe("TelegramAssistantService", () => {
       status: "running",
       startedAt: baseTime,
     });
+    await store.upsertDigitalTwinSession({
+      sessionKey: "bot_private:1",
+      source: "business",
+      chatId: 1,
+      businessConnectionId: "bc_1",
+      status: "active",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    await store.reserveDigitalTwinMessage({
+      id: "dtm-purge",
+      sessionKey: "bot_private:1",
+      messageKey: "telegram-business:bc_1:1:10",
+      direction: "inbound",
+      deliveryStatus: "received",
+      createdAt: baseTime,
+      metadata: {},
+    });
     await store.upsertPendingAction(createTaskDraftPendingAction({
       id: "pending-action:purge",
       conversationKey: "bot_private:1",
@@ -4826,6 +4846,11 @@ describe("TelegramAssistantService", () => {
         queuedMessages: number;
         assistantTurns: number;
         pendingActions: number;
+        digitalTwin: {
+          sessions: number;
+          messages: number;
+          turns: number;
+        };
       }>;
     }).purgeConversationData({
       conversationKey: "bot_private:1",
@@ -4837,11 +4862,106 @@ describe("TelegramAssistantService", () => {
       queuedMessages: 1,
       assistantTurns: 1,
       pendingActions: 1,
+      digitalTwin: {
+        sessions: 1,
+        messages: 1,
+        turns: 0,
+      },
     });
     await expect(store.listMessageRefs("bot_private:1")).resolves.toEqual([]);
     await expect(store.listQueuedMessages("bot_private:1")).resolves.toEqual([]);
     await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
     await expect(store.listPendingActions({ conversationKey: "bot_private:1" })).resolves.toEqual([]);
+  });
+
+  it("lets admins pause and reset digital twin sessions", async () => {
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      config: {
+        adminUserIds: ["10"],
+      },
+    }) as TelegramAssistantService & {
+      pauseDigitalTwinSession(input: {
+        sessionKey: string;
+        requestedByUserId: number;
+        reason?: string;
+      }): Promise<void>;
+      resetDigitalTwinSession(input: {
+        sessionKey: string;
+        requestedByUserId: number;
+      }): Promise<void>;
+    };
+    await store.upsertDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      source: "business",
+      chatId: 777,
+      businessConnectionId: "bc_1",
+      status: "active",
+      codexThreadId: "thread-before-reset",
+      personaProfileVersion: "default",
+      summaryNeedsRefresh: false,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+
+    await service.pauseDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      requestedByUserId: 10,
+      reason: "owner break",
+    });
+
+    await expect(store.getDigitalTwinSession("business:bc_1:777")).resolves
+      .toMatchObject({
+        status: "paused",
+        statusReason: "owner break",
+        codexThreadId: "thread-before-reset",
+      });
+
+    await service.resetDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      requestedByUserId: 10,
+    });
+
+    const resetSession = await store.getDigitalTwinSession("business:bc_1:777");
+    expect(resetSession).toMatchObject({
+      status: "reset_requested",
+      statusReason: "Reset by owner/admin.",
+    });
+    expect(resetSession?.codexThreadId).toBeUndefined();
+  });
+
+  it("rejects non-admin digital twin pause and reset controls", async () => {
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      config: {
+        adminUserIds: ["10"],
+      },
+    }) as TelegramAssistantService & {
+      pauseDigitalTwinSession(input: {
+        sessionKey: string;
+        requestedByUserId: number;
+        reason?: string;
+      }): Promise<void>;
+      resetDigitalTwinSession(input: {
+        sessionKey: string;
+        requestedByUserId: number;
+      }): Promise<void>;
+    };
+
+    await expect(service.pauseDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      requestedByUserId: 11,
+    })).rejects.toThrow(
+      "Telegram assistant pause digital twin session requires an admin user.",
+    );
+    await expect(service.resetDigitalTwinSession({
+      sessionKey: "business:bc_1:777",
+      requestedByUserId: 11,
+    })).rejects.toThrow(
+      "Telegram assistant reset digital twin session requires an admin user.",
+    );
   });
 
   it("does not mark an update processed or advance offset when handling fails", async () => {
