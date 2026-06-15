@@ -196,6 +196,20 @@ describe("config", () => {
       confirmWriteActions: true,
       projectQaEnabled: false,
       taskCreationEnabled: true,
+      digitalTwin: {
+        enabled: false,
+        autoReplyEnabled: true,
+        fullAccess: true,
+        sessionTtlDays: 0,
+        summaryRefreshMessageInterval: 20,
+        maxRecentMessages: 20,
+        codexTimeoutSeconds: 120,
+        redactedRetentionDays: 30,
+        fullTextRetentionDays: 0,
+        auditEncryptionKeyEnv: undefined,
+        personaProfileVersion: "default",
+        ownerStylePrompt: "",
+      },
       profileAutomation: {
         enabled: false,
         autoReplyEnabled: false,
@@ -274,6 +288,42 @@ describe("config", () => {
       maxMessageAgeSeconds: 120,
     });
     expect(config.telegramAssistant?.maxInboundMessageAgeSeconds).toBe(600);
+  });
+
+  it("parses Telegram digital twin settings from env and config file", () => {
+    const config = loadFleetConfig({
+      ...baseFleetEnv(),
+      TELEGRAM_ASSISTANT_ENABLED: "true",
+      TELEGRAM_ASSISTANT_BOT_TOKEN: "secret",
+      TELEGRAM_ALLOWED_USER_IDS: "101",
+      TELEGRAM_DIGITAL_TWIN_ENABLED: "true",
+      TELEGRAM_DIGITAL_TWIN_AUTO_REPLY_ENABLED: "false",
+      TELEGRAM_DIGITAL_TWIN_FULL_ACCESS: "true",
+      TELEGRAM_DIGITAL_TWIN_SESSION_TTL_DAYS: "7",
+      TELEGRAM_DIGITAL_TWIN_SUMMARY_REFRESH_MESSAGE_INTERVAL: "12",
+      TELEGRAM_DIGITAL_TWIN_MAX_RECENT_MESSAGES: "8",
+      TELEGRAM_DIGITAL_TWIN_CODEX_TIMEOUT_SECONDS: "90",
+      TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS: "45",
+      TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS: "5",
+      TELEGRAM_DIGITAL_TWIN_AUDIT_ENCRYPTION_KEY_ENV: "TG_AUDIT_KEY",
+      TELEGRAM_DIGITAL_TWIN_PERSONA_PROFILE_VERSION: "v2",
+      TELEGRAM_DIGITAL_TWIN_OWNER_STYLE_PROMPT: "Answer briefly in my style.",
+    });
+
+    expect(config.telegramAssistant?.digitalTwin).toEqual({
+      enabled: true,
+      autoReplyEnabled: false,
+      fullAccess: true,
+      sessionTtlDays: 7,
+      summaryRefreshMessageInterval: 12,
+      maxRecentMessages: 8,
+      codexTimeoutSeconds: 90,
+      redactedRetentionDays: 45,
+      fullTextRetentionDays: 5,
+      auditEncryptionKeyEnv: "TG_AUDIT_KEY",
+      personaProfileVersion: "v2",
+      ownerStylePrompt: "Answer briefly in my style.",
+    });
   });
 
   it("parses Telegram assistant bot username for group mention routing", () => {

@@ -267,6 +267,21 @@ export interface TelegramAssistantWebhookConfig {
   secretToken?: string;
 }
 
+export interface TelegramDigitalTwinConfig {
+  enabled: boolean;
+  autoReplyEnabled: boolean;
+  fullAccess: boolean;
+  sessionTtlDays: number;
+  summaryRefreshMessageInterval: number;
+  maxRecentMessages: number;
+  codexTimeoutSeconds: number;
+  redactedRetentionDays: number;
+  fullTextRetentionDays: number;
+  auditEncryptionKeyEnv?: string;
+  personaProfileVersion: string;
+  ownerStylePrompt: string;
+}
+
 export interface TelegramAssistantConfig {
   enabled: boolean;
   botToken?: string;
@@ -293,6 +308,7 @@ export interface TelegramAssistantConfig {
   maxInboundMessageAgeSeconds: number;
   webhook?: TelegramAssistantWebhookConfig;
   media: TelegramAssistantMediaConfig;
+  digitalTwin: TelegramDigitalTwinConfig;
   profileAutomation: TelegramProfileAutomationConfig;
 }
 

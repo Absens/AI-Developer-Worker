@@ -151,6 +151,20 @@ const DEFAULT_TELEGRAM_ASSISTANT_CONFIG: TelegramAssistantConfig = {
     maxBytes: 10 * 1024 * 1024,
     allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "text/plain"],
   },
+  digitalTwin: {
+    enabled: false,
+    autoReplyEnabled: true,
+    fullAccess: true,
+    sessionTtlDays: 0,
+    summaryRefreshMessageInterval: 20,
+    maxRecentMessages: 20,
+    codexTimeoutSeconds: 120,
+    redactedRetentionDays: 30,
+    fullTextRetentionDays: 0,
+    auditEncryptionKeyEnv: undefined,
+    personaProfileVersion: "default",
+    ownerStylePrompt: "",
+  },
   profileAutomation: {
     enabled: false,
     autoReplyEnabled: false,
@@ -1209,6 +1223,7 @@ const parseTelegramAssistantConfig = (
     rawValue?.profileAutomation,
     `${path}.profileAutomation`,
   );
+  const digitalTwin = optionalRecord(rawValue?.digitalTwin, `${path}.digitalTwin`);
   const webhook = optionalRecord(rawValue?.webhook, `${path}.webhook`);
   const media = optionalRecord(rawValue?.media, `${path}.media`);
   const modeEnvValue = firstEnv(env, "TELEGRAM_ASSISTANT_MODE");
@@ -1415,6 +1430,91 @@ const parseTelegramAssistantConfig = (
         media?.allowedMimeTypes,
         `${path}.media.allowedMimeTypes`,
       ),
+    },
+    digitalTwin: {
+      enabled: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_ENABLED"),
+        digitalTwin?.enabled,
+        "TELEGRAM_DIGITAL_TWIN_ENABLED",
+        `${path}.digitalTwin.enabled`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.enabled,
+      ),
+      autoReplyEnabled: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_AUTO_REPLY_ENABLED"),
+        digitalTwin?.autoReplyEnabled,
+        "TELEGRAM_DIGITAL_TWIN_AUTO_REPLY_ENABLED",
+        `${path}.digitalTwin.autoReplyEnabled`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.autoReplyEnabled,
+      ),
+      fullAccess: parseBooleanEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_FULL_ACCESS"),
+        digitalTwin?.fullAccess,
+        "TELEGRAM_DIGITAL_TWIN_FULL_ACCESS",
+        `${path}.digitalTwin.fullAccess`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.fullAccess,
+      ),
+      sessionTtlDays: parseNonNegativeIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_SESSION_TTL_DAYS"),
+        digitalTwin?.sessionTtlDays,
+        "TELEGRAM_DIGITAL_TWIN_SESSION_TTL_DAYS",
+        `${path}.digitalTwin.sessionTtlDays`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.sessionTtlDays,
+      ),
+      summaryRefreshMessageInterval: parsePositiveIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_SUMMARY_REFRESH_MESSAGE_INTERVAL"),
+        digitalTwin?.summaryRefreshMessageInterval,
+        "TELEGRAM_DIGITAL_TWIN_SUMMARY_REFRESH_MESSAGE_INTERVAL",
+        `${path}.digitalTwin.summaryRefreshMessageInterval`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.summaryRefreshMessageInterval,
+      ),
+      maxRecentMessages: parsePositiveIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_MAX_RECENT_MESSAGES"),
+        digitalTwin?.maxRecentMessages,
+        "TELEGRAM_DIGITAL_TWIN_MAX_RECENT_MESSAGES",
+        `${path}.digitalTwin.maxRecentMessages`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.maxRecentMessages,
+      ),
+      codexTimeoutSeconds: parsePositiveIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_CODEX_TIMEOUT_SECONDS"),
+        digitalTwin?.codexTimeoutSeconds,
+        "TELEGRAM_DIGITAL_TWIN_CODEX_TIMEOUT_SECONDS",
+        `${path}.digitalTwin.codexTimeoutSeconds`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.codexTimeoutSeconds,
+      ),
+      redactedRetentionDays: parsePositiveIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS"),
+        digitalTwin?.redactedRetentionDays,
+        "TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS",
+        `${path}.digitalTwin.redactedRetentionDays`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.redactedRetentionDays,
+      ),
+      fullTextRetentionDays: parseNonNegativeIntEnvOrConfig(
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS"),
+        digitalTwin?.fullTextRetentionDays,
+        "TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS",
+        `${path}.digitalTwin.fullTextRetentionDays`,
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.fullTextRetentionDays,
+      ),
+      auditEncryptionKeyEnv:
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_AUDIT_ENCRYPTION_KEY_ENV") ||
+        optionalString(
+          digitalTwin?.auditEncryptionKeyEnv,
+          `${path}.digitalTwin.auditEncryptionKeyEnv`,
+        ),
+      personaProfileVersion:
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_PERSONA_PROFILE_VERSION") ||
+        optionalString(
+          digitalTwin?.personaProfileVersion,
+          `${path}.digitalTwin.personaProfileVersion`,
+        ) ||
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.personaProfileVersion,
+      ownerStylePrompt:
+        firstEnv(env, "TELEGRAM_DIGITAL_TWIN_OWNER_STYLE_PROMPT") ||
+        optionalString(
+          digitalTwin?.ownerStylePrompt,
+          `${path}.digitalTwin.ownerStylePrompt`,
+        ) ||
+        DEFAULT_TELEGRAM_ASSISTANT_CONFIG.digitalTwin.ownerStylePrompt,
     },
     profileAutomation: {
       enabled: parseBooleanEnvOrConfig(
