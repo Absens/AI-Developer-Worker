@@ -173,6 +173,57 @@ describe("resolveTelegramExecutionRepositoryProfile", () => {
     });
   });
 
+  it("does not match short tags inside unrelated longer words", () => {
+    const repositories = [
+      repositoryFixture({
+        name: "frontend",
+        queues: ["FRONTEND"],
+        tags: ["ui"],
+      }),
+      repositoryFixture({
+        name: "backend",
+        baseBranch: "develop",
+        queues: ["BACKEND"],
+        tags: ["api"],
+      }),
+    ];
+
+    expect(resolveTelegramExecutionRepositoryProfile({
+      repositories,
+      text: "создай задачу для building",
+    })).toEqual({
+      status: "needs_selection",
+      options: [
+        executionProfile({
+          repositoryName: "frontend",
+          repoPathKey: "frontend",
+          queue: "FRONTEND",
+          tags: ["ui"],
+        }),
+        executionProfile({
+          repositoryName: "backend",
+          repoPathKey: "backend",
+          baseBranch: "develop",
+          queue: "BACKEND",
+          tags: ["api"],
+        }),
+      ],
+    });
+    expect(resolveTelegramExecutionRepositoryProfile({
+      repositories,
+      text: "создай задачу для ui",
+    })).toEqual({
+      status: "selected",
+      reason: "text_match",
+      profile: executionProfile({
+        repositoryName: "frontend",
+        repoPathKey: "frontend",
+        queue: "FRONTEND",
+        tags: ["ui"],
+      }),
+    });
+  });
+
   it("returns selection options when multiple profiles are possible", () => {
     const repositories = [
       repositoryFixture({

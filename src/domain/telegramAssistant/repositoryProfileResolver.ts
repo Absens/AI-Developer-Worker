@@ -52,9 +52,33 @@ const toExecutableProfile = (
 
 const normalizeMatchValue = (value: string): string => value.trim().toLowerCase();
 
+const isMatchBoundary = (character: string | undefined): boolean =>
+  character === undefined || !/[\p{L}\p{N}]/u.test(character);
+
 const matchesConfiguredValue = (text: string, value: string): boolean => {
   const normalizedValue = normalizeMatchValue(value);
-  return normalizedValue.length > 0 && text.includes(normalizedValue);
+  if (normalizedValue.length === 0) {
+    return false;
+  }
+
+  let fromIndex = 0;
+  while (fromIndex < text.length) {
+    const matchIndex = text.indexOf(normalizedValue, fromIndex);
+    if (matchIndex === -1) {
+      return false;
+    }
+
+    const before = matchIndex > 0 ? text[matchIndex - 1] : undefined;
+    const afterIndex = matchIndex + normalizedValue.length;
+    const after = afterIndex < text.length ? text[afterIndex] : undefined;
+    if (isMatchBoundary(before) && isMatchBoundary(after)) {
+      return true;
+    }
+
+    fromIndex = matchIndex + 1;
+  }
+
+  return false;
 };
 
 const getProfileMatchValues = (
