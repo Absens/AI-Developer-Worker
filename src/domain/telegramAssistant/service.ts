@@ -2194,6 +2194,12 @@ export class TelegramAssistantService {
     if (cancelledQueued.length > 0) {
       this.incrementMetric("telegram_queued_messages_total", { outcome: "cancelled" }, cancelledQueued.length);
     }
+    const sessionId = getExecutableTaskDraftSessionId(cancelled.payload);
+    if (sessionId) {
+      await this.store.completeExecutableTaskDraftSession(sessionId, {
+        status: "cancelled",
+      });
+    }
     await this.updatePendingActionGauges();
     return cancelled;
   }
@@ -2218,7 +2224,16 @@ export class TelegramAssistantService {
     message: TelegramInboundMessage,
     executableAction: TelegramPendingAction,
   ): Promise<void> {
-    const task = await this.findOrCreateTaskFromPendingAction(executableAction);
+    const payload = parseTaskDraftPayload(executableAction.payload);
+    const task = await this.findOrCreateTaskFromPendingAction(
+      executableAction,
+      payload,
+    );
+    if (payload.sessionId) {
+      await this.store.completeExecutableTaskDraftSession(payload.sessionId, {
+        status: "completed",
+      });
+    }
     await this.store.completePendingAction(executableAction.id, {
       status: "completed",
     });
@@ -2332,12 +2347,13 @@ export class TelegramAssistantService {
 
   private async findOrCreateTaskFromPendingAction(
     action: TelegramPendingAction,
+    parsedPayload?: TaskDraftPayload,
   ): Promise<TaskRecord> {
     if (!this.taskTracker) {
       throw new Error("Task tracker is required to create telegram task drafts.");
     }
 
-    const payload = parseTaskDraftPayload(action.payload);
+    const payload = parsedPayload ?? parseTaskDraftPayload(action.payload);
     const existing = await this.taskTracker.findTaskByExternalRef(
       "telegram",
       payload.externalKey,
@@ -3228,7 +3244,8 @@ const parseTaskDraftPayload = (
       executionMode !== undefined &&
       (
         !isTelegramExecutableTaskDraft(draft) ||
-        !isTelegramExecutableTaskDraftExecutionMode(executionMode)
+        !isTelegramExecutableTaskDraftExecutionMode(executionMode) ||
+        executionMode !== draft.executionMode
       )
     ) ||
     (sessionId !== undefined && typeof sessionId !== "string") ||
@@ -3256,6 +3273,27 @@ const parseTaskDraftPayload = (
       ? { attachments }
       : {}),
   };
+};
+
+const getExecutableTaskDraftSessionId = (
+  payload: Record<string, unknown>,
+): string | undefined => {
+  const sessionId = payload.sessionId;
+  if (typeof sessionId !== "string") {
+    return undefined;
+  }
+
+  const draft = payload.draft;
+  if (!isTelegramExecutableTaskDraft(draft)) {
+    return undefined;
+  }
+
+  const executionMode = payload.executionMode;
+  if (executionMode !== undefined && executionMode !== draft.executionMode) {
+    return undefined;
+  }
+
+  return sessionId;
 };
 
 const parseAnswerAiQuestionPayload = (

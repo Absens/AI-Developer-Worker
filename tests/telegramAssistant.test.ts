@@ -3402,6 +3402,14 @@ describe("TelegramAssistantService", () => {
       conversationKey: "bot_private:1",
     });
     expect(action).toMatchObject({ status: "completed" });
+    const sessionId = action?.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "completed" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
 
     const [subscription] = await store.listTaskSubscriptions("bot_private:1");
     expect(subscription).toMatchObject({
@@ -3420,6 +3428,58 @@ describe("TelegramAssistantService", () => {
       text: `Задача создана и поставлена в очередь: ${taskId}`,
     }));
     expect(await store.getOffset("default")).toBe(38);
+  });
+
+  it("rejects mismatched executable draft payload execution mode", async () => {
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const markReadySpy = vi.spyOn(taskTracker, "markReady");
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      repositories: [repositoryFixture({ tags: ["ai_dev"] })],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 40,
+      messageId: 99,
+    }));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+    await store.upsertPendingAction({
+      ...pending,
+      payload: {
+        ...pending.payload,
+        executionMode: "auto_ready",
+        draft: {
+          ...(pending.payload.draft as Record<string, unknown>),
+          executionMode: "owner_approval",
+        },
+      },
+    });
+
+    await expect(
+      service.handleUpdate(callbackUpdate(`c:${pending.id}`, {
+        updateId: 41,
+        callbackQueryId: "cb_mismatch",
+      })),
+    ).rejects.toThrow("Invalid telegram task draft payload.");
+
+    expect(createTaskSpy).not.toHaveBeenCalled();
+    expect(markReadySpy).not.toHaveBeenCalled();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "executing",
+    });
   });
 
   it("retries text approval from an executing draft after tracker write failure", async () => {
@@ -3639,6 +3699,8 @@ describe("TelegramAssistantService", () => {
     if (!pending) {
       throw new Error("Expected pending telegram action.");
     }
+    const sessionId = pending.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
     await store.enqueueMessage({
       id: "queued-follow-up",
       conversationKey: "bot_private:1",
@@ -3676,6 +3738,51 @@ describe("TelegramAssistantService", () => {
     await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
       status: "cancelled",
     });
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("cancels executable task draft sessions from text cancellation", async () => {
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({ store, taskTracker });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 130,
+      messageId: 99,
+    }));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+    const sessionId = pending.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
+
+    await service.handleUpdate(messageUpdate("отмена", {
+      updateId: 131,
+      messageId: 100,
+      date: 2,
+    }));
+
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "cancelled",
+    });
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
   });
 
   it("refreshes pending action gauges after cancelling a create-task callback", async () => {
