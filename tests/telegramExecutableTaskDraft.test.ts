@@ -5,6 +5,7 @@ import {
   classifyTelegramTaskRisk,
   nextExecutableDraftQuestion,
   resolveTelegramExecutionRepositoryProfile,
+  type TelegramExecutableTaskDraftSession,
   type TelegramExecutionRepositoryProfile,
 } from "../src/domain/telegramAssistant/index.js";
 import type { RepositoryProfile } from "../src/models/types.js";
@@ -345,6 +346,20 @@ describe("classifyTelegramTaskRisk", () => {
       requiresOwnerApproval: false,
     });
   });
+
+  it("uses token boundaries for Russian risk keywords", () => {
+    expect(classifyTelegramTaskRisk("выкатить на прод")).toEqual({
+      riskLevel: "high",
+      reasons: ["infrastructure_or_deploy"],
+      requiresOwnerApproval: true,
+    });
+
+    expect(classifyTelegramTaskRisk("уточнить контекст задачи")).toEqual({
+      riskLevel: "medium",
+      reasons: ["isolated_feature_or_bugfix"],
+      requiresOwnerApproval: false,
+    });
+  });
 });
 
 describe("buildTelegramExecutableTaskDraft", () => {
@@ -363,7 +378,7 @@ describe("buildTelegramExecutableTaskDraft", () => {
     expect(draft).toEqual({
       title: "добавить фильтр по статусу в списке задач",
       description: "создай задачу добавить фильтр по статусу в списке задач",
-      acceptanceCriteria: "Поведение реализовано и покрыто существующими проверками.",
+      acceptanceCriteria: ["Поведение реализовано и покрыто существующими проверками."],
       repositoryName: "frontend",
       repoPathKey: "frontend",
       baseBranch: "develop",
@@ -389,6 +404,18 @@ describe("buildTelegramExecutableTaskDraft", () => {
     });
   });
 
+  it("asks for description when selected profile text only contains a create-task command", () => {
+    const draft = buildTelegramExecutableTaskDraft({
+      text: "создай задачу",
+      selectedProfile: executionProfile(),
+    });
+
+    expect(nextExecutableDraftQuestion(draft)).toEqual({
+      field: "description",
+      text: "Опиши задачу чуть подробнее: что нужно изменить и где это проверить?",
+    });
+  });
+
   it("uses owner approval mode for high-risk and forced approval drafts", () => {
     expect(buildTelegramExecutableTaskDraft({
       text: "надо сделать deploy в prod и обновить docker конфиг",
@@ -400,5 +427,30 @@ describe("buildTelegramExecutableTaskDraft", () => {
       selectedProfile: executionProfile(),
       forceOwnerApproval: true,
     }).executionMode).toBe("owner_approval");
+  });
+
+  it("uses numeric owner identifiers in executable draft sessions", () => {
+    const session: TelegramExecutableTaskDraftSession = {
+      id: "draft-1",
+      conversationKey: "private:100",
+      source: "private",
+      initiatorUserId: 100,
+      ownerUserId: 200,
+      ownerChatId: 300,
+      chatId: 100,
+      originalText: "создай задачу добавить фильтр",
+      draft: buildTelegramExecutableTaskDraft({
+        text: "создай задачу добавить фильтр",
+        selectedProfile: executionProfile(),
+      }),
+      status: "collecting",
+      clarificationHistory: [],
+      createdAt: "2026-06-24T00:00:00.000Z",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      expiresAt: "2026-06-25T00:00:00.000Z",
+    };
+
+    expect(session.ownerUserId).toBe(200);
+    expect(session.ownerChatId).toBe(300);
   });
 });

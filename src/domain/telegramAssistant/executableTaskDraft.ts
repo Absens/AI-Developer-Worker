@@ -19,9 +19,11 @@ const MAX_TITLE_LENGTH = 80;
 const TASK_VERB_PREFIX_PATTERN =
   /^(?:\s*(?:надо\s+сделать|создай\s+задачу|заведи\s+задачу|сделай|почини|добавь)[:,\s-]*)+/iu;
 
-const toTitle = (text: string): string => {
-  const strippedTitle = text.replace(TASK_VERB_PREFIX_PATTERN, "").trim();
-  const title = strippedTitle.length > 0 ? strippedTitle : DEFAULT_TITLE;
+const stripTaskCommandPrefix = (text: string): string =>
+  text.replace(TASK_VERB_PREFIX_PATTERN, "").trim();
+
+const toTitle = (taskBody: string): string => {
+  const title = taskBody.length > 0 ? taskBody : DEFAULT_TITLE;
 
   if (title.length <= MAX_TITLE_LENGTH) {
     return title;
@@ -49,6 +51,7 @@ const uniqueTags = (tags: string[]): string[] => {
 export const buildTelegramExecutableTaskDraft = (
   input: BuildTelegramExecutableTaskDraftInput,
 ): TelegramExecutableTaskDraft => {
+  const taskBody = stripTaskCommandPrefix(input.text);
   const risk = classifyTelegramTaskRisk(input.text);
   const executionMode =
     risk.riskLevel === "high" || input.forceOwnerApproval === true
@@ -56,9 +59,9 @@ export const buildTelegramExecutableTaskDraft = (
       : "auto_ready";
 
   return {
-    title: toTitle(input.text),
+    title: toTitle(taskBody),
     description: input.text,
-    acceptanceCriteria: DEFAULT_ACCEPTANCE_CRITERIA,
+    acceptanceCriteria: [DEFAULT_ACCEPTANCE_CRITERIA],
     ...(input.selectedProfile
       ? {
           repositoryName: input.selectedProfile.repositoryName,
@@ -92,14 +95,15 @@ export const nextExecutableDraftQuestion = (
     };
   }
 
-  if (draft.acceptanceCriteria.trim().length === 0) {
+  if (draft.acceptanceCriteria.every((criterion) => criterion.trim().length === 0)) {
     return {
       field: "acceptanceCriteria",
       text: "Как понять, что задача выполнена? Назови 1-3 критерия приемки.",
     };
   }
 
-  if (draft.description.trim().length < 12) {
+  const taskBody = draft.title === DEFAULT_TITLE ? "" : draft.title.trim();
+  if (taskBody.length < 12) {
     return {
       field: "description",
       text: "Опиши задачу чуть подробнее: что нужно изменить и где это проверить?",

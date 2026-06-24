@@ -208,7 +208,7 @@ export type TelegramExecutableTaskDraftExecutionMode =
 export interface TelegramExecutableTaskDraft {
   title: string;
   description: string;
-  acceptanceCriteria: string;
+  acceptanceCriteria: string[];
   repositoryName?: string;
   repoPathKey?: string;
   baseBranch?: string;
@@ -235,8 +235,8 @@ export interface TelegramExecutableTaskDraftSession {
   conversationKey: string;
   source: TelegramExecutableTaskDraftSource;
   initiatorUserId?: number;
-  ownerUserId?: string;
-  ownerChatId?: string;
+  ownerUserId?: number;
+  ownerChatId?: number;
   chatId: number;
   messageId?: number;
   originalText: string;
