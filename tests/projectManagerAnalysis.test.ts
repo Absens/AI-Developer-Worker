@@ -144,6 +144,30 @@ describe("project manager strategy parser", () => {
     });
   });
 
+  it("parses raw PROJECT_STRATEGY JSON from Codex output-schema runs", () => {
+    const parsed = parseProjectStrategyResponse(
+      JSON.stringify({
+        summary: "Strategy found one technical opportunity.",
+        analysisLenses: [
+          { lens: "strategy", summary: "Validation evidence is weak." },
+        ],
+        opportunities: [],
+        proposedGoals: [],
+        questionsForHuman: [],
+      }),
+    );
+
+    expect(parsed).toEqual({
+      summary: "Strategy found one technical opportunity.",
+      analysisLenses: [
+        { lens: "strategy", summary: "Validation evidence is weak." },
+      ],
+      opportunities: [],
+      proposedGoals: [],
+      questionsForHuman: [],
+    });
+  });
+
   it("rejects PROJECT_STRATEGY proposed goals without sourceOpportunityId", () => {
     const parsed = parseProjectStrategyResponse(
       `${PROJECT_STRATEGY_MARKER} ${JSON.stringify({

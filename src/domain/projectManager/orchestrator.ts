@@ -17,8 +17,11 @@ import {
 } from "./analysisParser.js";
 import {
   buildProjectAnalysisPrompt,
+  PROJECT_ANALYSIS_OUTPUT_SCHEMA,
   buildProjectReplanPrompt,
+  PROJECT_REPLAN_OUTPUT_SCHEMA,
   buildProjectStrategyPrompt,
+  PROJECT_STRATEGY_OUTPUT_SCHEMA,
 } from "./promptBuilder.js";
 import { collectProjectReplanSnapshot } from "./replanSnapshot.js";
 import { collectProjectSignals } from "./signalCollector.js";
@@ -155,6 +158,7 @@ export class ProjectManagerOrchestrator {
       });
       const execution = await this.codex.runInitial(prompt, undefined, {
         sandbox: "read-only",
+        outputSchema: PROJECT_ANALYSIS_OUTPUT_SCHEMA,
       });
       if (execution.process.exitCode !== 0) {
         throw new Error(
@@ -240,6 +244,7 @@ export class ProjectManagerOrchestrator {
       });
       const execution = await this.codex.runInitial(prompt, undefined, {
         sandbox: "read-only",
+        outputSchema: PROJECT_STRATEGY_OUTPUT_SCHEMA,
       });
       if (execution.process.exitCode !== 0) {
         throw new Error(
@@ -354,6 +359,7 @@ export class ProjectManagerOrchestrator {
       });
       const execution = await this.codex.runInitial(prompt, undefined, {
         sandbox: "read-only",
+        outputSchema: PROJECT_REPLAN_OUTPUT_SCHEMA,
       });
       if (execution.process.exitCode !== 0) {
         throw new Error(

@@ -312,14 +312,18 @@ export interface TelegramAssistantConfig {
   profileAutomation: TelegramProfileAutomationConfig;
 }
 
+export type CodexOutputSchema = Record<string, unknown>;
+
 export interface CodexRunOptions {
   imagePaths?: string[];
   sandbox?: CodexSandbox;
+  outputSchema?: CodexOutputSchema;
 }
 
 export interface CodexReviewRunOptions {
   baseBranch: string;
   title?: string;
+  outputSchema?: CodexOutputSchema;
 }
 
 export interface TaskAnalysisDecision {

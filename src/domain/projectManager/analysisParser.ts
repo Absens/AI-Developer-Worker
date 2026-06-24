@@ -455,26 +455,37 @@ const parseGoalReplans = (
   return goalReplans;
 };
 
-export const parseProjectAnalysisResponse = (
+const extractStructuredPayload = (
   message: string | undefined,
-): ParsedProjectAnalysis | undefined => {
-  if (!message?.startsWith(PROJECT_ANALYSIS_MARKER)) {
+  marker: string,
+): Record<string, unknown> | undefined => {
+  if (!message) {
     return undefined;
   }
 
-  const payload = message.slice(PROJECT_ANALYSIS_MARKER.length).trim();
+  const payload = message.startsWith(marker)
+    ? message.slice(marker.length).trim()
+    : message.trim();
   if (!payload.startsWith("{")) {
     return undefined;
   }
 
-  let raw: Record<string, unknown>;
   try {
     const parsed = JSON.parse(payload);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return undefined;
     }
-    raw = parsed as Record<string, unknown>;
+    return parsed as Record<string, unknown>;
   } catch {
+    return undefined;
+  }
+};
+
+export const parseProjectAnalysisResponse = (
+  message: string | undefined,
+): ParsedProjectAnalysis | undefined => {
+  const raw = extractStructuredPayload(message, PROJECT_ANALYSIS_MARKER);
+  if (!raw) {
     return undefined;
   }
 
@@ -502,23 +513,8 @@ export const parseProjectAnalysisResponse = (
 export const parseProjectReplanResponse = (
   message: string | undefined,
 ): ParsedProjectAnalysis | undefined => {
-  if (!message?.startsWith(PROJECT_REPLAN_MARKER)) {
-    return undefined;
-  }
-
-  const payload = message.slice(PROJECT_REPLAN_MARKER.length).trim();
-  if (!payload.startsWith("{")) {
-    return undefined;
-  }
-
-  let raw: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(payload);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return undefined;
-    }
-    raw = parsed as Record<string, unknown>;
-  } catch {
+  const raw = extractStructuredPayload(message, PROJECT_REPLAN_MARKER);
+  if (!raw) {
     return undefined;
   }
 
@@ -563,21 +559,8 @@ export const parseProjectReplanResponse = (
 export const parseProjectStrategyResponse = (
   message: string | undefined,
 ): ParsedProjectStrategyAnalysis | undefined => {
-  if (!message?.startsWith(PROJECT_STRATEGY_MARKER)) {
-    return undefined;
-  }
-  const payload = message.slice(PROJECT_STRATEGY_MARKER.length).trim();
-  if (!payload.startsWith("{")) {
-    return undefined;
-  }
-  let raw: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(payload);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return undefined;
-    }
-    raw = parsed as Record<string, unknown>;
-  } catch {
+  const raw = extractStructuredPayload(message, PROJECT_STRATEGY_MARKER);
+  if (!raw) {
     return undefined;
   }
 

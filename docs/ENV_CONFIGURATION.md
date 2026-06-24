@@ -413,6 +413,13 @@ and explicit retention controls. Keep the mode disabled until owner consent,
 allowed chats/users, audit retention and encrypted full-text policy are decided
 for the deployment.
 
+Telegram task creation currently creates confirmed internal tasks, but it does
+not by itself send them into the worker execution queue. Execution requires
+repository execution fields and `ready` status; see
+[docs/TELEGRAM_TASK_INTAKE.md](/C:/Users/gabba/projects/developer/docs/TELEGRAM_TASK_INTAKE.md)
+before treating Telegram or Digital Twin messages as an auto-execution intake
+channel.
+
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `TELEGRAM_ASSISTANT_ENABLED` | `false` | Enables Telegram Assistant configuration. When `true`, `TELEGRAM_ASSISTANT_BOT_TOKEN` is required. Production also requires non-empty chat, user, or role-specific allowlists. |

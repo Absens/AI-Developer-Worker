@@ -34,6 +34,7 @@ import {
 import {
   DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
   DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD,
+  TASK_ANALYSIS_OUTPUT_SCHEMA,
   createClarificationFromAnalysis,
   createManualHoldAnalysisDecision,
   createReadyAnalysisDecision,
@@ -1370,7 +1371,10 @@ export class InternalWorkerOrchestrator {
       context.codex.runInitial(
         buildAnalysisPrompt(issue, comments, memoryContext, imageContext),
         observer,
-        { imagePaths: imageContext?.imagePaths ?? [] },
+        {
+          imagePaths: imageContext?.imagePaths ?? [],
+          outputSchema: TASK_ANALYSIS_OUTPUT_SCHEMA,
+        },
       ),
     );
     let decision: TaskAnalysisDecision | undefined;

@@ -8,7 +8,7 @@ import type {
 export const DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD = 70;
 export const DEFAULT_CONFIDENCE_HUMAN_THRESHOLD = 40;
 
-const VALID_TASK_TYPES = new Set<TaskType>([
+const VALID_TASK_TYPE_VALUES = [
   "frontend_ui_fix",
   "backend_endpoint",
   "tests_only",
@@ -16,16 +16,52 @@ const VALID_TASK_TYPES = new Set<TaskType>([
   "dependency_update",
   "documentation",
   "unknown",
-]);
+] as const satisfies readonly TaskType[];
 
-const VALID_EXECUTION_MODES = new Set<TaskExecutionMode>([
+const VALID_TASK_TYPES = new Set<TaskType>(VALID_TASK_TYPE_VALUES);
+
+const VALID_EXECUTION_MODE_VALUES = [
   "implement",
   "ask_clarification",
   "decompose",
   "human",
-]);
+] as const satisfies readonly TaskExecutionMode[];
+
+const VALID_EXECUTION_MODES = new Set<TaskExecutionMode>(VALID_EXECUTION_MODE_VALUES);
 
 const ANALYSIS_MARKER = "AI_ANALYSIS:";
+
+const stringArraySchema = {
+  type: "array",
+  items: { type: "string" },
+};
+
+export const TASK_ANALYSIS_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "confidence",
+    "taskType",
+    "recommendedMode",
+    "promptProfileId",
+    "expectedFiles",
+    "expectedSubsystems",
+    "riskFactors",
+    "missingContext",
+    "reasoning",
+  ],
+  properties: {
+    confidence: { type: "integer", minimum: 0, maximum: 100 },
+    taskType: { type: "string", enum: [...VALID_TASK_TYPE_VALUES] },
+    recommendedMode: { type: "string", enum: [...VALID_EXECUTION_MODE_VALUES] },
+    promptProfileId: { type: "string", minLength: 1 },
+    expectedFiles: stringArraySchema,
+    expectedSubsystems: stringArraySchema,
+    riskFactors: stringArraySchema,
+    missingContext: stringArraySchema,
+    reasoning: { type: "string", minLength: 1 },
+  },
+} satisfies Record<string, unknown>;
 
 const normalizeString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
@@ -64,11 +100,9 @@ const normalizeConfidence = (value: unknown): number | undefined => {
 
 const extractAnalysisPayload = (message: string): Record<string, unknown> | undefined => {
   const trimmed = message.trim();
-  if (!trimmed.startsWith(ANALYSIS_MARKER)) {
-    return undefined;
-  }
-
-  const payload = trimmed.slice(ANALYSIS_MARKER.length).trim();
+  const payload = trimmed.startsWith(ANALYSIS_MARKER)
+    ? trimmed.slice(ANALYSIS_MARKER.length).trim()
+    : trimmed;
   if (!payload.startsWith("{")) {
     return undefined;
   }

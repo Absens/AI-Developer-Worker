@@ -24,6 +24,19 @@ describe("analysis decision parsing", () => {
     });
   });
 
+  it("parses raw JSON output from Codex output-schema runs", () => {
+    const decision = parseTaskAnalysisDecision(
+      '{"confidence":91,"taskType":"documentation","recommendedMode":"implement","promptProfileId":"documentation","expectedFiles":["README.md"],"expectedSubsystems":["docs"],"riskFactors":[],"missingContext":[],"reasoning":"Documentation-only change with clear scope."}',
+    );
+
+    expect(decision).toMatchObject({
+      confidence: 91,
+      taskType: "documentation",
+      recommendedMode: "implement",
+      promptProfileId: "documentation",
+    });
+  });
+
   it("fails invalid output safely", () => {
     expect(parseTaskAnalysisDecision("READY_FOR_IMPLEMENTATION")).toBeUndefined();
     expect(

@@ -2,6 +2,7 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
+  CodexOutputSchema,
   CodexProgressEvent,
   CodexReviewRunOptions,
   CodexRunner,
@@ -9,7 +10,7 @@ import type {
   CodexRunOptions,
   CodexSandbox,
 } from "../../models/types.js";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -414,6 +415,19 @@ const withoutSandboxArgs = (args: readonly string[]): string[] => {
   return filtered;
 };
 
+const writeOutputSchemaFile = async (
+  tempDir: string,
+  outputSchema: CodexOutputSchema | undefined,
+): Promise<string | undefined> => {
+  if (!outputSchema) {
+    return undefined;
+  }
+
+  const outputSchemaPath = join(tempDir, "output-schema.json");
+  await writeFile(outputSchemaPath, `${JSON.stringify(outputSchema)}\n`, "utf8");
+  return outputSchemaPath;
+};
+
 const summarizeEvent = (
   mode: CodexRunnerMode,
   event: CodexEvent,
@@ -559,6 +573,7 @@ export class CliCodexRunner implements CodexRunner {
       observer,
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
+      outputSchema: options.outputSchema,
     });
   }
 
@@ -573,6 +588,7 @@ export class CliCodexRunner implements CodexRunner {
       observer,
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
+      outputSchema: options.outputSchema,
     });
   }
 
@@ -589,6 +605,7 @@ export class CliCodexRunner implements CodexRunner {
       observer,
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
+      outputSchema: options.outputSchema,
     });
   }
 
@@ -606,12 +623,14 @@ export class CliCodexRunner implements CodexRunner {
         baseBranch: options?.baseBranch ?? this.config.baseBranch,
         title: options?.title,
       },
+      outputSchema: options?.outputSchema,
     });
   }
 
   private buildBaseArgs(
     lastMessagePath: string,
     sandboxOverride?: CodexSandbox,
+    outputSchemaPath?: string,
   ): string[] {
     const args = [
       "exec",
@@ -631,6 +650,9 @@ export class CliCodexRunner implements CodexRunner {
     if (this.config.codexProfile) {
       args.push("--profile", this.config.codexProfile);
     }
+    if (outputSchemaPath) {
+      args.push("--output-schema", outputSchemaPath);
+    }
     args.push(...this.config.codexExecArgs);
     if (sandboxOverride) {
       return [...withoutSandboxArgs(args), "--sandbox", sandboxOverride];
@@ -641,6 +663,7 @@ export class CliCodexRunner implements CodexRunner {
   private buildReviewArgs(
     lastMessagePath: string,
     review: { baseBranch: string; title?: string },
+    outputSchemaPath?: string,
   ): string[] {
     const args = [
       "exec",
@@ -660,6 +683,9 @@ export class CliCodexRunner implements CodexRunner {
     if (this.config.codexModel) {
       args.push("--model", this.config.codexModel);
     }
+    if (outputSchemaPath) {
+      args.push("--output-schema", outputSchemaPath);
+    }
 
     args.push("--skip-git-repo-check", "--ephemeral", "-");
     return args;
@@ -673,9 +699,11 @@ export class CliCodexRunner implements CodexRunner {
     imagePaths: string[];
     sandbox?: CodexSandbox;
     review?: { baseBranch: string; title?: string };
+    outputSchema?: CodexOutputSchema;
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
     const lastMessagePath = join(tempDir, "last-message.txt");
+    const outputSchemaPath = await writeOutputSchemaFile(tempDir, input.outputSchema);
     const startedAt = Date.now();
     const jsonlState = createCodexJsonlState();
     const heartbeat = setInterval(() => {
@@ -701,8 +729,8 @@ export class CliCodexRunner implements CodexRunner {
     try {
       const args =
         input.mode === "review" && input.review
-          ? this.buildReviewArgs(lastMessagePath, input.review)
-          : this.buildBaseArgs(lastMessagePath, input.sandbox);
+          ? this.buildReviewArgs(lastMessagePath, input.review, outputSchemaPath)
+          : this.buildBaseArgs(lastMessagePath, input.sandbox, outputSchemaPath);
       const codexCliArgs = input.sandbox
         ? withoutSandboxArgs(this.config.codexCliArgs)
         : this.config.codexCliArgs;

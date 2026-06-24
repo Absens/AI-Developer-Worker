@@ -160,6 +160,13 @@ Telegram state is separate from task state. The store keeps offsets, processed
 updates, locks, pending actions, subscriptions and retention-limited audit data;
 the task source of truth remains internal tracker.
 
+Confirmed Telegram task drafts currently create internal task records for
+triage/review. They do not automatically become executable worker queue items:
+the task must also have execution fields such as `repoPathKey`, `baseBranch` and
+`queue`, then move to `ready` before `InternalWorkerOrchestrator` can claim it.
+See `docs/TELEGRAM_TASK_INTAKE.md` for the current intake boundary and the
+missing end-to-end work.
+
 ### Telegram Digital Twin
 
 Telegram Digital Twin is the forward-looking Telegram Assistant direction for
@@ -189,6 +196,9 @@ implementation threads and from internal task state:
 Detailed product and implementation notes live in
 `docs/superpowers/specs/2026-06-15-telegram-digital-twin-sessions-design.md`
 and `docs/superpowers/plans/2026-06-15-telegram-digital-twin-sessions.md`.
+The task-creation path for Digital Twin is not implemented yet; the current
+Digital Twin branch is conversational and must gain an explicit owner-approved
+task tool/action boundary before it can create executable tasks.
 
 ## Project Manager Agent
 

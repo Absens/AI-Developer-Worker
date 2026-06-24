@@ -253,7 +253,11 @@ Operational details, metrics, Bot API links, retention behavior, webhook
 requirements, Digital Twin sessions, and business/profile automation consent
 rules are documented in
 [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) and
-[docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md).
+[docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md). The current
+Telegram-to-task intake boundary, including why confirmed Telegram tasks do not
+automatically enter the worker execution queue yet and what is missing for
+Digital Twin task creation, is documented in
+[docs/TELEGRAM_TASK_INTAKE.md](docs/TELEGRAM_TASK_INTAKE.md).
 
 ## Проверки качества
 

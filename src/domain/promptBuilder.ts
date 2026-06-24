@@ -259,7 +259,7 @@ Mode: analysis-only
 Requirements:
 1. Analyze the task and repository context only.
 2. Do not modify files, do not create files, do not run formatters, and do not perform implementation work.
-3. Reply with exactly one line that starts with AI_ANALYSIS: followed by one compact JSON object.
+3. Reply with exactly one compact JSON object. Legacy callers may prefix the object with AI_ANALYSIS:, but prefer raw JSON when the CLI provides --output-schema.
 4. Do not add markdown fences, explanations, or any extra text around that one-line response.
 5. Choose recommendedMode from: implement, ask_clarification, decompose, human.
 6. Choose taskType from: frontend_ui_fix, backend_endpoint, tests_only, refactor, dependency_update, documentation, unknown.
@@ -307,7 +307,7 @@ Requirements:
 6. readinessScore must be an integer from 0 to 100.
 7. Use [] when no acceptance criteria are directly supported by the task, human comments, attachments, or repository context.
 8. Ask at most ${maxQuestions} clarification questions.
-9. Reply with exactly one line that starts with AI_TASK_REVIEW: followed by one compact JSON object.
+9. Reply with exactly one compact JSON object. Legacy callers may prefix the object with AI_TASK_REVIEW:, but prefer raw JSON when the CLI provides --output-schema.
 10. Do not add markdown fences, explanations, or any extra text around that one-line response.
 
 Required JSON schema:

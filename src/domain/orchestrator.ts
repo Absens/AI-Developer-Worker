@@ -70,6 +70,7 @@ import { withLeaseHeartbeat } from "./lockBackend.js";
 import {
   DEFAULT_CONFIDENCE_HUMAN_THRESHOLD,
   DEFAULT_CONFIDENCE_IMPLEMENT_THRESHOLD,
+  TASK_ANALYSIS_OUTPUT_SCHEMA,
   createClarificationFromAnalysis,
   createManualHoldAnalysisDecision,
   createReadyAnalysisDecision,
@@ -77,6 +78,7 @@ import {
 } from "./analysisDecision.js";
 import {
   createTaskIntakeFingerprint,
+  TASK_INTAKE_REVIEW_OUTPUT_SCHEMA,
   limitTaskIntakeReviewQuestions,
   parseTaskIntakeReviewDecision,
 } from "./taskIntakeReview.js";
@@ -97,6 +99,7 @@ import {
 } from "./trackerImageContext.js";
 import {
   buildSelfReviewPrompt,
+  SELF_REVIEW_OUTPUT_SCHEMA,
   formatSelfReviewDiagnostic,
   parseSelfReviewResult,
 } from "./selfReview.js";
@@ -653,7 +656,11 @@ export class WorkerOrchestrator {
                 maxQuestions,
               ),
               undefined,
-              { imagePaths: imageContext.imagePaths, sandbox: "read-only" },
+              {
+                imagePaths: imageContext.imagePaths,
+                sandbox: "read-only",
+                outputSchema: TASK_INTAKE_REVIEW_OUTPUT_SCHEMA,
+              },
             ),
         );
 
@@ -1723,7 +1730,10 @@ export class WorkerOrchestrator {
         this.codex.runInitial(
           buildAnalysisPrompt(issue, comments, memoryContext, imageContext),
           undefined,
-          { imagePaths: imageContext.imagePaths },
+          {
+            imagePaths: imageContext.imagePaths,
+            outputSchema: TASK_ANALYSIS_OUTPUT_SCHEMA,
+          },
         ),
     );
     let decision: TaskAnalysisDecision | undefined;
@@ -2389,6 +2399,7 @@ export class WorkerOrchestrator {
           {
             baseBranch: this.config.baseBranch,
             title: `[AI] ${input.issue.key} implementation`,
+            outputSchema: SELF_REVIEW_OUTPUT_SCHEMA,
           },
         ),
       );

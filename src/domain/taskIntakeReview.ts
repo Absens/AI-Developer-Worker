@@ -9,12 +9,46 @@ import type {
 
 const TASK_INTAKE_REVIEW_MARKER = "AI_TASK_REVIEW:";
 
-const VALID_REVIEW_STATUSES = new Set<TaskIntakeReviewStatus>([
+const VALID_REVIEW_STATUS_VALUES = [
   "ready",
   "needs_clarification",
   "needs_decomposition",
   "reject_as_invalid",
-]);
+] as const satisfies readonly TaskIntakeReviewStatus[];
+
+const VALID_REVIEW_STATUSES = new Set<TaskIntakeReviewStatus>(VALID_REVIEW_STATUS_VALUES);
+
+const stringArraySchema = {
+  type: "array",
+  items: { type: "string" },
+};
+
+export const TASK_INTAKE_REVIEW_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "status",
+    "readinessScore",
+    "summary",
+    "acceptanceCriteria",
+    "clarificationQuestions",
+    "decompositionHints",
+    "riskFactors",
+    "reasoning",
+  ],
+  properties: {
+    status: { type: "string", enum: [...VALID_REVIEW_STATUS_VALUES] },
+    readinessScore: { type: "integer", minimum: 0, maximum: 100 },
+    summary: { type: "string", minLength: 1 },
+    rewrittenTitle: { type: "string" },
+    rewrittenDescription: { type: "string" },
+    acceptanceCriteria: stringArraySchema,
+    clarificationQuestions: stringArraySchema,
+    decompositionHints: stringArraySchema,
+    riskFactors: stringArraySchema,
+    reasoning: { type: "string", minLength: 1 },
+  },
+} satisfies Record<string, unknown>;
 
 const normalizeString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
@@ -51,11 +85,9 @@ const extractTaskIntakeReviewPayload = (
   message: string,
 ): Record<string, unknown> | undefined => {
   const trimmed = message.trim();
-  if (!trimmed.startsWith(TASK_INTAKE_REVIEW_MARKER)) {
-    return undefined;
-  }
-
-  const payload = trimmed.slice(TASK_INTAKE_REVIEW_MARKER.length).trim();
+  const payload = trimmed.startsWith(TASK_INTAKE_REVIEW_MARKER)
+    ? trimmed.slice(TASK_INTAKE_REVIEW_MARKER.length).trim()
+    : trimmed;
   if (!payload.startsWith("{")) {
     return undefined;
   }

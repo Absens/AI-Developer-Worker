@@ -64,6 +64,19 @@ describe("selfReview", () => {
     });
   });
 
+  it("parses raw JSON output from Codex output-schema runs", () => {
+    const result = parseSelfReviewResult(
+      '{"status":"pass","summary":"No blocking issues.","findings":[]}',
+    );
+
+    expect(result).toEqual({
+      status: "pass",
+      passed: true,
+      summary: "No blocking issues.",
+      findings: [],
+    });
+  });
+
   it("parses a failing self-review result with findings", () => {
     const result = parseSelfReviewResult(
       `${SELF_REVIEW_MARKER} {"status":"fail","summary":"One blocking issue.","findings":[{"severity":"blocking","title":"Null total still crashes","details":"src/cart.ts can still read total from null.","file":"src/cart.ts","line":42,"recommendation":"Guard the total before formatting."}]}`,

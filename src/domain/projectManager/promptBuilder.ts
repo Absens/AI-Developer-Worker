@@ -49,6 +49,15 @@ const DEFAULT_ALLOWED_TASK_TYPES: TaskType[] = [
 ];
 const DEFAULT_MAX_SNAPSHOT_CHARS = 12000;
 const ALLOWED_EVIDENCE_REF_KINDS = EVIDENCE_REF_KINDS.join("|");
+const ALL_TASK_TYPES = [
+  "frontend_ui_fix",
+  "backend_endpoint",
+  "tests_only",
+  "refactor",
+  "dependency_update",
+  "documentation",
+  "unknown",
+] as const;
 
 const RESPONSE_SCHEMA = {
   summary: "string",
@@ -158,6 +167,237 @@ const STRATEGY_RESPONSE_SCHEMA = {
   ],
 };
 
+const stringArrayJsonSchema = {
+  type: "array",
+  items: { type: "string" },
+};
+
+const evidenceRefJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "ref"],
+  properties: {
+    kind: { type: "string", enum: [...EVIDENCE_REF_KINDS] },
+    ref: { type: "string", minLength: 1 },
+    summary: { type: "string" },
+  },
+};
+
+const evidenceRefsJsonSchema = {
+  type: "array",
+  items: evidenceRefJsonSchema,
+};
+
+const taskProposalJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "title",
+    "description",
+    "taskType",
+    "acceptanceCriteria",
+    "evidenceRefs",
+  ],
+  properties: {
+    title: { type: "string", minLength: 1 },
+    description: { type: "string", minLength: 1 },
+    taskType: { type: "string", enum: [...ALL_TASK_TYPES] },
+    acceptanceCriteria: stringArrayJsonSchema,
+    expectedBlastRadius: { type: "string" },
+    evidenceRefs: evidenceRefsJsonSchema,
+  },
+};
+
+const projectGoalJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "title",
+    "problemStatement",
+    "desiredOutcome",
+    "successMetrics",
+    "evidenceRefs",
+    "priority",
+    "riskLevel",
+    "suggestedTaskProposals",
+  ],
+  properties: {
+    title: { type: "string", minLength: 1 },
+    problemStatement: { type: "string", minLength: 1 },
+    desiredOutcome: { type: "string", minLength: 1 },
+    successMetrics: stringArrayJsonSchema,
+    evidenceRefs: evidenceRefsJsonSchema,
+    priority: { type: "string", enum: ["low", "normal", "high", "critical"] },
+    riskLevel: { type: "string", enum: ["low", "medium", "high"] },
+    suggestedTaskProposals: {
+      type: "array",
+      items: taskProposalJsonSchema,
+    },
+  },
+};
+
+const healthSignalJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "severity", "title", "description", "evidenceRefs"],
+  properties: {
+    kind: { type: "string", minLength: 1 },
+    severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+    title: { type: "string", minLength: 1 },
+    description: { type: "string", minLength: 1 },
+    evidenceRefs: evidenceRefsJsonSchema,
+    recommendation: { type: "string" },
+  },
+};
+
+export const PROJECT_ANALYSIS_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "healthSignals", "proposedGoals", "staleGoalIds"],
+  properties: {
+    summary: { type: "string", minLength: 1 },
+    healthSignals: { type: "array", items: healthSignalJsonSchema },
+    proposedGoals: { type: "array", items: projectGoalJsonSchema },
+    staleGoalIds: stringArrayJsonSchema,
+    previousAnalysisId: { type: "string" },
+    replanReason: { type: "string" },
+  },
+} satisfies Record<string, unknown>;
+
+export const PROJECT_REPLAN_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "summary",
+    "healthSignals",
+    "proposedGoals",
+    "staleGoalIds",
+    "replanReason",
+    "goalReplans",
+  ],
+  properties: {
+    previousAnalysisId: { type: "string" },
+    summary: { type: "string", minLength: 1 },
+    healthSignals: { type: "array", items: healthSignalJsonSchema },
+    proposedGoals: { type: "array", items: projectGoalJsonSchema },
+    staleGoalIds: stringArrayJsonSchema,
+    replanReason: { type: "string", minLength: 1 },
+    goalReplans: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["goalId", "decision", "rationale", "evidenceRefs", "followUpGoals"],
+        properties: {
+          goalId: { type: "string", minLength: 1 },
+          decision: { type: "string", enum: [...PROJECT_GOAL_REPLAN_DECISIONS] },
+          rationale: { type: "string", minLength: 1 },
+          evidenceRefs: evidenceRefsJsonSchema,
+          followUpGoals: { type: "array", items: projectGoalJsonSchema },
+          humanQuestion: { type: "string" },
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
+
+export const PROJECT_STRATEGY_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "summary",
+    "analysisLenses",
+    "opportunities",
+    "proposedGoals",
+    "questionsForHuman",
+  ],
+  properties: {
+    summary: { type: "string", minLength: 1 },
+    analysisLenses: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["lens", "summary"],
+        properties: {
+          lens: { type: "string", enum: [...PROJECT_STRATEGY_LENSES] },
+          summary: { type: "string", minLength: 1 },
+        },
+      },
+    },
+    opportunities: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "opportunityId",
+          "dimension",
+          "title",
+          "problemStatement",
+          "userOrBusinessImpact",
+          "technicalImpact",
+          "evidenceRefs",
+          "confidence",
+          "priority",
+          "riskLevel",
+          "recommendedNextStep",
+          "rationale",
+          "redTeamNotes",
+          "architectVerdict",
+        ],
+        properties: {
+          opportunityId: { type: "string", minLength: 1 },
+          dimension: { type: "string", enum: [...PROJECT_STRATEGY_DIMENSIONS] },
+          title: { type: "string", minLength: 1 },
+          problemStatement: { type: "string", minLength: 1 },
+          userOrBusinessImpact: { type: "string", minLength: 1 },
+          technicalImpact: { type: "string", minLength: 1 },
+          evidenceRefs: evidenceRefsJsonSchema,
+          confidence: { type: "integer", minimum: 0, maximum: 100 },
+          priority: { type: "string", enum: ["low", "normal", "high", "critical"] },
+          riskLevel: { type: "string", enum: ["low", "medium", "high"] },
+          recommendedNextStep: {
+            type: "string",
+            enum: [...PROJECT_STRATEGY_NEXT_STEPS],
+          },
+          rationale: { type: "string", minLength: 1 },
+          redTeamNotes: stringArrayJsonSchema,
+          architectVerdict: {
+            type: "string",
+            enum: [...PROJECT_STRATEGY_ARCHITECT_VERDICTS],
+          },
+        },
+      },
+    },
+    proposedGoals: {
+      type: "array",
+      items: {
+        ...projectGoalJsonSchema,
+        required: ["sourceOpportunityId", ...(projectGoalJsonSchema.required as string[])],
+        properties: {
+          sourceOpportunityId: { type: "string", minLength: 1 },
+          ...projectGoalJsonSchema.properties,
+        },
+      },
+    },
+    questionsForHuman: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["question", "whyItMatters"],
+        properties: {
+          question: { type: "string", minLength: 1 },
+          whyItMatters: { type: "string", minLength: 1 },
+          relatedOpportunityId: { type: "string" },
+          relatedOpportunityTitle: { type: "string" },
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
+
 const EVIDENCE_GUARDRAILS = [
   "- Do not create goals from weak or missing evidence.",
   "- If the snapshot only shows no-op validation commands, treat validation confidence as weak.",
@@ -212,7 +452,7 @@ export const buildProjectAnalysisPrompt = (
     `Focus areas: ${focusAreas}`,
     "",
     "Required output:",
-    "Reply with exactly one line starting with PROJECT_ANALYSIS: followed by compact JSON matching this schema.",
+    "Reply with exactly one compact JSON object matching this schema. Legacy callers may prefix it with PROJECT_ANALYSIS:, but prefer raw JSON when the CLI provides --output-schema.",
     JSON.stringify(RESPONSE_SCHEMA),
     "",
     "Snapshot:",
@@ -263,7 +503,7 @@ export const buildProjectReplanPrompt = (
     `Goal ids: ${goalIds.join(", ") || "none"}`,
     "",
     "Required output:",
-    `Reply with exactly one line starting with ${PROJECT_REPLAN_MARKER} followed by compact JSON matching this schema.`,
+    `Reply with exactly one compact JSON object matching this schema. Legacy callers may prefix it with ${PROJECT_REPLAN_MARKER}, but prefer raw JSON when the CLI provides --output-schema.`,
     JSON.stringify(REPLAN_RESPONSE_SCHEMA),
     "",
     "Linked task data:",
@@ -325,7 +565,7 @@ export const buildProjectStrategyPrompt = (
     `Strategy brief: ${input.snapshot.strategyBrief ?? "none"}`,
     "",
     "Required output:",
-    `Reply with exactly one line starting with ${PROJECT_STRATEGY_MARKER} followed by compact JSON matching this schema.`,
+    `Reply with exactly one compact JSON object matching this schema. Legacy callers may prefix it with ${PROJECT_STRATEGY_MARKER}, but prefer raw JSON when the CLI provides --output-schema.`,
     JSON.stringify(STRATEGY_RESPONSE_SCHEMA),
     "",
     "Strategy snapshot:",

@@ -181,12 +181,11 @@ describe("project manager prompt builder", () => {
     expect(prompt).toContain("Obey limits");
   });
 
-  it("requires exactly one PROJECT_ANALYSIS response line", () => {
+  it("asks for PROJECT_ANALYSIS-compatible JSON output", () => {
     const prompt = buildProjectAnalysisPrompt({ snapshot: buildSnapshot() });
 
-    expect(prompt).toContain(
-      "Reply with exactly one line starting with PROJECT_ANALYSIS:",
-    );
+    expect(prompt).toContain("Reply with exactly one compact JSON object");
+    expect(prompt).toContain("PROJECT_ANALYSIS:");
   });
 
   it("says not to create executable tasks directly", () => {

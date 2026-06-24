@@ -195,6 +195,53 @@ describe("CliCodexRunner", () => {
     expect(args).not.toContain("resume");
   });
 
+  it("writes output schema to a temp file and passes it to codex exec", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    const schemaSnapshotPath = join(tempDir, "schema-snapshot.json");
+    const outputSchema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["status"],
+      properties: {
+        status: { type: "string", enum: ["ok"] },
+      },
+    };
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const schemaIndex = args.indexOf('--output-schema');",
+        "if (schemaIndex < 0) { process.exit(2); }",
+        `fs.writeFileSync(${JSON.stringify(schemaSnapshotPath)}, fs.readFileSync(args[schemaIndex + 1], 'utf8'), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, '{\"status\":\"ok\"}\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-schema' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runInitial("Return schema output.", undefined, { outputSchema });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const schemaIndex = args.indexOf("--output-schema");
+    expect(schemaIndex).toBeGreaterThan(-1);
+    expect(args[schemaIndex + 1]).toContain("output-schema.json");
+    expect(JSON.parse(readFileSync(schemaSnapshotPath, "utf8"))).toEqual(outputSchema);
+  });
+
   it("overrides configured sandbox for initial codex exec runs", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

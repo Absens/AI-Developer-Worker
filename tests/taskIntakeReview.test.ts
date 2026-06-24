@@ -49,6 +49,18 @@ describe("task intake review", () => {
     });
   });
 
+  it("parses raw JSON output from Codex output-schema runs", () => {
+    const decision = parseTaskIntakeReviewDecision(
+      '{"status":"ready","readinessScore":95,"summary":"The task is ready for implementation.","acceptanceCriteria":["The button is visible on mobile."],"clarificationQuestions":[],"decompositionHints":[],"riskFactors":[],"reasoning":"The issue includes scope and expected behavior."}',
+    );
+
+    expect(decision).toMatchObject({
+      status: "ready",
+      readinessScore: 95,
+      acceptanceCriteria: ["The button is visible on mobile."],
+    });
+  });
+
   it("rejects malformed review decisions safely", () => {
     expect(parseTaskIntakeReviewDecision("READY")).toBeUndefined();
     expect(
