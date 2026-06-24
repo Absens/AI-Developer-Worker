@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildTelegramExecutableTaskDraft,
+  classifyTelegramTaskRisk,
+  nextExecutableDraftQuestion,
   resolveTelegramExecutionRepositoryProfile,
   type TelegramExecutionRepositoryProfile,
 } from "../src/domain/telegramAssistant/index.js";
@@ -309,5 +312,93 @@ describe("resolveTelegramExecutionRepositoryProfile", () => {
       status: "unavailable",
       reason: "profile_missing_queue",
     });
+  });
+});
+
+describe("classifyTelegramTaskRisk", () => {
+  it("classifies destructive infrastructure changes as high risk with owner approval", () => {
+    expect(classifyTelegramTaskRisk(
+      "нужно добавить миграцию, удалить старые данные и задеплоить в prod",
+    )).toEqual({
+      riskLevel: "high",
+      reasons: ["data_destructive_or_migration", "infrastructure_or_deploy"],
+      requiresOwnerApproval: true,
+    });
+  });
+
+  it("classifies documentation and test work as low risk", () => {
+    expect(classifyTelegramTaskRisk(
+      "поправь README, опечатки и добавь coverage для тестов",
+    )).toEqual({
+      riskLevel: "low",
+      reasons: ["documentation_or_tests"],
+      requiresOwnerApproval: false,
+    });
+  });
+
+  it("classifies isolated feature or bugfix work as medium risk", () => {
+    expect(classifyTelegramTaskRisk(
+      "добавь фильтр по статусу в списке задач",
+    )).toEqual({
+      riskLevel: "medium",
+      reasons: ["isolated_feature_or_bugfix"],
+      requiresOwnerApproval: false,
+    });
+  });
+});
+
+describe("buildTelegramExecutableTaskDraft", () => {
+  it("builds an executable draft from text and a selected repository profile", () => {
+    const draft = buildTelegramExecutableTaskDraft({
+      text: "создай задачу добавить фильтр по статусу в списке задач",
+      selectedProfile: executionProfile({
+        repositoryName: "frontend",
+        repoPathKey: "frontend",
+        baseBranch: "develop",
+        queue: "FRONTEND",
+        tags: ["ui", "telegram"],
+      }),
+    });
+
+    expect(draft).toEqual({
+      title: "добавить фильтр по статусу в списке задач",
+      description: "создай задачу добавить фильтр по статусу в списке задач",
+      acceptanceCriteria: "Поведение реализовано и покрыто существующими проверками.",
+      repositoryName: "frontend",
+      repoPathKey: "frontend",
+      baseBranch: "develop",
+      queue: "FRONTEND",
+      tags: ["telegram", "ui", "risk_medium"],
+      risk: {
+        riskLevel: "medium",
+        reasons: ["isolated_feature_or_bugfix"],
+        requiresOwnerApproval: false,
+      },
+      executionMode: "auto_ready",
+    });
+  });
+
+  it("asks for repository profile before other missing draft details", () => {
+    const draft = buildTelegramExecutableTaskDraft({
+      text: "сделай",
+    });
+
+    expect(nextExecutableDraftQuestion(draft)).toEqual({
+      field: "repositoryProfile",
+      text: "В каком репозитории выполнить задачу?",
+    });
+  });
+
+  it("uses owner approval mode for high-risk and forced approval drafts", () => {
+    expect(buildTelegramExecutableTaskDraft({
+      text: "надо сделать deploy в prod и обновить docker конфиг",
+      selectedProfile: executionProfile(),
+    }).executionMode).toBe("owner_approval");
+
+    expect(buildTelegramExecutableTaskDraft({
+      text: "добавь фильтр по статусу",
+      selectedProfile: executionProfile(),
+      forceOwnerApproval: true,
+    }).executionMode).toBe("owner_approval");
   });
 });

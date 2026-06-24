@@ -47,6 +47,12 @@ export {
   resolveTelegramTaskCandidates,
   type TelegramTaskCandidate,
 } from "./entityResolver.js";
+export { classifyTelegramTaskRisk } from "./riskClassifier.js";
+export {
+  buildTelegramExecutableTaskDraft,
+  nextExecutableDraftQuestion,
+  type BuildTelegramExecutableTaskDraftInput,
+} from "./executableTaskDraft.js";
 export {
   buildHeuristicTaskDraft,
   type TelegramTaskDraft,
@@ -83,6 +89,7 @@ export {
 } from "./projectSources.js";
 export { summarizeTaskForTelegram } from "./taskSummaries.js";
 export type {
+  TelegramActiveTaskQuestionPrompt,
   TelegramAssistantActor,
   TelegramAttachmentMetadata,
   TelegramAttachmentType,
@@ -100,6 +107,13 @@ export type {
   TelegramDigitalTwinSessionStatus,
   TelegramDigitalTwinTurn,
   TelegramDigitalTwinTurnStatus,
+  TelegramExecutableTaskDraft,
+  TelegramExecutableTaskDraftClarification,
+  TelegramExecutableTaskDraftExecutionMode,
+  TelegramExecutableTaskDraftQuestion,
+  TelegramExecutableTaskDraftSession,
+  TelegramExecutableTaskDraftSource,
+  TelegramExecutableTaskDraftStatus,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramIntentName,
@@ -112,5 +126,7 @@ export type {
   TelegramPendingActionStatus,
   TelegramQueuedMessage,
   TelegramQueuedMessageStatus,
+  TelegramTaskRiskAssessment,
+  TelegramTaskRiskLevel,
   TelegramTaskSubscription,
 } from "./types.js";

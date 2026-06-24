@@ -182,6 +182,87 @@ export interface TelegramTaskSubscription {
   lastNotifiedEventId?: string;
 }
 
+export type TelegramTaskRiskLevel = "low" | "medium" | "high";
+
+export interface TelegramTaskRiskAssessment {
+  riskLevel: TelegramTaskRiskLevel;
+  reasons: string[];
+  requiresOwnerApproval: boolean;
+}
+
+export type TelegramExecutableTaskDraftSource = "private" | "business" | "twin";
+
+export type TelegramExecutableTaskDraftStatus =
+  | "collecting"
+  | "awaiting_user_confirmation"
+  | "awaiting_owner_approval"
+  | "completed"
+  | "cancelled"
+  | "expired";
+
+export type TelegramExecutableTaskDraftExecutionMode =
+  | "auto_ready"
+  | "owner_approval"
+  | "triage_only";
+
+export interface TelegramExecutableTaskDraft {
+  title: string;
+  description: string;
+  acceptanceCriteria: string;
+  repositoryName?: string;
+  repoPathKey?: string;
+  baseBranch?: string;
+  queue?: string;
+  tags: string[];
+  risk: TelegramTaskRiskAssessment;
+  executionMode: TelegramExecutableTaskDraftExecutionMode;
+}
+
+export interface TelegramExecutableTaskDraftQuestion {
+  field: "repositoryProfile" | "acceptanceCriteria" | "description";
+  text: string;
+}
+
+export interface TelegramExecutableTaskDraftClarification {
+  field: TelegramExecutableTaskDraftQuestion["field"];
+  question: string;
+  answer: string;
+  answeredAt: string;
+}
+
+export interface TelegramExecutableTaskDraftSession {
+  id: string;
+  conversationKey: string;
+  source: TelegramExecutableTaskDraftSource;
+  initiatorUserId?: number;
+  ownerUserId?: string;
+  ownerChatId?: string;
+  chatId: number;
+  messageId?: number;
+  originalText: string;
+  draft: TelegramExecutableTaskDraft;
+  status: TelegramExecutableTaskDraftStatus;
+  clarificationQuestion?: TelegramExecutableTaskDraftQuestion;
+  clarificationHistory: TelegramExecutableTaskDraftClarification[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
+export interface TelegramActiveTaskQuestionPrompt {
+  id: string;
+  conversationKey: string;
+  chatId: number;
+  userId?: number;
+  taskId: string;
+  questionId: string;
+  promptMessageId?: number;
+  status: "open" | "answered" | "cancelled" | "expired";
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
 export type TelegramMessageRefSource = "user" | "assistant" | "system";
 
 export interface TelegramMessageRef {
