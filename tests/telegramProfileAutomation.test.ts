@@ -716,13 +716,16 @@ describe("profile automation", () => {
   });
 
   it("routes business write actions to the owner for approval before creating tasks", async () => {
-    const createdTask = taskFixture();
+    const createdTask = taskFixture({ status: "new" });
     const createTask = vi.fn(
       async (_input: CreateTaskInput): Promise<TaskRecord> => createdTask,
     );
+    const markReady = vi.fn(async () => undefined);
     const taskTracker = {
       createTask,
       findTaskByExternalRef: vi.fn(async () => null),
+      markReady,
+      getTask: vi.fn(async () => taskFixture({ id: createdTask.id, status: "ready" })),
     } as unknown as TaskTrackerClient;
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore();
@@ -750,9 +753,10 @@ describe("profile automation", () => {
     );
 
     expect(createTask).not.toHaveBeenCalled();
+    expect(markReady).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       chatId: "99",
-      text: expect.stringContaining("Создать задачу?"),
+      text: expect.stringContaining("Создать и запустить задачу?"),
     }));
 
     await service.handleUpdate({
@@ -767,10 +771,96 @@ describe("profile automation", () => {
     });
 
     expect(createTask).toHaveBeenCalledOnce();
+    expect(markReady).toHaveBeenCalledOnce();
     expect(createTask.mock.calls[0]?.[0]).toMatchObject({
+      repositoryName: "developer",
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: expect.arrayContaining(["telegram"]),
       externalRefs: [{ provider: "telegram", externalKey: "telegram:777:12" }],
-      externalSnapshot: { chatId: 777, messageId: 12, userId: 500 },
+      externalSnapshot: {
+        chatId: 777,
+        messageId: 12,
+        userId: 500,
+        executionMode: "owner_approval",
+      },
     });
+  });
+
+  it("does not resurrect a completed business owner approval action on retry", async () => {
+    const setupStore = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(setupStore);
+    const setupService = buildAssistant({
+      store: setupStore,
+      taskTracker: {
+        createTask: vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> =>
+          taskFixture(),
+        ),
+        findTaskByExternalRef: vi.fn(async () => null),
+      } as unknown as TaskTrackerClient,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: false,
+        requireOwnerApproval: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+      }),
+    });
+    const update = businessMessageUpdate({
+      updateId: 4,
+      messageId: 12,
+      chatId: 777,
+      text: "создай задачу проверить оплату",
+    });
+
+    await setupService.handleUpdate(update);
+    const [pending] = await setupStore.listPendingActions({
+      conversationKey: "bot_private:99",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending owner approval action.");
+    }
+
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store);
+    await store.upsertPendingAction({
+      ...pending,
+      status: "completed",
+      completedAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> =>
+      taskFixture(),
+    );
+    const sendMessage = vi.fn();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker: {
+        createTask,
+        findTaskByExternalRef: vi.fn(async () => null),
+      } as unknown as TaskTrackerClient,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: false,
+        requireOwnerApproval: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+      }),
+    });
+
+    await service.handleUpdate(update);
+
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(createTask).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "99",
+      text: expect.stringContaining("Создать"),
+    }));
   });
 
   it("lets a read-only globally allowed profile owner confirm a business task draft callback", async () => {
@@ -1062,6 +1152,74 @@ describe("profile automation", () => {
         }),
       ]),
     );
+  });
+
+  it("routes explicit Digital Twin task requests to owner approval instead of answer-only turn", async () => {
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "Ок, отвечаю как Twin.",
+      threadId: "thread-dt-1",
+      startedNewThread: true,
+    }));
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> =>
+      taskFixture(),
+    );
+    const sendMessage = vi.fn(async () => telegramMessage(9001));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store, { ownerChatId: "99" });
+    const service = buildAssistant({
+      store,
+      taskTracker: {
+        createTask,
+        findTaskByExternalRef: vi.fn(async () => null),
+        markReady: vi.fn(async () => undefined),
+        getTask: vi.fn(async () => taskFixture()),
+      } as unknown as TaskTrackerClient,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        requireOwnerApproval: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 300,
+        messageId: 30,
+        chatId: 777,
+        text: "создай задачу добавить отчет по оплатам",
+      }),
+    );
+
+    expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+    expect(createTask).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "99",
+      text: expect.stringContaining("Создать и запустить задачу?"),
+    }));
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:99",
+      status: "pending",
+    })).resolves.toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          executionMode: "owner_approval",
+          draft: expect.objectContaining({
+            repositoryName: "developer",
+            repoPathKey: "developer",
+            baseBranch: "main",
+            queue: "DEV",
+          }),
+        }),
+      }),
+    ]);
   });
 
   it("does not generate or send a second digital twin reply for a duplicate business message", async () => {

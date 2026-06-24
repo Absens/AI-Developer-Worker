@@ -8,7 +8,9 @@ import type { ObservabilityTelemetry } from "../../observability/service.js";
 import type { Logger } from "../../utils/logger.js";
 import { TelegramRetryAfterError } from "../../integrations/telegram/index.js";
 import type {
+  ClarificationQuestionRecord,
   TaskEvent,
+  TaskRecord,
   TaskTrackerClient,
 } from "../taskTracker/index.js";
 import type { TelegramAssistantStore } from "./store.js";
@@ -57,7 +59,7 @@ export class TelegramNotificationRouter {
       for (const subscription of taskSubscriptions) {
         const events = eventsAfterSubscriptionWatermark(sortedEvents, subscription);
         for (const event of events) {
-          await this.sendEventToSubscription(subscription, event);
+          await this.sendEventToSubscription(subscription, event, task);
         }
       }
     }
@@ -66,6 +68,7 @@ export class TelegramNotificationRouter {
   private async sendEventToSubscription(
     subscription: TelegramTaskSubscription,
     event: TaskEvent,
+    task: TaskRecord,
   ): Promise<void> {
     const reservedAt = this.clock().toISOString();
     const staleAfter = addMilliseconds(reservedAt, this.retryStaleMs);
@@ -82,15 +85,40 @@ export class TelegramNotificationRouter {
     }
 
     try {
-      const rendered = renderTelegramResponse(renderEventNotification(event));
+      const openQuestion = getAwaitingHumanOpenQuestion(event, task);
+      const rendered = renderTelegramResponse(
+        renderEventNotification(event, task, openQuestion),
+      );
+      let promptMessageId: number | undefined;
       for (const text of rendered.messages) {
-        await this.telegram.sendMessage({
+        const sent = await this.telegram.sendMessage({
           chatId: String(subscription.chatId),
           text,
           parseMode: rendered.parseMode,
           ...(rendered.disableWebPagePreview !== undefined
             ? { disableWebPagePreview: rendered.disableWebPagePreview }
             : {}),
+        });
+        promptMessageId ??= sent.message_id;
+      }
+      if (openQuestion) {
+        const now = this.clock().toISOString();
+        await this.store.upsertActiveTaskQuestionPrompt({
+          id: buildActiveTaskQuestionPromptId(
+            subscription.conversationKey,
+            event.taskId,
+            openQuestion.id,
+          ),
+          conversationKey: subscription.conversationKey,
+          chatId: subscription.chatId,
+          ...(subscription.userId !== undefined ? { userId: subscription.userId } : {}),
+          taskId: event.taskId,
+          questionId: openQuestion.id,
+          ...(promptMessageId !== undefined ? { promptMessageId } : {}),
+          status: "open",
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: addDays(now, 7),
         });
       }
       await this.store.completeNotificationDelivery(subscription.id, event.id, {
@@ -139,15 +167,108 @@ const groupSubscriptionsByTaskId = (
   return grouped;
 };
 
-const renderEventNotification = (event: TaskEvent): TelegramResponse => ({
-  blocks: [
-    { kind: "title", text: `${event.taskId}: ${event.kind}` },
-    ...(event.message
-      ? [{ kind: "paragraph" as const, text: event.message }]
-      : []),
-  ],
-  disableWebPagePreview: true,
-});
+const renderEventNotification = (
+  event: TaskEvent,
+  task: TaskRecord,
+  openQuestion?: ClarificationQuestionRecord,
+): TelegramResponse => {
+  if (event.kind === "merge_request_recorded") {
+    const mergeRequestUrl = event.payload?.mergeRequestUrl;
+    const body = typeof mergeRequestUrl === "string"
+      ? mergeRequestUrl
+      : event.message;
+    return {
+      blocks: [
+        { kind: "title", text: `${event.taskId}: Реализация готова` },
+        ...(body ? [{ kind: "paragraph" as const, text: body }] : []),
+      ],
+      disableWebPagePreview: true,
+    };
+  }
+
+  if (event.kind === "task_status_changed" && event.payload?.to === "done") {
+    return {
+      blocks: [
+        { kind: "title", text: `${event.taskId}: Задача завершена` },
+        ...(event.message
+          ? [{ kind: "paragraph" as const, text: event.message }]
+          : []),
+      ],
+      disableWebPagePreview: true,
+    };
+  }
+
+  if (
+    event.kind === "task_status_changed" &&
+    event.payload?.to === "awaiting_human"
+  ) {
+    const questionText = openQuestion
+      ? describeClarificationQuestion(openQuestion)
+      : event.message;
+    return {
+      blocks: [
+        { kind: "title", text: `${task.id}: Нужен ответ` },
+        ...(questionText
+          ? [{ kind: "paragraph" as const, text: questionText }]
+          : []),
+      ],
+      disableWebPagePreview: true,
+    };
+  }
+
+  return {
+    blocks: [
+      { kind: "title", text: `${event.taskId}: ${event.kind}` },
+      ...(event.message
+        ? [{ kind: "paragraph" as const, text: event.message }]
+        : []),
+    ],
+    disableWebPagePreview: true,
+  };
+};
+
+const getAwaitingHumanOpenQuestion = (
+  event: TaskEvent,
+  task: TaskRecord,
+): ClarificationQuestionRecord | undefined => {
+  if (
+    event.kind !== "task_status_changed" ||
+    event.payload?.to !== "awaiting_human"
+  ) {
+    return undefined;
+  }
+  return latestOpenClarificationQuestion(task);
+};
+
+const latestOpenClarificationQuestion = (
+  task: TaskRecord,
+): ClarificationQuestionRecord | undefined =>
+  task.clarificationQuestions
+    .filter((question) => question.status === "open")
+    .sort(compareClarificationQuestionsNewestFirst)[0];
+
+const compareClarificationQuestionsNewestFirst = (
+  left: ClarificationQuestionRecord,
+  right: ClarificationQuestionRecord,
+): number =>
+  right.createdAt.localeCompare(left.createdAt) ||
+  right.id.localeCompare(left.id);
+
+const describeClarificationQuestion = (
+  question: ClarificationQuestionRecord,
+): string => {
+  const directQuestion = question.question.question.trim();
+  if (directQuestion) {
+    return directQuestion;
+  }
+
+  const summary = question.question.summary.trim();
+  if (summary) {
+    return summary;
+  }
+
+  return question.question.blockingReason;
+};
 
 const sortTaskEvents = (events: TaskEvent[]): TaskEvent[] =>
   [...events].sort((left, right) =>
@@ -180,9 +301,21 @@ const buildDeliveryId = (
   reservedAt: string,
 ): string => `telegram-notification:${subscriptionId}:${eventId}:${reservedAt}`;
 
+const buildActiveTaskQuestionPromptId = (
+  conversationKey: string,
+  taskId: string,
+  questionId: string,
+): string => `telegram-question:${conversationKey}:${taskId}:${questionId}`;
+
 const addMilliseconds = (isoDate: string, milliseconds: number): string => {
   const date = new Date(isoDate);
   date.setTime(date.getTime() + Math.max(0, milliseconds));
+  return date.toISOString();
+};
+
+const addDays = (isoDate: string, days: number): string => {
+  const date = new Date(isoDate);
+  date.setUTCDate(date.getUTCDate() + Math.max(0, days));
   return date.toISOString();
 };
 

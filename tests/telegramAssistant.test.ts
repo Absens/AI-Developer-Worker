@@ -439,6 +439,9 @@ interface MessageUpdateOverrides {
   chatId?: number;
   userId?: number;
   date?: number;
+  chatType?: "private" | "group" | "supergroup";
+  messageThreadId?: number;
+  isReplyToBot?: boolean;
 }
 
 const messageUpdate = (
@@ -449,12 +452,30 @@ const messageUpdate = (
   message: {
     message_id: overrides.messageId ?? 99,
     date: overrides.date ?? 1,
-    chat: { id: overrides.chatId ?? 1, type: "private" },
+    chat: { id: overrides.chatId ?? 1, type: overrides.chatType ?? "private" },
+    ...(overrides.messageThreadId !== undefined
+      ? { message_thread_id: overrides.messageThreadId }
+      : {}),
     from: {
       id: overrides.userId ?? 10,
       is_bot: false,
       first_name: "User",
     },
+    ...(overrides.isReplyToBot
+      ? {
+          reply_to_message: {
+            message_id: 1,
+            date: 1,
+            chat: { id: overrides.chatId ?? 1, type: overrides.chatType ?? "private" },
+            from: {
+              id: 99,
+              is_bot: true,
+              first_name: "Assistant",
+              username: "dev_bot",
+            },
+          },
+        }
+      : {}),
     text,
   },
 });
@@ -3020,7 +3041,7 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(12);
   });
 
-  it("creates a task draft pending action and waits for confirmation", async () => {
+  it("creates an executable task draft session and waits for confirmation", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore({
       now: () => new Date("2026-05-30T08:00:00.000Z"),
@@ -3063,32 +3084,593 @@ describe("TelegramAssistantService", () => {
         messageId: 99,
         userId: 10,
         externalKey: "telegram:1:99",
+        sessionId: "tged_z_2r",
+        executionMode: "auto_ready",
         draft: {
           title: "починить регистрацию",
           description: "создай задачу починить регистрацию",
           repositoryName: "developer",
+          repoPathKey: "developer",
+          baseBranch: "main",
+          queue: "DEV",
           acceptanceCriteria: [
             "Поведение реализовано и покрыто существующими проверками.",
           ],
-          tags: ["telegram"],
+          tags: ["telegram", "risk_medium"],
+          risk: {
+            riskLevel: "medium",
+            reasons: ["isolated_feature_or_bugfix"],
+            requiresOwnerApproval: false,
+          },
+          executionMode: "auto_ready",
         },
       },
+    });
+    await expect(
+      store.getExecutableTaskDraftSession("tged_z_2r"),
+    ).resolves.toMatchObject({
+      id: "tged_z_2r",
+      source: "private",
+      initiatorUserId: 10,
+      chatId: 1,
+      messageId: 99,
+      originalText: "создай задачу починить регистрацию",
+      status: "awaiting_user_confirmation",
+      clarificationHistory: [],
     });
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       chatId: "1",
       parseMode: "HTML",
       replyToMessageId: 99,
-      text: expect.stringContaining("Создать задачу"),
+      text: expect.stringContaining("Создать и запустить задачу"),
       replyMarkup: {
         inline_keyboard: [
           [
-            { text: "Создать", callback_data: "c:tgpa_z_2r" },
+            { text: "Создать и запустить", callback_data: "c:tgpa_z_2r" },
             { text: "Отмена", callback_data: "cancel:tgpa_z_2r" },
           ],
         ],
       },
     }));
     expect(await store.getOffset("default")).toBe(36);
+  });
+
+  it("blocks private task creation when task creation is disabled", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { taskCreationEnabled: false },
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 135,
+      messageId: 135,
+    }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: expect.stringMatching(/создание задач.*выключено/i),
+    }));
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("does not create a private executable draft when no repository profile is available", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      repositories: [],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 136,
+      messageId: 136,
+    }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Не могу поставить задачу в очередь: не настроен repository profile для выполнения.",
+    }));
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("collects repository clarification for ambiguous private executable drafts", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", baseBranch: "develop", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 140,
+      messageId: 200,
+    }));
+
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      id: "tged_3w_5k",
+      status: "collecting",
+      clarificationQuestion: {
+        field: "repositoryProfile",
+        text: "В каком репозитории выполнить задачу?",
+      },
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 200,
+      text: expect.stringContaining("В каком репозитории"),
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("answers repository clarification and then confirms a frontend executable task", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"], tags: ["ui"] }),
+        repositoryFixture({ name: "backend", baseBranch: "develop", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 141,
+      messageId: 201,
+    }));
+    await service.handleUpdate(messageUpdate("frontend", {
+      updateId: 142,
+      messageId: 202,
+      date: 2,
+    }));
+
+    const session = await store.getActiveExecutableTaskDraftSession("bot_private:1");
+    expect(session).toMatchObject({
+      id: "tged_3x_5l",
+      status: "awaiting_user_confirmation",
+      draft: {
+        repositoryName: "frontend",
+        queue: "FRONTEND",
+        executionMode: "auto_ready",
+      },
+      clarificationHistory: [{
+        field: "repositoryProfile",
+        question: "В каком репозитории выполнить задачу?",
+        answer: "frontend",
+      }],
+    });
+    expect(session?.clarificationQuestion).toBeUndefined();
+
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    expect(pending).toMatchObject({
+      id: "tgpa_3y_5m",
+      payload: {
+        sessionId: "tged_3x_5l",
+        messageId: 201,
+        externalKey: "telegram:1:201",
+        draft: {
+          repositoryName: "frontend",
+          queue: "FRONTEND",
+        },
+      },
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 202,
+      text: expect.stringContaining("Создать и запустить задачу"),
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 143,
+      messageId: 203,
+      date: 3,
+    }));
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    expect(createTaskSpy.mock.calls[0]?.[0]).toMatchObject({
+      repositoryName: "frontend",
+      repoPathKey: "frontend",
+      baseBranch: "main",
+      queue: "FRONTEND",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:201",
+      },
+      externalSnapshot: {
+        messageId: 201,
+      },
+    });
+    await expect(
+      store.getExecutableTaskDraftSession("tged_3x_5l"),
+    ).resolves.toMatchObject({ status: "completed" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("executes a pending create action approval instead of treating yes as draft clarification", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 148,
+      messageId: 208,
+    }));
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_unrelated_create",
+      payload: {
+        ...createTaskDraftPendingAction().payload,
+        externalKey: "telegram:1:77",
+      },
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 149,
+      messageId: 209,
+      date: 2,
+    }));
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    await expect(store.getPendingAction("tgpa_unrelated_create")).resolves.toMatchObject({
+      status: "completed",
+    });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [],
+    });
+  });
+
+  it("cancels a pending answer action instead of cancelling the collecting draft", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 150,
+      messageId: 210,
+    }));
+    await store.upsertPendingAction({
+      id: "tgpa_unrelated_answer",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      intent: {
+        name: "answer_ai_question",
+        confidence: 1,
+        rawText: "ответь что можно продолжать",
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      payload: {
+        taskId: "task_1",
+        questionId: "question_1",
+        body: "можно продолжать",
+        command: { type: "resume", rawText: "можно продолжать" },
+        chatId: 1,
+        messageId: 77,
+        userId: 10,
+        externalKey: "telegram_answer:1:77:question_1",
+      },
+      status: "pending",
+      createdAt: "2026-05-30T08:00:00.000Z",
+      updatedAt: "2026-05-30T08:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await service.handleUpdate(messageUpdate("нет", {
+      updateId: 151,
+      messageId: 211,
+      date: 2,
+    }));
+
+    await expect(store.getPendingAction("tgpa_unrelated_answer")).resolves.toMatchObject({
+      status: "cancelled",
+    });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [],
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 211,
+      text: "Действие отменено.",
+    }));
+  });
+
+  it("keeps collecting when repository clarification answer is unknown", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 144,
+      messageId: 204,
+    }));
+    await service.handleUpdate(messageUpdate("mobile", {
+      updateId: 145,
+      messageId: 205,
+      date: 2,
+    }));
+
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [{
+        field: "repositoryProfile",
+        answer: "mobile",
+      }],
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 205,
+      text: expect.stringContaining("В каком репозитории"),
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("cancels collecting executable draft sessions from text cancellation", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 146,
+      messageId: 206,
+    }));
+    await service.handleUpdate(messageUpdate("отмена", {
+      updateId: 147,
+      messageId: 207,
+      date: 2,
+    }));
+
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getExecutableTaskDraftSession("tged_42_5q"),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    expect(
+      (await store.getExecutableTaskDraftSession("tged_42_5q"))?.clarificationQuestion,
+    ).toBeUndefined();
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 207,
+      text: "Действие отменено.",
+    }));
+  });
+
+  it.each(["не надо", "cancel"])(
+    "cancels collecting executable draft sessions from %s without recording clarification",
+    async (cancelText) => {
+      const sendMessage = vi.fn();
+      const store = new InMemoryTelegramAssistantStore();
+      const taskTracker = fakeTaskTracker();
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        taskTracker,
+        config: { defaultRepository: undefined },
+        repositories: [
+          repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+          repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+        ],
+      });
+
+      await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+        updateId: 154,
+        messageId: 214,
+      }));
+      const activeSession = await store.getActiveExecutableTaskDraftSession(
+        "bot_private:1",
+      );
+      if (!activeSession) {
+        throw new Error("Expected active executable draft session.");
+      }
+
+      await service.handleUpdate(messageUpdate(cancelText, {
+        updateId: 155,
+        messageId: 215,
+        date: 2,
+      }));
+
+      await expect(store.listPendingActions()).resolves.toEqual([]);
+      const terminalSession = await store.getExecutableTaskDraftSession(
+        activeSession.id,
+      );
+      expect(terminalSession).toMatchObject({
+        status: "cancelled",
+        clarificationHistory: [],
+      });
+      expect(terminalSession?.clarificationQuestion).toBeUndefined();
+      await expect(
+        store.getActiveExecutableTaskDraftSession("bot_private:1"),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(["cancel!", "не надо, спасибо"])(
+    "cancels collecting executable draft sessions from routed reject %s without recording clarification",
+    async (cancelText) => {
+      const sendMessage = vi.fn();
+      const store = new InMemoryTelegramAssistantStore();
+      const taskTracker = fakeTaskTracker();
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        taskTracker,
+        config: { defaultRepository: undefined },
+        repositories: [
+          repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+          repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+        ],
+      });
+
+      await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+        updateId: 156,
+        messageId: 216,
+      }));
+      const activeSession = await store.getActiveExecutableTaskDraftSession(
+        "bot_private:1",
+      );
+      if (!activeSession) {
+        throw new Error("Expected active executable draft session.");
+      }
+
+      await service.handleUpdate(messageUpdate(cancelText, {
+        updateId: 157,
+        messageId: 217,
+        date: 2,
+      }));
+
+      await expect(store.listPendingActions()).resolves.toEqual([]);
+      const terminalSession = await store.getExecutableTaskDraftSession(
+        activeSession.id,
+      );
+      expect(terminalSession).toMatchObject({
+        status: "cancelled",
+        clarificationHistory: [],
+      });
+      expect(terminalSession?.clarificationQuestion).toBeUndefined();
+      await expect(
+        store.getActiveExecutableTaskDraftSession("bot_private:1"),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it("does not record bare yes as a collecting draft clarification without a pending action", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 152,
+      messageId: 212,
+    }));
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 153,
+      messageId: 213,
+      date: 2,
+    }));
+
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [],
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 213,
+      text: expect.stringContaining("В каком репозитории"),
+    }));
   });
 
   it("records a human answer for the latest open AI question after confirmation", async () => {
@@ -3129,6 +3711,403 @@ describe("TelegramAssistantService", () => {
       status: "completed",
     })).resolves.toHaveLength(1);
     expect(await store.getOffset("default")).toBe(45);
+  });
+
+  it("records a reply to an active task question prompt directly when confirmations are disabled", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      promptMessageId: 500,
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: { confirmWriteActions: false },
+    });
+
+    await service.handleUpdate(messageUpdate("  продолжаем с вариантом A  ", {
+      updateId: 45,
+      messageId: 107,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: "продолжаем с вариантом A",
+        command: {
+          type: "resume",
+          rawText: "продолжаем с вариантом A",
+        },
+        author: expect.objectContaining({
+          owner: "human",
+          id: "telegram:10",
+        }),
+      }),
+    );
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 107,
+      text: "Ответ записан. Задача продолжит работу.",
+    }));
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+  });
+
+  it("creates a pending confirmation for a reply to an active task question prompt by default", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+
+    await service.handleUpdate(messageUpdate("можно продолжать", {
+      updateId: 46,
+      messageId: 108,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).not.toHaveBeenCalled();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    expect(pending).toMatchObject({
+      id: "tgpa_1a_30",
+      intent: {
+        name: "answer_ai_question",
+        rawText: "можно продолжать",
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      payload: {
+        taskId: "task_awaiting",
+        questionId: "question_latest",
+        body: "можно продолжать",
+        command: { type: "resume", rawText: "можно продолжать" },
+        chatId: 1,
+        messageId: 108,
+        userId: 10,
+        externalKey: "telegram_answer:1:108:question_latest",
+      },
+    });
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: expect.stringContaining("можно продолжать"),
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 47,
+      messageId: 109,
+      date: 2,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: "можно продолжать",
+      }),
+    );
+    await expect(store.getPendingAction(pending?.id ?? "")).resolves.toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("does not consume an active task question prompt for another user", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 11,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: {
+        allowedUserIds: ["10", "11"],
+        developerUserIds: ["10", "11"],
+      },
+    });
+
+    await service.handleUpdate(messageUpdate("ответ не того пользователя", {
+      updateId: 48,
+      messageId: 110,
+      userId: 10,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).not.toHaveBeenCalled();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "open",
+      userId: 11,
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 110,
+      text: "Не нашел открытый вопрос AI. Уточни задачу или дождись вопроса.",
+    }));
+  });
+
+  it("records a reply to an active task question prompt from a subscribed group conversation", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:group:-100:main:task_awaiting:question_latest",
+      conversationKey: "group:-100:main",
+      chatId: -100,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: {
+        confirmWriteActions: false,
+        allowedChatIds: ["-100"],
+        allowedUserIds: ["10"],
+        developerUserIds: ["10"],
+        botUsername: "dev_bot",
+      },
+    });
+
+    await service.handleUpdate(messageUpdate("можно продолжать из группы", {
+      updateId: 49,
+      messageId: 111,
+      chatId: -100,
+      chatType: "group",
+      isReplyToBot: true,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: "можно продолжать из группы",
+      }),
+    );
+    await expect(
+      store.getActiveTaskQuestionPrompt("group:-100:main"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "-100",
+      replyToMessageId: 111,
+      text: "Ответ записан. Задача продолжит работу.",
+    }));
+  });
+
+  it("keeps an active task question prompt open when pending answer creation fails", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const originalUpsertPendingAction = store.upsertPendingAction.bind(store);
+    vi.spyOn(store, "upsertPendingAction")
+      .mockRejectedValueOnce(new Error("pending action write failed"))
+      .mockImplementation(originalUpsertPendingAction);
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+    const update = messageUpdate("можно продолжать", {
+      updateId: 50,
+      messageId: 112,
+    });
+
+    await expect(service.handleUpdate(update)).rejects.toThrow(
+      "pending action write failed",
+    );
+
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toMatchObject({ status: "open" });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(taskTracker.recordHumanAnswer).not.toHaveBeenCalled();
+
+    await service.handleUpdate(update);
+
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    })).resolves.toHaveLength(1);
+  });
+
+  it("does not duplicate direct answers when consuming an active prompt fails after recording", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const originalConsumeActivePrompt =
+      store.consumeActiveTaskQuestionPrompt.bind(store);
+    vi.spyOn(store, "consumeActiveTaskQuestionPrompt")
+      .mockRejectedValueOnce(new Error("prompt consume failed"))
+      .mockImplementation(originalConsumeActivePrompt);
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: { confirmWriteActions: false },
+    });
+    const update = messageUpdate("продолжаем без дубля", {
+      updateId: 51,
+      messageId: 113,
+    });
+
+    await expect(service.handleUpdate(update)).rejects.toThrow(
+      "prompt consume failed",
+    );
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toMatchObject({ status: "open" });
+
+    await service.handleUpdate(update);
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      text: "Ответ записан. Задача продолжит работу.",
+    }));
+  });
+
+  it("does not consume a newer active prompt created while answering an older prompt", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const originalUpsertPendingAction = store.upsertPendingAction.bind(store);
+    vi.spyOn(store, "upsertPendingAction")
+      .mockImplementationOnce(async (action) => {
+        const result = await originalUpsertPendingAction(action);
+        await store.upsertActiveTaskQuestionPrompt({
+          id: "telegram-question:bot_private:1:task_awaiting:question_newer",
+          conversationKey: "bot_private:1",
+          chatId: 1,
+          userId: 10,
+          taskId: "task_awaiting",
+          questionId: "question_newer",
+          status: "open",
+          createdAt: baseTime,
+          updatedAt: "2026-05-30T08:10:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        });
+        return result;
+      });
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+
+    await service.handleUpdate(messageUpdate("можно продолжать старый вопрос", {
+      updateId: 52,
+      messageId: 114,
+    }));
+
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "telegram-question:bot_private:1:task_awaiting:question_newer",
+      status: "open",
+    }));
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    })).resolves.toHaveLength(1);
   });
 
   it("retries an answer callback from an executing action after answer write failure", async () => {
@@ -3236,7 +4215,7 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(45);
   });
 
-  it("creates an internal task from a confirmed draft without idempotencyKey", async () => {
+  it("creates a ready executable task from a confirmed trusted private draft", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore({
       now: () => new Date("2026-05-30T08:00:00.000Z"),
@@ -3245,6 +4224,7 @@ describe("TelegramAssistantService", () => {
       now: () => new Date("2026-05-30T08:00:00.000Z"),
     });
     const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const markReadySpy = vi.spyOn(taskTracker, "markReady");
     const service = new TelegramAssistantService({
       store,
       config: {
@@ -3252,7 +4232,7 @@ describe("TelegramAssistantService", () => {
         defaultRepository: "developer",
       },
       taskTracker,
-      repositories: [repositoryFixture()],
+      repositories: [repositoryFixture({ tags: ["ai_dev"] })],
       telegram: { sendMessage, answerCallbackQuery: vi.fn() },
     });
 
@@ -3278,9 +4258,10 @@ describe("TelegramAssistantService", () => {
     });
 
     expect(createTaskSpy).toHaveBeenCalledOnce();
+    expect(markReadySpy).toHaveBeenCalledOnce();
     const createdInput = createTaskSpy.mock.calls[0]?.[0];
     expect(createdInput).toBeDefined();
-    expect(createdInput).toEqual({
+    expect(createdInput).toMatchObject({
       title: "починить регистрацию",
       description: "создай задачу починить регистрацию",
       source: {
@@ -3294,12 +4275,26 @@ describe("TelegramAssistantService", () => {
         displayName: "Telegram Assistant",
       },
       repositoryName: "developer",
-      tags: ["telegram"],
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: ["telegram", "ai_dev", "risk_medium"],
       acceptanceCriteria: [
         "Поведение реализовано и покрыто существующими проверками.",
       ],
+      riskFactors: ["isolated_feature_or_bugfix"],
       externalRefs: [{ provider: "telegram", externalKey: "telegram:1:99" }],
-      externalSnapshot: { chatId: 1, messageId: 99, userId: 10 },
+      externalSnapshot: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        executionMode: "auto_ready",
+        risk: {
+          riskLevel: "medium",
+          reasons: ["isolated_feature_or_bugfix"],
+          requiresOwnerApproval: false,
+        },
+      },
     });
     expect(createdInput as unknown as Record<string, unknown>).not.toHaveProperty(
       "idempotencyKey",
@@ -3309,6 +4304,14 @@ describe("TelegramAssistantService", () => {
       conversationKey: "bot_private:1",
     });
     expect(action).toMatchObject({ status: "completed" });
+    const sessionId = action?.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "completed" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
 
     const [subscription] = await store.listTaskSubscriptions("bot_private:1");
     expect(subscription).toMatchObject({
@@ -3324,9 +4327,164 @@ describe("TelegramAssistantService", () => {
     expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
       chatId: "1",
       replyToMessageId: 100,
-      text: expect.stringContaining(taskId),
+      text: `Задача создана и поставлена в очередь: ${taskId}`,
     }));
     expect(await store.getOffset("default")).toBe(38);
+  });
+
+  it("requires owner approval before queueing high-risk trusted private tasks", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const markReadySpy = vi.spyOn(taskTracker, "markReady");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: {
+        defaultRepository: "developer",
+        profileAutomation: {
+          ...baseTelegramAssistantConfig().profileAutomation,
+          allowedOwnerIds: ["99"],
+        },
+      },
+      repositories: [repositoryFixture({ tags: ["ai_dev"] })],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поменять авторизацию", {
+      updateId: 90,
+      messageId: 190,
+    }));
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 91,
+      messageId: 191,
+    }));
+
+    expect(createTaskSpy).not.toHaveBeenCalled();
+    expect(markReadySpy).not.toHaveBeenCalled();
+    const ownerActions = await store.listPendingActions({
+      conversationKey: "bot_private:99",
+      status: "pending",
+    });
+    expect(ownerActions).toEqual([
+      expect.objectContaining({
+        chatId: 99,
+        userId: 99,
+        payload: expect.objectContaining({
+          executionMode: "owner_approval",
+          externalKey: "telegram:1:190",
+          draft: expect.objectContaining({
+            repositoryName: "developer",
+            repoPathKey: "developer",
+            baseBranch: "main",
+            queue: "DEV",
+            executionMode: "owner_approval",
+            risk: expect.objectContaining({
+              riskLevel: "high",
+              requiresOwnerApproval: true,
+            }),
+          }),
+        }),
+      }),
+    ]);
+    const sessionId = ownerActions[0]?.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "awaiting_owner_approval" });
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "99",
+      text: expect.stringContaining("High-risk"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 191,
+      text: "Задача отправлена owner/admin на подтверждение запуска.",
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 92,
+      messageId: 192,
+      chatId: 99,
+      userId: 99,
+    }));
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    expect(markReadySpy).toHaveBeenCalledOnce();
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(createTaskSpy.mock.calls[0]?.[0]).toMatchObject({
+      repositoryName: "developer",
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: ["telegram", "ai_dev", "risk_high"],
+      externalRefs: [{ provider: "telegram", externalKey: "telegram:1:190" }],
+      externalSnapshot: {
+        chatId: 1,
+        messageId: 190,
+        userId: 10,
+        executionMode: "owner_approval",
+      },
+    });
+  });
+
+  it("rejects mismatched executable draft payload execution mode", async () => {
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const markReadySpy = vi.spyOn(taskTracker, "markReady");
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      repositories: [repositoryFixture({ tags: ["ai_dev"] })],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 40,
+      messageId: 99,
+    }));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+    await store.upsertPendingAction({
+      ...pending,
+      payload: {
+        ...pending.payload,
+        executionMode: "auto_ready",
+        draft: {
+          ...(pending.payload.draft as Record<string, unknown>),
+          executionMode: "owner_approval",
+        },
+      },
+    });
+
+    await expect(
+      service.handleUpdate(callbackUpdate(`c:${pending.id}`, {
+        updateId: 41,
+        callbackQueryId: "cb_mismatch",
+      })),
+    ).rejects.toThrow("Invalid telegram task draft payload.");
+
+    expect(createTaskSpy).not.toHaveBeenCalled();
+    expect(markReadySpy).not.toHaveBeenCalled();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "executing",
+    });
   });
 
   it("retries text approval from an executing draft after tracker write failure", async () => {
@@ -3420,7 +4578,7 @@ describe("TelegramAssistantService", () => {
     expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
       chatId: "1",
       replyToMessageId: 100,
-      text: "Задача создана: task_retry_1",
+      text: "Задача создана и поставлена в очередь: task_retry_1",
     }));
     expect(await store.isUpdateProcessed(37)).toBe(true);
     expect(await store.getOffset("default")).toBe(38);
@@ -3546,6 +4704,8 @@ describe("TelegramAssistantService", () => {
     if (!pending) {
       throw new Error("Expected pending telegram action.");
     }
+    const sessionId = pending.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
     await store.enqueueMessage({
       id: "queued-follow-up",
       conversationKey: "bot_private:1",
@@ -3583,6 +4743,51 @@ describe("TelegramAssistantService", () => {
     await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
       status: "cancelled",
     });
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("cancels executable task draft sessions from text cancellation", async () => {
+    const taskTracker = fakeTaskTracker();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const service = buildAssistant({ store, taskTracker });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 130,
+      messageId: 99,
+    }));
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    if (!pending) {
+      throw new Error("Expected pending telegram action.");
+    }
+    const sessionId = pending.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
+
+    await service.handleUpdate(messageUpdate("отмена", {
+      updateId: 131,
+      messageId: 100,
+      date: 2,
+    }));
+
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    await expect(store.getPendingAction(pending.id)).resolves.toMatchObject({
+      status: "cancelled",
+    });
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
   });
 
   it("refreshes pending action gauges after cancelling a create-task callback", async () => {
@@ -4549,11 +5754,11 @@ describe("TelegramAssistantService", () => {
       config: { userTaskCreationDailyLimit: 1 },
     });
 
-    await service.handleUpdate(messageUpdate("создай задачу первую", {
+    await service.handleUpdate(messageUpdate("создай задачу добавить проверку статуса заказа", {
       updateId: 960,
       messageId: 960,
     }));
-    await service.handleUpdate(messageUpdate("создай задачу вторую", {
+    await service.handleUpdate(messageUpdate("создай задачу добавить проверку ошибок оплаты", {
       updateId: 961,
       messageId: 961,
     }));
@@ -4862,6 +6067,8 @@ describe("TelegramAssistantService", () => {
       queuedMessages: 1,
       assistantTurns: 1,
       pendingActions: 1,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
       digitalTwin: {
         sessions: 1,
         messages: 1,

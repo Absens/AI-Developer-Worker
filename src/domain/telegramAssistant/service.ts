@@ -46,6 +46,15 @@ import type { TelegramNotificationRouter } from "./notificationRouter.js";
 import { routeTelegramIntent } from "./intentRouter.js";
 import { validateTelegramAttachment } from "./media.js";
 import { canHandleBusinessMessage } from "./profileAutomation.js";
+import {
+  applyExecutableDraftAnswer,
+  buildTelegramExecutableTaskDraft,
+  nextExecutableDraftQuestion,
+} from "./executableTaskDraft.js";
+import {
+  resolveTelegramExecutionRepositoryProfile,
+  type TelegramExecutionRepositoryProfile,
+} from "./repositoryProfileResolver.js";
 import type {
   AnswerProjectQuestionResult,
   AssistantSource,
@@ -68,6 +77,11 @@ import type {
   TelegramBusinessConnectionRecord,
   TelegramConversationSource,
   TelegramDigitalTwinSession,
+  TelegramExecutableTaskDraft,
+  TelegramExecutableTaskDraftExecutionMode,
+  TelegramExecutableTaskDraftQuestion,
+  TelegramExecutableTaskDraftSession,
+  TelegramActiveTaskQuestionPrompt,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramPendingAction,
@@ -166,10 +180,15 @@ const ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE =
 const ANSWER_RECORDED_MESSAGE = "Ответ записан. Задача продолжит работу.";
 const TASK_CREATION_DAILY_LIMIT_MESSAGE = "Дневной лимит создания задач исчерпан.";
 const PROJECT_QA_DAILY_LIMIT_MESSAGE = "Дневной лимит проектного Q&A исчерпан.";
+const TASK_SENT_TO_OWNER_APPROVAL_MESSAGE =
+  "Задача отправлена owner/admin на подтверждение запуска.";
+const TASK_OWNER_APPROVAL_UNAVAILABLE_MESSAGE =
+  "Не могу отправить задачу на owner/admin approval: не настроен owner/admin Telegram id.";
 const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md"];
 const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
 const MAX_TASK_SOURCE_COUNT = 5;
+const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена|cancel|не\s+надо)$/iu;
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
@@ -461,10 +480,114 @@ export class TelegramAssistantService {
       return undefined;
     }
 
+    const actor = resolveTelegramActor(this.config, message);
+
+    if (message.source === "bot_private" && message.text !== undefined) {
+      const activeExecutableDraftSession =
+        await this.store.getActiveExecutableTaskDraftSession(message.conversationKey);
+      if (
+        activeExecutableDraftSession?.status === "collecting" &&
+        activeExecutableDraftSession.clarificationQuestion
+      ) {
+        const activeIntent = routeTelegramIntent(message.text, {
+          projectQaEnabled: this.isProjectQaEnabledForMessage(message),
+        });
+        if (!actor.allowed) {
+          await this.sendMessage({
+            chatId: String(message.chatId),
+            text: UNAUTHORIZED_MESSAGE,
+          });
+          return undefined;
+        }
+
+        if (activeIntent.name === "approve_action") {
+          const now = new Date().toISOString();
+          const pendingAction = await this.findLatestConfirmableAction(
+            message,
+            ["pending", "executing"],
+            now,
+          );
+          if (pendingAction) {
+            await this.recordMessageRef(message);
+            await this.handleApproveAction(message);
+            return undefined;
+          }
+
+          await this.recordMessageRef(message);
+          await this.sendPlainMessage(
+            message,
+            activeExecutableDraftSession.clarificationQuestion.text,
+          );
+          return undefined;
+        }
+
+        if (
+          activeIntent.name === "reject_action" ||
+          EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN.test(message.text.trim())
+        ) {
+          const now = new Date().toISOString();
+          const pendingAction = await this.findLatestConfirmableAction(
+            message,
+            ["pending"],
+            now,
+          );
+          if (pendingAction) {
+            await this.recordMessageRef(message);
+            await this.handleRejectAction(message);
+            return undefined;
+          }
+          if (activeIntent.name === "reject_action") {
+            await this.recordMessageRef(message);
+            await this.cancelExecutableDraftSession(message, activeExecutableDraftSession);
+            return undefined;
+          }
+        }
+
+        await this.recordMessageRef(message);
+        await this.handleExecutableDraftClarification(
+          message,
+          activeExecutableDraftSession,
+          message.text,
+        );
+        return undefined;
+      }
+    }
+
+    if (message.text !== undefined) {
+      const activeTaskQuestionPrompt =
+        await this.store.getActiveTaskQuestionPrompt(message.conversationKey);
+      if (activeTaskQuestionPrompt) {
+        if (!actor.allowed) {
+          await this.sendMessage({
+            chatId: String(message.chatId),
+            text: UNAUTHORIZED_MESSAGE,
+          });
+          return undefined;
+        }
+        if (!canPerformTelegramWrite(actor)) {
+          await this.sendMessage({
+            chatId: String(message.chatId),
+            text: WRITE_ROLE_REQUIRED_MESSAGE,
+            ...(message.messageId
+              ? { replyToMessageId: message.messageId }
+              : {}),
+          });
+          return undefined;
+        }
+
+        await this.recordMessageRef(message);
+        await this.handleActiveTaskQuestionPromptReply(
+          message,
+          activeTaskQuestionPrompt,
+          message.text,
+        );
+        return undefined;
+      }
+    }
+
     const intent = routeTelegramIntent(message.text, {
       projectQaEnabled: this.isProjectQaEnabledForMessage(message),
     });
-    const actor = resolveTelegramActor(this.config, message);
     const projectQuestionAllowedByProfile =
       intent.name === "project_question" &&
       message.source === "business" &&
@@ -538,7 +661,7 @@ export class TelegramAssistantService {
       await this.handleCreateTaskDraft(
         message,
         intent,
-        intent.rawText ?? message.text ?? "",
+        message.text ?? intent.rawText ?? "",
       );
       return undefined;
     }
@@ -835,6 +958,20 @@ export class TelegramAssistantService {
       return undefined;
     }
 
+    if (intent.name === "create_task_draft") {
+      if (this.config.profileAutomation.requireOwnerApproval) {
+        await this.handleBusinessCreateTaskDraftForOwnerApproval(
+          message,
+          connection,
+          intent,
+          intent.rawText ?? message.text ?? "",
+        );
+      } else if (policy.shouldAutoReply && !policy.canReply) {
+        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
+      }
+      return undefined;
+    }
+
     if (
       message.source === "business" &&
       this.config.digitalTwin.enabled &&
@@ -855,20 +992,6 @@ export class TelegramAssistantService {
         return undefined;
       }
       await this.handleTaskStatus(message, intent.rawText ?? message.text ?? "");
-      return undefined;
-    }
-
-    if (intent.name === "create_task_draft") {
-      if (this.config.profileAutomation.requireOwnerApproval) {
-        await this.handleBusinessCreateTaskDraftForOwnerApproval(
-          message,
-          connection,
-          intent,
-          intent.rawText ?? message.text ?? "",
-        );
-      } else if (policy.shouldAutoReply && !policy.canReply) {
-        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
-      }
       return undefined;
     }
 
@@ -973,14 +1096,60 @@ export class TelegramAssistantService {
       return;
     }
 
-    const draft = buildHeuristicTaskDraft(
-      text,
-      this.repositories,
-      this.config.defaultRepository,
-    );
     const actionId = buildPendingActionId(message.updateId, message.messageId);
     const externalKey = buildTelegramExternalKey(message.chatId, message.messageId);
     const now = new Date().toISOString();
+    const existingAction = await this.store.getPendingAction(actionId);
+    if (existingAction) {
+      if (existingAction.status === "pending" && isPendingActionUnexpired(existingAction, now)) {
+        const existingPayload = parseTaskDraftPayload(existingAction.payload);
+        await this.sendTelegramResponse(
+          ownerMessage,
+          isTelegramExecutableTaskDraft(existingPayload.draft)
+            ? buildExecutableTaskDraftResponse(existingPayload.draft, existingAction.id)
+            : buildTaskDraftResponse(existingPayload.draft, existingAction.id),
+        );
+      }
+      return;
+    }
+
+    const repositoryResolution = resolveTelegramExecutionRepositoryProfile({
+      text,
+      repositories: this.repositories,
+      defaultRepository: this.config.defaultRepository,
+    });
+    if (repositoryResolution.status === "unavailable") {
+      await this.sendOwnerPlainMessage(
+        connection,
+        "Не могу поставить задачу в очередь: не настроен repository profile для выполнения.",
+      );
+      return;
+    }
+    if (repositoryResolution.status === "needs_selection") {
+      const options = repositoryResolution.options
+        .map((option) => `${option.repositoryName} / ${option.queue}`)
+        .join(", ");
+      await this.sendOwnerPlainMessage(
+        connection,
+        `Нужно выбрать репозиторий для задачи перед запуском: ${options}.`,
+      );
+      return;
+    }
+
+    const executableDraft = buildTelegramExecutableTaskDraft({
+      text,
+      selectedProfile: repositoryResolution.profile,
+      forceOwnerApproval: true,
+    });
+    const draft: TelegramExecutableTaskDraft = {
+      ...executableDraft,
+      title: buildHeuristicTaskDraft(
+        text,
+        this.repositories,
+        this.config.defaultRepository,
+      ).title,
+      description: text,
+    };
     const pendingAction: TelegramPendingAction = {
       id: actionId,
       conversationKey: ownerMessage.conversationKey,
@@ -989,6 +1158,7 @@ export class TelegramAssistantService {
       intent,
       payload: {
         draft,
+        executionMode: draft.executionMode,
         chatId: message.chatId,
         messageId: message.messageId,
         userId: message.userId,
@@ -1007,7 +1177,7 @@ export class TelegramAssistantService {
     await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       ownerMessage,
-      buildTaskDraftResponse(draft, pendingAction.id),
+      buildExecutableTaskDraftResponse(draft, pendingAction.id),
     );
   }
 
@@ -1042,11 +1212,169 @@ export class TelegramAssistantService {
     });
   }
 
+  private isOwnerOrAdmin(userId: number | undefined): boolean {
+    if (userId === undefined) {
+      return false;
+    }
+    const role = resolveTelegramRole(this.config, userId);
+    return (
+      role === "admin" ||
+      this.config.profileAutomation.allowedOwnerIds.includes(String(userId))
+    );
+  }
+
+  private resolveOwnerApprovalRecipient(): {
+    chatId: number;
+    userId: number;
+    conversationKey: string;
+  } | undefined {
+    const configuredId = [
+      ...this.config.profileAutomation.allowedOwnerIds,
+      ...this.config.adminUserIds,
+    ].find((id) => id.trim().length > 0);
+    if (!configuredId) {
+      return undefined;
+    }
+
+    const userId = Number(configuredId);
+    if (!Number.isSafeInteger(userId)) {
+      return undefined;
+    }
+
+    return {
+      chatId: userId,
+      userId,
+      conversationKey: `bot_private:${userId}`,
+    };
+  }
+
+  private buildConfiguredOwnerApprovalMessage(
+    message: TelegramInboundMessage,
+    recipient: { chatId: number; userId: number; conversationKey: string },
+  ): TelegramInboundMessage {
+    return {
+      ...message,
+      id: `${message.id}:owner-approval`,
+      conversationKey: recipient.conversationKey,
+      source: "bot_private",
+      chatId: recipient.chatId,
+      userId: recipient.userId,
+      messageId: undefined,
+      businessConnectionId: undefined,
+      actor: {
+        telegramUserId: recipient.userId,
+        role: resolveTelegramRole(this.config, recipient.userId),
+      },
+    };
+  }
+
+  private async routeCreateTaskActionToOwnerApproval(
+    message: TelegramInboundMessage,
+    action: TelegramPendingAction,
+    payload: TaskDraftPayload,
+  ): Promise<boolean> {
+    const recipient = this.resolveOwnerApprovalRecipient();
+    if (!recipient) {
+      if (payload.sessionId) {
+        await this.store.completeExecutableTaskDraftSession(payload.sessionId, {
+          status: "cancelled",
+        });
+      }
+      await this.store.completePendingAction(action.id, {
+        status: "cancelled",
+      });
+      await this.updatePendingActionGauges();
+      await this.sendPlainMessage(message, TASK_OWNER_APPROVAL_UNAVAILABLE_MESSAGE);
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    const ownerActionId = buildOwnerApprovalPendingActionId(action.id);
+    const existingOwnerAction = await this.store.getPendingAction(ownerActionId);
+    if (existingOwnerAction) {
+      const ownerMessage = this.buildConfiguredOwnerApprovalMessage(message, recipient);
+      if (
+        existingOwnerAction.status === "pending" &&
+        isPendingActionUnexpired(existingOwnerAction, now)
+      ) {
+        if (isTelegramExecutableTaskDraft(payload.draft)) {
+          await this.sendTelegramResponse(
+            ownerMessage,
+            buildOwnerExecutableTaskApprovalResponse(
+              payload.draft,
+              existingOwnerAction.id,
+            ),
+          );
+        } else {
+          await this.sendTelegramResponse(
+            ownerMessage,
+            buildTaskDraftResponse(payload.draft, existingOwnerAction.id),
+          );
+        }
+      }
+      await this.store.completePendingAction(action.id, {
+        status: "completed",
+      });
+      await this.updatePendingActionGauges();
+      await this.sendPlainMessage(message, TASK_SENT_TO_OWNER_APPROVAL_MESSAGE);
+      return true;
+    }
+
+    const ownerAction: TelegramPendingAction = {
+      ...action,
+      id: ownerActionId,
+      conversationKey: recipient.conversationKey,
+      chatId: recipient.chatId,
+      userId: recipient.userId,
+      status: "pending",
+      updatedAt: now,
+      consumedAt: undefined,
+      completedAt: undefined,
+    };
+    await this.store.upsertPendingAction(ownerAction);
+    if (payload.sessionId) {
+      const session = await this.store.getExecutableTaskDraftSession(payload.sessionId);
+      if (session) {
+        await this.store.upsertExecutableTaskDraftSession({
+          ...session,
+          status: "awaiting_owner_approval",
+          updatedAt: now,
+        });
+      }
+    }
+    await this.store.completePendingAction(action.id, {
+      status: "completed",
+    });
+    await this.updatePendingActionGauges();
+
+    const ownerMessage = this.buildConfiguredOwnerApprovalMessage(message, recipient);
+    if (isTelegramExecutableTaskDraft(payload.draft)) {
+      await this.sendTelegramResponse(
+        ownerMessage,
+        buildOwnerExecutableTaskApprovalResponse(payload.draft, ownerAction.id),
+      );
+    } else {
+      await this.sendTelegramResponse(
+        ownerMessage,
+        buildTaskDraftResponse(payload.draft, ownerAction.id),
+      );
+    }
+    await this.sendPlainMessage(message, TASK_SENT_TO_OWNER_APPROVAL_MESSAGE);
+    return true;
+  }
+
   private async handleCreateTaskDraft(
     message: TelegramInboundMessage,
     intent: TelegramIntent,
     text: string,
   ): Promise<void> {
+    if (!this.config.taskCreationEnabled) {
+      await this.sendPlainMessage(
+        message,
+        "Создание задач через Telegram сейчас выключено.",
+      );
+      return;
+    }
     if (!this.taskTracker) {
       await this.sendPlainMessage(message, TASK_CREATION_UNAVAILABLE_MESSAGE);
       return;
@@ -1064,42 +1392,210 @@ export class TelegramAssistantService {
       return;
     }
 
-    const draft = buildHeuristicTaskDraft(
-      text,
-      this.repositories,
-      this.config.defaultRepository,
-    );
-    const actionId = buildPendingActionId(message.updateId, message.messageId);
-    const externalKey = buildTelegramExternalKey(message.chatId, message.messageId);
+    const draftText = message.text ?? text;
+    const repositoryResolution = resolveTelegramExecutionRepositoryProfile({
+      text: draftText,
+      repositories: this.repositories,
+      defaultRepository: this.config.defaultRepository,
+    });
     const now = new Date().toISOString();
-    const pendingAction: TelegramPendingAction = {
-      id: actionId,
-      conversationKey: message.conversationKey,
-      chatId: message.chatId,
-      userId: message.userId,
-      intent,
-      payload: {
-        draft,
+
+    if (repositoryResolution.status === "unavailable") {
+      await this.sendPlainMessage(
+        message,
+        "Не могу поставить задачу в очередь: не настроен repository profile для выполнения.",
+      );
+      return;
+    }
+
+    if (repositoryResolution.status === "needs_selection") {
+      const clarificationQuestion: TelegramExecutableTaskDraftQuestion = {
+        field: "repositoryProfile",
+        text: "В каком репозитории выполнить задачу?",
+      };
+      await this.store.upsertExecutableTaskDraftSession({
+        id: buildExecutableDraftSessionId(message.updateId, message.messageId),
+        conversationKey: message.conversationKey,
+        source: "private",
+        initiatorUserId: message.userId,
         chatId: message.chatId,
         messageId: message.messageId,
-        userId: message.userId,
-        externalKey,
-        ...(message.attachments && message.attachments.length > 0
-          ? { attachments: message.attachments }
-          : {}),
-      },
-      status: "pending",
+        originalText: draftText,
+        draft: this.buildPrivateExecutableTaskDraft(draftText),
+        status: "collecting",
+        clarificationQuestion,
+        clarificationHistory: [],
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: addDays(now, this.config.conversationRetentionDays),
+      });
+      await this.sendPlainMessage(
+        message,
+        "В каком репозитории выполнить задачу? Ответь названием репозитория или queue.",
+      );
+      return;
+    }
+
+    const draft = this.buildPrivateExecutableTaskDraft(
+      draftText,
+      repositoryResolution.profile,
+    );
+    const clarificationQuestion = nextExecutableDraftQuestion(draft);
+    const session: TelegramExecutableTaskDraftSession = {
+      id: buildExecutableDraftSessionId(message.updateId, message.messageId),
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      messageId: message.messageId,
+      source: "private",
+      initiatorUserId: message.userId,
+      originalText: draftText,
+      draft,
+      status: clarificationQuestion ? "collecting" : "awaiting_user_confirmation",
+      ...(clarificationQuestion ? { clarificationQuestion } : {}),
+      clarificationHistory: [],
       createdAt: now,
       updatedAt: now,
       expiresAt: addDays(now, this.config.conversationRetentionDays),
     };
+    await this.store.upsertExecutableTaskDraftSession(session);
 
+    if (clarificationQuestion) {
+      await this.sendPlainMessage(message, clarificationQuestion.text);
+      return;
+    }
+
+    const pendingAction = createExecutableTaskPendingActionFromSession(
+      message,
+      intent,
+      session,
+    );
     await this.store.upsertPendingAction(pendingAction);
     await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       message,
-      buildTaskDraftResponse(draft, pendingAction.id),
+      buildExecutableTaskDraftResponse(draft, pendingAction.id),
     );
+  }
+
+  private buildPrivateExecutableTaskDraft(
+    text: string,
+    selectedProfile?: TelegramExecutionRepositoryProfile,
+  ): TelegramExecutableTaskDraft {
+    const draft = buildTelegramExecutableTaskDraft({
+      text,
+      ...(selectedProfile ? { selectedProfile } : {}),
+    });
+    const heuristicTitle = buildHeuristicTaskDraft(
+      text,
+      this.repositories,
+      this.config.defaultRepository,
+    ).title;
+    return {
+      ...draft,
+      title: heuristicTitle,
+      description: text,
+    };
+  }
+
+  private async handleExecutableDraftClarification(
+    message: TelegramInboundMessage,
+    session: TelegramExecutableTaskDraftSession,
+    answer: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    if (EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN.test(answer.trim())) {
+      await this.cancelExecutableDraftSession(message, session, now);
+      return;
+    }
+
+    const question = session.clarificationQuestion;
+    if (!question) {
+      return;
+    }
+
+    const updatedDraft = applyExecutableDraftAnswer(
+      session.draft,
+      question,
+      answer,
+      this.buildExecutableRepositoryProfiles(),
+    );
+    const nextQuestion = nextExecutableDraftQuestion(updatedDraft);
+    const updatedSession: TelegramExecutableTaskDraftSession = {
+      ...session,
+      draft: updatedDraft,
+      status: nextQuestion ? "collecting" : "awaiting_user_confirmation",
+      ...(nextQuestion ? { clarificationQuestion: nextQuestion } : {}),
+      clarificationHistory: [
+        ...session.clarificationHistory,
+        {
+          field: question.field,
+          question: question.text,
+          answer: answer.trim(),
+          answeredAt: now,
+        },
+      ],
+      updatedAt: now,
+    };
+    if (!nextQuestion) {
+      delete updatedSession.clarificationQuestion;
+    }
+
+    await this.store.upsertExecutableTaskDraftSession(updatedSession);
+
+    if (nextQuestion) {
+      await this.sendPlainMessage(message, nextQuestion.text);
+      return;
+    }
+
+    const pendingAction = createExecutableTaskPendingActionFromSession(
+      message,
+      {
+        name: "create_task_draft",
+        confidence: 1,
+        rawText: session.originalText,
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      updatedSession,
+    );
+    await this.store.upsertPendingAction(pendingAction);
+    await this.updatePendingActionGauges();
+    await this.sendTelegramResponse(
+      message,
+      buildExecutableTaskDraftResponse(updatedDraft, pendingAction.id),
+    );
+  }
+
+  private async cancelExecutableDraftSession(
+    message: TelegramInboundMessage,
+    session: TelegramExecutableTaskDraftSession,
+    now: string = new Date().toISOString(),
+  ): Promise<void> {
+    const cancelledSession: TelegramExecutableTaskDraftSession = {
+      ...session,
+      status: "cancelled",
+      updatedAt: now,
+    };
+    delete cancelledSession.clarificationQuestion;
+    await this.store.upsertExecutableTaskDraftSession(cancelledSession);
+    await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+  }
+
+  private buildExecutableRepositoryProfiles(): TelegramExecutionRepositoryProfile[] {
+    return this.repositories.flatMap((repository) => {
+      const queue = repository.queues[0]?.trim();
+      if (!queue) {
+        return [];
+      }
+
+      return [{
+        repositoryName: repository.name,
+        repoPathKey: repository.name,
+        baseBranch: repository.baseBranch,
+        queue,
+        tags: [...repository.tags],
+      }];
+    });
   }
 
   private async handleAnswerAiQuestion(
@@ -1129,14 +1625,108 @@ export class TelegramAssistantService {
       return;
     }
 
+    await this.handleResolvedAnswerAiQuestion(
+      message,
+      intent,
+      text,
+      candidateResolution.candidate,
+    );
+  }
+
+  private async handleActiveTaskQuestionPromptReply(
+    message: TelegramInboundMessage,
+    prompt: TelegramActiveTaskQuestionPrompt,
+    text: string,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_ANSWER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendPlainMessage(
+        message,
+        ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
+
+    if (!isActiveTaskQuestionPromptForMessage(prompt, message)) {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const task = await this.taskTracker.getTask(prompt.taskId);
+    const question = task.clarificationQuestions.find(
+      (candidate) => candidate.id === prompt.questionId,
+    );
+    if (!question) {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    await this.handleResolvedAnswerAiQuestion(
+      message,
+      buildAnswerAiQuestionIntent(text),
+      text,
+      { task, question },
+      { activePrompt: prompt },
+    );
+  }
+
+  private async handleResolvedAnswerAiQuestion(
+    message: TelegramInboundMessage,
+    intent: TelegramIntent,
+    text: string,
+    candidate: AnswerAiQuestionCandidate,
+    options: { activePrompt?: TelegramActiveTaskQuestionPrompt } = {},
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_ANSWER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendPlainMessage(
+        message,
+        ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
+
     const body = text.trim() || message.text?.trim() || "";
     const command = { type: "resume" as const, rawText: body };
+    const payload = buildAnswerAiQuestionPayload({
+      message,
+      candidate,
+      body,
+      command,
+    });
+    const answer: HumanAnswerInput = {
+      questionId: payload.questionId,
+      author: buildTelegramHumanAnswerAuthor(message, payload.userId),
+      body,
+      command,
+    };
+    const alreadyRecorded = await this.hasRecordedTelegramAnswer(payload, answer);
+    if (candidate.question.status !== "open" && !alreadyRecorded) {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    if (!this.config.confirmWriteActions) {
+      if (!alreadyRecorded) {
+        await this.taskTracker.recordHumanAnswer(candidate.task.id, answer);
+      }
+      if (options.activePrompt) {
+        await this.consumeActiveTaskQuestionPromptForMessage(
+          message,
+          options.activePrompt,
+        );
+      }
+      await this.sendPlainMessage(message, ANSWER_RECORDED_MESSAGE);
+      return;
+    }
+
     const actionId = buildPendingActionId(message.updateId, message.messageId);
-    const externalKey = buildTelegramAnswerExternalKey(
-      message.chatId,
-      message.messageId,
-      candidateResolution.candidate.question.id,
-    );
     const now = new Date().toISOString();
     const pendingAction: TelegramPendingAction = {
       id: actionId,
@@ -1144,16 +1734,7 @@ export class TelegramAssistantService {
       chatId: message.chatId,
       userId: message.userId,
       intent,
-      payload: {
-        taskId: candidateResolution.candidate.task.id,
-        questionId: candidateResolution.candidate.question.id,
-        body,
-        command,
-        chatId: message.chatId,
-        messageId: message.messageId,
-        userId: message.userId,
-        externalKey,
-      },
+      payload: { ...payload },
       status: "pending",
       createdAt: now,
       updatedAt: now,
@@ -1161,15 +1742,38 @@ export class TelegramAssistantService {
     };
 
     await this.store.upsertPendingAction(pendingAction);
+    if (options.activePrompt) {
+      await this.consumeActiveTaskQuestionPromptForMessage(
+        message,
+        options.activePrompt,
+      );
+    }
     await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       message,
       buildAnswerAiQuestionResponse(
-        candidateResolution.candidate,
+        candidate,
         body,
         pendingAction.id,
       ),
     );
+  }
+
+  private async consumeActiveTaskQuestionPromptForMessage(
+    message: TelegramInboundMessage,
+    prompt: TelegramActiveTaskQuestionPrompt,
+  ): Promise<void> {
+    const consumed = await this.store.consumeActiveTaskQuestionPrompt({
+      promptId: prompt.id,
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      userId: message.userId,
+    });
+    if (!consumed || consumed.id !== prompt.id) {
+      throw new Error(
+        `Telegram active task question prompt was not consumed: ${prompt.id}`,
+      );
+    }
   }
 
   private async prepareProjectQuestionTurn(
@@ -2108,6 +2712,12 @@ export class TelegramAssistantService {
     if (cancelledQueued.length > 0) {
       this.incrementMetric("telegram_queued_messages_total", { outcome: "cancelled" }, cancelledQueued.length);
     }
+    const sessionId = getExecutableTaskDraftSessionId(cancelled.payload);
+    if (sessionId) {
+      await this.store.completeExecutableTaskDraftSession(sessionId, {
+        status: "cancelled",
+      });
+    }
     await this.updatePendingActionGauges();
     return cancelled;
   }
@@ -2132,13 +2742,38 @@ export class TelegramAssistantService {
     message: TelegramInboundMessage,
     executableAction: TelegramPendingAction,
   ): Promise<void> {
-    const task = await this.findOrCreateTaskFromPendingAction(executableAction);
+    const payload = parseTaskDraftPayload(executableAction.payload);
+    if (
+      payload.executionMode === "owner_approval" &&
+      !this.isOwnerOrAdmin(message.userId)
+    ) {
+      await this.routeCreateTaskActionToOwnerApproval(
+        message,
+        executableAction,
+        payload,
+      );
+      return;
+    }
+
+    const task = await this.findOrCreateTaskFromPendingAction(
+      executableAction,
+      payload,
+    );
+    if (payload.sessionId) {
+      await this.store.completeExecutableTaskDraftSession(payload.sessionId, {
+        status: "completed",
+      });
+    }
     await this.store.completePendingAction(executableAction.id, {
       status: "completed",
     });
     await this.updatePendingActionGauges();
     await this.subscribeConversationToTask(message, task);
-    await this.sendPlainMessage(message, `Задача создана: ${task.id}`);
+    const createdMessage =
+      task.status === "ready" || task.status === "claimed"
+        ? `Задача создана и поставлена в очередь: ${task.id}`
+        : `Задача создана для triage: ${task.id}`;
+    await this.sendPlainMessage(message, createdMessage);
   }
 
   private async completeAnswerAiQuestionAction(
@@ -2242,22 +2877,26 @@ export class TelegramAssistantService {
 
   private async findOrCreateTaskFromPendingAction(
     action: TelegramPendingAction,
+    parsedPayload?: TaskDraftPayload,
   ): Promise<TaskRecord> {
     if (!this.taskTracker) {
       throw new Error("Task tracker is required to create telegram task drafts.");
     }
 
-    const payload = parseTaskDraftPayload(action.payload);
+    const payload = parsedPayload ?? parseTaskDraftPayload(action.payload);
     const existing = await this.taskTracker.findTaskByExternalRef(
       "telegram",
       payload.externalKey,
     );
     if (existing) {
       await this.ensureTelegramAttachmentsRegistered(existing, payload);
-      return existing;
+      return this.ensureExecutableTaskReady(existing, payload);
     }
 
     try {
+      const executableDraft = isTelegramExecutableTaskDraft(payload.draft)
+        ? payload.draft
+        : undefined;
       const task = await this.taskTracker.createTask({
         title: payload.draft.title,
         description: payload.draft.description,
@@ -2272,8 +2911,18 @@ export class TelegramAssistantService {
           displayName: "Telegram Assistant",
         },
         repositoryName: payload.draft.repositoryName,
+        ...(executableDraft?.repoPathKey
+          ? { repoPathKey: executableDraft.repoPathKey }
+          : {}),
+        ...(executableDraft?.baseBranch
+          ? { baseBranch: executableDraft.baseBranch }
+          : {}),
+        ...(executableDraft?.queue ? { queue: executableDraft.queue } : {}),
         tags: payload.draft.tags,
         acceptanceCriteria: payload.draft.acceptanceCriteria,
+        ...(executableDraft
+          ? { riskFactors: executableDraft.risk.reasons }
+          : {}),
         externalRefs: [
           { provider: "telegram", externalKey: payload.externalKey },
         ],
@@ -2281,13 +2930,17 @@ export class TelegramAssistantService {
           chatId: payload.chatId,
           messageId: payload.messageId,
           userId: payload.userId,
+          ...(payload.executionMode ? { executionMode: payload.executionMode } : {}),
+          ...(executableDraft
+            ? { risk: executableDraft.risk }
+            : {}),
           ...(payload.attachments && payload.attachments.length > 0
             ? { attachments: payload.attachments }
             : {}),
         },
       });
       await this.ensureTelegramAttachmentsRegistered(task, payload);
-      return task;
+      return this.ensureExecutableTaskReady(task, payload);
     } catch (error) {
       if (error instanceof DuplicateExternalRefError) {
         const existingAfterRace = await this.taskTracker.findTaskByExternalRef(
@@ -2296,11 +2949,33 @@ export class TelegramAssistantService {
         );
         if (existingAfterRace) {
           await this.ensureTelegramAttachmentsRegistered(existingAfterRace, payload);
-          return existingAfterRace;
+          return this.ensureExecutableTaskReady(existingAfterRace, payload);
         }
       }
       throw error;
     }
+  }
+
+  private async ensureExecutableTaskReady(
+    task: TaskRecord,
+    payload: TaskDraftPayload,
+  ): Promise<TaskRecord> {
+    if (!this.taskTracker) {
+      throw new Error("Task tracker is required to mark telegram tasks ready.");
+    }
+    if (
+      (payload.executionMode === "auto_ready" ||
+        payload.executionMode === "owner_approval") &&
+      (task.status === "new" || task.status === "triage")
+    ) {
+      await this.taskTracker.markReady(
+        task.id,
+        "Telegram task approved for execution.",
+      );
+      return this.taskTracker.getTask(task.id);
+    }
+
+    return task;
   }
 
   private async ensureTelegramAttachmentsRegistered(
@@ -2946,6 +3621,84 @@ const buildTaskDraftResponse = (
   disableWebPagePreview: true,
 });
 
+const buildExecutableTaskDraftResponse = (
+  draft: TelegramExecutableTaskDraft,
+  actionId: string,
+): TelegramResponse => ({
+  blocks: [
+    { kind: "title", text: "Создать и запустить задачу?" },
+    { kind: "field", label: "Название", value: draft.title },
+    ...(draft.repositoryName || draft.queue
+      ? [{
+          kind: "field" as const,
+          label: "Репозиторий/очередь",
+          value: [draft.repositoryName, draft.queue].filter(Boolean).join(" / "),
+        }]
+      : []),
+    {
+      kind: "field",
+      label: "Риск",
+      value: `${draft.risk.riskLevel}: ${draft.risk.reasons.join(", ")}`,
+    },
+    {
+      kind: "paragraph",
+      text: draft.executionMode === "auto_ready"
+        ? "После подтверждения задача будет поставлена в очередь выполнения."
+        : "После подтверждения задача останется на triage/owner approval.",
+    },
+    {
+      kind: "field",
+      label: "Критерии",
+      value: draft.acceptanceCriteria.join("\n"),
+    },
+  ],
+  inlineButtonRows: [
+    [
+      { text: "Создать и запустить", callbackData: `c:${actionId}` },
+      { text: "Отмена", callbackData: `cancel:${actionId}` },
+    ],
+  ],
+  disableWebPagePreview: true,
+});
+
+const buildOwnerExecutableTaskApprovalResponse = (
+  draft: TelegramExecutableTaskDraft,
+  actionId: string,
+): TelegramResponse => ({
+  blocks: [
+    { kind: "title", text: "High-risk: подтвердить запуск задачи?" },
+    { kind: "field", label: "Название", value: draft.title },
+    ...(draft.repositoryName || draft.queue
+      ? [{
+          kind: "field" as const,
+          label: "Репозиторий/очередь",
+          value: [draft.repositoryName, draft.queue].filter(Boolean).join(" / "),
+        }]
+      : []),
+    {
+      kind: "field",
+      label: "Риск",
+      value: `${draft.risk.riskLevel}: ${draft.risk.reasons.join(", ")}`,
+    },
+    {
+      kind: "paragraph",
+      text: "После подтверждения задача будет создана и поставлена в очередь выполнения.",
+    },
+    {
+      kind: "field",
+      label: "Критерии",
+      value: draft.acceptanceCriteria.join("\n"),
+    },
+  ],
+  inlineButtonRows: [
+    [
+      { text: "Создать и запустить", callbackData: `c:${actionId}` },
+      { text: "Отмена", callbackData: `cancel:${actionId}` },
+    ],
+  ],
+  disableWebPagePreview: true,
+});
+
 const buildAnswerAiQuestionResponse = (
   candidate: AnswerAiQuestionCandidate,
   body: string,
@@ -2970,6 +3723,54 @@ const buildAnswerAiQuestionResponse = (
   disableWebPagePreview: true,
 });
 
+const buildAnswerAiQuestionIntent = (rawText: string): TelegramIntent => ({
+  name: "answer_ai_question",
+  confidence: 1,
+  rawText,
+  requiresConfirmation: true,
+  safetyLevel: "confirm_write",
+});
+
+const buildAnswerAiQuestionPayload = (input: {
+  message: TelegramInboundMessage;
+  candidate: AnswerAiQuestionCandidate;
+  body: string;
+  command: TelegramResumeCommand;
+}): AnswerAiQuestionPayload => {
+  if (input.message.messageId === undefined || input.message.userId === undefined) {
+    throw new Error("Telegram answer payload requires message and user ids.");
+  }
+
+  return {
+    taskId: input.candidate.task.id,
+    questionId: input.candidate.question.id,
+    body: input.body,
+    command: input.command,
+    chatId: input.message.chatId,
+    messageId: input.message.messageId,
+    userId: input.message.userId,
+    externalKey: buildTelegramAnswerExternalKey(
+      input.message.chatId,
+      input.message.messageId,
+      input.candidate.question.id,
+    ),
+  };
+};
+
+const isActiveTaskQuestionPromptForMessage = (
+  prompt: TelegramActiveTaskQuestionPrompt,
+  message: TelegramInboundMessage,
+): boolean =>
+  prompt.conversationKey === message.conversationKey &&
+  prompt.chatId === message.chatId &&
+  (
+    prompt.userId === undefined ||
+    (
+      message.userId !== undefined &&
+      prompt.userId === message.userId
+    )
+  );
+
 const formatTaskButtonText = (taskId: string, title: string): string => {
   const text = `${taskId}: ${title}`;
   if (text.length <= 64) {
@@ -2980,13 +3781,54 @@ const formatTaskButtonText = (taskId: string, title: string): string => {
 };
 
 interface TaskDraftPayload {
-  draft: TelegramTaskDraft;
+  draft: TelegramTaskDraft | TelegramExecutableTaskDraft;
+  sessionId?: string;
+  executionMode?: TelegramExecutableTaskDraftExecutionMode;
   chatId: number;
   messageId: number;
   userId: number;
   externalKey: string;
   attachments?: TelegramAttachmentMetadata[];
 }
+
+const createExecutableTaskPendingActionFromSession = (
+  message: TelegramInboundMessage,
+  intent: TelegramIntent,
+  session: TelegramExecutableTaskDraftSession,
+): TelegramPendingAction => {
+  if (message.messageId === undefined || message.userId === undefined) {
+    throw new Error(
+      "Cannot create executable telegram task pending action without message id and user id.",
+    );
+  }
+
+  const actionId = buildPendingActionId(message.updateId, message.messageId);
+  const taskMessageId = session.messageId ?? message.messageId;
+  const externalKey = buildTelegramExternalKey(message.chatId, taskMessageId);
+  return {
+    id: actionId,
+    conversationKey: message.conversationKey,
+    chatId: message.chatId,
+    userId: message.userId,
+    intent,
+    payload: {
+      draft: session.draft,
+      sessionId: session.id,
+      executionMode: session.draft.executionMode,
+      chatId: message.chatId,
+      messageId: taskMessageId,
+      userId: message.userId,
+      externalKey,
+      ...(message.attachments && message.attachments.length > 0
+        ? { attachments: message.attachments }
+        : {}),
+    },
+    status: "pending",
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    expiresAt: session.expiresAt,
+  };
+};
 
 const buildTelegramAttachmentsRegistrationKey = (externalKey: string): string =>
   `telegram:${externalKey}:attachments_registered`;
@@ -3012,8 +3854,19 @@ const parseTaskDraftPayload = (
 ): TaskDraftPayload => {
   const draft = payload.draft;
   const attachments = payload.attachments;
+  const executionMode = payload.executionMode;
+  const sessionId = payload.sessionId;
   if (
     !isTelegramTaskDraft(draft) ||
+    (
+      executionMode !== undefined &&
+      (
+        !isTelegramExecutableTaskDraft(draft) ||
+        !isTelegramExecutableTaskDraftExecutionMode(executionMode) ||
+        executionMode !== draft.executionMode
+      )
+    ) ||
+    (sessionId !== undefined && typeof sessionId !== "string") ||
     typeof payload.chatId !== "number" ||
     typeof payload.messageId !== "number" ||
     typeof payload.userId !== "number" ||
@@ -3028,6 +3881,8 @@ const parseTaskDraftPayload = (
 
   return {
     draft,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(executionMode !== undefined ? { executionMode } : {}),
     chatId: payload.chatId,
     messageId: payload.messageId,
     userId: payload.userId,
@@ -3036,6 +3891,27 @@ const parseTaskDraftPayload = (
       ? { attachments }
       : {}),
   };
+};
+
+const getExecutableTaskDraftSessionId = (
+  payload: Record<string, unknown>,
+): string | undefined => {
+  const sessionId = payload.sessionId;
+  if (typeof sessionId !== "string") {
+    return undefined;
+  }
+
+  const draft = payload.draft;
+  if (!isTelegramExecutableTaskDraft(draft)) {
+    return undefined;
+  }
+
+  const executionMode = payload.executionMode;
+  if (executionMode !== undefined && executionMode !== draft.executionMode) {
+    return undefined;
+  }
+
+  return sessionId;
 };
 
 const parseAnswerAiQuestionPayload = (
@@ -3082,6 +3958,48 @@ const isTelegramTaskDraft = (value: unknown): value is TelegramTaskDraft => {
     draft.tags.every((tag) => typeof tag === "string")
   );
 };
+
+const isTelegramExecutableTaskDraft = (
+  value: unknown,
+): value is TelegramExecutableTaskDraft => {
+  if (!isTelegramTaskDraft(value)) {
+    return false;
+  }
+  const draft = value as Partial<TelegramExecutableTaskDraft>;
+  return (
+    (draft.repoPathKey === undefined || typeof draft.repoPathKey === "string") &&
+    (draft.baseBranch === undefined || typeof draft.baseBranch === "string") &&
+    (draft.queue === undefined || typeof draft.queue === "string") &&
+    isTelegramTaskRiskAssessment(draft.risk) &&
+    isTelegramExecutableTaskDraftExecutionMode(draft.executionMode)
+  );
+};
+
+const isTelegramTaskRiskAssessment = (
+  value: unknown,
+): value is TelegramExecutableTaskDraft["risk"] => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const risk = value as Partial<TelegramExecutableTaskDraft["risk"]>;
+  return (
+    (
+      risk.riskLevel === "low" ||
+      risk.riskLevel === "medium" ||
+      risk.riskLevel === "high"
+    ) &&
+    Array.isArray(risk.reasons) &&
+    risk.reasons.every((reason) => typeof reason === "string") &&
+    typeof risk.requiresOwnerApproval === "boolean"
+  );
+};
+
+const isTelegramExecutableTaskDraftExecutionMode = (
+  value: unknown,
+): value is TelegramExecutableTaskDraftExecutionMode =>
+  value === "auto_ready" ||
+  value === "owner_approval" ||
+  value === "triage_only";
 
 const isTelegramAttachmentMetadata = (
   value: unknown,
@@ -3189,6 +4107,12 @@ const isPendingActionUnexpired = (
 
 const buildPendingActionId = (updateId: number, messageId: number): string =>
   `tgpa_${updateId.toString(36)}_${messageId.toString(36)}`;
+
+const buildExecutableDraftSessionId = (updateId: number, messageId: number): string =>
+  `tged_${updateId.toString(36)}_${messageId.toString(36)}`;
+
+const buildOwnerApprovalPendingActionId = (actionId: string): string =>
+  `${actionId}_owner`;
 
 const buildTelegramExternalKey = (chatId: number, messageId: number): string =>
   `telegram:${chatId}:${messageId}`;

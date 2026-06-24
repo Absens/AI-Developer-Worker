@@ -233,6 +233,13 @@ task notifications. It never calls the human TaskTracker API over HTTP; writes g
 through the internal `TaskTrackerClient`, and task creation requires
 `TASK_TRACKER_PROVIDER=internal`.
 
+Trusted private Telegram users can create executable low/medium-risk tasks after
+confirmation. The assistant resolves a repository profile, writes
+`repositoryName`, `repoPathKey`, `baseBranch` and `queue`, marks approved tasks
+`ready`, and the existing worker queue claims them through
+`InternalWorkerOrchestrator`. High-risk private tasks and Business/Profile
+automation requests are routed to owner/admin approval before execution.
+
 `TELEGRAM_DIGITAL_TWIN_*` is a strategic Telegram Assistant submode rather than
 a simple notification feature. It is intended for Telegram Business/Secretary
 chats where the assistant can maintain durable per-contact Codex sessions, reply
@@ -250,13 +257,12 @@ while `TELEGRAM_DEVELOPER_USER_IDS`, `TELEGRAM_OPERATOR_USER_IDS`, and
 defaults to mentions and replies to align with Telegram privacy mode.
 
 Operational details, metrics, Bot API links, retention behavior, webhook
-requirements, Digital Twin sessions, and business/profile automation consent
-rules are documented in
+requirements, Digital Twin sessions, task lifecycle notifications, and
+business/profile automation consent rules are documented in
 [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) and
 [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md). The current
-Telegram-to-task intake boundary, including why confirmed Telegram tasks do not
-automatically enter the worker execution queue yet and what is missing for
-Digital Twin task creation, is documented in
+Telegram-to-task intake boundary, including trusted private executable intake,
+owner approval, and the Digital Twin explicit task proposal path, is documented in
 [docs/TELEGRAM_TASK_INTAKE.md](docs/TELEGRAM_TASK_INTAKE.md).
 
 ## Проверки качества

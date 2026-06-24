@@ -3,8 +3,10 @@ export {
   type CancelQueuedMessagesInput,
   type CompleteAssistantTurnInput,
   type CompleteDigitalTwinTurnInput,
+  type CompleteExecutableTaskDraftSessionInput,
   type CompleteNotificationDeliveryInput,
   type CompletePendingActionInput,
+  type ConsumeActiveTaskQuestionPromptInput,
   type ConsumePendingActionInput,
   type InMemoryTelegramAssistantStoreOptions,
   type ListPendingActionsInput,
@@ -47,10 +49,23 @@ export {
   resolveTelegramTaskCandidates,
   type TelegramTaskCandidate,
 } from "./entityResolver.js";
+export { classifyTelegramTaskRisk } from "./riskClassifier.js";
+export {
+  applyExecutableDraftAnswer,
+  buildTelegramExecutableTaskDraft,
+  nextExecutableDraftQuestion,
+  type BuildTelegramExecutableTaskDraftInput,
+} from "./executableTaskDraft.js";
 export {
   buildHeuristicTaskDraft,
   type TelegramTaskDraft,
 } from "./taskDraftBuilder.js";
+export {
+  resolveTelegramExecutionRepositoryProfile,
+  type ResolveTelegramExecutionRepositoryProfileInput,
+  type TelegramExecutionRepositoryProfile,
+  type TelegramRepositoryProfileResolution,
+} from "./repositoryProfileResolver.js";
 export {
   validateTelegramAttachment,
   type TelegramAttachmentCandidate,
@@ -77,6 +92,7 @@ export {
 } from "./projectSources.js";
 export { summarizeTaskForTelegram } from "./taskSummaries.js";
 export type {
+  TelegramActiveTaskQuestionPrompt,
   TelegramAssistantActor,
   TelegramAttachmentMetadata,
   TelegramAttachmentType,
@@ -94,6 +110,13 @@ export type {
   TelegramDigitalTwinSessionStatus,
   TelegramDigitalTwinTurn,
   TelegramDigitalTwinTurnStatus,
+  TelegramExecutableTaskDraft,
+  TelegramExecutableTaskDraftClarification,
+  TelegramExecutableTaskDraftExecutionMode,
+  TelegramExecutableTaskDraftQuestion,
+  TelegramExecutableTaskDraftSession,
+  TelegramExecutableTaskDraftSource,
+  TelegramExecutableTaskDraftStatus,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramIntentName,
@@ -106,5 +129,7 @@ export type {
   TelegramPendingActionStatus,
   TelegramQueuedMessage,
   TelegramQueuedMessageStatus,
+  TelegramTaskRiskAssessment,
+  TelegramTaskRiskLevel,
   TelegramTaskSubscription,
 } from "./types.js";

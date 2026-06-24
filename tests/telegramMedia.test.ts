@@ -255,7 +255,7 @@ describe("TelegramAssistantService media attachments", () => {
     await service.handleUpdate(callbackUpdate(`c:${pendingActions[0]?.id}`));
 
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      externalSnapshot: {
+      externalSnapshot: expect.objectContaining({
         chatId: 1,
         messageId: 99,
         userId: 10,
@@ -268,7 +268,7 @@ describe("TelegramAssistantService media attachments", () => {
             size: 1000,
           },
         ],
-      },
+      }),
     }));
     expect(appendEventOnce).toHaveBeenCalledWith("task_with_attachment", {
       kind: "attachments_registered",
