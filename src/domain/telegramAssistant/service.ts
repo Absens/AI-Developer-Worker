@@ -1562,6 +1562,7 @@ export class TelegramAssistantService {
     prompt: TelegramActiveTaskQuestionPrompt,
   ): Promise<void> {
     const consumed = await this.store.consumeActiveTaskQuestionPrompt({
+      promptId: prompt.id,
       conversationKey: message.conversationKey,
       chatId: message.chatId,
       userId: message.userId,

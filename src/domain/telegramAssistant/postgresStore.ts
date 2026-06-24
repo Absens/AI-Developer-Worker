@@ -1656,41 +1656,31 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
     return this.withTransaction(async (client) => {
       const result = await client.query<ActiveTaskQuestionPromptRow>(
         `
-          SELECT *
-          FROM telegram_active_task_question_prompts
-          WHERE conversation_key = $1
+          UPDATE telegram_active_task_question_prompts
+          SET status = 'answered',
+              updated_at = $5
+          WHERE id = $1
+            AND conversation_key = $2
+            AND chat_id = $3
+            AND (user_id IS NULL OR user_id = $4)
             AND status = 'open'
-            AND expires_at > $2
-          ORDER BY updated_at DESC, id DESC
-          LIMIT 1
-          FOR UPDATE
+            AND expires_at > $5
+          RETURNING *
         `,
-        [input.conversationKey, now],
+        [
+          input.promptId,
+          input.conversationKey,
+          input.chatId,
+          input.userId ?? null,
+          now,
+        ],
       );
       const row = result.rows[0];
       if (!row) {
         return undefined;
       }
 
-      const prompt = mapActiveTaskQuestionPromptRow(row);
-      if (
-        prompt.chatId !== input.chatId ||
-        (prompt.userId !== undefined && prompt.userId !== input.userId)
-      ) {
-        return undefined;
-      }
-
-      await client.query<ActiveTaskQuestionPromptRow>(
-        `
-          UPDATE telegram_active_task_question_prompts
-          SET status = 'answered',
-              updated_at = $2
-          WHERE id = $1
-          RETURNING *
-        `,
-        [prompt.id, now],
-      );
-      return prompt;
+      return mapActiveTaskQuestionPromptRow(row);
     });
   }
 

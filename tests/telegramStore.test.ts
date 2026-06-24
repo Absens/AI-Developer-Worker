@@ -257,6 +257,7 @@ describe("InMemoryTelegramAssistantStore", () => {
     await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt());
 
     const consumed = await store.consumeActiveTaskQuestionPrompt({
+      promptId: "prompt-1",
       conversationKey,
       chatId: 100,
       userId: 200,
@@ -272,6 +273,7 @@ describe("InMemoryTelegramAssistantStore", () => {
     ).resolves.toBeUndefined();
     await expect(
       store.consumeActiveTaskQuestionPrompt({
+        promptId: "prompt-1",
         conversationKey,
         chatId: 100,
         userId: 200,
@@ -294,6 +296,7 @@ describe("InMemoryTelegramAssistantStore", () => {
 
     await expect(
       store.consumeActiveTaskQuestionPrompt({
+        promptId: "matching-prompt",
         conversationKey,
         chatId: 101,
         userId: 200,
@@ -301,6 +304,7 @@ describe("InMemoryTelegramAssistantStore", () => {
     ).resolves.toBeUndefined();
     await expect(
       store.consumeActiveTaskQuestionPrompt({
+        promptId: "matching-prompt",
         conversationKey,
         chatId: 100,
         userId: 201,
@@ -320,11 +324,44 @@ describe("InMemoryTelegramAssistantStore", () => {
 
     await expect(
       store.consumeActiveTaskQuestionPrompt({
+        promptId: "chat-only-prompt",
         conversationKey,
         chatId: 100,
         userId: 999,
       }),
     ).resolves.toEqual(expect.objectContaining({ id: "chat-only-prompt" }));
+  });
+
+  it("consumes the requested active prompt without answering a newer conversation prompt", async () => {
+    const store = createStore();
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "older-prompt",
+      questionId: "question-old",
+      updatedAt: baseTime,
+    }));
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "newer-prompt",
+      questionId: "question-new",
+      updatedAt: laterTime,
+    }));
+
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        promptId: "older-prompt",
+        conversationKey,
+        chatId: 100,
+        userId: 200,
+        answeredAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "older-prompt",
+    }));
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "newer-prompt",
+      status: "open",
+    }));
   });
 
   it("does not reopen an answered active task prompt from a later open upsert", async () => {

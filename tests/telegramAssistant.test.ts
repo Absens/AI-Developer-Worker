@@ -4055,6 +4055,61 @@ describe("TelegramAssistantService", () => {
     }));
   });
 
+  it("does not consume a newer active prompt created while answering an older prompt", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const originalUpsertPendingAction = store.upsertPendingAction.bind(store);
+    vi.spyOn(store, "upsertPendingAction")
+      .mockImplementationOnce(async (action) => {
+        const result = await originalUpsertPendingAction(action);
+        await store.upsertActiveTaskQuestionPrompt({
+          id: "telegram-question:bot_private:1:task_awaiting:question_newer",
+          conversationKey: "bot_private:1",
+          chatId: 1,
+          userId: 10,
+          taskId: "task_awaiting",
+          questionId: "question_newer",
+          status: "open",
+          createdAt: baseTime,
+          updatedAt: "2026-05-30T08:10:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        });
+        return result;
+      });
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+
+    await service.handleUpdate(messageUpdate("можно продолжать старый вопрос", {
+      updateId: 52,
+      messageId: 114,
+    }));
+
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "telegram-question:bot_private:1:task_awaiting:question_newer",
+      status: "open",
+    }));
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    })).resolves.toHaveLength(1);
+  });
+
   it("retries an answer callback from an executing action after answer write failure", async () => {
     const answerCallbackQuery = vi.fn();
     const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask({

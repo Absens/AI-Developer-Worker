@@ -45,6 +45,7 @@ export interface CompleteExecutableTaskDraftSessionInput {
 }
 
 export interface ConsumeActiveTaskQuestionPromptInput {
+  promptId: string;
   conversationKey: string;
   chatId: number;
   userId?: number;
@@ -1006,9 +1007,12 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
     input: ConsumeActiveTaskQuestionPromptInput,
   ): Promise<TelegramActiveTaskQuestionPrompt | undefined> {
     const now = input.answeredAt ?? this.nowIso();
-    const existing = this.findActiveTaskQuestionPrompt(input.conversationKey, now);
+    const existing = this.activeTaskQuestionPrompts.get(input.promptId);
     if (
       !existing ||
+      existing.conversationKey !== input.conversationKey ||
+      existing.status !== "open" ||
+      isExpired(existing.expiresAt, now) ||
       existing.chatId !== input.chatId ||
       (existing.userId !== undefined && existing.userId !== input.userId)
     ) {

@@ -676,13 +676,13 @@ describe("PostgresTelegramAssistantStore executable task intake", () => {
         if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") {
           return queryResult([]);
         }
-        if (text.includes("FOR UPDATE")) {
-          expect(text).toContain("telegram_active_task_question_prompts");
-          expect(values).toEqual([conversationKey, laterTime]);
-          return queryResult([activeTaskQuestionPromptRow() as R]);
-        }
         if (text.includes("UPDATE telegram_active_task_question_prompts")) {
-          expect(values).toEqual(["prompt-1", laterTime]);
+          expect(text).toContain("id = $1");
+          expect(text).toContain("conversation_key = $2");
+          expect(text).toContain("chat_id = $3");
+          expect(text).toContain("(user_id IS NULL OR user_id = $4)");
+          expect(text).toContain("status = 'open'");
+          expect(values).toEqual(["prompt-1", conversationKey, 100, 200, laterTime]);
           return queryResult([
             activeTaskQuestionPromptRow({
               status: "answered",
@@ -699,6 +699,7 @@ describe("PostgresTelegramAssistantStore executable task intake", () => {
 
     await expect(
       store.consumeActiveTaskQuestionPrompt({
+        promptId: "prompt-1",
         conversationKey,
         chatId: 100,
         userId: 200,
@@ -706,14 +707,63 @@ describe("PostgresTelegramAssistantStore executable task intake", () => {
       }),
     ).resolves.toEqual(expect.objectContaining({
       id: "prompt-1",
-      status: "open",
     }));
     expect(queries.map((query) => query.text)).toEqual([
       "BEGIN",
-      expect.stringContaining("FOR UPDATE"),
       expect.stringContaining("UPDATE telegram_active_task_question_prompts"),
       "COMMIT",
     ]);
+  });
+
+  it("consumes active task prompts by id without selecting a newer conversation prompt", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") {
+          return queryResult([]);
+        }
+        if (text.includes("UPDATE telegram_active_task_question_prompts")) {
+          expect(text).toContain("id = $1");
+          expect(text).not.toContain("ORDER BY updated_at DESC");
+          expect(values).toEqual([
+            "older-prompt",
+            conversationKey,
+            100,
+            200,
+            laterTime,
+          ]);
+          return queryResult([
+            activeTaskQuestionPromptRow({
+              id: "older-prompt",
+              question_id: "question-old",
+              status: "answered",
+              updated_at: laterTime,
+            }) as R,
+          ]);
+        }
+        throw new Error(`Unexpected SQL: ${text}`);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db, {
+      now: () => new Date(baseTime),
+    });
+
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        promptId: "older-prompt",
+        conversationKey,
+        chatId: 100,
+        userId: 200,
+        answeredAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "older-prompt",
+      status: "answered",
+    }));
   });
 });
 
@@ -1384,6 +1434,7 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
     ).resolves.toEqual(expect.objectContaining({ id: "prompt-1" }));
     await expect(
       store.consumeActiveTaskQuestionPrompt({
+        promptId: "prompt-1",
         conversationKey,
         chatId: 100,
         userId: 200,
