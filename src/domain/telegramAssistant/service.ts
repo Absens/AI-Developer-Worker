@@ -47,6 +47,7 @@ import { routeTelegramIntent } from "./intentRouter.js";
 import { validateTelegramAttachment } from "./media.js";
 import { canHandleBusinessMessage } from "./profileAutomation.js";
 import {
+  applyExecutableDraftAnswer,
   buildTelegramExecutableTaskDraft,
   nextExecutableDraftQuestion,
 } from "./executableTaskDraft.js";
@@ -182,6 +183,7 @@ const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md
 const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
 const MAX_TASK_SOURCE_COUNT = 5;
+const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена)$/iu;
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
@@ -473,10 +475,36 @@ export class TelegramAssistantService {
       return undefined;
     }
 
+    const actor = resolveTelegramActor(this.config, message);
+
+    if (message.source === "bot_private" && message.text !== undefined) {
+      const activeExecutableDraftSession =
+        await this.store.getActiveExecutableTaskDraftSession(message.conversationKey);
+      if (
+        activeExecutableDraftSession?.status === "collecting" &&
+        activeExecutableDraftSession.clarificationQuestion
+      ) {
+        if (!actor.allowed) {
+          await this.sendMessage({
+            chatId: String(message.chatId),
+            text: UNAUTHORIZED_MESSAGE,
+          });
+          return undefined;
+        }
+
+        await this.recordMessageRef(message);
+        await this.handleExecutableDraftClarification(
+          message,
+          activeExecutableDraftSession,
+          message.text,
+        );
+        return undefined;
+      }
+    }
+
     const intent = routeTelegramIntent(message.text, {
       projectQaEnabled: this.isProjectQaEnabledForMessage(message),
     });
-    const actor = resolveTelegramActor(this.config, message);
     const projectQuestionAllowedByProfile =
       intent.name === "project_question" &&
       message.source === "business" &&
@@ -1186,6 +1214,95 @@ export class TelegramAssistantService {
       title: heuristicTitle,
       description: text,
     };
+  }
+
+  private async handleExecutableDraftClarification(
+    message: TelegramInboundMessage,
+    session: TelegramExecutableTaskDraftSession,
+    answer: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    if (EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN.test(answer.trim())) {
+      await this.store.completeExecutableTaskDraftSession(session.id, {
+        status: "cancelled",
+      });
+      await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+      return;
+    }
+
+    const question = session.clarificationQuestion;
+    if (!question) {
+      return;
+    }
+
+    const updatedDraft = applyExecutableDraftAnswer(
+      session.draft,
+      question,
+      answer,
+      this.buildExecutableRepositoryProfiles(),
+    );
+    const nextQuestion = nextExecutableDraftQuestion(updatedDraft);
+    const updatedSession: TelegramExecutableTaskDraftSession = {
+      ...session,
+      draft: updatedDraft,
+      status: nextQuestion ? "collecting" : "awaiting_user_confirmation",
+      ...(nextQuestion ? { clarificationQuestion: nextQuestion } : {}),
+      clarificationHistory: [
+        ...session.clarificationHistory,
+        {
+          field: question.field,
+          question: question.text,
+          answer: answer.trim(),
+          answeredAt: now,
+        },
+      ],
+      updatedAt: now,
+    };
+    if (!nextQuestion) {
+      delete updatedSession.clarificationQuestion;
+    }
+
+    await this.store.upsertExecutableTaskDraftSession(updatedSession);
+
+    if (nextQuestion) {
+      await this.sendPlainMessage(message, nextQuestion.text);
+      return;
+    }
+
+    const pendingAction = createExecutableTaskPendingActionFromSession(
+      message,
+      {
+        name: "create_task_draft",
+        confidence: 1,
+        rawText: session.originalText,
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      updatedSession,
+    );
+    await this.store.upsertPendingAction(pendingAction);
+    await this.updatePendingActionGauges();
+    await this.sendTelegramResponse(
+      message,
+      buildExecutableTaskDraftResponse(updatedDraft, pendingAction.id),
+    );
+  }
+
+  private buildExecutableRepositoryProfiles(): TelegramExecutionRepositoryProfile[] {
+    return this.repositories.flatMap((repository) => {
+      const queue = repository.queues[0]?.trim();
+      if (!queue) {
+        return [];
+      }
+
+      return [{
+        repositoryName: repository.name,
+        repoPathKey: repository.name,
+        baseBranch: repository.baseBranch,
+        queue,
+        tags: [...repository.tags],
+      }];
+    });
   }
 
   private async handleAnswerAiQuestion(
@@ -3186,7 +3303,8 @@ const createExecutableTaskPendingActionFromSession = (
   }
 
   const actionId = buildPendingActionId(message.updateId, message.messageId);
-  const externalKey = buildTelegramExternalKey(message.chatId, message.messageId);
+  const taskMessageId = session.messageId ?? message.messageId;
+  const externalKey = buildTelegramExternalKey(message.chatId, taskMessageId);
   return {
     id: actionId,
     conversationKey: message.conversationKey,
@@ -3198,7 +3316,7 @@ const createExecutableTaskPendingActionFromSession = (
       sessionId: session.id,
       executionMode: session.draft.executionMode,
       chatId: message.chatId,
-      messageId: message.messageId,
+      messageId: taskMessageId,
       userId: message.userId,
       externalKey,
       ...(message.attachments && message.attachments.length > 0

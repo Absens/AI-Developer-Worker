@@ -3168,6 +3168,229 @@ describe("TelegramAssistantService", () => {
     expect(taskTracker.createTask).not.toHaveBeenCalled();
   });
 
+  it("collects repository clarification for ambiguous private executable drafts", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", baseBranch: "develop", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 140,
+      messageId: 200,
+    }));
+
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      id: "tged_3w_5k",
+      status: "collecting",
+      clarificationQuestion: {
+        field: "repositoryProfile",
+        text: "В каком репозитории выполнить задачу?",
+      },
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 200,
+      text: expect.stringContaining("В каком репозитории"),
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("answers repository clarification and then confirms a frontend executable task", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"], tags: ["ui"] }),
+        repositoryFixture({ name: "backend", baseBranch: "develop", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 141,
+      messageId: 201,
+    }));
+    await service.handleUpdate(messageUpdate("frontend", {
+      updateId: 142,
+      messageId: 202,
+      date: 2,
+    }));
+
+    const session = await store.getActiveExecutableTaskDraftSession("bot_private:1");
+    expect(session).toMatchObject({
+      id: "tged_3x_5l",
+      status: "awaiting_user_confirmation",
+      draft: {
+        repositoryName: "frontend",
+        queue: "FRONTEND",
+        executionMode: "auto_ready",
+      },
+      clarificationHistory: [{
+        field: "repositoryProfile",
+        question: "В каком репозитории выполнить задачу?",
+        answer: "frontend",
+      }],
+    });
+    expect(session?.clarificationQuestion).toBeUndefined();
+
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    expect(pending).toMatchObject({
+      id: "tgpa_3y_5m",
+      payload: {
+        sessionId: "tged_3x_5l",
+        messageId: 201,
+        externalKey: "telegram:1:201",
+        draft: {
+          repositoryName: "frontend",
+          queue: "FRONTEND",
+        },
+      },
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 202,
+      text: expect.stringContaining("Создать и запустить задачу"),
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 143,
+      messageId: 203,
+      date: 3,
+    }));
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    expect(createTaskSpy.mock.calls[0]?.[0]).toMatchObject({
+      repositoryName: "frontend",
+      repoPathKey: "frontend",
+      baseBranch: "main",
+      queue: "FRONTEND",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:201",
+      },
+      externalSnapshot: {
+        messageId: 201,
+      },
+    });
+    await expect(
+      store.getExecutableTaskDraftSession("tged_3x_5l"),
+    ).resolves.toMatchObject({ status: "completed" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("keeps collecting when repository clarification answer is unknown", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 144,
+      messageId: 204,
+    }));
+    await service.handleUpdate(messageUpdate("mobile", {
+      updateId: 145,
+      messageId: 205,
+      date: 2,
+    }));
+
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [{
+        field: "repositoryProfile",
+        answer: "mobile",
+      }],
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 205,
+      text: expect.stringContaining("В каком репозитории"),
+    }));
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("cancels collecting executable draft sessions from text cancellation", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 146,
+      messageId: 206,
+    }));
+    await service.handleUpdate(messageUpdate("отмена", {
+      updateId: 147,
+      messageId: 207,
+      date: 2,
+    }));
+
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getExecutableTaskDraftSession("tged_42_5q"),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 207,
+      text: "Действие отменено.",
+    }));
+  });
+
   it("records a human answer for the latest open AI question after confirmation", async () => {
     const taskTracker = fakeTaskTrackerWithAwaitingHumanTask();
     const store = new InMemoryTelegramAssistantStore({

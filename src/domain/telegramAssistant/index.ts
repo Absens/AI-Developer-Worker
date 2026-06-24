@@ -51,6 +51,7 @@ export {
 } from "./entityResolver.js";
 export { classifyTelegramTaskRisk } from "./riskClassifier.js";
 export {
+  applyExecutableDraftAnswer,
   buildTelegramExecutableTaskDraft,
   nextExecutableDraftQuestion,
   type BuildTelegramExecutableTaskDraftInput,

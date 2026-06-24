@@ -114,3 +114,88 @@ export const nextExecutableDraftQuestion = (
 
   return undefined;
 };
+
+const recomputeExecutionMode = (
+  draft: TelegramExecutableTaskDraft,
+): TelegramExecutableTaskDraft["executionMode"] => {
+  if (draft.risk.riskLevel === "high" || draft.risk.requiresOwnerApproval) {
+    return "owner_approval";
+  }
+
+  return nextExecutableDraftQuestion(draft) ? "triage_only" : "auto_ready";
+};
+
+const matchesRepositoryProfileAnswer = (
+  profile: TelegramExecutionRepositoryProfile,
+  answer: string,
+): boolean => {
+  const normalizedAnswer = answer.trim().toLowerCase();
+  if (!normalizedAnswer) {
+    return false;
+  }
+
+  return [
+    profile.repositoryName,
+    profile.repoPathKey,
+    profile.queue,
+  ].some((value) => value.trim().toLowerCase() === normalizedAnswer);
+};
+
+export const applyExecutableDraftAnswer = (
+  draft: TelegramExecutableTaskDraft,
+  question: TelegramExecutableTaskDraftQuestion,
+  answer: string,
+  profiles: TelegramExecutionRepositoryProfile[],
+): TelegramExecutableTaskDraft => {
+  const trimmedAnswer = answer.trim();
+  if (!trimmedAnswer) {
+    return draft;
+  }
+
+  if (question.field === "repositoryProfile") {
+    const profile = profiles.find((candidate) =>
+      matchesRepositoryProfileAnswer(candidate, trimmedAnswer)
+    );
+    if (!profile) {
+      return draft;
+    }
+
+    const updated: TelegramExecutableTaskDraft = {
+      ...draft,
+      repositoryName: profile.repositoryName,
+      repoPathKey: profile.repoPathKey,
+      baseBranch: profile.baseBranch,
+      queue: profile.queue,
+      tags: uniqueTags([...draft.tags, ...profile.tags]),
+    };
+    return {
+      ...updated,
+      executionMode: recomputeExecutionMode(updated),
+    };
+  }
+
+  if (question.field === "acceptanceCriteria") {
+    const acceptanceCriteria = trimmedAnswer
+      .split(/[\n;]+/u)
+      .map((criterion) => criterion.trim())
+      .filter((criterion) => criterion.length > 0)
+      .slice(0, 3);
+    const updated: TelegramExecutableTaskDraft = {
+      ...draft,
+      acceptanceCriteria,
+    };
+    return {
+      ...updated,
+      executionMode: recomputeExecutionMode(updated),
+    };
+  }
+
+  const updated: TelegramExecutableTaskDraft = {
+    ...draft,
+    description: `${draft.description.trimEnd()}\n\nУточнение: ${trimmedAnswer}`,
+  };
+  return {
+    ...updated,
+    executionMode: recomputeExecutionMode(updated),
+  };
+};

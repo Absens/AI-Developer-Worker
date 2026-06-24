@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildTelegramExecutableTaskDraft,
+  applyExecutableDraftAnswer,
   classifyTelegramTaskRisk,
   nextExecutableDraftQuestion,
   resolveTelegramExecutionRepositoryProfile,
@@ -453,6 +454,54 @@ describe("buildTelegramExecutableTaskDraft", () => {
       selectedProfile: executionProfile(),
       forceOwnerApproval: true,
     }).executionMode).toBe("owner_approval");
+  });
+
+  it("applies repository clarification answers and recomputes readiness", () => {
+    const draft = buildTelegramExecutableTaskDraft({
+      text: "создай задачу поправить текст",
+    });
+
+    const updated = applyExecutableDraftAnswer(
+      draft,
+      {
+        field: "repositoryProfile",
+        text: "В каком репозитории выполнить задачу?",
+      },
+      "frontend",
+      [
+        executionProfile({
+          repositoryName: "frontend",
+          repoPathKey: "frontend",
+          queue: "FRONTEND",
+          tags: ["ui", "telegram"],
+        }),
+        executionProfile({
+          repositoryName: "backend",
+          repoPathKey: "backend",
+          queue: "BACKEND",
+          tags: ["api"],
+        }),
+      ],
+    );
+
+    expect(updated).toMatchObject({
+      repositoryName: "frontend",
+      repoPathKey: "frontend",
+      baseBranch: "main",
+      queue: "FRONTEND",
+      executionMode: "auto_ready",
+      tags: ["telegram", "risk_low", "ui"],
+    });
+    expect(nextExecutableDraftQuestion(updated)).toBeUndefined();
+    expect(applyExecutableDraftAnswer(
+      draft,
+      {
+        field: "repositoryProfile",
+        text: "В каком репозитории выполнить задачу?",
+      },
+      "unknown",
+      [executionProfile({ repositoryName: "frontend", queue: "FRONTEND" })],
+    )).toEqual(draft);
   });
 
   it("uses numeric owner identifiers in executable draft sessions", () => {
