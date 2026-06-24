@@ -531,6 +531,11 @@ export class TelegramAssistantService {
             await this.handleRejectAction(message);
             return undefined;
           }
+          if (activeIntent.name === "reject_action") {
+            await this.recordMessageRef(message);
+            await this.cancelExecutableDraftSession(message, activeExecutableDraftSession);
+            return undefined;
+          }
         }
 
         await this.recordMessageRef(message);
@@ -1264,14 +1269,7 @@ export class TelegramAssistantService {
   ): Promise<void> {
     const now = new Date().toISOString();
     if (EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN.test(answer.trim())) {
-      const cancelledSession: TelegramExecutableTaskDraftSession = {
-        ...session,
-        status: "cancelled",
-        updatedAt: now,
-      };
-      delete cancelledSession.clarificationQuestion;
-      await this.store.upsertExecutableTaskDraftSession(cancelledSession);
-      await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
+      await this.cancelExecutableDraftSession(message, session, now);
       return;
     }
 
@@ -1331,6 +1329,21 @@ export class TelegramAssistantService {
       message,
       buildExecutableTaskDraftResponse(updatedDraft, pendingAction.id),
     );
+  }
+
+  private async cancelExecutableDraftSession(
+    message: TelegramInboundMessage,
+    session: TelegramExecutableTaskDraftSession,
+    now: string = new Date().toISOString(),
+  ): Promise<void> {
+    const cancelledSession: TelegramExecutableTaskDraftSession = {
+      ...session,
+      status: "cancelled",
+      updatedAt: now,
+    };
+    delete cancelledSession.clarificationQuestion;
+    await this.store.upsertExecutableTaskDraftSession(cancelledSession);
+    await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
   }
 
   private buildExecutableRepositoryProfiles(): TelegramExecutionRepositoryProfile[] {
