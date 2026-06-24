@@ -530,6 +530,8 @@ describe("InMemoryTelegramAssistantStore", () => {
       queuedMessages: 1,
       assistantTurns: 1,
       pendingActions: 1,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
     });
 
     await expect(store.listMessageRefs(conversationKey)).resolves.toEqual([]);
@@ -1020,6 +1022,8 @@ describe("InMemoryTelegramAssistantStore", () => {
       messageRefs: 1,
       queuedMessages: 1,
       pendingActions: 0,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
     });
     await expect(store.listMessageRefs(conversationKey)).resolves.toEqual([
       expect.objectContaining({ id: "ref-1" }),
@@ -1071,10 +1075,112 @@ describe("InMemoryTelegramAssistantStore", () => {
       messageRefs: 0,
       queuedMessages: 0,
       pendingActions: 3,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
     });
     await expect(store.listPendingActions({ conversationKey })).resolves.toEqual([
       expect.objectContaining({ id: "completed-current", status: "completed" }),
     ]);
+  });
+
+  it("purges conversation-scoped executable draft sessions and active prompts", async () => {
+    const store = createStore();
+    await store.upsertExecutableTaskDraftSession(executableDraftSession());
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "other-session",
+      conversationKey: "bot_private:101:201",
+      chatId: 101,
+    }));
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt());
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "other-prompt",
+      conversationKey: "bot_private:101:201",
+      chatId: 101,
+    }));
+
+    await expect(
+      store.purgeTelegramConversationData({ conversationKey }),
+    ).resolves.toEqual({
+      messageRefs: 0,
+      queuedMessages: 0,
+      assistantTurns: 0,
+      pendingActions: 0,
+      executableTaskDraftSessions: 1,
+      activeTaskQuestionPrompts: 1,
+    });
+
+    await expect(
+      store.getActiveExecutableTaskDraftSession(conversationKey),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:101:201"),
+    ).resolves.toEqual(expect.objectContaining({ id: "other-session" }));
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:101:201"),
+    ).resolves.toEqual(expect.objectContaining({ id: "other-prompt" }));
+  });
+
+  it("expires active intake records and deletes terminal expired intake records", async () => {
+    const store = createStore();
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "active-expired-session",
+      status: "collecting",
+      expiresAt: expiredTime,
+    }));
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "terminal-expired-session",
+      status: "completed",
+      expiresAt: expiredTime,
+    }));
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "active-current-session",
+      status: "awaiting_user_confirmation",
+      expiresAt: futureTime,
+    }));
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "open-expired-prompt",
+      status: "open",
+      expiresAt: expiredTime,
+    }));
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "answered-expired-prompt",
+      status: "answered",
+      expiresAt: expiredTime,
+    }));
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "open-current-prompt",
+      status: "open",
+      expiresAt: futureTime,
+    }));
+
+    await expect(
+      store.purgeExpiredTelegramAssistantData({ now: baseTime }),
+    ).resolves.toEqual({
+      messageRefs: 0,
+      queuedMessages: 0,
+      pendingActions: 0,
+      executableTaskDraftSessions: 2,
+      activeTaskQuestionPrompts: 2,
+    });
+
+    await expect(
+      store.getExecutableTaskDraftSession("active-expired-session"),
+    ).resolves.toEqual(expect.objectContaining({
+      status: "expired",
+      updatedAt: baseTime,
+    }));
+    await expect(
+      store.getExecutableTaskDraftSession("terminal-expired-session"),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.getActiveExecutableTaskDraftSession(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "active-current-session" }));
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "open-current-prompt" }));
   });
 
   it("stores business connection records by connection id", async () => {

@@ -244,6 +244,19 @@ const ACTIVE_EXECUTABLE_TASK_DRAFT_STATUSES: TelegramExecutableTaskDraftStatus[]
   "awaiting_owner_approval",
 ];
 
+const TERMINAL_EXECUTABLE_TASK_DRAFT_STATUSES: TelegramExecutableTaskDraftStatus[] = [
+  "completed",
+  "cancelled",
+  "expired",
+];
+
+const TERMINAL_ACTIVE_TASK_QUESTION_PROMPT_STATUSES:
+  TelegramActiveTaskQuestionPrompt["status"][] = [
+    "answered",
+    "cancelled",
+    "expired",
+  ];
+
 const TERMINAL_NOTIFICATION_DELIVERY_STATUSES =
   new Set<TelegramNotificationDeliveryStatus>(["sent", "failed"]);
 
@@ -1960,6 +1973,42 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         `,
         [now],
       );
+      const deletedExecutableTaskDraftSessions = await client.query(
+        `
+          DELETE FROM telegram_executable_task_draft_sessions
+          WHERE status = ANY($2::text[])
+            AND expires_at <= $1
+        `,
+        [now, TERMINAL_EXECUTABLE_TASK_DRAFT_STATUSES],
+      );
+      const expiredExecutableTaskDraftSessions = await client.query(
+        `
+          UPDATE telegram_executable_task_draft_sessions
+          SET status = 'expired',
+              updated_at = $1
+          WHERE status = ANY($2::text[])
+            AND expires_at <= $1
+        `,
+        [now, ACTIVE_EXECUTABLE_TASK_DRAFT_STATUSES],
+      );
+      const deletedActiveTaskQuestionPrompts = await client.query(
+        `
+          DELETE FROM telegram_active_task_question_prompts
+          WHERE status = ANY($2::text[])
+            AND expires_at <= $1
+        `,
+        [now, TERMINAL_ACTIVE_TASK_QUESTION_PROMPT_STATUSES],
+      );
+      const expiredActiveTaskQuestionPrompts = await client.query(
+        `
+          UPDATE telegram_active_task_question_prompts
+          SET status = 'expired',
+              updated_at = $1
+          WHERE status = 'open'
+            AND expires_at <= $1
+        `,
+        [now],
+      );
 
       return {
         messageRefs: messageRefs.rowCount ?? 0,
@@ -1967,6 +2016,12 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         pendingActions:
           (deletedPendingActions.rowCount ?? 0) +
           (expiredPendingActions.rowCount ?? 0),
+        executableTaskDraftSessions:
+          (deletedExecutableTaskDraftSessions.rowCount ?? 0) +
+          (expiredExecutableTaskDraftSessions.rowCount ?? 0),
+        activeTaskQuestionPrompts:
+          (deletedActiveTaskQuestionPrompts.rowCount ?? 0) +
+          (expiredActiveTaskQuestionPrompts.rowCount ?? 0),
       };
     });
   }
@@ -2022,12 +2077,22 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         "DELETE FROM telegram_assistant_pending_actions WHERE conversation_key = $1",
         [input.conversationKey],
       );
+      const executableTaskDraftSessions = await client.query(
+        "DELETE FROM telegram_executable_task_draft_sessions WHERE conversation_key = $1",
+        [input.conversationKey],
+      );
+      const activeTaskQuestionPrompts = await client.query(
+        "DELETE FROM telegram_active_task_question_prompts WHERE conversation_key = $1",
+        [input.conversationKey],
+      );
 
       return {
         messageRefs: messageRefs.rowCount ?? 0,
         queuedMessages: queuedMessages.rowCount ?? 0,
         assistantTurns: assistantTurns.rowCount ?? 0,
         pendingActions: pendingActions.rowCount ?? 0,
+        executableTaskDraftSessions: executableTaskDraftSessions.rowCount ?? 0,
+        activeTaskQuestionPrompts: activeTaskQuestionPrompts.rowCount ?? 0,
       };
     });
   }

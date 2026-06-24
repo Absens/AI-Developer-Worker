@@ -381,7 +381,9 @@ describe("PostgresTelegramAssistantStore conversation purge", () => {
         values?: unknown[],
       ): Promise<QueryResult<R>> {
         queries.push({ text, values });
-        const rowCount = text.includes("DELETE FROM telegram_assistant_")
+        const rowCount = text.includes("DELETE FROM telegram_assistant_") ||
+          text.includes("DELETE FROM telegram_executable_task_draft_sessions") ||
+          text.includes("DELETE FROM telegram_active_task_question_prompts")
           ? 1
           : null;
         return {
@@ -402,18 +404,79 @@ describe("PostgresTelegramAssistantStore conversation purge", () => {
       queuedMessages: 1,
       assistantTurns: 1,
       pendingActions: 1,
+      executableTaskDraftSessions: 1,
+      activeTaskQuestionPrompts: 1,
     });
     expect(queries.map((query) => query.text)).toEqual(expect.arrayContaining([
       expect.stringContaining("DELETE FROM telegram_assistant_pending_actions"),
+      expect.stringContaining("DELETE FROM telegram_executable_task_draft_sessions"),
+      expect.stringContaining("DELETE FROM telegram_active_task_question_prompts"),
     ]));
     expect(queries.filter((query) =>
-      query.text.includes("DELETE FROM telegram_assistant_")
+      query.text.includes("DELETE FROM telegram_assistant_") ||
+      query.text.includes("DELETE FROM telegram_executable_task_draft_sessions") ||
+      query.text.includes("DELETE FROM telegram_active_task_question_prompts")
     ).map((query) => query.values)).toEqual([
       [conversationKey],
       [conversationKey],
       [conversationKey],
       [conversationKey],
+      [conversationKey],
+      [conversationKey],
     ]);
+  });
+});
+
+describe("PostgresTelegramAssistantStore expired data purge", () => {
+  it("expires active intake rows and deletes expired terminal intake rows", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        const rowCount = text.includes("telegram_executable_task_draft_sessions") ||
+          text.includes("telegram_active_task_question_prompts")
+          ? 2
+          : 0;
+        return {
+          command: text.trimStart().startsWith("UPDATE") ? "UPDATE" : "DELETE",
+          oid: 0,
+          fields: [],
+          rows: [],
+          rowCount,
+        };
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    await expect(
+      store.purgeExpiredTelegramAssistantData({ now: baseTime }),
+    ).resolves.toEqual({
+      messageRefs: 0,
+      queuedMessages: 0,
+      pendingActions: 0,
+      executableTaskDraftSessions: 4,
+      activeTaskQuestionPrompts: 4,
+    });
+    expect(queries.map((query) => query.text)).toEqual(expect.arrayContaining([
+      expect.stringContaining("DELETE FROM telegram_executable_task_draft_sessions"),
+      expect.stringContaining("UPDATE telegram_executable_task_draft_sessions"),
+      expect.stringContaining("DELETE FROM telegram_active_task_question_prompts"),
+      expect.stringContaining("UPDATE telegram_active_task_question_prompts"),
+    ]));
+    expect(queries.some((query) =>
+      query.text.includes("status = ANY($2::text[])") &&
+      query.values?.[1] instanceof Array &&
+      (query.values[1] as string[]).includes("completed") &&
+      (query.values[1] as string[]).includes("cancelled") &&
+      (query.values[1] as string[]).includes("expired")
+    )).toBe(true);
+    expect(queries.some((query) =>
+      query.text.includes("status = 'open'") &&
+      query.text.includes("SET status = 'expired'")
+    )).toBe(true);
   });
 });
 
@@ -1051,6 +1114,8 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
       messageRefs: 1,
       queuedMessages: 1,
       pendingActions: 0,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
     });
   });
 

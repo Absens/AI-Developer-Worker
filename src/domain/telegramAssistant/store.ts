@@ -131,6 +131,8 @@ export interface PurgeExpiredTelegramAssistantDataResult {
   messageRefs: number;
   queuedMessages: number;
   pendingActions: number;
+  executableTaskDraftSessions?: number;
+  activeTaskQuestionPrompts?: number;
 }
 
 export interface CountTelegramUserActivityInput {
@@ -147,6 +149,8 @@ export interface PurgeTelegramConversationDataResult {
   queuedMessages: number;
   assistantTurns: number;
   pendingActions: number;
+  executableTaskDraftSessions?: number;
+  activeTaskQuestionPrompts?: number;
 }
 
 export interface TelegramAssistantStore {
@@ -383,6 +387,20 @@ const EXECUTABLE_TASK_DRAFT_ACTIVE_STATUSES =
     "collecting",
     "awaiting_user_confirmation",
     "awaiting_owner_approval",
+  ]);
+
+const EXECUTABLE_TASK_DRAFT_TERMINAL_STATUSES =
+  new Set<TelegramExecutableTaskDraftStatus>([
+    "completed",
+    "cancelled",
+    "expired",
+  ]);
+
+const ACTIVE_TASK_QUESTION_PROMPT_TERMINAL_STATUSES =
+  new Set<TelegramActiveTaskQuestionPrompt["status"]>([
+    "answered",
+    "cancelled",
+    "expired",
   ]);
 
 const NOTIFICATION_DELIVERY_TERMINAL_STATUSES =
@@ -1134,6 +1152,8 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
       messageRefs: 0,
       queuedMessages: 0,
       pendingActions: 0,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
     };
 
     for (const [id, ref] of this.messageRefs.entries()) {
@@ -1167,6 +1187,51 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
           updatedAt: now,
         });
         result.pendingActions += 1;
+      }
+    }
+
+    for (const [id, session] of this.executableTaskDraftSessions.entries()) {
+      if (
+        EXECUTABLE_TASK_DRAFT_TERMINAL_STATUSES.has(session.status) &&
+        isExpired(session.expiresAt, now)
+      ) {
+        this.executableTaskDraftSessions.delete(id);
+        result.executableTaskDraftSessions =
+          (result.executableTaskDraftSessions ?? 0) + 1;
+        continue;
+      }
+      if (
+        EXECUTABLE_TASK_DRAFT_ACTIVE_STATUSES.has(session.status) &&
+        isExpired(session.expiresAt, now)
+      ) {
+        this.executableTaskDraftSessions.set(id, {
+          ...session,
+          status: "expired",
+          updatedAt: now,
+        });
+        result.executableTaskDraftSessions =
+          (result.executableTaskDraftSessions ?? 0) + 1;
+      }
+    }
+
+    for (const [id, prompt] of this.activeTaskQuestionPrompts.entries()) {
+      if (
+        ACTIVE_TASK_QUESTION_PROMPT_TERMINAL_STATUSES.has(prompt.status) &&
+        isExpired(prompt.expiresAt, now)
+      ) {
+        this.activeTaskQuestionPrompts.delete(id);
+        result.activeTaskQuestionPrompts =
+          (result.activeTaskQuestionPrompts ?? 0) + 1;
+        continue;
+      }
+      if (prompt.status === "open" && isExpired(prompt.expiresAt, now)) {
+        this.activeTaskQuestionPrompts.set(id, {
+          ...prompt,
+          status: "expired",
+          updatedAt: now,
+        });
+        result.activeTaskQuestionPrompts =
+          (result.activeTaskQuestionPrompts ?? 0) + 1;
       }
     }
 
@@ -1204,6 +1269,8 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
       queuedMessages: 0,
       assistantTurns: 0,
       pendingActions: 0,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
     };
 
     for (const [id, ref] of this.messageRefs.entries()) {
@@ -1231,6 +1298,22 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
       if (action.conversationKey === input.conversationKey) {
         this.pendingActions.delete(id);
         result.pendingActions += 1;
+      }
+    }
+
+    for (const [id, session] of this.executableTaskDraftSessions.entries()) {
+      if (session.conversationKey === input.conversationKey) {
+        this.executableTaskDraftSessions.delete(id);
+        result.executableTaskDraftSessions =
+          (result.executableTaskDraftSessions ?? 0) + 1;
+      }
+    }
+
+    for (const [id, prompt] of this.activeTaskQuestionPrompts.entries()) {
+      if (prompt.conversationKey === input.conversationKey) {
+        this.activeTaskQuestionPrompts.delete(id);
+        result.activeTaskQuestionPrompts =
+          (result.activeTaskQuestionPrompts ?? 0) + 1;
       }
     }
 
