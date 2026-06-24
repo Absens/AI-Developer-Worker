@@ -233,6 +233,15 @@ task notifications. It never calls the human TaskTracker API over HTTP; writes g
 through the internal `TaskTrackerClient`, and task creation requires
 `TASK_TRACKER_PROVIDER=internal`.
 
+`TELEGRAM_DIGITAL_TWIN_*` is a strategic Telegram Assistant submode rather than
+a simple notification feature. It is intended for Telegram Business/Secretary
+chats where the assistant can maintain durable per-contact Codex sessions, reply
+on behalf of the owner after explicit access gates, preserve thread continuity
+through `runResume`, and keep retention-limited audit records. Keep it disabled
+by default, document owner consent before production use, and treat persona,
+session reset, audit encryption, and full-text retention settings as part of the
+runtime contract.
+
 Use `TELEGRAM_ASSISTANT_BOT_TOKEN` for the assistant. Alert delivery uses the
 separate `TELEGRAM_BOT_TOKEN`, even if both variables intentionally contain the
 same bot token. Keep allowlists tight: chat/user allowlists grant read access,
@@ -241,7 +250,8 @@ while `TELEGRAM_DEVELOPER_USER_IDS`, `TELEGRAM_OPERATOR_USER_IDS`, and
 defaults to mentions and replies to align with Telegram privacy mode.
 
 Operational details, metrics, Bot API links, retention behavior, webhook
-requirements, and business/profile automation consent rules are documented in
+requirements, Digital Twin sessions, and business/profile automation consent
+rules are documented in
 [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) and
 [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md).
 

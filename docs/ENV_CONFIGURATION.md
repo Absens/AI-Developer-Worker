@@ -405,6 +405,14 @@ routing and config ownership remain separate.
 All env values override the same fields in fleet config under
 `telegramAssistant.*`.
 
+Digital Twin settings under `TELEGRAM_DIGITAL_TWIN_*` are part of the Telegram
+Assistant namespace, but they should be treated as a separate product direction.
+They model owner-approved Telegram Business/Secretary sessions with durable
+Codex thread continuity, per-contact delivery/audit state, persona versioning
+and explicit retention controls. Keep the mode disabled until owner consent,
+allowed chats/users, audit retention and encrypted full-text policy are decided
+for the deployment.
+
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `TELEGRAM_ASSISTANT_ENABLED` | `false` | Enables Telegram Assistant configuration. When `true`, `TELEGRAM_ASSISTANT_BOT_TOKEN` is required. Production also requires non-empty chat, user, or role-specific allowlists. |

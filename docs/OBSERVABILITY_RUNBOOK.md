@@ -291,6 +291,17 @@ developer/operator/admin users, `groupMode=all_messages`, profile automation
 auto-reply, project Q&A without readable repository docs/source roots, and
 profile Q&A without owner approval.
 
+Digital Twin mode is the long-running Business/Secretary-chat path behind
+`TELEGRAM_DIGITAL_TWIN_*`. Operationally it should be monitored separately from
+ordinary task commands because it creates durable per-contact Codex sessions,
+stores delivery/audit state, and may auto-reply on behalf of the owner. Before
+enabling it in production, document owner consent, allowed owner/chat/user IDs,
+persona profile versioning, session reset policy, and whether encrypted full
+text retention is allowed. Cleanup uses the same Telegram Assistant retention
+cadence and prunes redacted/full-text Digital Twin audit according to
+`TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` and
+`TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS`.
+
 Bot API references:
 
 - [getUpdates](https://core.telegram.org/bots/api#getupdates) for polling.

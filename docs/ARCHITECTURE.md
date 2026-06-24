@@ -18,6 +18,8 @@ Yandex Tracker или внутреннего task tracker, запускает Co
 - observability HTTP server с health/readiness/metrics, event timeline и human API;
 - Angular human console в `web/`;
 - Telegram Assistant как дополнительный Bot API-интерфейс к internal tracker;
+- Telegram Digital Twin как перспективное направление для owner-approved
+  Business/Secretary sessions поверх Telegram Assistant;
 - Project Manager Agent для анализа проекта, целей, предложений задач и replanning.
 
 ## Runtime Entry Points
@@ -158,6 +160,36 @@ Telegram state is separate from task state. The store keeps offsets, processed
 updates, locks, pending actions, subscriptions and retention-limited audit data;
 the task source of truth remains internal tracker.
 
+### Telegram Digital Twin
+
+Telegram Digital Twin is the forward-looking Telegram Assistant direction for
+Telegram Business/Secretary chats. Unlike one-shot project Q&A or task commands,
+it keeps durable per-contact sessions, continues Codex threads with `runResume`,
+records inbound/outbound delivery state, and can answer on behalf of the owner
+when Telegram business rights, local allowlists and owner consent all pass.
+
+The feature is configured by `telegramAssistant.digitalTwin` in fleet config or
+`TELEGRAM_DIGITAL_TWIN_*` env vars. Keep `TELEGRAM_DIGITAL_TWIN_ENABLED=false`
+unless the deployment has a documented consent model, clear owner/admin control
+paths, and retention decisions for redacted audit and optional encrypted full
+text. The current design deliberately separates Digital Twin state from worker
+implementation threads and from internal task state:
+
+- session state stores persona version, Codex thread id, status and summary
+  refresh markers;
+- message/turn state handles idempotency, queued messages, sent Telegram
+  message ids and one-running-turn-per-session guards;
+- audit retention is handled by Telegram Assistant cleanup using
+  `TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS`,
+  `TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS` and optional
+  `TELEGRAM_DIGITAL_TWIN_AUDIT_ENCRYPTION_KEY_ENV`;
+- future product work should evolve this boundary instead of mixing Digital
+  Twin behavior into task execution or Project Manager flows.
+
+Detailed product and implementation notes live in
+`docs/superpowers/specs/2026-06-15-telegram-digital-twin-sessions-design.md`
+and `docs/superpowers/plans/2026-06-15-telegram-digital-twin-sessions.md`.
+
 ## Project Manager Agent
 
 Project Manager is disabled by default and requires internal tracker mode. It
@@ -221,6 +253,11 @@ links, script names and env var names should still be checked against
 - New human UI workflow: update `src/observability/taskTrackerHumanApi.ts`,
   `web/src/app/models/`, `web/src/app/services/`, page/component tests and
   `web/e2e` when it affects critical flows.
+- New Telegram Digital Twin behavior: update `src/domain/telegramAssistant/`
+  session/store/service boundaries, PostgreSQL migration or retention behavior
+  when persistence changes, `docs/ENV_CONFIGURATION.md`, and
+  `docs/OBSERVABILITY_RUNBOOK.md`. Do not route Digital Twin writes through the
+  human HTTP API.
 - New environment variable: follow the configuration rules above and include a
   preflight or parser test when the variable affects startup safety.
 
@@ -234,4 +271,3 @@ links, script names and env var names should still be checked against
 - Treat merged GitLab MRs as code-delivery evidence, not human acceptance.
 - Keep target repository credentials and validation commands aligned with the
   actual repository mounted at `REPO_PATH`.
-
