@@ -958,6 +958,20 @@ export class TelegramAssistantService {
       return undefined;
     }
 
+    if (intent.name === "create_task_draft") {
+      if (this.config.profileAutomation.requireOwnerApproval) {
+        await this.handleBusinessCreateTaskDraftForOwnerApproval(
+          message,
+          connection,
+          intent,
+          intent.rawText ?? message.text ?? "",
+        );
+      } else if (policy.shouldAutoReply && !policy.canReply) {
+        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
+      }
+      return undefined;
+    }
+
     if (
       message.source === "business" &&
       this.config.digitalTwin.enabled &&
@@ -978,20 +992,6 @@ export class TelegramAssistantService {
         return undefined;
       }
       await this.handleTaskStatus(message, intent.rawText ?? message.text ?? "");
-      return undefined;
-    }
-
-    if (intent.name === "create_task_draft") {
-      if (this.config.profileAutomation.requireOwnerApproval) {
-        await this.handleBusinessCreateTaskDraftForOwnerApproval(
-          message,
-          connection,
-          intent,
-          intent.rawText ?? message.text ?? "",
-        );
-      } else if (policy.shouldAutoReply && !policy.canReply) {
-        await this.notifyOwnerBusinessReplyUnavailable(connection, message);
-      }
       return undefined;
     }
 

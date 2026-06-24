@@ -1154,6 +1154,74 @@ describe("profile automation", () => {
     );
   });
 
+  it("routes explicit Digital Twin task requests to owner approval instead of answer-only turn", async () => {
+    const answerAsDigitalTwin = vi.fn(async () => ({
+      answer: "Ок, отвечаю как Twin.",
+      threadId: "thread-dt-1",
+      startedNewThread: true,
+    }));
+    const createTask = vi.fn(async (_input: CreateTaskInput): Promise<TaskRecord> =>
+      taskFixture(),
+    );
+    const sendMessage = vi.fn(async () => telegramMessage(9001));
+    const store = new InMemoryTelegramAssistantStore();
+    await upsertBusinessConnection(store, { ownerChatId: "99" });
+    const service = buildAssistant({
+      store,
+      taskTracker: {
+        createTask,
+        findTaskByExternalRef: vi.fn(async () => null),
+        markReady: vi.fn(async () => undefined),
+        getTask: vi.fn(async () => taskFixture()),
+      } as unknown as TaskTrackerClient,
+      assistantCodex: { answerAsDigitalTwin },
+      sendMessage,
+      config: profileAutomationConfig({
+        enabled: true,
+        autoReplyEnabled: true,
+        requireOwnerApproval: true,
+        allowedOwnerIds: ["10"],
+        allowedChatIds: ["777"],
+        digitalTwin: {
+          enabled: true,
+          autoReplyEnabled: true,
+        },
+      }),
+    });
+
+    await service.handleUpdate(
+      businessMessageUpdate({
+        updateId: 300,
+        messageId: 30,
+        chatId: 777,
+        text: "создай задачу добавить отчет по оплатам",
+      }),
+    );
+
+    expect(answerAsDigitalTwin).not.toHaveBeenCalled();
+    expect(createTask).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "99",
+      text: expect.stringContaining("Создать и запустить задачу?"),
+    }));
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:99",
+      status: "pending",
+    })).resolves.toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          executionMode: "owner_approval",
+          draft: expect.objectContaining({
+            repositoryName: "developer",
+            repoPathKey: "developer",
+            baseBranch: "main",
+            queue: "DEV",
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it("does not generate or send a second digital twin reply for a duplicate business message", async () => {
     const answerAsDigitalTwin = vi.fn(async () => ({
       answer: "Первый ответ.",
