@@ -4332,6 +4332,109 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(38);
   });
 
+  it("requires owner approval before queueing high-risk trusted private tasks", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const markReadySpy = vi.spyOn(taskTracker, "markReady");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: {
+        defaultRepository: "developer",
+        profileAutomation: {
+          ...baseTelegramAssistantConfig().profileAutomation,
+          allowedOwnerIds: ["99"],
+        },
+      },
+      repositories: [repositoryFixture({ tags: ["ai_dev"] })],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поменять авторизацию", {
+      updateId: 90,
+      messageId: 190,
+    }));
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 91,
+      messageId: 191,
+    }));
+
+    expect(createTaskSpy).not.toHaveBeenCalled();
+    expect(markReadySpy).not.toHaveBeenCalled();
+    const ownerActions = await store.listPendingActions({
+      conversationKey: "bot_private:99",
+      status: "pending",
+    });
+    expect(ownerActions).toEqual([
+      expect.objectContaining({
+        chatId: 99,
+        userId: 99,
+        payload: expect.objectContaining({
+          executionMode: "owner_approval",
+          externalKey: "telegram:1:190",
+          draft: expect.objectContaining({
+            repositoryName: "developer",
+            repoPathKey: "developer",
+            baseBranch: "main",
+            queue: "DEV",
+            executionMode: "owner_approval",
+            risk: expect.objectContaining({
+              riskLevel: "high",
+              requiresOwnerApproval: true,
+            }),
+          }),
+        }),
+      }),
+    ]);
+    const sessionId = ownerActions[0]?.payload.sessionId;
+    expect(typeof sessionId).toBe("string");
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "awaiting_owner_approval" });
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "99",
+      text: expect.stringContaining("High-risk"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 191,
+      text: "Задача отправлена owner/admin на подтверждение запуска.",
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 92,
+      messageId: 192,
+      chatId: 99,
+      userId: 99,
+    }));
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    expect(markReadySpy).toHaveBeenCalledOnce();
+    await expect(
+      store.getExecutableTaskDraftSession(String(sessionId)),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(createTaskSpy.mock.calls[0]?.[0]).toMatchObject({
+      repositoryName: "developer",
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: ["telegram", "ai_dev", "risk_high"],
+      externalRefs: [{ provider: "telegram", externalKey: "telegram:1:190" }],
+      externalSnapshot: {
+        chatId: 1,
+        messageId: 190,
+        userId: 10,
+        executionMode: "owner_approval",
+      },
+    });
+  });
+
   it("rejects mismatched executable draft payload execution mode", async () => {
     const taskTracker = new InMemoryTaskTrackerClient({
       now: () => new Date("2026-05-30T08:00:00.000Z"),

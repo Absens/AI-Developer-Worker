@@ -180,6 +180,10 @@ const ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE =
 const ANSWER_RECORDED_MESSAGE = "Ответ записан. Задача продолжит работу.";
 const TASK_CREATION_DAILY_LIMIT_MESSAGE = "Дневной лимит создания задач исчерпан.";
 const PROJECT_QA_DAILY_LIMIT_MESSAGE = "Дневной лимит проектного Q&A исчерпан.";
+const TASK_SENT_TO_OWNER_APPROVAL_MESSAGE =
+  "Задача отправлена owner/admin на подтверждение запуска.";
+const TASK_OWNER_APPROVAL_UNAVAILABLE_MESSAGE =
+  "Не могу отправить задачу на owner/admin approval: не настроен owner/admin Telegram id.";
 const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md"];
 const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
@@ -1092,14 +1096,60 @@ export class TelegramAssistantService {
       return;
     }
 
-    const draft = buildHeuristicTaskDraft(
-      text,
-      this.repositories,
-      this.config.defaultRepository,
-    );
     const actionId = buildPendingActionId(message.updateId, message.messageId);
     const externalKey = buildTelegramExternalKey(message.chatId, message.messageId);
     const now = new Date().toISOString();
+    const existingAction = await this.store.getPendingAction(actionId);
+    if (existingAction) {
+      if (existingAction.status === "pending" && isPendingActionUnexpired(existingAction, now)) {
+        const existingPayload = parseTaskDraftPayload(existingAction.payload);
+        await this.sendTelegramResponse(
+          ownerMessage,
+          isTelegramExecutableTaskDraft(existingPayload.draft)
+            ? buildExecutableTaskDraftResponse(existingPayload.draft, existingAction.id)
+            : buildTaskDraftResponse(existingPayload.draft, existingAction.id),
+        );
+      }
+      return;
+    }
+
+    const repositoryResolution = resolveTelegramExecutionRepositoryProfile({
+      text,
+      repositories: this.repositories,
+      defaultRepository: this.config.defaultRepository,
+    });
+    if (repositoryResolution.status === "unavailable") {
+      await this.sendOwnerPlainMessage(
+        connection,
+        "Не могу поставить задачу в очередь: не настроен repository profile для выполнения.",
+      );
+      return;
+    }
+    if (repositoryResolution.status === "needs_selection") {
+      const options = repositoryResolution.options
+        .map((option) => `${option.repositoryName} / ${option.queue}`)
+        .join(", ");
+      await this.sendOwnerPlainMessage(
+        connection,
+        `Нужно выбрать репозиторий для задачи перед запуском: ${options}.`,
+      );
+      return;
+    }
+
+    const executableDraft = buildTelegramExecutableTaskDraft({
+      text,
+      selectedProfile: repositoryResolution.profile,
+      forceOwnerApproval: true,
+    });
+    const draft: TelegramExecutableTaskDraft = {
+      ...executableDraft,
+      title: buildHeuristicTaskDraft(
+        text,
+        this.repositories,
+        this.config.defaultRepository,
+      ).title,
+      description: text,
+    };
     const pendingAction: TelegramPendingAction = {
       id: actionId,
       conversationKey: ownerMessage.conversationKey,
@@ -1108,6 +1158,7 @@ export class TelegramAssistantService {
       intent,
       payload: {
         draft,
+        executionMode: draft.executionMode,
         chatId: message.chatId,
         messageId: message.messageId,
         userId: message.userId,
@@ -1126,7 +1177,7 @@ export class TelegramAssistantService {
     await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       ownerMessage,
-      buildTaskDraftResponse(draft, pendingAction.id),
+      buildExecutableTaskDraftResponse(draft, pendingAction.id),
     );
   }
 
@@ -1159,6 +1210,157 @@ export class TelegramAssistantService {
       chatId: connection.ownerChatId,
       text,
     });
+  }
+
+  private isOwnerOrAdmin(userId: number | undefined): boolean {
+    if (userId === undefined) {
+      return false;
+    }
+    const role = resolveTelegramRole(this.config, userId);
+    return (
+      role === "admin" ||
+      this.config.profileAutomation.allowedOwnerIds.includes(String(userId))
+    );
+  }
+
+  private resolveOwnerApprovalRecipient(): {
+    chatId: number;
+    userId: number;
+    conversationKey: string;
+  } | undefined {
+    const configuredId = [
+      ...this.config.profileAutomation.allowedOwnerIds,
+      ...this.config.adminUserIds,
+    ].find((id) => id.trim().length > 0);
+    if (!configuredId) {
+      return undefined;
+    }
+
+    const userId = Number(configuredId);
+    if (!Number.isSafeInteger(userId)) {
+      return undefined;
+    }
+
+    return {
+      chatId: userId,
+      userId,
+      conversationKey: `bot_private:${userId}`,
+    };
+  }
+
+  private buildConfiguredOwnerApprovalMessage(
+    message: TelegramInboundMessage,
+    recipient: { chatId: number; userId: number; conversationKey: string },
+  ): TelegramInboundMessage {
+    return {
+      ...message,
+      id: `${message.id}:owner-approval`,
+      conversationKey: recipient.conversationKey,
+      source: "bot_private",
+      chatId: recipient.chatId,
+      userId: recipient.userId,
+      messageId: undefined,
+      businessConnectionId: undefined,
+      actor: {
+        telegramUserId: recipient.userId,
+        role: resolveTelegramRole(this.config, recipient.userId),
+      },
+    };
+  }
+
+  private async routeCreateTaskActionToOwnerApproval(
+    message: TelegramInboundMessage,
+    action: TelegramPendingAction,
+    payload: TaskDraftPayload,
+  ): Promise<boolean> {
+    const recipient = this.resolveOwnerApprovalRecipient();
+    if (!recipient) {
+      if (payload.sessionId) {
+        await this.store.completeExecutableTaskDraftSession(payload.sessionId, {
+          status: "cancelled",
+        });
+      }
+      await this.store.completePendingAction(action.id, {
+        status: "cancelled",
+      });
+      await this.updatePendingActionGauges();
+      await this.sendPlainMessage(message, TASK_OWNER_APPROVAL_UNAVAILABLE_MESSAGE);
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    const ownerActionId = buildOwnerApprovalPendingActionId(action.id);
+    const existingOwnerAction = await this.store.getPendingAction(ownerActionId);
+    if (existingOwnerAction) {
+      const ownerMessage = this.buildConfiguredOwnerApprovalMessage(message, recipient);
+      if (
+        existingOwnerAction.status === "pending" &&
+        isPendingActionUnexpired(existingOwnerAction, now)
+      ) {
+        if (isTelegramExecutableTaskDraft(payload.draft)) {
+          await this.sendTelegramResponse(
+            ownerMessage,
+            buildOwnerExecutableTaskApprovalResponse(
+              payload.draft,
+              existingOwnerAction.id,
+            ),
+          );
+        } else {
+          await this.sendTelegramResponse(
+            ownerMessage,
+            buildTaskDraftResponse(payload.draft, existingOwnerAction.id),
+          );
+        }
+      }
+      await this.store.completePendingAction(action.id, {
+        status: "completed",
+      });
+      await this.updatePendingActionGauges();
+      await this.sendPlainMessage(message, TASK_SENT_TO_OWNER_APPROVAL_MESSAGE);
+      return true;
+    }
+
+    const ownerAction: TelegramPendingAction = {
+      ...action,
+      id: ownerActionId,
+      conversationKey: recipient.conversationKey,
+      chatId: recipient.chatId,
+      userId: recipient.userId,
+      status: "pending",
+      updatedAt: now,
+      consumedAt: undefined,
+      completedAt: undefined,
+    };
+    await this.store.upsertPendingAction(ownerAction);
+    if (payload.sessionId) {
+      const session = await this.store.getExecutableTaskDraftSession(payload.sessionId);
+      if (session) {
+        await this.store.upsertExecutableTaskDraftSession({
+          ...session,
+          status: "awaiting_owner_approval",
+          updatedAt: now,
+        });
+      }
+    }
+    await this.store.completePendingAction(action.id, {
+      status: "completed",
+    });
+    await this.updatePendingActionGauges();
+
+    const ownerMessage = this.buildConfiguredOwnerApprovalMessage(message, recipient);
+    if (isTelegramExecutableTaskDraft(payload.draft)) {
+      await this.sendTelegramResponse(
+        ownerMessage,
+        buildOwnerExecutableTaskApprovalResponse(payload.draft, ownerAction.id),
+      );
+    } else {
+      await this.sendTelegramResponse(
+        ownerMessage,
+        buildTaskDraftResponse(payload.draft, ownerAction.id),
+      );
+    }
+    await this.sendPlainMessage(message, TASK_SENT_TO_OWNER_APPROVAL_MESSAGE);
+    return true;
   }
 
   private async handleCreateTaskDraft(
@@ -2541,6 +2743,18 @@ export class TelegramAssistantService {
     executableAction: TelegramPendingAction,
   ): Promise<void> {
     const payload = parseTaskDraftPayload(executableAction.payload);
+    if (
+      payload.executionMode === "owner_approval" &&
+      !this.isOwnerOrAdmin(message.userId)
+    ) {
+      await this.routeCreateTaskActionToOwnerApproval(
+        message,
+        executableAction,
+        payload,
+      );
+      return;
+    }
+
     const task = await this.findOrCreateTaskFromPendingAction(
       executableAction,
       payload,
@@ -2750,7 +2964,8 @@ export class TelegramAssistantService {
       throw new Error("Task tracker is required to mark telegram tasks ready.");
     }
     if (
-      payload.executionMode === "auto_ready" &&
+      (payload.executionMode === "auto_ready" ||
+        payload.executionMode === "owner_approval") &&
       (task.status === "new" || task.status === "triage")
     ) {
       await this.taskTracker.markReady(
@@ -3446,6 +3661,44 @@ const buildExecutableTaskDraftResponse = (
   disableWebPagePreview: true,
 });
 
+const buildOwnerExecutableTaskApprovalResponse = (
+  draft: TelegramExecutableTaskDraft,
+  actionId: string,
+): TelegramResponse => ({
+  blocks: [
+    { kind: "title", text: "High-risk: подтвердить запуск задачи?" },
+    { kind: "field", label: "Название", value: draft.title },
+    ...(draft.repositoryName || draft.queue
+      ? [{
+          kind: "field" as const,
+          label: "Репозиторий/очередь",
+          value: [draft.repositoryName, draft.queue].filter(Boolean).join(" / "),
+        }]
+      : []),
+    {
+      kind: "field",
+      label: "Риск",
+      value: `${draft.risk.riskLevel}: ${draft.risk.reasons.join(", ")}`,
+    },
+    {
+      kind: "paragraph",
+      text: "После подтверждения задача будет создана и поставлена в очередь выполнения.",
+    },
+    {
+      kind: "field",
+      label: "Критерии",
+      value: draft.acceptanceCriteria.join("\n"),
+    },
+  ],
+  inlineButtonRows: [
+    [
+      { text: "Создать и запустить", callbackData: `c:${actionId}` },
+      { text: "Отмена", callbackData: `cancel:${actionId}` },
+    ],
+  ],
+  disableWebPagePreview: true,
+});
+
 const buildAnswerAiQuestionResponse = (
   candidate: AnswerAiQuestionCandidate,
   body: string,
@@ -3857,6 +4110,9 @@ const buildPendingActionId = (updateId: number, messageId: number): string =>
 
 const buildExecutableDraftSessionId = (updateId: number, messageId: number): string =>
   `tged_${updateId.toString(36)}_${messageId.toString(36)}`;
+
+const buildOwnerApprovalPendingActionId = (actionId: string): string =>
+  `${actionId}_owner`;
 
 const buildTelegramExternalKey = (chatId: number, messageId: number): string =>
   `telegram:${chatId}:${messageId}`;
