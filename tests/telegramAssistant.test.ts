@@ -3020,7 +3020,7 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(12);
   });
 
-  it("creates a task draft pending action and waits for confirmation", async () => {
+  it("creates an executable task draft session and waits for confirmation", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore({
       now: () => new Date("2026-05-30T08:00:00.000Z"),
@@ -3063,32 +3063,109 @@ describe("TelegramAssistantService", () => {
         messageId: 99,
         userId: 10,
         externalKey: "telegram:1:99",
+        sessionId: "tged_z_2r",
+        executionMode: "auto_ready",
         draft: {
           title: "починить регистрацию",
           description: "создай задачу починить регистрацию",
           repositoryName: "developer",
+          repoPathKey: "developer",
+          baseBranch: "main",
+          queue: "DEV",
           acceptanceCriteria: [
             "Поведение реализовано и покрыто существующими проверками.",
           ],
-          tags: ["telegram"],
+          tags: ["telegram", "risk_medium"],
+          risk: {
+            riskLevel: "medium",
+            reasons: ["isolated_feature_or_bugfix"],
+            requiresOwnerApproval: false,
+          },
+          executionMode: "auto_ready",
         },
       },
+    });
+    await expect(
+      store.getExecutableTaskDraftSession("tged_z_2r"),
+    ).resolves.toMatchObject({
+      id: "tged_z_2r",
+      source: "private",
+      initiatorUserId: 10,
+      chatId: 1,
+      messageId: 99,
+      originalText: "создай задачу починить регистрацию",
+      status: "awaiting_user_confirmation",
+      clarificationHistory: [],
     });
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       chatId: "1",
       parseMode: "HTML",
       replyToMessageId: 99,
-      text: expect.stringContaining("Создать задачу"),
+      text: expect.stringContaining("Создать и запустить задачу"),
       replyMarkup: {
         inline_keyboard: [
           [
-            { text: "Создать", callback_data: "c:tgpa_z_2r" },
+            { text: "Создать и запустить", callback_data: "c:tgpa_z_2r" },
             { text: "Отмена", callback_data: "cancel:tgpa_z_2r" },
           ],
         ],
       },
     }));
     expect(await store.getOffset("default")).toBe(36);
+  });
+
+  it("blocks private task creation when task creation is disabled", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { taskCreationEnabled: false },
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 135,
+      messageId: 135,
+    }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: expect.stringMatching(/создание задач.*выключено/i),
+    }));
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
+  });
+
+  it("does not create a private executable draft when no repository profile is available", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      repositories: [],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу починить регистрацию", {
+      updateId: 136,
+      messageId: 136,
+    }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: "Не могу поставить задачу в очередь: не настроен repository profile для выполнения.",
+    }));
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(taskTracker.createTask).not.toHaveBeenCalled();
   });
 
   it("records a human answer for the latest open AI question after confirmation", async () => {
@@ -3236,7 +3313,7 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(45);
   });
 
-  it("creates an internal task from a confirmed draft without idempotencyKey", async () => {
+  it("creates a ready executable task from a confirmed trusted private draft", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore({
       now: () => new Date("2026-05-30T08:00:00.000Z"),
@@ -3245,6 +3322,7 @@ describe("TelegramAssistantService", () => {
       now: () => new Date("2026-05-30T08:00:00.000Z"),
     });
     const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const markReadySpy = vi.spyOn(taskTracker, "markReady");
     const service = new TelegramAssistantService({
       store,
       config: {
@@ -3252,7 +3330,7 @@ describe("TelegramAssistantService", () => {
         defaultRepository: "developer",
       },
       taskTracker,
-      repositories: [repositoryFixture()],
+      repositories: [repositoryFixture({ tags: ["ai_dev"] })],
       telegram: { sendMessage, answerCallbackQuery: vi.fn() },
     });
 
@@ -3278,9 +3356,10 @@ describe("TelegramAssistantService", () => {
     });
 
     expect(createTaskSpy).toHaveBeenCalledOnce();
+    expect(markReadySpy).toHaveBeenCalledOnce();
     const createdInput = createTaskSpy.mock.calls[0]?.[0];
     expect(createdInput).toBeDefined();
-    expect(createdInput).toEqual({
+    expect(createdInput).toMatchObject({
       title: "починить регистрацию",
       description: "создай задачу починить регистрацию",
       source: {
@@ -3294,12 +3373,26 @@ describe("TelegramAssistantService", () => {
         displayName: "Telegram Assistant",
       },
       repositoryName: "developer",
-      tags: ["telegram"],
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: ["telegram", "ai_dev", "risk_medium"],
       acceptanceCriteria: [
         "Поведение реализовано и покрыто существующими проверками.",
       ],
+      riskFactors: ["isolated_feature_or_bugfix"],
       externalRefs: [{ provider: "telegram", externalKey: "telegram:1:99" }],
-      externalSnapshot: { chatId: 1, messageId: 99, userId: 10 },
+      externalSnapshot: {
+        chatId: 1,
+        messageId: 99,
+        userId: 10,
+        executionMode: "auto_ready",
+        risk: {
+          riskLevel: "medium",
+          reasons: ["isolated_feature_or_bugfix"],
+          requiresOwnerApproval: false,
+        },
+      },
     });
     expect(createdInput as unknown as Record<string, unknown>).not.toHaveProperty(
       "idempotencyKey",
@@ -3324,7 +3417,7 @@ describe("TelegramAssistantService", () => {
     expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
       chatId: "1",
       replyToMessageId: 100,
-      text: expect.stringContaining(taskId),
+      text: `Задача создана и поставлена в очередь: ${taskId}`,
     }));
     expect(await store.getOffset("default")).toBe(38);
   });
@@ -3420,7 +3513,7 @@ describe("TelegramAssistantService", () => {
     expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
       chatId: "1",
       replyToMessageId: 100,
-      text: "Задача создана: task_retry_1",
+      text: "Задача создана и поставлена в очередь: task_retry_1",
     }));
     expect(await store.isUpdateProcessed(37)).toBe(true);
     expect(await store.getOffset("default")).toBe(38);
@@ -4549,11 +4642,11 @@ describe("TelegramAssistantService", () => {
       config: { userTaskCreationDailyLimit: 1 },
     });
 
-    await service.handleUpdate(messageUpdate("создай задачу первую", {
+    await service.handleUpdate(messageUpdate("создай задачу добавить проверку статуса заказа", {
       updateId: 960,
       messageId: 960,
     }));
-    await service.handleUpdate(messageUpdate("создай задачу вторую", {
+    await service.handleUpdate(messageUpdate("создай задачу добавить проверку ошибок оплаты", {
       updateId: 961,
       messageId: 961,
     }));
@@ -4862,6 +4955,8 @@ describe("TelegramAssistantService", () => {
       queuedMessages: 1,
       assistantTurns: 1,
       pendingActions: 1,
+      executableTaskDraftSessions: 0,
+      activeTaskQuestionPrompts: 0,
       digitalTwin: {
         sessions: 1,
         messages: 1,

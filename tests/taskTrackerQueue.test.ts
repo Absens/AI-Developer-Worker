@@ -226,6 +226,48 @@ describe("internal task tracker queue", () => {
     expect(claim?.task.id).toBe("live");
   });
 
+  it("claims a Telegram-created ready task matching the repository profile", async () => {
+    const client = new InMemoryTaskTrackerClient();
+    await client.createTask(baseTaskInput({
+      id: "telegram-ready",
+      title: "Telegram task",
+      source: {
+        kind: "system",
+        provider: "telegram",
+        externalKey: "telegram:1:99",
+      },
+      createdBy: {
+        owner: "external_source",
+        id: "telegram",
+        displayName: "Telegram Assistant",
+      },
+      repositoryName: "developer",
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: ["telegram", "ai_dev", "risk_medium"],
+      status: "ready",
+      externalRefs: [{ provider: "telegram", externalKey: "telegram:1:99" }],
+    }));
+
+    const claim = await client.claimNextTask(claimInput({
+      repositoryProfiles: [
+        {
+          name: "developer",
+          repoPathKey: "developer",
+          queues: ["DEV"],
+          tags: ["ai_dev"],
+        },
+      ],
+    }));
+
+    expect(claim?.task.id).toBe("telegram-ready");
+    expect(claim?.task.repositoryName).toBe("developer");
+    expect(claim?.task.repoPathKey).toBe("developer");
+    expect(claim?.task.baseBranch).toBe("main");
+    expect(claim?.task.queue).toBe("DEV");
+  });
+
   it("does not claim a task with an active blocking dependency", async () => {
     const client = new InMemoryTaskTrackerClient();
     await client.createTask(baseTaskInput({ id: "blocked" }));
