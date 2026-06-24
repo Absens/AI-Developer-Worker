@@ -622,6 +622,49 @@ describe("PostgresTelegramAssistantStore executable task intake", () => {
     ]));
   });
 
+  it("does not reopen an answered active task prompt from a later open upsert", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        if (text.includes("INSERT INTO telegram_active_task_question_prompts")) {
+          expect(text).toContain("ON CONFLICT (id)");
+          expect(text).toContain("status = 'open'");
+          expect(text).toContain("EXCLUDED.status <> 'open'");
+          return queryResult([]);
+        }
+        if (text.includes("WHERE id = $1")) {
+          expect(values).toEqual(["prompt-1"]);
+          return queryResult([
+            activeTaskQuestionPromptRow({
+              status: "answered",
+              updated_at: laterTime,
+            }) as R,
+          ]);
+        }
+        throw new Error(`Unexpected SQL: ${text}`);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db, {
+      now: () => new Date(baseTime),
+    });
+
+    await expect(
+      store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+        status: "open",
+        updatedAt: futureTime,
+      })),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "prompt-1",
+      status: "answered",
+      updatedAt: laterTime,
+    }));
+    expect(queries).toHaveLength(2);
+  });
+
   it("consumes active task question prompts inside a transaction and returns the original prompt", async () => {
     const queries: Array<{ text: string; values?: unknown[] }> = [];
     const db = {

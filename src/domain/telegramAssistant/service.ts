@@ -549,7 +549,7 @@ export class TelegramAssistantService {
       }
     }
 
-    if (message.source === "bot_private" && message.text !== undefined) {
+    if (message.text !== undefined) {
       const activeTaskQuestionPrompt =
         await this.store.getActiveTaskQuestionPrompt(message.conversationKey);
       if (activeTaskQuestionPrompt) {
@@ -557,6 +557,16 @@ export class TelegramAssistantService {
           await this.sendMessage({
             chatId: String(message.chatId),
             text: UNAUTHORIZED_MESSAGE,
+          });
+          return undefined;
+        }
+        if (!canPerformTelegramWrite(actor)) {
+          await this.sendMessage({
+            chatId: String(message.chatId),
+            text: WRITE_ROLE_REQUIRED_MESSAGE,
+            ...(message.messageId
+              ? { replyToMessageId: message.messageId }
+              : {}),
           });
           return undefined;
         }
@@ -1438,21 +1448,14 @@ export class TelegramAssistantService {
       return;
     }
 
-    const consumed = await this.store.consumeActiveTaskQuestionPrompt({
-      conversationKey: message.conversationKey,
-      chatId: message.chatId,
-      userId: message.userId,
-    });
-    if (!consumed || consumed.id !== prompt.id) {
+    if (!isActiveTaskQuestionPromptForMessage(prompt, message)) {
       await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
       return;
     }
 
-    const task = await this.taskTracker.getTask(consumed.taskId);
+    const task = await this.taskTracker.getTask(prompt.taskId);
     const question = task.clarificationQuestions.find(
-      (candidate) =>
-        candidate.id === consumed.questionId &&
-        candidate.status === "open",
+      (candidate) => candidate.id === prompt.questionId,
     );
     if (!question) {
       await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
@@ -1464,6 +1467,7 @@ export class TelegramAssistantService {
       buildAnswerAiQuestionIntent(text),
       text,
       { task, question },
+      { activePrompt: prompt },
     );
   }
 
@@ -1472,6 +1476,7 @@ export class TelegramAssistantService {
     intent: TelegramIntent,
     text: string,
     candidate: AnswerAiQuestionCandidate,
+    options: { activePrompt?: TelegramActiveTaskQuestionPrompt } = {},
   ): Promise<void> {
     if (!this.taskTracker) {
       await this.sendPlainMessage(message, TASK_ANSWER_UNAVAILABLE_MESSAGE);
@@ -1487,23 +1492,39 @@ export class TelegramAssistantService {
 
     const body = text.trim() || message.text?.trim() || "";
     const command = { type: "resume" as const, rawText: body };
+    const payload = buildAnswerAiQuestionPayload({
+      message,
+      candidate,
+      body,
+      command,
+    });
+    const answer: HumanAnswerInput = {
+      questionId: payload.questionId,
+      author: buildTelegramHumanAnswerAuthor(message, payload.userId),
+      body,
+      command,
+    };
+    const alreadyRecorded = await this.hasRecordedTelegramAnswer(payload, answer);
+    if (candidate.question.status !== "open" && !alreadyRecorded) {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
     if (!this.config.confirmWriteActions) {
-      await this.taskTracker.recordHumanAnswer(candidate.task.id, {
-        questionId: candidate.question.id,
-        author: buildTelegramHumanAnswerAuthor(message, message.userId),
-        body,
-        command,
-      });
+      if (!alreadyRecorded) {
+        await this.taskTracker.recordHumanAnswer(candidate.task.id, answer);
+      }
+      if (options.activePrompt) {
+        await this.consumeActiveTaskQuestionPromptForMessage(
+          message,
+          options.activePrompt,
+        );
+      }
       await this.sendPlainMessage(message, ANSWER_RECORDED_MESSAGE);
       return;
     }
 
     const actionId = buildPendingActionId(message.updateId, message.messageId);
-    const externalKey = buildTelegramAnswerExternalKey(
-      message.chatId,
-      message.messageId,
-      candidate.question.id,
-    );
     const now = new Date().toISOString();
     const pendingAction: TelegramPendingAction = {
       id: actionId,
@@ -1511,16 +1532,7 @@ export class TelegramAssistantService {
       chatId: message.chatId,
       userId: message.userId,
       intent,
-      payload: {
-        taskId: candidate.task.id,
-        questionId: candidate.question.id,
-        body,
-        command,
-        chatId: message.chatId,
-        messageId: message.messageId,
-        userId: message.userId,
-        externalKey,
-      },
+      payload: { ...payload },
       status: "pending",
       createdAt: now,
       updatedAt: now,
@@ -1528,6 +1540,12 @@ export class TelegramAssistantService {
     };
 
     await this.store.upsertPendingAction(pendingAction);
+    if (options.activePrompt) {
+      await this.consumeActiveTaskQuestionPromptForMessage(
+        message,
+        options.activePrompt,
+      );
+    }
     await this.updatePendingActionGauges();
     await this.sendTelegramResponse(
       message,
@@ -1537,6 +1555,22 @@ export class TelegramAssistantService {
         pendingAction.id,
       ),
     );
+  }
+
+  private async consumeActiveTaskQuestionPromptForMessage(
+    message: TelegramInboundMessage,
+    prompt: TelegramActiveTaskQuestionPrompt,
+  ): Promise<void> {
+    const consumed = await this.store.consumeActiveTaskQuestionPrompt({
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      userId: message.userId,
+    });
+    if (!consumed || consumed.id !== prompt.id) {
+      throw new Error(
+        `Telegram active task question prompt was not consumed: ${prompt.id}`,
+      );
+    }
   }
 
   private async prepareProjectQuestionTurn(
@@ -3442,6 +3476,46 @@ const buildAnswerAiQuestionIntent = (rawText: string): TelegramIntent => ({
   requiresConfirmation: true,
   safetyLevel: "confirm_write",
 });
+
+const buildAnswerAiQuestionPayload = (input: {
+  message: TelegramInboundMessage;
+  candidate: AnswerAiQuestionCandidate;
+  body: string;
+  command: TelegramResumeCommand;
+}): AnswerAiQuestionPayload => {
+  if (input.message.messageId === undefined || input.message.userId === undefined) {
+    throw new Error("Telegram answer payload requires message and user ids.");
+  }
+
+  return {
+    taskId: input.candidate.task.id,
+    questionId: input.candidate.question.id,
+    body: input.body,
+    command: input.command,
+    chatId: input.message.chatId,
+    messageId: input.message.messageId,
+    userId: input.message.userId,
+    externalKey: buildTelegramAnswerExternalKey(
+      input.message.chatId,
+      input.message.messageId,
+      input.candidate.question.id,
+    ),
+  };
+};
+
+const isActiveTaskQuestionPromptForMessage = (
+  prompt: TelegramActiveTaskQuestionPrompt,
+  message: TelegramInboundMessage,
+): boolean =>
+  prompt.conversationKey === message.conversationKey &&
+  prompt.chatId === message.chatId &&
+  (
+    prompt.userId === undefined ||
+    (
+      message.userId !== undefined &&
+      prompt.userId === message.userId
+    )
+  );
 
 const formatTaskButtonText = (taskId: string, title: string): string => {
   const text = `${taskId}: ${title}`;

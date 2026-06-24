@@ -439,6 +439,9 @@ interface MessageUpdateOverrides {
   chatId?: number;
   userId?: number;
   date?: number;
+  chatType?: "private" | "group" | "supergroup";
+  messageThreadId?: number;
+  isReplyToBot?: boolean;
 }
 
 const messageUpdate = (
@@ -449,12 +452,30 @@ const messageUpdate = (
   message: {
     message_id: overrides.messageId ?? 99,
     date: overrides.date ?? 1,
-    chat: { id: overrides.chatId ?? 1, type: "private" },
+    chat: { id: overrides.chatId ?? 1, type: overrides.chatType ?? "private" },
+    ...(overrides.messageThreadId !== undefined
+      ? { message_thread_id: overrides.messageThreadId }
+      : {}),
     from: {
       id: overrides.userId ?? 10,
       is_bot: false,
       first_name: "User",
     },
+    ...(overrides.isReplyToBot
+      ? {
+          reply_to_message: {
+            message_id: 1,
+            date: 1,
+            chat: { id: overrides.chatId ?? 1, type: overrides.chatType ?? "private" },
+            from: {
+              id: 99,
+              is_bot: true,
+              first_name: "Assistant",
+              username: "dev_bot",
+            },
+          },
+        }
+      : {}),
     text,
   },
 });
@@ -3871,6 +3892,166 @@ describe("TelegramAssistantService", () => {
       chatId: "1",
       replyToMessageId: 110,
       text: "Не нашел открытый вопрос AI. Уточни задачу или дождись вопроса.",
+    }));
+  });
+
+  it("records a reply to an active task question prompt from a subscribed group conversation", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:group:-100:main:task_awaiting:question_latest",
+      conversationKey: "group:-100:main",
+      chatId: -100,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: {
+        confirmWriteActions: false,
+        allowedChatIds: ["-100"],
+        allowedUserIds: ["10"],
+        developerUserIds: ["10"],
+        botUsername: "dev_bot",
+      },
+    });
+
+    await service.handleUpdate(messageUpdate("можно продолжать из группы", {
+      updateId: 49,
+      messageId: 111,
+      chatId: -100,
+      chatType: "group",
+      isReplyToBot: true,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: "можно продолжать из группы",
+      }),
+    );
+    await expect(
+      store.getActiveTaskQuestionPrompt("group:-100:main"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "-100",
+      replyToMessageId: 111,
+      text: "Ответ записан. Задача продолжит работу.",
+    }));
+  });
+
+  it("keeps an active task question prompt open when pending answer creation fails", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const originalUpsertPendingAction = store.upsertPendingAction.bind(store);
+    vi.spyOn(store, "upsertPendingAction")
+      .mockRejectedValueOnce(new Error("pending action write failed"))
+      .mockImplementation(originalUpsertPendingAction);
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+    const update = messageUpdate("можно продолжать", {
+      updateId: 50,
+      messageId: 112,
+    });
+
+    await expect(service.handleUpdate(update)).rejects.toThrow(
+      "pending action write failed",
+    );
+
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toMatchObject({ status: "open" });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(taskTracker.recordHumanAnswer).not.toHaveBeenCalled();
+
+    await service.handleUpdate(update);
+
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    await expect(store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    })).resolves.toHaveLength(1);
+  });
+
+  it("does not duplicate direct answers when consuming an active prompt fails after recording", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const originalConsumeActivePrompt =
+      store.consumeActiveTaskQuestionPrompt.bind(store);
+    vi.spyOn(store, "consumeActiveTaskQuestionPrompt")
+      .mockRejectedValueOnce(new Error("prompt consume failed"))
+      .mockImplementation(originalConsumeActivePrompt);
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: { confirmWriteActions: false },
+    });
+    const update = messageUpdate("продолжаем без дубля", {
+      updateId: 51,
+      messageId: 113,
+    });
+
+    await expect(service.handleUpdate(update)).rejects.toThrow(
+      "prompt consume failed",
+    );
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toMatchObject({ status: "open" });
+
+    await service.handleUpdate(update);
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      text: "Ответ записан. Задача продолжит работу.",
     }));
   });
 

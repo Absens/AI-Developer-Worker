@@ -1591,6 +1591,8 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
           created_at = EXCLUDED.created_at,
           updated_at = EXCLUDED.updated_at,
           expires_at = EXCLUDED.expires_at
+        WHERE telegram_active_task_question_prompts.status = 'open'
+          OR EXCLUDED.status <> 'open'
         RETURNING *
       `,
       [
@@ -1607,7 +1609,25 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         prompt.expiresAt,
       ],
     );
-    return mapActiveTaskQuestionPromptRow(result.rows[0]!);
+    const row = result.rows[0] ?? await this.getActiveTaskQuestionPromptById(prompt.id);
+    if (!row) {
+      throw new Error(`Telegram active task question prompt not found: ${prompt.id}`);
+    }
+    return mapActiveTaskQuestionPromptRow(row);
+  }
+
+  private async getActiveTaskQuestionPromptById(
+    promptId: string,
+  ): Promise<ActiveTaskQuestionPromptRow | undefined> {
+    const result = await this.db.query<ActiveTaskQuestionPromptRow>(
+      `
+        SELECT *
+        FROM telegram_active_task_question_prompts
+        WHERE id = $1
+      `,
+      [promptId],
+    );
+    return result.rows[0];
   }
 
   public async getActiveTaskQuestionPrompt(

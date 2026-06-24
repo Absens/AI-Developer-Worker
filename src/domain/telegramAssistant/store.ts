@@ -983,6 +983,14 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
   public async upsertActiveTaskQuestionPrompt(
     prompt: TelegramActiveTaskQuestionPrompt,
   ): Promise<TelegramActiveTaskQuestionPrompt> {
+    const existing = this.activeTaskQuestionPrompts.get(prompt.id);
+    if (
+      existing &&
+      prompt.status === "open" &&
+      ACTIVE_TASK_QUESTION_PROMPT_TERMINAL_STATUSES.has(existing.status)
+    ) {
+      return clone(existing);
+    }
     this.activeTaskQuestionPrompts.set(prompt.id, clone(prompt));
     return clone(prompt);
   }

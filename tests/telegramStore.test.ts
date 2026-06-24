@@ -327,6 +327,28 @@ describe("InMemoryTelegramAssistantStore", () => {
     ).resolves.toEqual(expect.objectContaining({ id: "chat-only-prompt" }));
   });
 
+  it("does not reopen an answered active task prompt from a later open upsert", async () => {
+    const store = createStore();
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      status: "answered",
+      updatedAt: laterTime,
+    }));
+
+    await expect(
+      store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+        status: "open",
+        updatedAt: futureTime,
+      })),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "prompt-1",
+      status: "answered",
+      updatedAt: laterTime,
+    }));
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toBeUndefined();
+  });
+
   it("saves polling offsets separately from processed update ids", async () => {
     const store = createStore();
 
