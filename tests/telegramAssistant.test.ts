@@ -3307,6 +3307,127 @@ describe("TelegramAssistantService", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("executes a pending create action approval instead of treating yes as draft clarification", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const taskTracker = new InMemoryTaskTrackerClient({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    const createTaskSpy = vi.spyOn(taskTracker, "createTask");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 148,
+      messageId: 208,
+    }));
+    await store.upsertPendingAction(createTaskDraftPendingAction({
+      id: "tgpa_unrelated_create",
+      payload: {
+        ...createTaskDraftPendingAction().payload,
+        externalKey: "telegram:1:77",
+      },
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 149,
+      messageId: 209,
+      date: 2,
+    }));
+
+    expect(createTaskSpy).toHaveBeenCalledOnce();
+    await expect(store.getPendingAction("tgpa_unrelated_create")).resolves.toMatchObject({
+      status: "completed",
+    });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [],
+    });
+  });
+
+  it("cancels a pending answer action instead of cancelling the collecting draft", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 150,
+      messageId: 210,
+    }));
+    await store.upsertPendingAction({
+      id: "tgpa_unrelated_answer",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      intent: {
+        name: "answer_ai_question",
+        confidence: 1,
+        rawText: "ответь что можно продолжать",
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      payload: {
+        taskId: "task_1",
+        questionId: "question_1",
+        body: "можно продолжать",
+        command: { type: "resume", rawText: "можно продолжать" },
+        chatId: 1,
+        messageId: 77,
+        userId: 10,
+        externalKey: "telegram_answer:1:77:question_1",
+      },
+      status: "pending",
+      createdAt: "2026-05-30T08:00:00.000Z",
+      updatedAt: "2026-05-30T08:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await service.handleUpdate(messageUpdate("нет", {
+      updateId: 151,
+      messageId: 211,
+      date: 2,
+    }));
+
+    await expect(store.getPendingAction("tgpa_unrelated_answer")).resolves.toMatchObject({
+      status: "cancelled",
+    });
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [],
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 211,
+      text: "Действие отменено.",
+    }));
+  });
+
   it("keeps collecting when repository clarification answer is unknown", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore();
@@ -3381,6 +3502,9 @@ describe("TelegramAssistantService", () => {
     await expect(
       store.getExecutableTaskDraftSession("tged_42_5q"),
     ).resolves.toMatchObject({ status: "cancelled" });
+    expect(
+      (await store.getExecutableTaskDraftSession("tged_42_5q"))?.clarificationQuestion,
+    ).toBeUndefined();
     await expect(
       store.getActiveExecutableTaskDraftSession("bot_private:1"),
     ).resolves.toBeUndefined();
@@ -3388,6 +3512,45 @@ describe("TelegramAssistantService", () => {
       chatId: "1",
       replyToMessageId: 207,
       text: "Действие отменено.",
+    }));
+  });
+
+  it("does not record bare yes as a collecting draft clarification without a pending action", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const taskTracker = fakeTaskTracker();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      taskTracker,
+      config: { defaultRepository: undefined },
+      repositories: [
+        repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+        repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+      ],
+    });
+
+    await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+      updateId: 152,
+      messageId: 212,
+    }));
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 153,
+      messageId: 213,
+      date: 2,
+    }));
+
+    await expect(
+      store.getActiveExecutableTaskDraftSession("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "collecting",
+      clarificationQuestion: { field: "repositoryProfile" },
+      clarificationHistory: [],
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 213,
+      text: expect.stringContaining("В каком репозитории"),
     }));
   });
 

@@ -484,12 +484,53 @@ export class TelegramAssistantService {
         activeExecutableDraftSession?.status === "collecting" &&
         activeExecutableDraftSession.clarificationQuestion
       ) {
+        const activeIntent = routeTelegramIntent(message.text, {
+          projectQaEnabled: this.isProjectQaEnabledForMessage(message),
+        });
         if (!actor.allowed) {
           await this.sendMessage({
             chatId: String(message.chatId),
             text: UNAUTHORIZED_MESSAGE,
           });
           return undefined;
+        }
+
+        if (activeIntent.name === "approve_action") {
+          const now = new Date().toISOString();
+          const pendingAction = await this.findLatestConfirmableAction(
+            message,
+            ["pending", "executing"],
+            now,
+          );
+          if (pendingAction) {
+            await this.recordMessageRef(message);
+            await this.handleApproveAction(message);
+            return undefined;
+          }
+
+          await this.recordMessageRef(message);
+          await this.sendPlainMessage(
+            message,
+            activeExecutableDraftSession.clarificationQuestion.text,
+          );
+          return undefined;
+        }
+
+        if (
+          activeIntent.name === "reject_action" ||
+          EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN.test(message.text.trim())
+        ) {
+          const now = new Date().toISOString();
+          const pendingAction = await this.findLatestConfirmableAction(
+            message,
+            ["pending"],
+            now,
+          );
+          if (pendingAction) {
+            await this.recordMessageRef(message);
+            await this.handleRejectAction(message);
+            return undefined;
+          }
         }
 
         await this.recordMessageRef(message);
@@ -1223,9 +1264,13 @@ export class TelegramAssistantService {
   ): Promise<void> {
     const now = new Date().toISOString();
     if (EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN.test(answer.trim())) {
-      await this.store.completeExecutableTaskDraftSession(session.id, {
+      const cancelledSession: TelegramExecutableTaskDraftSession = {
+        ...session,
         status: "cancelled",
-      });
+        updatedAt: now,
+      };
+      delete cancelledSession.clarificationQuestion;
+      await this.store.upsertExecutableTaskDraftSession(cancelledSession);
       await this.sendPlainMessage(message, ACTION_CANCELLED_MESSAGE);
       return;
     }
