@@ -183,7 +183,7 @@ const PROJECT_SOURCE_ROOT_FILES = ["README.md", "AGENTS.md", "product_roadmap.md
 const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
 const MAX_TASK_SOURCE_COUNT = 5;
-const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена)$/iu;
+const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена|cancel|не\s+надо)$/iu;
 
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;

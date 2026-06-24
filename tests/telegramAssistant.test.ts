@@ -3515,6 +3515,55 @@ describe("TelegramAssistantService", () => {
     }));
   });
 
+  it.each(["не надо", "cancel"])(
+    "cancels collecting executable draft sessions from %s without recording clarification",
+    async (cancelText) => {
+      const sendMessage = vi.fn();
+      const store = new InMemoryTelegramAssistantStore();
+      const taskTracker = fakeTaskTracker();
+      const service = buildAssistant({
+        store,
+        sendMessage,
+        taskTracker,
+        config: { defaultRepository: undefined },
+        repositories: [
+          repositoryFixture({ name: "frontend", queues: ["FRONTEND"] }),
+          repositoryFixture({ name: "backend", queues: ["BACKEND"] }),
+        ],
+      });
+
+      await service.handleUpdate(messageUpdate("создай задачу поправить текст", {
+        updateId: 154,
+        messageId: 214,
+      }));
+      const activeSession = await store.getActiveExecutableTaskDraftSession(
+        "bot_private:1",
+      );
+      if (!activeSession) {
+        throw new Error("Expected active executable draft session.");
+      }
+
+      await service.handleUpdate(messageUpdate(cancelText, {
+        updateId: 155,
+        messageId: 215,
+        date: 2,
+      }));
+
+      await expect(store.listPendingActions()).resolves.toEqual([]);
+      const terminalSession = await store.getExecutableTaskDraftSession(
+        activeSession.id,
+      );
+      expect(terminalSession).toMatchObject({
+        status: "cancelled",
+        clarificationHistory: [],
+      });
+      expect(terminalSession?.clarificationQuestion).toBeUndefined();
+      await expect(
+        store.getActiveExecutableTaskDraftSession("bot_private:1"),
+      ).resolves.toBeUndefined();
+    },
+  );
+
   it("does not record bare yes as a collecting draft clarification without a pending action", async () => {
     const sendMessage = vi.fn();
     const store = new InMemoryTelegramAssistantStore();
