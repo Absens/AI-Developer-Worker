@@ -413,12 +413,14 @@ and explicit retention controls. Keep the mode disabled until owner consent,
 allowed chats/users, audit retention and encrypted full-text policy are decided
 for the deployment.
 
-Telegram task creation currently creates confirmed internal tasks, but it does
-not by itself send them into the worker execution queue. Execution requires
-repository execution fields and `ready` status; see
-[docs/TELEGRAM_TASK_INTAKE.md](/C:/Users/gabba/projects/developer/docs/TELEGRAM_TASK_INTAKE.md)
-before treating Telegram or Digital Twin messages as an auto-execution intake
-channel.
+Telegram task creation can now create execution-ready internal tasks for
+trusted private users and owner-approved Business/TWIN proposals. The assistant
+resolves repository execution fields, creates the task through the internal
+`TaskTrackerClient`, and marks approved executable tasks `ready` for the normal
+worker queue. High-risk private tasks and Business/TWIN task requests require
+owner/admin approval; see
+[docs/TELEGRAM_TASK_INTAKE.md](TELEGRAM_TASK_INTAKE.md)
+before enabling this as an auto-execution intake channel.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -427,9 +429,9 @@ channel.
 | `TELEGRAM_ASSISTANT_MODE` | `polling` | Assistant delivery mode: `polling` or `webhook`. |
 | `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Polling interval when mode is `polling`. Positive integer. |
 | `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used only for Telegram project Q&A. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
-| `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before write actions. |
+| `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before task creation, ready transitions and Telegram-recorded AI question answers. |
 | `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands in the base assistant. Counts against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
-| `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables task creation drafts. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. |
+| `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables executable task draft sessions, pending create-task actions and direct task writes. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. Set to `false` to block all Telegram task creation before draft or pending-action state is created. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | Empty list | Comma-separated Telegram chat IDs allowed to use the assistant. |
 | `TELEGRAM_ALLOWED_USER_IDS` | Empty list | Comma-separated Telegram user IDs allowed to use the assistant. |
 | `TELEGRAM_DEVELOPER_USER_IDS` | Empty list | Comma-separated user IDs with developer role. |

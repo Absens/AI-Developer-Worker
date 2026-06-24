@@ -302,6 +302,14 @@ cadence and prunes redacted/full-text Digital Twin audit according to
 `TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` and
 `TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS`.
 
+Telegram task subscriptions receive lifecycle notifications for queued, claimed,
+awaiting human answer, merge-request ready, failed and done/accepted events.
+Notification payloads are redacted and should not contain raw validation logs or
+secrets. When a task waits for a human answer, Telegram Assistant stores an
+active prompt for the exact task question; a reply in that subscribed
+conversation records the answer directly or through the normal confirmation
+flow when `TELEGRAM_CONFIRM_WRITE_ACTIONS=true`.
+
 Bot API references:
 
 - [getUpdates](https://core.telegram.org/bots/api#getupdates) for polling.
