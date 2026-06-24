@@ -52,6 +52,12 @@ export {
   type TelegramTaskDraft,
 } from "./taskDraftBuilder.js";
 export {
+  resolveTelegramExecutionRepositoryProfile,
+  type ResolveTelegramExecutionRepositoryProfileInput,
+  type TelegramExecutionRepositoryProfile,
+  type TelegramRepositoryProfileResolution,
+} from "./repositoryProfileResolver.js";
+export {
   validateTelegramAttachment,
   type TelegramAttachmentCandidate,
 } from "./media.js";
