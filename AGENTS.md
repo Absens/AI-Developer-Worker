@@ -2,15 +2,21 @@
 
 ## Project Structure & Module Organization
 
-This repository contains a Node.js/TypeScript worker that polls Yandex Tracker, runs `codex-cli`, validates a target repository, and opens GitLab merge requests.
+This repository contains a Node.js/TypeScript worker that polls Yandex Tracker or an internal task tracker, runs Codex CLI, validates a target repository, and opens GitLab merge requests. It also includes an observability/human API surface, an Angular internal tracker console, Telegram Assistant support, and Project Manager automation.
 
 - `src/` runtime code
 - `src/domain/` orchestration and prompt building
-- `src/integrations/` Tracker, GitLab, Git, and Codex adapters
+- `src/domain/taskTracker/` internal task tracker domain contracts and policies
+- `src/domain/projectManager/` Project Manager analysis, goals, replanning, and proposal logic
+- `src/domain/telegramAssistant/` Telegram Assistant dialogue and notification workflows
+- `src/integrations/` Tracker, internal tracker, Yandex bridge, GitLab, Git, Telegram, and Codex adapters
+- `src/observability/` health/readiness, metrics, alerts, event storage, and human task API
 - `src/utils/` shared helpers such as shell execution, retry, and logging
 - `tests/` Vitest unit and smoke tests
+- `web/` Angular human console for internal task tracker workflows
 - `scripts/` operational helpers, including Codex auth bootstrap
 - `docs/` runbooks for Docker and Windows/PowerShell usage
+- `docs/ARCHITECTURE.md` architecture map for runtime flows, module boundaries, and common change paths
 
 ## Build, Test, and Development Commands
 
@@ -20,6 +26,10 @@ This repository contains a Node.js/TypeScript worker that polls Yandex Tracker, 
 - `npm run test:smoke` runs the end-to-end smoke test with mock Tracker/GitLab and real git flow
 - `npm run build` builds the production bundle into `dist/`
 - `npm run dev` starts the worker with `tsx`
+- `npm run preflight` checks config, Codex auth, git, Tracker, GitLab, and target commands without processing the queue
+- `npm run tracker:migrate` applies PostgreSQL migrations for the internal task tracker
+- `npm run verify:codex-cli` checks the installed Codex CLI contract expected by the worker
+- `npm run web:typecheck`, `npm run web:test`, `npm run web:build`, and `npm run web:e2e` validate the Angular console
 - `npm run bootstrap:codex-home` copies an existing Codex auth directory into a target path or mounted volume
 
 ## Coding Style & Naming Conventions
@@ -38,4 +48,4 @@ Current history uses short imperative commit messages, for example `Update envir
 
 ## Security & Configuration Tips
 
-Do not commit `.env`, `.codex-home/`, or any Codex auth state. In Docker, prefer a dedicated writable `CODEX_HOME` volume over binding the host `~/.codex` directly. Validate `TRACKER_STATUS_MAP_FILE`, `CODEX_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` against the real target repository before running the worker continuously.
+Do not commit `.env`, `.codex-home/`, or any Codex auth state. In Docker, prefer a dedicated writable `CODEX_HOME` volume over binding the host `~/.codex` directly. Validate `TRACKER_STATUS_MAP_FILE`, `CODEX_CLI_COMMAND`, `TEST_COMMAND`, `LINT_COMMAND`, and any optional quality gate commands against the real target repository before running the worker continuously.

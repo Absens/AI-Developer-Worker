@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 WORKDIR /workspace
 
-ARG CODEX_CLI_VERSION=0.139.0
+ARG CODEX_CLI_VERSION=0.142.0
 ENV CODEX_HOME=/codex-home
 ENV TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser
 

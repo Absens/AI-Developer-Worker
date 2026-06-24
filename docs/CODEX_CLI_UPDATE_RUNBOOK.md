@@ -9,18 +9,22 @@ Use it whenever you:
 - notice that Codex auth, `codex exec`, or `resume` behavior changed,
 - want to validate that a newer Codex release did not silently break the worker.
 
-Current target for this repository, checked on 2026-06-15:
+Current target for this repository, checked on 2026-06-24:
 
-- stable production target: `@openai/codex@0.139.0`
-- alpha line: `0.140.0-alpha.*`; do not select it for production Docker images
+- stable production target: `@openai/codex@0.142.0`
+- production images should keep an explicit semver pin, not `@latest`
 
-Upstream release notes reviewed for `0.130.0` -> `0.139.0`:
+Upstream release notes reviewed for `0.130.0` -> `0.142.0`:
 
 - [0.131.0](https://github.com/openai/codex/releases/tag/rust-v0.131.0) added `codex doctor`, improved auth and sandbox reliability, and introduced profile-v2 work.
 - [0.132.0](https://github.com/openai/codex/releases/tag/rust-v0.132.0) added `--output-schema` support to `codex exec resume`.
 - [0.134.0](https://github.com/openai/codex/releases/tag/rust-v0.134.0) made `--profile` the primary profile selector and rejected legacy profile configs through migration guidance.
 - [0.136.0](https://github.com/openai/codex/releases/tag/rust-v0.136.0) improved `CODEX_API_KEY` remote registration and ChatGPT auth refresh diagnostics.
-- [0.137.0](https://github.com/openai/codex/releases/tag/rust-v0.137.0), [0.138.0](https://github.com/openai/codex/releases/tag/rust-v0.138.0), and [0.139.0](https://github.com/openai/codex/releases/tag/rust-v0.139.0) primarily changed TUI, plugin, MCP, sandbox, image, auth, and Desktop/App Server behavior. The non-interactive `exec --json`, `resume`, `review`, `--output-last-message`, and image-attachment contracts used by this worker remain present in `0.139.0`.
+- [0.137.0](https://github.com/openai/codex/releases/tag/rust-v0.137.0), [0.138.0](https://github.com/openai/codex/releases/tag/rust-v0.138.0), and [0.139.0](https://github.com/openai/codex/releases/tag/rust-v0.139.0) primarily changed TUI, plugin, MCP, sandbox, image, auth, and Desktop/App Server behavior.
+- [0.140.0](https://developers.openai.com/codex/changelog) added `/usage`, `/goal`, permanent session deletion, Claude import, Bedrock auth, SQLite state repair, MCP reliability fixes, and large-repository responsiveness improvements.
+- [0.141.0](https://developers.openai.com/codex/changelog) focused on remote executors, plugin MCP activation, app-server child threads and rate-limit credits, hook-trust behavior in `codex exec`, Windows sandbox fixes, SQLite WAL-reset pinning, and TLS proxy compatibility.
+- [0.142.0](https://developers.openai.com/codex/changelog) added usage-limit reset credits, remote plugin organization and recommendations, rollout token budgets, app-server delegation controls, indexed web-search mode, scheduled reminders/time tools, and fixes for exec-server/MCP disconnects, remote environment paths, plugin loading, subagent errors, and goal-first thread persistence.
+- The non-interactive `exec --json`, `resume`, `review`, `--output-last-message`, and image-attachment contracts used by this worker remain present in `0.142.0`.
 
 ## What this worker depends on
 
@@ -64,11 +68,11 @@ Inside the built image or local environment:
 codex --version
 ```
 
-The Docker image pins `@openai/codex@0.139.0` by default through `CODEX_CLI_VERSION`.
+The Docker image pins `@openai/codex@0.142.0` by default through `CODEX_CLI_VERSION`.
 Build the target image explicitly after this runbook passes:
 
 ```bash
-docker build --build-arg CODEX_CLI_VERSION=0.139.0 -t ai-developer-worker:codex-0.139.0 .
+docker build --build-arg CODEX_CLI_VERSION=0.142.0 -t ai-developer-worker:codex-0.142.0 .
 ```
 
 Do not replace the pin with `@latest`. `codex update` exists for local CLI installations, but pinned Docker runtime images should not self-update during build or startup.
@@ -84,7 +88,7 @@ npm run verify:codex-cli
 To verify a version before installing it globally or rebuilding Docker, run the verifier through a launcher:
 
 ```bash
-CODEX_CLI_COMMAND=npx CODEX_CLI_ARGS_JSON='["-y","@openai/codex@0.139.0"]' npm run verify:codex-cli
+CODEX_CLI_COMMAND=npx CODEX_CLI_ARGS_JSON='["-y","@openai/codex@0.142.0"]' npm run verify:codex-cli
 ```
 
 For manual inspection, also check the current help output:
@@ -193,7 +197,7 @@ These env vars define the integration surface:
 
 `CODEX_CLI_ARGS_JSON` is for launcher/global Codex args that must appear before
 `exec`, for example `["--search","--ask-for-approval","never"]`.
-In Codex CLI `0.139.0`, examples should prefer `never` or `on-request`; avoid
+In Codex CLI `0.142.0`, examples should prefer `never` or `on-request`; avoid
 `--ask-for-approval on-failure`, which is deprecated in the help output.
 `CODEX_EXEC_ARGS_JSON` is for flags accepted by `codex exec --help`, for example
 `["--add-dir","/workspace/shared"]`.
@@ -224,10 +228,10 @@ npx vitest run tests/codexAuth.test.ts tests/codexRunner.test.ts tests/orchestra
 Container verification for the pinned image:
 
 ```bash
-docker build --build-arg CODEX_CLI_VERSION=0.139.0 -t ai-developer-worker:codex-0.139.0 .
-docker run --rm --entrypoint codex ai-developer-worker:codex-0.139.0 --version
-docker run --rm --entrypoint codex ai-developer-worker:codex-0.139.0 exec --help
-docker run --rm --entrypoint npm ai-developer-worker:codex-0.139.0 run verify:codex-cli
+docker build --build-arg CODEX_CLI_VERSION=0.142.0 -t ai-developer-worker:codex-0.142.0 .
+docker run --rm --entrypoint codex ai-developer-worker:codex-0.142.0 --version
+docker run --rm --entrypoint codex ai-developer-worker:codex-0.142.0 exec --help
+docker run --rm --entrypoint npm ai-developer-worker:codex-0.142.0 run verify:codex-cli
 ```
 
 Run the live/auth probe only in a disposable environment with valid network and Codex auth:
@@ -238,14 +242,14 @@ docker run --rm \
   -e CODEX_HOME=/tmp/codex-home \
   -v codex-home:/tmp/codex-home \
   --entrypoint npm \
-  ai-developer-worker:codex-0.139.0 \
+  ai-developer-worker:codex-0.142.0 \
   run verify:codex-cli
 ```
 
 Rollback build command for the previous known-good line:
 
 ```bash
-docker build --build-arg CODEX_CLI_VERSION=0.130.0 -t ai-developer-worker:codex-0.130.0 .
+docker build --build-arg CODEX_CLI_VERSION=0.139.0 -t ai-developer-worker:codex-0.139.0 .
 ```
 
 ## Common breakpoints to look for

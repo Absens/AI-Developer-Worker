@@ -1,0 +1,237 @@
+# Architecture Overview
+
+Этот документ нужен как карта сопровождения проекта. Runbook-и в `docs/`
+описывают отдельные операционные сценарии, а здесь собраны границы модулей,
+runtime-потоки и места, которые обычно нужно менять вместе.
+
+## Назначение
+
+`ai-developer-worker` - Node.js/TypeScript процесс, который берет задачу из
+Yandex Tracker или внутреннего task tracker, запускает Codex CLI в целевом
+репозитории, проверяет результат, публикует ветку и merge request в GitLab и
+записывает ход работы обратно в task system.
+
+Проект также содержит:
+
+- внутреннюю task-модель с PostgreSQL-хранилищем;
+- Yandex bridge для импорта и зеркалирования задач;
+- observability HTTP server с health/readiness/metrics, event timeline и human API;
+- Angular human console в `web/`;
+- Telegram Assistant как дополнительный Bot API-интерфейс к internal tracker;
+- Project Manager Agent для анализа проекта, целей, предложений задач и replanning.
+
+## Runtime Entry Points
+
+| Файл | Ответственность |
+| --- | --- |
+| `src/index.ts` | Минимальная точка входа: строит application, запускает preflight-only mode или runtime. |
+| `src/app.ts` | Главный composition root: загружает config, создает tracker/git/gitlab/codex adapters, observability, cleanup, Telegram Assistant, Project Manager store и выбирает orchestrator. |
+| `src/config.ts` | Единый parser `.env` и fleet YAML. Здесь задаются defaults, validation и compatibility checks. |
+| `src/preflight.ts` | CLI wrapper для preflight без обработки очереди. |
+| `scripts/internal-tracker-migrate.ts` | Применяет migrations для PostgreSQL internal tracker. |
+
+Запуск `npm run dev` загружает `.env` и стартует `src/index.ts` через `tsx`.
+Production bundle собирается в `dist/` командой `npm run build`, а
+`npm run start` запускает `dist/index.js`.
+
+## Runtime Modes
+
+| Условие | Orchestrator | Source of truth |
+| --- | --- | --- |
+| `TASK_TRACKER_PROVIDER=yandex`, без `WORKER_CONFIG_FILE` | `WorkerOrchestrator` | Yandex issue statuses + structured comments. |
+| `TASK_TRACKER_PROVIDER=internal`, без `WORKER_CONFIG_FILE` | `InternalWorkerOrchestrator` | Internal task tracker, обычно PostgreSQL. |
+| `TASK_TRACKER_PROVIDER=yandex`, с `WORKER_CONFIG_FILE` | `FleetOrchestrator` | Yandex issues/comments, несколько repository profiles. |
+| `TASK_TRACKER_PROVIDER=internal`, с `WORKER_CONFIG_FILE` | `InternalWorkerOrchestrator` с несколькими contexts | Internal tracker + repository profiles from fleet YAML. |
+| `WORKER_PREFLIGHT_ONLY=true` или `npm run preflight` | `PreflightService` | Проверки окружения без обработки задач. |
+
+`WORKER_RUN_ONCE=true` выполняет один цикл и завершает процесс. В continuous
+режиме orchestrator повторяет циклы с `POLL_INTERVAL_MINUTES` и завершает
+текущую задачу перед shutdown.
+
+## Task Execution Flow
+
+Упрощенный flow для обычной реализации:
+
+1. Загрузить config и поднять HTTP/observability surface, если он включен.
+2. Проверить target repository и Codex auth до изменения задач.
+3. Найти или восстановить задачу: Yandex queue/tag, explicit `TARGET_ISSUE_KEY`
+   или internal atomic claim queue.
+4. Проверить task/repository lease и `blocked_by` зависимости.
+5. Подготовить ветку `feature/ai-task-{id}` в target repository.
+6. Собрать context: task description, comments, prompt profile, optional
+   repository memory и image attachments.
+7. Запустить Codex analysis и выбрать режим: implement, decompose, analyze-only
+   или human/manual hold.
+8. Для implementation: запустить Codex, затем quality gates в порядке
+   `typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visual_regression`.
+9. Если включен `CODEX_SELF_REVIEW_ENABLED`, выполнить `codex exec review`
+   после quality gates и до публикации MR.
+10. Создать commit, push, переиспользовать или создать GitLab merge request.
+11. Записать результат обратно в Tracker/internal tracker и observability.
+12. После merge MR задача не считается принятой автоматически: она переходит в
+   review/human testing и ждет человеческого acceptance.
+
+Если Codex возвращает `AI_QUESTION:`, worker сохраняет `threadId`, переводит
+задачу в ожидание и возобновляет тот же Codex-сеанс только после явной команды
+человека `/resume`, `/skip` или `/cancel`.
+
+## Main Module Boundaries
+
+| Path | Что здесь живет |
+| --- | --- |
+| `src/domain/orchestrator.ts` | Direct Yandex flow, structured comments protocol, branch/MR lifecycle, review feedback, self-review gate. |
+| `src/domain/internalWorkerOrchestrator.ts` | Internal tracker flow: atomic claim, leases, lifecycle events, task records, Yandex bridge sync. |
+| `src/domain/fleetOrchestrator.ts` | Multi-repository Yandex routing, repository-level leases and queue/tag matching. |
+| `src/domain/taskTracker/` | Provider-neutral internal task domain: statuses, queue eligibility, field ownership, proposals, leases. |
+| `src/domain/projectManager/` | Project Manager analysis/replan/strategy prompts, stores and policies. |
+| `src/domain/telegramAssistant/` | Telegram intents, write confirmations, notifications, project Q&A, digital twin/profile automation state. |
+| `src/domain/promptBuilder.ts` | Prompt contracts for analysis, implementation, resume, fix, decomposition and intake review. |
+| `src/domain/qualityGates.ts` | Ordered target-repository validation commands and diagnostics formatting. |
+| `src/domain/memoryStore.ts` | File-based repository memory used to enrich prompts. |
+| `src/integrations/tracker/` | Yandex Tracker API adapter and structured comment protocol. |
+| `src/integrations/internalTracker/` | PostgreSQL implementation, migrations, cleanup and factory for internal tracker. |
+| `src/integrations/yandexBridge/` | Import/export bridge between Yandex issues and internal task records. |
+| `src/integrations/codex/` | Codex CLI process runner, JSONL parsing, auth checks and resume/review support. |
+| `src/integrations/git/` | Target repository branch, diff, commit and push operations. |
+| `src/integrations/gitlab/` | GitLab REST API adapter for merge requests and review discussions. |
+| `src/integrations/telegram/` | Low-level Telegram Bot API client, polling and webhook transport. |
+| `src/observability/` | HTTP server, metrics, events, alerts, redaction and human task API. |
+| `web/` | Angular human console for internal tracker workflows. |
+
+Keep business decisions in `src/domain/`. Adapters in `src/integrations/`
+should translate external APIs into local contracts and avoid owning workflow
+policy.
+
+## Internal Tracker
+
+Internal tracker mode is the production path for structured task state. The
+canonical entities live in `src/domain/taskTracker/types.ts`; PostgreSQL storage
+lives in `src/integrations/internalTracker/postgresTaskTracker.ts`, with schema
+migrations in `src/integrations/internalTracker/migrations/`.
+
+Important invariants:
+
+- PostgreSQL is the production storage adapter; in-memory storage is for tests
+  and local smoke scenarios.
+- Claiming uses task and repository leases so workers do not mutate the same
+  target repository concurrently.
+- `TaskRecord` owns lifecycle, decisions, plans, agent runs, validations, merge
+  requests, dependencies, comments, artifacts and proposal metadata.
+- Field ownership rules protect human/system/agent-owned task fields.
+- Yandex sync is optional and only valid for `TASK_INTAKE_MODE=yandex_integration`
+  or `hybrid`.
+
+Run migrations with `npm run tracker:migrate` before starting internal provider
+against PostgreSQL.
+
+## Human Surfaces
+
+### Observability HTTP Server
+
+`src/observability/server.ts` exposes `/healthz`, `/readyz`, `/metrics`,
+event state and optional human task API. The server starts when observability is
+enabled, or when the task tracker UI/API is enabled.
+
+The human API implementation is in `src/observability/taskTrackerHumanApi.ts`.
+It is workflow-oriented rather than generic CRUD: queue views, task detail,
+commands, proposals, goals and Project Manager runs are exposed as explicit
+operations.
+
+### Angular Console
+
+`web/` contains the Angular console served under `/tasks` in production when
+`TASK_TRACKER_UI_STATIC_DIR` points to the built bundle. JSON requests go to the
+Node server under `TASK_TRACKER_UI_API_PATH`, default `/api`.
+
+The browser app does not store bearer tokens. Deployments should use localhost
+mode for local development, trusted proxy role headers, or a reverse proxy that
+injects `Authorization`.
+
+### Telegram Assistant
+
+Telegram Assistant is optional and disabled by default. It uses the internal
+`TaskTrackerClient` directly instead of calling the human HTTP API. It can read
+task status, create task drafts with confirmation, answer AI questions,
+subscribe users to notifications and run project Q&A through Codex.
+
+Telegram state is separate from task state. The store keeps offsets, processed
+updates, locks, pending actions, subscriptions and retention-limited audit data;
+the task source of truth remains internal tracker.
+
+## Project Manager Agent
+
+Project Manager is disabled by default and requires internal tracker mode. It
+uses repository/task signals to produce strategy analysis, goals, task proposals
+and replanning decisions. It should not bypass task/proposal policy:
+
+- proposal generation is controlled by autonomy policy;
+- low-risk auto execution is opt-in and limited by task type and repository
+  policy;
+- human approval remains required for goals when
+  `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL=true`.
+
+Core files are under `src/domain/projectManager/`, with PostgreSQL persistence
+in `src/integrations/internalTracker/postgresProjectManagerStore.ts`.
+
+## Configuration Rules
+
+When adding or changing configuration, update these together:
+
+- `src/config.ts` parser/default/validation;
+- `src/models/types.ts` config types;
+- `.env.example` operator-facing defaults;
+- `docs/ENV_CONFIGURATION.md` full variable table;
+- `tests/config.test.ts` focused parser coverage;
+- fleet YAML docs/runbooks if the option is also supported in `WORKER_CONFIG_FILE`.
+
+For operational behavior changes, also check:
+
+- `README.md` for the quick overview;
+- `docs/LOCAL_DOCKER_RUN.md` and `docs/WINDOWS_POWERSHELL_QUICKSTART.md` for local run impact;
+- `docs/OBSERVABILITY_RUNBOOK.md` for metrics, alerts, UI/API and Telegram surfaces;
+- `docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md` for schema, cleanup or backup implications.
+
+## Test Map
+
+| Change area | Typical verification |
+| --- | --- |
+| TypeScript/domain/config | `npm run typecheck`, `npm test` or focused `vitest run tests/<name>.test.ts`. |
+| Direct worker flow | `npm run test:smoke`, targeted orchestrator tests. |
+| Internal tracker/PostgreSQL | `npm run tracker:migrate`, internal tracker tests, `npm run preflight` in real env. |
+| Codex CLI contract | `npm run verify:codex-cli`; use `CODEX_CONTRACT_LIVE=1` only in an environment with safe live auth. |
+| Angular console | `npm run web:typecheck`, `npm run web:test`, `npm run web:build`, `npm run web:e2e`. |
+| Docker/local ops docs | `docker compose up --build` in one-shot mode where credentials are available. |
+
+Documentation-only changes normally do not require the full test suite, but
+links, script names and env var names should still be checked against
+`package.json`, `.env.example` and `src/config.ts`.
+
+## Common Change Recipes
+
+- New worker behavior: start in `src/domain/orchestrator.ts` and
+  `src/domain/internalWorkerOrchestrator.ts`; keep direct Yandex and internal
+  tracker semantics aligned unless the difference is intentional.
+- New task field or status: update `src/domain/taskTracker/types.ts`,
+  `status.ts`, field ownership rules, storage adapters, human API DTOs and web
+  mappers.
+- New external API behavior: keep retry/redaction/normalization in the relevant
+  `src/integrations/*` adapter and expose a small domain-facing method.
+- New prompt contract: update `src/domain/promptBuilder.ts`, parser/validator
+  tests and any docs that describe the AI marker.
+- New human UI workflow: update `src/observability/taskTrackerHumanApi.ts`,
+  `web/src/app/models/`, `web/src/app/services/`, page/component tests and
+  `web/e2e` when it affects critical flows.
+- New environment variable: follow the configuration rules above and include a
+  preflight or parser test when the variable affects startup safety.
+
+## Operational Guardrails
+
+- Run `npm run preflight` before a continuous worker run in a new environment.
+- Use `WORKER_RUN_ONCE=true` for the first real task in any new setup.
+- Do not share a writable OAuth `CODEX_HOME` across active workers; use API key
+  auth or one auth volume per worker.
+- Keep `.env`, `.codex-home/` and Codex auth state out of git.
+- Treat merged GitLab MRs as code-delivery evidence, not human acceptance.
+- Keep target repository credentials and validation commands aligned with the
+  actual repository mounted at `REPO_PATH`.
+
