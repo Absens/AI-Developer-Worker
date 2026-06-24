@@ -3692,6 +3692,188 @@ describe("TelegramAssistantService", () => {
     expect(await store.getOffset("default")).toBe(45);
   });
 
+  it("records a reply to an active task question prompt directly when confirmations are disabled", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      promptMessageId: 500,
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: { confirmWriteActions: false },
+    });
+
+    await service.handleUpdate(messageUpdate("  продолжаем с вариантом A  ", {
+      updateId: 45,
+      messageId: 107,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: "продолжаем с вариантом A",
+        command: {
+          type: "resume",
+          rawText: "продолжаем с вариантом A",
+        },
+        author: expect.objectContaining({
+          owner: "human",
+          id: "telegram:10",
+        }),
+      }),
+    );
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 107,
+      text: "Ответ записан. Задача продолжит работу.",
+    }));
+    await expect(store.listPendingActions()).resolves.toEqual([]);
+  });
+
+  it("creates a pending confirmation for a reply to an active task question prompt by default", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 10,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({ store, taskTracker, sendMessage });
+
+    await service.handleUpdate(messageUpdate("можно продолжать", {
+      updateId: 46,
+      messageId: 108,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).not.toHaveBeenCalled();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toBeUndefined();
+    const [pending] = await store.listPendingActions({
+      conversationKey: "bot_private:1",
+      status: "pending",
+    });
+    expect(pending).toMatchObject({
+      id: "tgpa_1a_30",
+      intent: {
+        name: "answer_ai_question",
+        rawText: "можно продолжать",
+        requiresConfirmation: true,
+        safetyLevel: "confirm_write",
+      },
+      payload: {
+        taskId: "task_awaiting",
+        questionId: "question_latest",
+        body: "можно продолжать",
+        command: { type: "resume", rawText: "можно продолжать" },
+        chatId: 1,
+        messageId: 108,
+        userId: 10,
+        externalKey: "telegram_answer:1:108:question_latest",
+      },
+    });
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      text: expect.stringContaining("можно продолжать"),
+    }));
+
+    await service.handleUpdate(messageUpdate("да", {
+      updateId: 47,
+      messageId: 109,
+      date: 2,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledOnce();
+    expect(taskTracker.recordHumanAnswer).toHaveBeenCalledWith(
+      "task_awaiting",
+      expect.objectContaining({
+        questionId: "question_latest",
+        body: "можно продолжать",
+      }),
+    );
+    await expect(store.getPendingAction(pending?.id ?? "")).resolves.toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("does not consume an active task question prompt for another user", async () => {
+    const sendMessage = vi.fn();
+    const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-05-30T08:00:00.000Z"),
+    });
+    await store.upsertActiveTaskQuestionPrompt({
+      id: "telegram-question:bot_private:1:task_awaiting:question_latest",
+      conversationKey: "bot_private:1",
+      chatId: 1,
+      userId: 11,
+      taskId: "task_awaiting",
+      questionId: "question_latest",
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const service = buildAssistant({
+      store,
+      taskTracker,
+      sendMessage,
+      config: {
+        allowedUserIds: ["10", "11"],
+        developerUserIds: ["10", "11"],
+      },
+    });
+
+    await service.handleUpdate(messageUpdate("ответ не того пользователя", {
+      updateId: 48,
+      messageId: 110,
+      userId: 10,
+    }));
+
+    expect(taskTracker.recordHumanAnswer).not.toHaveBeenCalled();
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:1"),
+    ).resolves.toMatchObject({
+      status: "open",
+      userId: 11,
+    });
+    expect(sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 110,
+      text: "Не нашел открытый вопрос AI. Уточни задачу или дождись вопроса.",
+    }));
+  });
+
   it("retries an answer callback from an executing action after answer write failure", async () => {
     const answerCallbackQuery = vi.fn();
     const taskTracker = fakeMutableTaskTrackerWithAwaitingHumanTask({

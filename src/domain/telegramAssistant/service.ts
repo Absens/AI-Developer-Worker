@@ -81,6 +81,7 @@ import type {
   TelegramExecutableTaskDraftExecutionMode,
   TelegramExecutableTaskDraftQuestion,
   TelegramExecutableTaskDraftSession,
+  TelegramActiveTaskQuestionPrompt,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramPendingAction,
@@ -542,6 +543,28 @@ export class TelegramAssistantService {
         await this.handleExecutableDraftClarification(
           message,
           activeExecutableDraftSession,
+          message.text,
+        );
+        return undefined;
+      }
+    }
+
+    if (message.source === "bot_private" && message.text !== undefined) {
+      const activeTaskQuestionPrompt =
+        await this.store.getActiveTaskQuestionPrompt(message.conversationKey);
+      if (activeTaskQuestionPrompt) {
+        if (!actor.allowed) {
+          await this.sendMessage({
+            chatId: String(message.chatId),
+            text: UNAUTHORIZED_MESSAGE,
+          });
+          return undefined;
+        }
+
+        await this.recordMessageRef(message);
+        await this.handleActiveTaskQuestionPromptReply(
+          message,
+          activeTaskQuestionPrompt,
           message.text,
         );
         return undefined;
@@ -1390,13 +1413,96 @@ export class TelegramAssistantService {
       return;
     }
 
+    await this.handleResolvedAnswerAiQuestion(
+      message,
+      intent,
+      text,
+      candidateResolution.candidate,
+    );
+  }
+
+  private async handleActiveTaskQuestionPromptReply(
+    message: TelegramInboundMessage,
+    prompt: TelegramActiveTaskQuestionPrompt,
+    text: string,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_ANSWER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendPlainMessage(
+        message,
+        ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
+
+    const consumed = await this.store.consumeActiveTaskQuestionPrompt({
+      conversationKey: message.conversationKey,
+      chatId: message.chatId,
+      userId: message.userId,
+    });
+    if (!consumed || consumed.id !== prompt.id) {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    const task = await this.taskTracker.getTask(consumed.taskId);
+    const question = task.clarificationQuestions.find(
+      (candidate) =>
+        candidate.id === consumed.questionId &&
+        candidate.status === "open",
+    );
+    if (!question) {
+      await this.sendPlainMessage(message, ANSWER_QUESTION_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    await this.handleResolvedAnswerAiQuestion(
+      message,
+      buildAnswerAiQuestionIntent(text),
+      text,
+      { task, question },
+    );
+  }
+
+  private async handleResolvedAnswerAiQuestion(
+    message: TelegramInboundMessage,
+    intent: TelegramIntent,
+    text: string,
+    candidate: AnswerAiQuestionCandidate,
+  ): Promise<void> {
+    if (!this.taskTracker) {
+      await this.sendPlainMessage(message, TASK_ANSWER_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (message.messageId === undefined || message.userId === undefined) {
+      await this.sendPlainMessage(
+        message,
+        ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
+
     const body = text.trim() || message.text?.trim() || "";
     const command = { type: "resume" as const, rawText: body };
+    if (!this.config.confirmWriteActions) {
+      await this.taskTracker.recordHumanAnswer(candidate.task.id, {
+        questionId: candidate.question.id,
+        author: buildTelegramHumanAnswerAuthor(message, message.userId),
+        body,
+        command,
+      });
+      await this.sendPlainMessage(message, ANSWER_RECORDED_MESSAGE);
+      return;
+    }
+
     const actionId = buildPendingActionId(message.updateId, message.messageId);
     const externalKey = buildTelegramAnswerExternalKey(
       message.chatId,
       message.messageId,
-      candidateResolution.candidate.question.id,
+      candidate.question.id,
     );
     const now = new Date().toISOString();
     const pendingAction: TelegramPendingAction = {
@@ -1406,8 +1512,8 @@ export class TelegramAssistantService {
       userId: message.userId,
       intent,
       payload: {
-        taskId: candidateResolution.candidate.task.id,
-        questionId: candidateResolution.candidate.question.id,
+        taskId: candidate.task.id,
+        questionId: candidate.question.id,
         body,
         command,
         chatId: message.chatId,
@@ -1426,7 +1532,7 @@ export class TelegramAssistantService {
     await this.sendTelegramResponse(
       message,
       buildAnswerAiQuestionResponse(
-        candidateResolution.candidate,
+        candidate,
         body,
         pendingAction.id,
       ),
@@ -3327,6 +3433,14 @@ const buildAnswerAiQuestionResponse = (
     ],
   ],
   disableWebPagePreview: true,
+});
+
+const buildAnswerAiQuestionIntent = (rawText: string): TelegramIntent => ({
+  name: "answer_ai_question",
+  confidence: 1,
+  rawText,
+  requiresConfirmation: true,
+  safetyLevel: "confirm_write",
 });
 
 const formatTaskButtonText = (taskId: string, title: string): string => {

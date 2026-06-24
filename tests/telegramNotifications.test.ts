@@ -264,4 +264,157 @@ describe("TelegramNotificationRouter", () => {
       }),
     ]);
   });
+
+  it("renders MR ready and done lifecycle notifications with product titles", async () => {
+    const store = new InMemoryTelegramAssistantStore();
+    await store.upsertTaskSubscription({
+      id: "sub-lifecycle",
+      taskId: "TASK-4",
+      conversationKey: "bot_private:103",
+      chatId: 103,
+      userId: 203,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const task = taskFixture({
+      id: "TASK-4",
+      events: [
+        taskEvent({
+          id: "event-mr",
+          taskId: "TASK-4",
+          kind: "merge_request_recorded",
+          message: "MR is ready.",
+          payload: { mergeRequestUrl: "https://gitlab.example/mr/4" },
+        }),
+        taskEvent({
+          id: "event-done",
+          taskId: "TASK-4",
+          kind: "task_status_changed",
+          message: "All checks passed.",
+          payload: { from: "review", to: "done" },
+          createdAt: laterTime,
+        }),
+      ],
+    });
+    const sendMessage = vi.fn(async () => telegramMessage(9004, 103));
+    const router = new TelegramNotificationRouter({
+      store,
+      taskTracker: { getTask: vi.fn(async (): Promise<TaskRecord> => task) },
+      telegram: { sendMessage },
+      clock: () => new Date(baseTime),
+    });
+
+    await router.scanSubscribedTasks();
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      chatId: "103",
+      disableWebPagePreview: true,
+      text: expect.stringContaining("Реализация готова"),
+    }));
+    expect(sendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      text: expect.stringContaining("https://gitlab.example/mr/4"),
+    }));
+    expect(sendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      text: expect.stringContaining("Задача завершена"),
+    }));
+    expect(sendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      text: expect.stringContaining("All checks passed."),
+    }));
+  });
+
+  it("stores an active task question prompt when awaiting human notification is sent", async () => {
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date(baseTime),
+    });
+    await store.upsertTaskSubscription({
+      id: "sub-awaiting",
+      taskId: "TASK-5",
+      conversationKey: "bot_private:104",
+      chatId: 104,
+      userId: 204,
+      createdAt: baseTime,
+      updatedAt: baseTime,
+    });
+    const task = taskFixture({
+      id: "TASK-5",
+      status: "awaiting_human",
+      events: [
+        taskEvent({
+          id: "event-awaiting",
+          taskId: "TASK-5",
+          kind: "task_status_changed",
+          payload: { from: "claimed", to: "awaiting_human" },
+          message: "Need clarification.",
+        }),
+      ],
+      clarificationQuestions: [
+        {
+          id: "question-old",
+          taskId: "TASK-5",
+          workerId: "worker-1",
+          question: {
+            summary: "Old summary",
+            blockingReason: "Old reason",
+            question: "Old question?",
+            options: [],
+            resumeHint: "Reply to continue.",
+          },
+          status: "open",
+          createdAt: baseTime,
+        },
+        {
+          id: "question-latest",
+          taskId: "TASK-5",
+          workerId: "worker-1",
+          question: {
+            summary: "Choose implementation",
+            blockingReason: "AI needs a product decision.",
+            question: "Use option A?",
+            options: ["Yes", "No"],
+            resumeHint: "Reply to continue.",
+          },
+          status: "open",
+          createdAt: latestTime,
+        },
+      ],
+    });
+    const sendMessage = vi.fn(async () => telegramMessage(9104, 104));
+    const router = new TelegramNotificationRouter({
+      store,
+      taskTracker: { getTask: vi.fn(async (): Promise<TaskRecord> => task) },
+      telegram: { sendMessage },
+      clock: () => new Date(baseTime),
+    });
+
+    await router.scanSubscribedTasks();
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Нужен ответ"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Use option A?"),
+    }));
+    await expect(
+      store.getActiveTaskQuestionPrompt("bot_private:104"),
+    ).resolves.toMatchObject({
+      id: "telegram-question:bot_private:104:TASK-5:question-latest",
+      conversationKey: "bot_private:104",
+      chatId: 104,
+      userId: 204,
+      taskId: "TASK-5",
+      questionId: "question-latest",
+      promptMessageId: 9104,
+      status: "open",
+      createdAt: baseTime,
+      updatedAt: baseTime,
+      expiresAt: "2026-06-06T08:00:00.000Z",
+    });
+    await expect(store.listTaskSubscriptionsForTask("TASK-5")).resolves.toEqual([
+      expect.objectContaining({
+        id: "sub-awaiting",
+        lastNotifiedEventId: "event-awaiting",
+      }),
+    ]);
+  });
 });
