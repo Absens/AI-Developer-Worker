@@ -56,7 +56,9 @@ export const buildTelegramExecutableTaskDraft = (
   const executionMode =
     risk.riskLevel === "high" || input.forceOwnerApproval === true
       ? "owner_approval"
-      : "auto_ready";
+      : taskBody.length < 12 || !input.selectedProfile
+        ? "triage_only"
+        : "auto_ready";
 
   return {
     title: toTitle(taskBody),
@@ -102,7 +104,7 @@ export const nextExecutableDraftQuestion = (
     };
   }
 
-  const taskBody = draft.title === DEFAULT_TITLE ? "" : draft.title.trim();
+  const taskBody = stripTaskCommandPrefix(draft.description);
   if (taskBody.length < 12) {
     return {
       field: "description",

@@ -5,6 +5,7 @@ import {
   classifyTelegramTaskRisk,
   nextExecutableDraftQuestion,
   resolveTelegramExecutionRepositoryProfile,
+  type TelegramExecutableTaskDraft,
   type TelegramExecutableTaskDraftSession,
   type TelegramExecutionRepositoryProfile,
 } from "../src/domain/telegramAssistant/index.js";
@@ -409,6 +410,31 @@ describe("buildTelegramExecutableTaskDraft", () => {
       text: "создай задачу",
       selectedProfile: executionProfile(),
     });
+
+    expect(draft.executionMode).toBe("triage_only");
+    expect(nextExecutableDraftQuestion(draft)).toEqual({
+      field: "description",
+      text: "Опиши задачу чуть подробнее: что нужно изменить и где это проверить?",
+    });
+  });
+
+  it("checks description sufficiency from description even when title is stale", () => {
+    const draft: TelegramExecutableTaskDraft = {
+      title: "добавить фильтр по статусу",
+      description: "создай задачу",
+      acceptanceCriteria: ["Поведение реализовано."],
+      repositoryName: "developer",
+      repoPathKey: "developer",
+      baseBranch: "main",
+      queue: "DEV",
+      tags: ["telegram", "risk_medium"],
+      risk: {
+        riskLevel: "medium",
+        reasons: ["isolated_feature_or_bugfix"],
+        requiresOwnerApproval: false,
+      },
+      executionMode: "auto_ready",
+    };
 
     expect(nextExecutableDraftQuestion(draft)).toEqual({
       field: "description",
