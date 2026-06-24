@@ -8,8 +8,10 @@ import type {
   CancelQueuedMessagesInput,
   CompleteAssistantTurnInput,
   CompleteDigitalTwinTurnInput,
+  CompleteExecutableTaskDraftSessionInput,
   CompleteNotificationDeliveryInput,
   CompletePendingActionInput,
+  ConsumeActiveTaskQuestionPromptInput,
   ConsumePendingActionInput,
   CountTelegramUserActivityInput,
   ListPendingActionsInput,
@@ -26,12 +28,18 @@ import type {
   UpdateDigitalTwinMessageDeliveryInput,
 } from "./store.js";
 import type {
+  TelegramActiveTaskQuestionPrompt,
   TelegramAssistantTurn,
   TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
   TelegramDigitalTwinMessage,
   TelegramDigitalTwinSession,
   TelegramDigitalTwinTurn,
+  TelegramExecutableTaskDraft,
+  TelegramExecutableTaskDraftClarification,
+  TelegramExecutableTaskDraftQuestion,
+  TelegramExecutableTaskDraftSession,
+  TelegramExecutableTaskDraftStatus,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramMessageRef,
@@ -111,6 +119,39 @@ type TaskSubscriptionRow = QueryResultRow & {
   created_at: Date | string;
   updated_at: Date | string;
   last_notified_event_id: string | null;
+};
+
+type ExecutableTaskDraftSessionRow = QueryResultRow & {
+  id: string;
+  conversation_key: string;
+  source: TelegramExecutableTaskDraftSession["source"];
+  initiator_user_id: number | string | null;
+  owner_user_id: number | string | null;
+  owner_chat_id: number | string | null;
+  chat_id: number | string;
+  message_id: number | string | null;
+  original_text: string;
+  draft: unknown;
+  status: TelegramExecutableTaskDraftStatus;
+  clarification_question: unknown | null;
+  clarification_history: unknown;
+  created_at: Date | string;
+  updated_at: Date | string;
+  expires_at: Date | string;
+};
+
+type ActiveTaskQuestionPromptRow = QueryResultRow & {
+  id: string;
+  conversation_key: string;
+  chat_id: number | string;
+  user_id: number | string | null;
+  task_id: string;
+  question_id: string;
+  prompt_message_id: number | string | null;
+  status: TelegramActiveTaskQuestionPrompt["status"];
+  created_at: Date | string;
+  updated_at: Date | string;
+  expires_at: Date | string;
 };
 
 type NotificationDeliveryRow = QueryResultRow & {
@@ -196,6 +237,12 @@ const TERMINAL_PENDING_ACTION_STATUSES = new Set<TelegramPendingActionStatus>([
   "cancelled",
   "expired",
 ]);
+
+const ACTIVE_EXECUTABLE_TASK_DRAFT_STATUSES: TelegramExecutableTaskDraftStatus[] = [
+  "collecting",
+  "awaiting_user_confirmation",
+  "awaiting_owner_approval",
+];
 
 const TERMINAL_NOTIFICATION_DELIVERY_STATUSES =
   new Set<TelegramNotificationDeliveryStatus>(["sent", "failed"]);
@@ -303,6 +350,68 @@ const mapTaskSubscriptionRow = (
   ...(row.last_notified_event_id
     ? { lastNotifiedEventId: row.last_notified_event_id }
     : {}),
+});
+
+const mapExecutableTaskDraftSessionRow = (
+  row: ExecutableTaskDraftSessionRow,
+): TelegramExecutableTaskDraftSession => ({
+  id: row.id,
+  conversationKey: row.conversation_key,
+  source: row.source,
+  ...(row.initiator_user_id !== null
+    ? { initiatorUserId: toNumber(row.initiator_user_id) }
+    : {}),
+  ...(row.owner_user_id !== null ? { ownerUserId: toNumber(row.owner_user_id) } : {}),
+  ...(row.owner_chat_id !== null ? { ownerChatId: toNumber(row.owner_chat_id) } : {}),
+  chatId: toNumber(row.chat_id),
+  ...(row.message_id !== null ? { messageId: toNumber(row.message_id) } : {}),
+  originalText: row.original_text,
+  draft: jsonValue<TelegramExecutableTaskDraft>(row.draft, {
+    title: "",
+    description: "",
+    acceptanceCriteria: [],
+    tags: [],
+    risk: {
+      riskLevel: "low",
+      reasons: [],
+      requiresOwnerApproval: false,
+    },
+    executionMode: "triage_only",
+  }),
+  status: row.status,
+  ...(row.clarification_question !== null
+    ? {
+        clarificationQuestion: jsonValue<TelegramExecutableTaskDraftQuestion>(
+          row.clarification_question,
+          { field: "description", text: "" },
+        ),
+      }
+    : {}),
+  clarificationHistory: jsonValue<TelegramExecutableTaskDraftClarification[]>(
+    row.clarification_history,
+    [],
+  ),
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+  expiresAt: toIso(row.expires_at),
+});
+
+const mapActiveTaskQuestionPromptRow = (
+  row: ActiveTaskQuestionPromptRow,
+): TelegramActiveTaskQuestionPrompt => ({
+  id: row.id,
+  conversationKey: row.conversation_key,
+  chatId: toNumber(row.chat_id),
+  ...(row.user_id !== null ? { userId: toNumber(row.user_id) } : {}),
+  taskId: row.task_id,
+  questionId: row.question_id,
+  ...(row.prompt_message_id !== null
+    ? { promptMessageId: toNumber(row.prompt_message_id) }
+    : {}),
+  status: row.status,
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+  expiresAt: toIso(row.expires_at),
 });
 
 const mapNotificationDeliveryRow = (
@@ -1337,6 +1446,218 @@ export class PostgresTelegramAssistantStore implements TelegramAssistantStore {
         [actionId, input.status, completedAt],
       );
       return mapPendingActionRow(result.rows[0]!);
+    });
+  }
+
+  public async upsertExecutableTaskDraftSession(
+    session: TelegramExecutableTaskDraftSession,
+  ): Promise<TelegramExecutableTaskDraftSession> {
+    const result = await this.db.query<ExecutableTaskDraftSessionRow>(
+      `
+        INSERT INTO telegram_executable_task_draft_sessions (
+          id, conversation_key, source, initiator_user_id, owner_user_id,
+          owner_chat_id, chat_id, message_id, original_text, draft, status,
+          clarification_question, clarification_history, created_at, updated_at,
+          expires_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11,
+          $12::jsonb, $13::jsonb, $14, $15, $16
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+          draft = EXCLUDED.draft,
+          status = EXCLUDED.status,
+          clarification_question = EXCLUDED.clarification_question,
+          clarification_history = EXCLUDED.clarification_history,
+          updated_at = EXCLUDED.updated_at,
+          expires_at = EXCLUDED.expires_at
+        RETURNING *
+      `,
+      [
+        session.id,
+        session.conversationKey,
+        session.source,
+        session.initiatorUserId ?? null,
+        session.ownerUserId ?? null,
+        session.ownerChatId ?? null,
+        session.chatId,
+        session.messageId ?? null,
+        session.originalText,
+        JSON.stringify(session.draft),
+        session.status,
+        session.clarificationQuestion
+          ? JSON.stringify(session.clarificationQuestion)
+          : null,
+        JSON.stringify(session.clarificationHistory),
+        session.createdAt,
+        session.updatedAt,
+        session.expiresAt,
+      ],
+    );
+    return mapExecutableTaskDraftSessionRow(result.rows[0]!);
+  }
+
+  public async getExecutableTaskDraftSession(
+    sessionId: string,
+  ): Promise<TelegramExecutableTaskDraftSession | undefined> {
+    const result = await this.db.query<ExecutableTaskDraftSessionRow>(
+      `
+        SELECT *
+        FROM telegram_executable_task_draft_sessions
+        WHERE id = $1
+      `,
+      [sessionId],
+    );
+    const row = result.rows[0];
+    return row ? mapExecutableTaskDraftSessionRow(row) : undefined;
+  }
+
+  public async getActiveExecutableTaskDraftSession(
+    conversationKey: string,
+  ): Promise<TelegramExecutableTaskDraftSession | undefined> {
+    const result = await this.db.query<ExecutableTaskDraftSessionRow>(
+      `
+        SELECT *
+        FROM telegram_executable_task_draft_sessions
+        WHERE conversation_key = $1
+          AND expires_at > $2
+          AND status = ANY($3::text[])
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `,
+      [conversationKey, this.nowIso(), ACTIVE_EXECUTABLE_TASK_DRAFT_STATUSES],
+    );
+    const row = result.rows[0];
+    return row ? mapExecutableTaskDraftSessionRow(row) : undefined;
+  }
+
+  public async completeExecutableTaskDraftSession(
+    sessionId: string,
+    input: CompleteExecutableTaskDraftSessionInput,
+  ): Promise<TelegramExecutableTaskDraftSession> {
+    const updatedAt = input.updatedAt ?? this.nowIso();
+    const result = await this.db.query<ExecutableTaskDraftSessionRow>(
+      `
+        UPDATE telegram_executable_task_draft_sessions
+        SET status = $2,
+            updated_at = $3
+        WHERE id = $1
+        RETURNING *
+      `,
+      [sessionId, input.status, updatedAt],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(
+        `Telegram executable task draft session not found: ${sessionId}`,
+      );
+    }
+    return mapExecutableTaskDraftSessionRow(row);
+  }
+
+  public async upsertActiveTaskQuestionPrompt(
+    prompt: TelegramActiveTaskQuestionPrompt,
+  ): Promise<TelegramActiveTaskQuestionPrompt> {
+    const result = await this.db.query<ActiveTaskQuestionPromptRow>(
+      `
+        INSERT INTO telegram_active_task_question_prompts (
+          id, conversation_key, chat_id, user_id, task_id, question_id,
+          prompt_message_id, status, created_at, updated_at, expires_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (id)
+        DO UPDATE SET
+          conversation_key = EXCLUDED.conversation_key,
+          chat_id = EXCLUDED.chat_id,
+          user_id = EXCLUDED.user_id,
+          task_id = EXCLUDED.task_id,
+          question_id = EXCLUDED.question_id,
+          prompt_message_id = EXCLUDED.prompt_message_id,
+          status = EXCLUDED.status,
+          created_at = EXCLUDED.created_at,
+          updated_at = EXCLUDED.updated_at,
+          expires_at = EXCLUDED.expires_at
+        RETURNING *
+      `,
+      [
+        prompt.id,
+        prompt.conversationKey,
+        prompt.chatId,
+        prompt.userId ?? null,
+        prompt.taskId,
+        prompt.questionId,
+        prompt.promptMessageId ?? null,
+        prompt.status,
+        prompt.createdAt,
+        prompt.updatedAt,
+        prompt.expiresAt,
+      ],
+    );
+    return mapActiveTaskQuestionPromptRow(result.rows[0]!);
+  }
+
+  public async getActiveTaskQuestionPrompt(
+    conversationKey: string,
+  ): Promise<TelegramActiveTaskQuestionPrompt | undefined> {
+    const result = await this.db.query<ActiveTaskQuestionPromptRow>(
+      `
+        SELECT *
+        FROM telegram_active_task_question_prompts
+        WHERE conversation_key = $1
+          AND status = 'open'
+          AND expires_at > $2
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `,
+      [conversationKey, this.nowIso()],
+    );
+    const row = result.rows[0];
+    return row ? mapActiveTaskQuestionPromptRow(row) : undefined;
+  }
+
+  public async consumeActiveTaskQuestionPrompt(
+    input: ConsumeActiveTaskQuestionPromptInput,
+  ): Promise<TelegramActiveTaskQuestionPrompt | undefined> {
+    const now = input.answeredAt ?? this.nowIso();
+    return this.withTransaction(async (client) => {
+      const result = await client.query<ActiveTaskQuestionPromptRow>(
+        `
+          SELECT *
+          FROM telegram_active_task_question_prompts
+          WHERE conversation_key = $1
+            AND status = 'open'
+            AND expires_at > $2
+          ORDER BY updated_at DESC, id DESC
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [input.conversationKey, now],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        return undefined;
+      }
+
+      const prompt = mapActiveTaskQuestionPromptRow(row);
+      if (
+        prompt.chatId !== input.chatId ||
+        (prompt.userId !== undefined && prompt.userId !== input.userId)
+      ) {
+        return undefined;
+      }
+
+      await client.query<ActiveTaskQuestionPromptRow>(
+        `
+          UPDATE telegram_active_task_question_prompts
+          SET status = 'answered',
+              updated_at = $2
+          WHERE id = $1
+          RETURNING *
+        `,
+        [prompt.id, now],
+      );
+      return prompt;
     });
   }
 

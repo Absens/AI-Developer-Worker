@@ -1,6 +1,7 @@
 import type {
   TelegramAssistantTurn,
   TelegramAssistantTurnStatus,
+  TelegramActiveTaskQuestionPrompt,
   TelegramBusinessConnectionInput,
   TelegramBusinessConnectionRecord,
   TelegramDigitalTwinDeliveryStatus,
@@ -8,6 +9,8 @@ import type {
   TelegramDigitalTwinSession,
   TelegramDigitalTwinTurn,
   TelegramDigitalTwinTurnStatus,
+  TelegramExecutableTaskDraftSession,
+  TelegramExecutableTaskDraftStatus,
   TelegramMessageRef,
   TelegramNotificationDelivery,
   TelegramNotificationDeliveryStatus,
@@ -31,6 +34,21 @@ export interface CompletePendingActionInput {
     "completed" | "cancelled" | "expired"
   >;
   completedAt?: string;
+}
+
+export interface CompleteExecutableTaskDraftSessionInput {
+  status: Extract<
+    TelegramExecutableTaskDraftStatus,
+    "completed" | "cancelled" | "expired"
+  >;
+  updatedAt?: string;
+}
+
+export interface ConsumeActiveTaskQuestionPromptInput {
+  conversationKey: string;
+  chatId: number;
+  userId?: number;
+  answeredAt?: string;
 }
 
 export interface ListPendingActionsInput {
@@ -219,6 +237,28 @@ export interface TelegramAssistantStore {
     actionId: string,
     input: CompletePendingActionInput,
   ): Promise<TelegramPendingAction>;
+  upsertExecutableTaskDraftSession(
+    session: TelegramExecutableTaskDraftSession,
+  ): Promise<TelegramExecutableTaskDraftSession>;
+  getExecutableTaskDraftSession(
+    sessionId: string,
+  ): Promise<TelegramExecutableTaskDraftSession | undefined>;
+  getActiveExecutableTaskDraftSession(
+    conversationKey: string,
+  ): Promise<TelegramExecutableTaskDraftSession | undefined>;
+  completeExecutableTaskDraftSession(
+    sessionId: string,
+    input: CompleteExecutableTaskDraftSessionInput,
+  ): Promise<TelegramExecutableTaskDraftSession>;
+  upsertActiveTaskQuestionPrompt(
+    prompt: TelegramActiveTaskQuestionPrompt,
+  ): Promise<TelegramActiveTaskQuestionPrompt>;
+  getActiveTaskQuestionPrompt(
+    conversationKey: string,
+  ): Promise<TelegramActiveTaskQuestionPrompt | undefined>;
+  consumeActiveTaskQuestionPrompt(
+    input: ConsumeActiveTaskQuestionPromptInput,
+  ): Promise<TelegramActiveTaskQuestionPrompt | undefined>;
   upsertTaskSubscription(
     subscription: TelegramTaskSubscription,
   ): Promise<TelegramTaskSubscription>;
@@ -338,6 +378,13 @@ const PENDING_ACTION_TERMINAL_STATUSES = new Set<TelegramPendingActionStatus>([
   "expired",
 ]);
 
+const EXECUTABLE_TASK_DRAFT_ACTIVE_STATUSES =
+  new Set<TelegramExecutableTaskDraftStatus>([
+    "collecting",
+    "awaiting_user_confirmation",
+    "awaiting_owner_approval",
+  ]);
+
 const NOTIFICATION_DELIVERY_TERMINAL_STATUSES =
   new Set<TelegramNotificationDeliveryStatus>(["sent", "failed"]);
 
@@ -354,6 +401,10 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
   private readonly taskSubscriptions = new Map<string, TelegramTaskSubscription>();
   private readonly notificationDeliveries =
     new Map<string, TelegramNotificationDelivery>();
+  private readonly executableTaskDraftSessions =
+    new Map<string, TelegramExecutableTaskDraftSession>();
+  private readonly activeTaskQuestionPrompts =
+    new Map<string, TelegramActiveTaskQuestionPrompt>();
   private readonly businessConnections =
     new Map<string, TelegramBusinessConnectionRecord>();
   private readonly digitalTwinSessions =
@@ -862,6 +913,91 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
     return clone(completed);
   }
 
+  public async upsertExecutableTaskDraftSession(
+    session: TelegramExecutableTaskDraftSession,
+  ): Promise<TelegramExecutableTaskDraftSession> {
+    this.executableTaskDraftSessions.set(session.id, clone(session));
+    return clone(session);
+  }
+
+  public async getExecutableTaskDraftSession(
+    sessionId: string,
+  ): Promise<TelegramExecutableTaskDraftSession | undefined> {
+    const session = this.executableTaskDraftSessions.get(sessionId);
+    return session ? clone(session) : undefined;
+  }
+
+  public async getActiveExecutableTaskDraftSession(
+    conversationKey: string,
+  ): Promise<TelegramExecutableTaskDraftSession | undefined> {
+    const now = this.nowIso();
+    const session = [...this.executableTaskDraftSessions.values()]
+      .filter((candidate) =>
+        candidate.conversationKey === conversationKey &&
+        EXECUTABLE_TASK_DRAFT_ACTIVE_STATUSES.has(candidate.status) &&
+        !isExpired(candidate.expiresAt, now)
+      )
+      .sort(compareNewestByUpdatedAtThenId)[0];
+    return session ? clone(session) : undefined;
+  }
+
+  public async completeExecutableTaskDraftSession(
+    sessionId: string,
+    input: CompleteExecutableTaskDraftSessionInput,
+  ): Promise<TelegramExecutableTaskDraftSession> {
+    const existing = this.executableTaskDraftSessions.get(sessionId);
+    if (!existing) {
+      throw new Error(
+        `Telegram executable task draft session not found: ${sessionId}`,
+      );
+    }
+
+    const updatedAt = input.updatedAt ?? this.nowIso();
+    const completed: TelegramExecutableTaskDraftSession = {
+      ...existing,
+      status: input.status,
+      updatedAt,
+    };
+    this.executableTaskDraftSessions.set(sessionId, clone(completed));
+    return clone(completed);
+  }
+
+  public async upsertActiveTaskQuestionPrompt(
+    prompt: TelegramActiveTaskQuestionPrompt,
+  ): Promise<TelegramActiveTaskQuestionPrompt> {
+    this.activeTaskQuestionPrompts.set(prompt.id, clone(prompt));
+    return clone(prompt);
+  }
+
+  public async getActiveTaskQuestionPrompt(
+    conversationKey: string,
+  ): Promise<TelegramActiveTaskQuestionPrompt | undefined> {
+    const prompt = this.findActiveTaskQuestionPrompt(conversationKey, this.nowIso());
+    return prompt ? clone(prompt) : undefined;
+  }
+
+  public async consumeActiveTaskQuestionPrompt(
+    input: ConsumeActiveTaskQuestionPromptInput,
+  ): Promise<TelegramActiveTaskQuestionPrompt | undefined> {
+    const now = input.answeredAt ?? this.nowIso();
+    const existing = this.findActiveTaskQuestionPrompt(input.conversationKey, now);
+    if (
+      !existing ||
+      existing.chatId !== input.chatId ||
+      (existing.userId !== undefined && existing.userId !== input.userId)
+    ) {
+      return undefined;
+    }
+
+    const answered: TelegramActiveTaskQuestionPrompt = {
+      ...existing,
+      status: "answered",
+      updatedAt: now,
+    };
+    this.activeTaskQuestionPrompts.set(existing.id, clone(answered));
+    return clone(existing);
+  }
+
   public async upsertTaskSubscription(
     subscription: TelegramTaskSubscription,
   ): Promise<TelegramTaskSubscription> {
@@ -1117,7 +1253,30 @@ export class InMemoryTelegramAssistantStore implements TelegramAssistantStore {
     return clone(action);
   }
 
+  private findActiveTaskQuestionPrompt(
+    conversationKey: string,
+    now: string,
+  ): TelegramActiveTaskQuestionPrompt | undefined {
+    return [...this.activeTaskQuestionPrompts.values()]
+      .filter((candidate) =>
+        candidate.conversationKey === conversationKey &&
+        candidate.status === "open" &&
+        !isExpired(candidate.expiresAt, now)
+      )
+      .sort(compareNewestByUpdatedAtThenId)[0];
+  }
+
   private nowIso(): string {
     return this.now().toISOString();
   }
 }
+
+const compareNewestByUpdatedAtThenId = <
+  T extends { id: string; updatedAt: string },
+>(
+  left: T,
+  right: T,
+): number => {
+  const byUpdatedAt = right.updatedAt.localeCompare(left.updatedAt);
+  return byUpdatedAt !== 0 ? byUpdatedAt : right.id.localeCompare(left.id);
+};

@@ -10,6 +10,8 @@ import {
   runInternalTrackerMigrations,
 } from "../src/integrations/internalTracker/index.js";
 import type {
+  TelegramActiveTaskQuestionPrompt,
+  TelegramExecutableTaskDraftSession,
   TelegramInboundMessage,
   TelegramIntent,
   TelegramPendingAction,
@@ -56,6 +58,94 @@ const pendingAction = (
   createdAt: baseTime,
   updatedAt: baseTime,
   expiresAt: futureTime,
+  ...overrides,
+});
+
+const executableDraftSession = (
+  overrides: Partial<TelegramExecutableTaskDraftSession> = {},
+): TelegramExecutableTaskDraftSession => ({
+  id: "draft-session-1",
+  conversationKey,
+  source: "private",
+  initiatorUserId: 200,
+  chatId: 100,
+  messageId: 300,
+  originalText: "Create a task for repository setup",
+  draft: {
+    title: "Repository setup",
+    description: "Configure the repository for automated task execution.",
+    acceptanceCriteria: ["Typecheck passes"],
+    repositoryName: "developer",
+    repoPathKey: "developer",
+    tags: ["telegram"],
+    risk: {
+      riskLevel: "low",
+      reasons: ["Repository maintenance only"],
+      requiresOwnerApproval: false,
+    },
+    executionMode: "auto_ready",
+  },
+  status: "collecting",
+  clarificationHistory: [],
+  createdAt: baseTime,
+  updatedAt: baseTime,
+  expiresAt: futureTime,
+  ...overrides,
+});
+
+const executableDraftSessionRow = (
+  overrides: Partial<Record<string, unknown>> = {},
+): QueryResultRow => ({
+  id: "draft-session-1",
+  conversation_key: conversationKey,
+  source: "private",
+  initiator_user_id: 200,
+  owner_user_id: null,
+  owner_chat_id: null,
+  chat_id: 100,
+  message_id: 300,
+  original_text: "Create a task for repository setup",
+  draft: executableDraftSession().draft,
+  status: "collecting",
+  clarification_question: null,
+  clarification_history: [],
+  created_at: baseTime,
+  updated_at: baseTime,
+  expires_at: futureTime,
+  ...overrides,
+});
+
+const activeTaskQuestionPrompt = (
+  overrides: Partial<TelegramActiveTaskQuestionPrompt> = {},
+): TelegramActiveTaskQuestionPrompt => ({
+  id: "prompt-1",
+  conversationKey,
+  chatId: 100,
+  userId: 200,
+  taskId: "DEV-1",
+  questionId: "question-1",
+  promptMessageId: 301,
+  status: "open",
+  createdAt: baseTime,
+  updatedAt: baseTime,
+  expiresAt: futureTime,
+  ...overrides,
+});
+
+const activeTaskQuestionPromptRow = (
+  overrides: Partial<Record<string, unknown>> = {},
+): QueryResultRow => ({
+  id: "prompt-1",
+  conversation_key: conversationKey,
+  chat_id: 100,
+  user_id: 200,
+  task_id: "DEV-1",
+  question_id: "question-1",
+  prompt_message_id: 301,
+  status: "open",
+  created_at: baseTime,
+  updated_at: baseTime,
+  expires_at: futureTime,
   ...overrides,
 });
 
@@ -327,6 +417,200 @@ describe("PostgresTelegramAssistantStore conversation purge", () => {
   });
 });
 
+describe("PostgresTelegramAssistantStore executable task intake", () => {
+  it("upserts and maps executable draft sessions", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        expect(text).toContain("telegram_executable_task_draft_sessions");
+        expect(text).toContain("ON CONFLICT (id)");
+        expect(values).toContain(JSON.stringify(executableDraftSession().draft));
+        return queryResult([executableDraftSessionRow() as R]);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    await expect(
+      store.upsertExecutableTaskDraftSession(executableDraftSession()),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "draft-session-1",
+      draft: expect.objectContaining({ title: "Repository setup" }),
+      clarificationHistory: [],
+    }));
+    expect(queries).toHaveLength(1);
+  });
+
+  it("selects active executable draft sessions by active statuses and expiry", async () => {
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        expect(text).toContain("telegram_executable_task_draft_sessions");
+        expect(text).toContain("expires_at > $2");
+        expect(text).toContain("status = ANY($3::text[])");
+        expect(text).toContain("ORDER BY updated_at DESC, id DESC");
+        expect(values).toEqual([
+          conversationKey,
+          baseTime,
+          ["collecting", "awaiting_user_confirmation", "awaiting_owner_approval"],
+        ]);
+        return queryResult([
+          executableDraftSessionRow({
+            id: "active-session",
+            status: "awaiting_owner_approval",
+          }) as R,
+        ]);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db, {
+      now: () => new Date(baseTime),
+    });
+
+    await expect(
+      store.getActiveExecutableTaskDraftSession(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "active-session",
+      status: "awaiting_owner_approval",
+    }));
+  });
+
+  it("completes executable draft sessions and reports missing rows", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        if (text.includes("UPDATE telegram_executable_task_draft_sessions")) {
+          return queryResult([
+            executableDraftSessionRow({
+              status: "completed",
+              updated_at: laterTime,
+            }) as R,
+          ]);
+        }
+        throw new Error(`Unexpected SQL: ${text}`);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db);
+
+    await expect(
+      store.completeExecutableTaskDraftSession("draft-session-1", {
+        status: "completed",
+        updatedAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      status: "completed",
+      updatedAt: laterTime,
+    }));
+    expect(queries[0]?.values).toEqual(["draft-session-1", "completed", laterTime]);
+
+    const missingStore = new PostgresTelegramAssistantStore({
+      async query<R extends QueryResultRow = QueryResultRow>(): Promise<QueryResult<R>> {
+        return queryResult([]);
+      },
+    });
+    await expect(
+      missingStore.completeExecutableTaskDraftSession("missing-session", {
+        status: "expired",
+        updatedAt: laterTime,
+      }),
+    ).rejects.toThrow(
+      "Telegram executable task draft session not found: missing-session",
+    );
+  });
+
+  it("upserts and selects active task question prompts", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        if (text.includes("INSERT INTO telegram_active_task_question_prompts")) {
+          expect(values).toContain("prompt-1");
+          return queryResult([activeTaskQuestionPromptRow() as R]);
+        }
+        expect(text).toContain("WHERE conversation_key = $1");
+        expect(text).toContain("status = 'open'");
+        expect(text).toContain("expires_at > $2");
+        return queryResult([activeTaskQuestionPromptRow() as R]);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db, {
+      now: () => new Date(baseTime),
+    });
+
+    await expect(
+      store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt()),
+    ).resolves.toEqual(expect.objectContaining({ id: "prompt-1" }));
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "prompt-1" }));
+    expect(queries.map((query) => query.text)).toEqual(expect.arrayContaining([
+      expect.stringContaining("telegram_active_task_question_prompts"),
+    ]));
+  });
+
+  it("consumes active task question prompts inside a transaction and returns the original prompt", async () => {
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      async query<R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<R>> {
+        queries.push({ text, values });
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") {
+          return queryResult([]);
+        }
+        if (text.includes("FOR UPDATE")) {
+          expect(text).toContain("telegram_active_task_question_prompts");
+          expect(values).toEqual([conversationKey, laterTime]);
+          return queryResult([activeTaskQuestionPromptRow() as R]);
+        }
+        if (text.includes("UPDATE telegram_active_task_question_prompts")) {
+          expect(values).toEqual(["prompt-1", laterTime]);
+          return queryResult([
+            activeTaskQuestionPromptRow({
+              status: "answered",
+              updated_at: laterTime,
+            }) as R,
+          ]);
+        }
+        throw new Error(`Unexpected SQL: ${text}`);
+      },
+    };
+    const store = new PostgresTelegramAssistantStore(db, {
+      now: () => new Date(baseTime),
+    });
+
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        conversationKey,
+        chatId: 100,
+        userId: 200,
+        answeredAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "prompt-1",
+      status: "open",
+    }));
+    expect(queries.map((query) => query.text)).toEqual([
+      "BEGIN",
+      expect.stringContaining("FOR UPDATE"),
+      expect.stringContaining("UPDATE telegram_active_task_question_prompts"),
+      "COMMIT",
+    ]);
+  });
+});
+
 describe("PostgresTelegramAssistantStore digital twin sessions", () => {
   it("uses a transaction advisory lock for digital twin sessions", async () => {
     const queries: Array<{ text: string; values?: unknown[] }> = [];
@@ -427,6 +711,40 @@ describe("telegram assistant internal tracker migrations", () => {
     expect(migration?.sql).toContain("CREATE TABLE IF NOT EXISTS telegram_digital_twin_messages");
     expect(migration?.sql).toContain("CREATE TABLE IF NOT EXISTS telegram_digital_twin_turns");
     expect(migration?.sql).toContain("telegram_digital_twin_turns_running_unique_idx");
+  });
+
+  it("adds Telegram executable task intake tables in migration 0015", () => {
+    const migrations = listInternalTrackerMigrations();
+    const migration = migrations.find((candidate) =>
+      candidate.filename === "0015_telegram_executable_task_intake.sql"
+    );
+
+    expect(migration?.version).toBe("0015");
+    expect(migration?.sql).toContain(
+      "CREATE TABLE IF NOT EXISTS telegram_executable_task_draft_sessions",
+    );
+    expect(migration?.sql).toContain(
+      "CREATE TABLE IF NOT EXISTS telegram_active_task_question_prompts",
+    );
+    expect(migration?.sql).toContain("CHECK (source IN ('private', 'business', 'twin'))");
+    expect(migration?.sql).toContain(
+      "CHECK (status IN ('collecting', 'awaiting_user_confirmation', 'awaiting_owner_approval', 'completed', 'cancelled', 'expired'))",
+    );
+    expect(migration?.sql).toContain(
+      "CHECK (status IN ('open', 'answered', 'cancelled', 'expired'))",
+    );
+    expect(migration?.sql).toContain(
+      "telegram_executable_task_draft_sessions_active_idx",
+    );
+    expect(migration?.sql).toContain(
+      "telegram_executable_task_draft_sessions_expiry_idx",
+    );
+    expect(migration?.sql).toContain(
+      "telegram_active_task_question_prompts_conversation_idx",
+    );
+    expect(migration?.sql).toContain(
+      "telegram_active_task_question_prompts_task_idx",
+    );
   });
 });
 
@@ -933,6 +1251,49 @@ describePostgres("PostgresTelegramAssistantStore with real PostgreSQL", () => {
       messages: 1,
       turns: 1,
     });
+  });
+
+  it("persists executable draft sessions and active task prompts", async () => {
+    await runInternalTrackerMigrations(pool);
+    const store = new PostgresTelegramAssistantStore(pool, {
+      now: () => new Date(baseTime),
+    });
+
+    await store.upsertExecutableTaskDraftSession(executableDraftSession());
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt());
+
+    await expect(
+      store.getExecutableTaskDraftSession("draft-session-1"),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "draft-session-1",
+      draft: expect.objectContaining({ title: "Repository setup" }),
+    }));
+    await expect(
+      store.getActiveExecutableTaskDraftSession(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "draft-session-1" }));
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "prompt-1" }));
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        conversationKey,
+        chatId: 100,
+        userId: 200,
+        answeredAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "prompt-1",
+      status: "open",
+    }));
+    await expect(
+      store.completeExecutableTaskDraftSession("draft-session-1", {
+        status: "completed",
+        updatedAt: laterTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "draft-session-1",
+      status: "completed",
+    }));
   });
 
   it("does not overwrite newer business connection records with same-second stale update ids", async () => {

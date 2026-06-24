@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   InMemoryTelegramAssistantStore,
   type TelegramAssistantActor,
+  type TelegramActiveTaskQuestionPrompt,
+  type TelegramExecutableTaskDraftSession,
   type TelegramInboundMessage,
   type TelegramIntent,
   type TelegramPendingAction,
@@ -117,6 +119,55 @@ const queuedMessage = (
   ...overrides,
 });
 
+const executableDraftSession = (
+  overrides: Partial<TelegramExecutableTaskDraftSession> = {},
+): TelegramExecutableTaskDraftSession => ({
+  id: "draft-session-1",
+  conversationKey,
+  source: "private",
+  initiatorUserId: 200,
+  chatId: 100,
+  messageId: 300,
+  originalText: "Create a task for repository setup",
+  draft: {
+    title: "Repository setup",
+    description: "Configure the repository for automated task execution.",
+    acceptanceCriteria: ["Typecheck passes"],
+    repositoryName: "developer",
+    repoPathKey: "developer",
+    tags: ["telegram"],
+    risk: {
+      riskLevel: "low",
+      reasons: ["Repository maintenance only"],
+      requiresOwnerApproval: false,
+    },
+    executionMode: "auto_ready",
+  },
+  status: "collecting",
+  clarificationHistory: [],
+  createdAt: baseTime,
+  updatedAt: baseTime,
+  expiresAt: futureTime,
+  ...overrides,
+});
+
+const activeTaskQuestionPrompt = (
+  overrides: Partial<TelegramActiveTaskQuestionPrompt> = {},
+): TelegramActiveTaskQuestionPrompt => ({
+  id: "prompt-1",
+  conversationKey,
+  chatId: 100,
+  userId: 200,
+  taskId: "DEV-1",
+  questionId: "question-1",
+  promptMessageId: 301,
+  status: "open",
+  createdAt: baseTime,
+  updatedAt: baseTime,
+  expiresAt: futureTime,
+  ...overrides,
+});
+
 const createStore = (): InMemoryTelegramAssistantStore =>
   new InMemoryTelegramAssistantStore({
     now: () => new Date(baseTime),
@@ -134,6 +185,148 @@ const deferred = <T>(): {
 };
 
 describe("InMemoryTelegramAssistantStore", () => {
+  it("stores executable task draft sessions and selects the newest active session per conversation", async () => {
+    const store = createStore();
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "older",
+      updatedAt: baseTime,
+    }));
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "newer",
+      status: "awaiting_user_confirmation",
+      updatedAt: laterTime,
+    }));
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "expired-active",
+      status: "awaiting_owner_approval",
+      updatedAt: futureTime,
+      expiresAt: expiredTime,
+    }));
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "completed",
+      status: "completed",
+      updatedAt: futureTime,
+    }));
+
+    await expect(store.getExecutableTaskDraftSession("older")).resolves.toEqual(
+      expect.objectContaining({ id: "older" }),
+    );
+    await expect(
+      store.getActiveExecutableTaskDraftSession(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "newer",
+      status: "awaiting_user_confirmation",
+    }));
+  });
+
+  it("uses draft session id as the active selection tie breaker and completes sessions", async () => {
+    const store = createStore();
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "session-a",
+      updatedAt: laterTime,
+    }));
+    await store.upsertExecutableTaskDraftSession(executableDraftSession({
+      id: "session-b",
+      updatedAt: laterTime,
+    }));
+
+    await expect(
+      store.getActiveExecutableTaskDraftSession(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "session-b" }));
+    await expect(
+      store.completeExecutableTaskDraftSession("session-b", {
+        status: "cancelled",
+        updatedAt: futureTime,
+      }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "session-b",
+      status: "cancelled",
+      updatedAt: futureTime,
+    }));
+    await expect(
+      store.completeExecutableTaskDraftSession("missing-session", {
+        status: "expired",
+      }),
+    ).rejects.toThrow(
+      "Telegram executable task draft session not found: missing-session",
+    );
+  });
+
+  it("stores active task prompts and consumes matching prompts only once", async () => {
+    const store = createStore();
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt());
+
+    const consumed = await store.consumeActiveTaskQuestionPrompt({
+      conversationKey,
+      chatId: 100,
+      userId: 200,
+      answeredAt: laterTime,
+    });
+
+    expect(consumed).toEqual(expect.objectContaining({
+      id: "prompt-1",
+      status: "open",
+    }));
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        conversationKey,
+        chatId: 100,
+        userId: 200,
+        answeredAt: futureTime,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(store.getActiveTaskQuestionPrompt("other")).resolves.toBeUndefined();
+  });
+
+  it("ignores expired active prompts and rejects chat or user mismatches", async () => {
+    const store = createStore();
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "expired-prompt",
+      expiresAt: expiredTime,
+    }));
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "matching-prompt",
+      updatedAt: laterTime,
+    }));
+
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        conversationKey,
+        chatId: 101,
+        userId: 200,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        conversationKey,
+        chatId: 100,
+        userId: 201,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.getActiveTaskQuestionPrompt(conversationKey),
+    ).resolves.toEqual(expect.objectContaining({ id: "matching-prompt" }));
+  });
+
+  it("allows task prompts without a user restriction to be consumed by chat", async () => {
+    const store = createStore();
+    await store.upsertActiveTaskQuestionPrompt(activeTaskQuestionPrompt({
+      id: "chat-only-prompt",
+      userId: undefined,
+    }));
+
+    await expect(
+      store.consumeActiveTaskQuestionPrompt({
+        conversationKey,
+        chatId: 100,
+        userId: 999,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ id: "chat-only-prompt" }));
+  });
+
   it("saves polling offsets separately from processed update ids", async () => {
     const store = createStore();
 
