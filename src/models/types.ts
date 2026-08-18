@@ -318,6 +318,7 @@ export interface CodexRunOptions {
   imagePaths?: string[];
   sandbox?: CodexSandbox;
   outputSchema?: CodexOutputSchema;
+  webSearch?: boolean;
 }
 
 export interface CodexReviewRunOptions {

@@ -233,6 +233,19 @@ task notifications. It never calls the human TaskTracker API over HTTP; writes g
 through the internal `TaskTrackerClient`, and task creation requires
 `TASK_TRACKER_PROVIDER=internal`.
 
+When `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
+group can also send a Wildberries product-card URL such as
+`https://www.wildberries.ru/catalog/123456789/detail.aspx`. The bot acknowledges
+the request immediately and runs a read-only Codex competitor-research turn with
+web search. After completion it sends a concise summary to the chat and uploads a
+self-contained `wb-competitor-report-<article>.html` document with the full
+analysis, sources and recommendations. The HTML is rendered by the application
+from structured Codex output and escapes untrusted marketplace content. If
+Telegram document delivery is unavailable or fails, the full report is chunked
+and returned as text instead. This MVP supports Wildberries links only, reuses
+`TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and `TELEGRAM_CODEX_TIMEOUT_SECONDS`, and is
+not enabled for Telegram Business/Profile automation.
+
 Trusted private Telegram users can create executable low/medium-risk tasks after
 confirmation. The assistant resolves a repository profile, writes
 `repositoryName`, `repoPathKey`, `baseBranch` and `queue`, marks approved tasks

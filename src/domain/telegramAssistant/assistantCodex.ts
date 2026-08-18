@@ -1,4 +1,10 @@
 import type { CodexExecution, CodexRunner } from "../../models/types.js";
+import {
+  buildCompetitorResearchPrompt,
+  COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
+  parseCompetitorResearchOutput,
+  type WildberriesProductReference,
+} from "./competitorResearch.js";
 
 export interface AssistantSource {
   id: string;
@@ -12,6 +18,15 @@ export interface AnswerProjectQuestionInput {
 
 export interface AnswerProjectQuestionResult {
   answer: string;
+  threadId?: string;
+  timedOut?: boolean;
+}
+
+export type ResearchMarketplaceCompetitorsInput = WildberriesProductReference;
+
+export interface ResearchMarketplaceCompetitorsResult {
+  summary: string;
+  report: string;
   threadId?: string;
   timedOut?: boolean;
 }
@@ -49,6 +64,8 @@ const TIMEOUT_ANSWER =
   "Codex не успел ответить за отведенное время. Попробуй сузить вопрос.";
 const EMPTY_ANSWER =
   "Codex не вернул ответ по предоставленным проектным источникам.";
+const COMPETITOR_RESEARCH_TIMEOUT_REPORT =
+  "Codex не успел завершить исследование конкурентов за отведенное время.";
 const TIMEOUT = Symbol("telegram-assistant-codex-timeout");
 
 export class TelegramAssistantCodexService {
@@ -78,6 +95,37 @@ export class TelegramAssistantCodexService {
     const answer = execution.finalMessage?.trim() || EMPTY_ANSWER;
     return {
       answer,
+      ...(execution.threadId ? { threadId: execution.threadId } : {}),
+    };
+  }
+
+  public async researchMarketplaceCompetitors(
+    input: ResearchMarketplaceCompetitorsInput,
+  ): Promise<ResearchMarketplaceCompetitorsResult> {
+    const execution = await withTimeout(
+      this.codex.runInitial(
+        buildCompetitorResearchPrompt(input),
+        undefined,
+        {
+          sandbox: "read-only",
+          webSearch: true,
+          outputSchema: COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
+        },
+      ),
+      this.timeoutMs,
+    );
+
+    if (execution === TIMEOUT) {
+      return {
+        summary: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
+        report: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
+        timedOut: true,
+      };
+    }
+
+    const content = parseCompetitorResearchOutput(execution.finalMessage);
+    return {
+      ...content,
       ...(execution.threadId ? { threadId: execution.threadId } : {}),
     };
   }

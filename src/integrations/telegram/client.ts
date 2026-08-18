@@ -31,6 +31,16 @@ export interface TelegramSendMessageInput {
   replyMarkup?: TelegramInlineKeyboardMarkup;
 }
 
+export interface TelegramSendDocumentInput {
+  chatId: number | string;
+  fileName: string;
+  content: string;
+  mimeType?: string;
+  caption?: string;
+  replyToMessageId?: number;
+  businessConnectionId?: string;
+}
+
 export interface TelegramAnswerCallbackQueryInput {
   callbackQueryId: string;
   text?: string;
@@ -146,6 +156,30 @@ export class TelegramClient {
     }
   }
 
+  async sendDocument(input: TelegramSendDocumentInput): Promise<TelegramMessage> {
+    try {
+      return await this.postForm<TelegramMessage>(
+        "sendDocument",
+        this.buildSendDocumentForm(input),
+      );
+    } catch (error) {
+      if (
+        input.replyToMessageId !== undefined &&
+        error instanceof TelegramApiError &&
+        error.isReplyTargetMissingError
+      ) {
+        return this.postForm<TelegramMessage>(
+          "sendDocument",
+          this.buildSendDocumentForm({
+            ...input,
+            replyToMessageId: undefined,
+          }),
+        );
+      }
+      throw error;
+    }
+  }
+
   async answerCallbackQuery(input: TelegramAnswerCallbackQueryInput): Promise<boolean> {
     return this.post<boolean>("answerCallbackQuery", {
       callback_query_id: input.callbackQueryId,
@@ -221,6 +255,28 @@ export class TelegramClient {
     };
   }
 
+  private buildSendDocumentForm(input: TelegramSendDocumentInput): FormData {
+    const form = new FormData();
+    form.append("chat_id", String(input.chatId));
+    form.append(
+      "document",
+      new Blob([input.content], {
+        type: input.mimeType ?? "application/octet-stream",
+      }),
+      input.fileName,
+    );
+    if (input.caption !== undefined) {
+      form.append("caption", input.caption);
+    }
+    if (input.replyToMessageId !== undefined) {
+      form.append("reply_to_message_id", String(input.replyToMessageId));
+    }
+    if (input.businessConnectionId !== undefined) {
+      form.append("business_connection_id", input.businessConnectionId);
+    }
+    return form;
+  }
+
   private async post<T>(method: string, body: Record<string, unknown>): Promise<T> {
     const url = this.methodUrl(method);
     const response = await this.fetchImpl(url, {
@@ -228,13 +284,32 @@ export class TelegramClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).catch((error) => {
-      throw new TelegramApiError(
-        method,
-        0,
-        `Telegram fetch failed: ${errorToMessage(error)}`,
-        [this.botToken, url],
-      );
+      throw this.fetchError(method, url, error);
     });
+    return this.readResult<T>(method, response);
+  }
+
+  private async postForm<T>(method: string, body: FormData): Promise<T> {
+    const url = this.methodUrl(method);
+    const response = await this.fetchImpl(url, {
+      method: "POST",
+      body,
+    }).catch((error) => {
+      throw this.fetchError(method, url, error);
+    });
+    return this.readResult<T>(method, response);
+  }
+
+  private fetchError(method: string, url: string, error: unknown): TelegramApiError {
+    return new TelegramApiError(
+      method,
+      0,
+      `Telegram fetch failed: ${errorToMessage(error)}`,
+      [this.botToken, url],
+    );
+  }
+
+  private async readResult<T>(method: string, response: Response): Promise<T> {
     const text = await response.text();
     const payload = parseTelegramResponse<T>(text);
     const description = payload?.description ?? text;

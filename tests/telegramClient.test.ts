@@ -172,6 +172,87 @@ describe("TelegramClient", () => {
     });
   });
 
+  it("uploads an HTML report through sendDocument multipart form data", async () => {
+    const calls: FetchCall[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return jsonResponse({
+        ok: true,
+        result: {
+          message_id: 11,
+          chat: { id: 123, type: "private" },
+          date: 1,
+          document: {
+            file_id: "file-1",
+            file_unique_id: "unique-1",
+            file_name: "report.html",
+            mime_type: "text/html",
+          },
+        },
+      });
+    };
+    const client = new TelegramClient({ botToken: "token", fetch: fetchImpl });
+
+    const message = await client.sendDocument({
+      chatId: 123,
+      fileName: "report.html",
+      content: "<!doctype html><title>Report</title>",
+      mimeType: "text/html; charset=utf-8",
+      caption: "Полный отчёт",
+      replyToMessageId: 7,
+    });
+
+    expect(message.message_id).toBe(11);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://api.telegram.org/bottoken/sendDocument");
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(calls[0]?.init.headers).toBeUndefined();
+    const body = calls[0]?.init.body;
+    expect(body).toBeInstanceOf(FormData);
+    const form = body as FormData;
+    expect(form.get("chat_id")).toBe("123");
+    expect(form.get("caption")).toBe("Полный отчёт");
+    expect(form.get("reply_to_message_id")).toBe("7");
+    const document = form.get("document");
+    expect(document).toBeInstanceOf(Blob);
+    expect((document as File).name).toBe("report.html");
+    expect((document as File).type).toBe("text/html; charset=utf-8");
+    expect(await (document as File).text()).toContain("<title>Report</title>");
+  });
+
+  it("retries sendDocument without a missing reply target", async () => {
+    const calls: FetchCall[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      if (calls.length === 1) {
+        return jsonResponse(
+          {
+            ok: false,
+            error_code: 400,
+            description: "Bad Request: message to be replied not found",
+          },
+          { status: 400 },
+        );
+      }
+      return jsonResponse({
+        ok: true,
+        result: { message_id: 12, chat: { id: 123, type: "private" }, date: 1 },
+      });
+    };
+    const client = new TelegramClient({ botToken: "token", fetch: fetchImpl });
+
+    await client.sendDocument({
+      chatId: 123,
+      fileName: "report.html",
+      content: "report",
+      replyToMessageId: 999,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect((calls[0]?.init.body as FormData).get("reply_to_message_id")).toBe("999");
+    expect((calls[1]?.init.body as FormData).get("reply_to_message_id")).toBeNull();
+  });
+
   it("redacts fetch setup errors before rethrowing", async () => {
     const fetchImpl: typeof fetch = async (input) => {
       throw new Error(`failed to fetch ${String(input)}`);

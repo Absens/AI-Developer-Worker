@@ -76,6 +76,29 @@ describe("routeTelegramIntent", () => {
       projectQaEnabled: true,
     }).name).toBe("project_question");
   });
+
+  it.each([
+    "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+    "Найди конкурентов для wildberries.ru/catalog/123456789/detail.aspx",
+  ])("routes Wildberries product research %s", (text) => {
+    expect(routeTelegramIntent(text, { projectQaEnabled: true }).name).toBe(
+      "competitor_research",
+    );
+  });
+
+  it("keeps explicit task creation ahead of Wildberries research", () => {
+    expect(routeTelegramIntent(
+      "создай задачу проверить https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { projectQaEnabled: true },
+    ).name).toBe("create_task_draft");
+  });
+
+  it("does not route non-product Wildberries pages to competitor research", () => {
+    expect(routeTelegramIntent(
+      "https://www.wildberries.ru/brands/example",
+      { projectQaEnabled: true },
+    ).name).toBe("project_question");
+  });
 });
 
 describe("resolveTelegramActor", () => {
