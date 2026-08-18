@@ -1,8 +1,98 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { TelegramAssistantCodexService } from "../src/domain/telegramAssistant/index.js";
+import { COMPETITOR_RESEARCH_OUTPUT_SCHEMA } from "../src/domain/telegramAssistant/competitorResearch.js";
 
 describe("TelegramAssistantCodexService", () => {
+  it("runs marketplace competitor research with read-only web search and structured output", async () => {
+    const runInitial = vi.fn(async () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: JSON.stringify({
+        summary: "Краткий конкурентный вывод.",
+        report: "Конкурентный отчёт.",
+      }),
+      threadId: "thread_competitors_1",
+    }));
+    const runResume = vi.fn();
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+    });
+
+    const result = await service.researchMarketplaceCompetitors({
+      marketplace: "wildberries",
+      productId: "123456789",
+      sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+    });
+
+    expect(result).toEqual({
+      summary: "Краткий конкурентный вывод.",
+      report: "Конкурентный отчёт.",
+      threadId: "thread_competitors_1",
+    });
+    expect(runInitial).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      ),
+      undefined,
+      {
+        sandbox: "read-only",
+        webSearch: true,
+        outputSchema: COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
+      },
+    );
+    expect(runResume).not.toHaveBeenCalled();
+  });
+
+  it("keeps a plain competitor report when the CLI does not return JSON", async () => {
+    const runInitial = vi.fn(async () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: "  Текстовый отчёт для совместимости.  ",
+    }));
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+    });
+
+    await expect(service.researchMarketplaceCompetitors({
+      marketplace: "wildberries",
+      productId: "123456789",
+      sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+    })).resolves.toEqual({
+      summary: "Текстовый отчёт для совместимости.",
+      report: "Текстовый отчёт для совместимости.",
+    });
+  });
+
+  it("returns a bounded competitor research timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const runInitial = vi.fn(() => new Promise<never>(() => undefined));
+      const service = new TelegramAssistantCodexService({
+        codex: { runInitial, runResume: vi.fn() },
+        maxContextChars: 2000,
+        timeoutSeconds: 1,
+      });
+
+      const pending = service.researchMarketplaceCompetitors({
+        marketplace: "wildberries",
+        productId: "123456789",
+        sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(pending).resolves.toEqual({
+        summary: "Codex не успел завершить исследование конкурентов за отведенное время.",
+        report: "Codex не успел завершить исследование конкурентов за отведенное время.",
+        timedOut: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("answers project questions through a read-only initial Codex run", async () => {
     const runInitial = vi.fn(async (
       _prompt: string,

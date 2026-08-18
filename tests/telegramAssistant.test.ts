@@ -22,6 +22,7 @@ import { InMemoryTaskTrackerClient } from "../src/domain/taskTracker/index.js";
 import {
   TelegramUpdatePoller,
   TelegramRetryAfterError,
+  type TelegramSendDocumentInput,
   type TelegramUpdate,
 } from "../src/integrations/telegram/index.js";
 import { runApplicationRuntime } from "../src/app.js";
@@ -367,6 +368,7 @@ interface BuildAssistantInput {
   observability?: FakeTelegramObservability;
   answerCallbackQuery?: TelegramAssistantServiceOptions["telegram"]["answerCallbackQuery"];
   sendMessage?: TelegramAssistantServiceOptions["telegram"]["sendMessage"];
+  sendDocument?: NonNullable<TelegramAssistantServiceOptions["telegram"]["sendDocument"]>;
   config?: Partial<TelegramAssistantConfig>;
   repositories?: RepositoryProfile[];
 }
@@ -376,6 +378,11 @@ interface FakeAssistantCodexService {
     question: string;
     sources: Array<{ id: string; body: string }>;
   }): Promise<{ answer: string; threadId?: string; timedOut?: boolean }>;
+  researchMarketplaceCompetitors?(input: {
+    marketplace: "wildberries";
+    productId: string;
+    sourceUrl: string;
+  }): Promise<{ summary: string; report: string; threadId?: string; timedOut?: boolean }>;
 }
 
 interface FakeTelegramObservability {
@@ -428,6 +435,7 @@ const buildAssistant = (input: BuildAssistantInput): TelegramAssistantService =>
     telegram: {
       sendMessage: input.sendMessage ?? vi.fn(),
       answerCallbackQuery: input.answerCallbackQuery ?? vi.fn(),
+      ...(input.sendDocument ? { sendDocument: input.sendDocument } : {}),
     },
     ...(input.logger ? { logger: input.logger } : {}),
     ...(input.observability ? { observability: input.observability } : {}),
@@ -1106,6 +1114,377 @@ describe("TelegramAssistantService", () => {
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
+  });
+
+  it("acknowledges a Wildberries link and sends a summary plus an asynchronous HTML report", async () => {
+    const sendMessage = vi.fn();
+    const sendDocument = vi.fn(async (_input: TelegramSendDocumentInput) => ({
+      message_id: 401,
+      date: 1,
+      chat: { id: 1, type: "private" as const },
+    }));
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-08-18T10:00:00.000Z"),
+    });
+    let sawRunningTurn = false;
+    const researchMarketplaceCompetitors = vi.fn(async (input: {
+      marketplace: "wildberries";
+      productId: string;
+      sourceUrl: string;
+    }) => {
+      expect(input).toEqual({
+        marketplace: "wildberries",
+        productId: "123456789",
+        sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      });
+      await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toEqual(
+        expect.objectContaining({ status: "running" }),
+      );
+      sawRunningTurn = true;
+      return {
+        summary: "Найден конкурент A. Главный приоритет — усилить первый экран.",
+        report: "## Прямые конкуренты\n- Конкурент A — релевантен.",
+        threadId: "thread_competitors_1",
+      };
+    });
+    const answerProjectQuestion = vi.fn(async () => ({ answer: "must not run" }));
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      sendDocument,
+      assistantCodex: {
+        answerProjectQuestion,
+        researchMarketplaceCompetitors,
+      },
+      config: { projectQaEnabled: true },
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "Найди конкурентов: https://wildberries.ru/catalog/123456789/detail.aspx?targetUrl=SP",
+      { updateId: 201, messageId: 301 },
+    ));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 301,
+      text: "Начал поиск и анализ конкурентов. Отчёт придёт в этот чат после завершения.",
+    }));
+    await waitForCondition(() => sawRunningTurn);
+    await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+      typeof input.text === "string" &&
+      input.text.includes("Конкурентный анализ Wildberries") &&
+      input.text.includes("Найден конкурент A"),
+    ));
+    await waitForCondition(() => sendDocument.mock.calls.length === 1);
+
+    expect(researchMarketplaceCompetitors).toHaveBeenCalledOnce();
+    expect(answerProjectQuestion).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      parseMode: "HTML",
+      replyToMessageId: 301,
+      disableWebPagePreview: true,
+      text: expect.stringContaining("Конкурентный анализ Wildberries"),
+    }));
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Прямые конкуренты"),
+    }));
+    expect(sendDocument).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      fileName: "wb-competitor-report-123456789.html",
+      mimeType: "text/html; charset=utf-8",
+      caption: "Полный конкурентный анализ WB · 123456789",
+      replyToMessageId: 301,
+      content: expect.stringContaining("<!doctype html>"),
+    }));
+    expect(sendDocument.mock.calls[0]?.[0].content).toContain("Прямые конкуренты");
+    expect(sendDocument.mock.calls[0]?.[0].content).toContain("Конкурент A");
+    await waitForCondition(async () =>
+      (await store.getActiveAssistantTurn("bot_private:1")) === undefined,
+    );
+  });
+
+  it("falls back to the full text report when HTML document delivery fails", async () => {
+    const sendMessage = vi.fn();
+    const sendDocument = vi.fn(async () => {
+      throw new Error("Telegram document upload failed");
+    });
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      sendDocument,
+      logger,
+      assistantCodex: {
+        answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
+        researchMarketplaceCompetitors: vi.fn(async () => ({
+          summary: "Краткий вывод для чата.",
+          report: "## Полный раздел\n- Детальный вывод для пользователя.",
+        })),
+      },
+      config: { projectQaEnabled: true },
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { updateId: 209, messageId: 309 },
+    ));
+
+    await waitForCondition(() => sendDocument.mock.calls.length === 1);
+    await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+      input.text === "Не удалось отправить HTML-файл. Ниже полный отчёт текстом.",
+    ));
+    await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+      typeof input.text === "string" &&
+      input.text.includes("Детальный вывод для пользователя"),
+    ));
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Telegram competitor research document delivery failed.",
+      expect.objectContaining({
+        conversationKey: "bot_private:1",
+        productId: "123456789",
+      }),
+    );
+    await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
+  });
+
+  it("does not start competitor research when project Q&A is disabled", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore();
+    const researchMarketplaceCompetitors = vi.fn(async () => ({
+      summary: "must not run",
+      report: "must not run",
+    }));
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      assistantCodex: {
+        answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
+        researchMarketplaceCompetitors,
+      },
+      config: { projectQaEnabled: false },
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { updateId: 202, messageId: 302 },
+    ));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 302,
+      text: "Исследование конкурентов сейчас недоступно.",
+    }));
+    expect(researchMarketplaceCompetitors).not.toHaveBeenCalled();
+    await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
+  });
+
+  it("marks timed out competitor research as failed and sends the timeout report", async () => {
+    const sendMessage = vi.fn();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-08-18T10:00:00.000Z"),
+    });
+    const completeAssistantTurn = vi.spyOn(store, "completeAssistantTurnIfRunning");
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      assistantCodex: {
+        answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
+        researchMarketplaceCompetitors: vi.fn(async () => ({
+          summary: "Codex не успел завершить исследование конкурентов за отведенное время.",
+          report: "Codex не успел завершить исследование конкурентов за отведенное время.",
+          timedOut: true,
+        })),
+      },
+      config: { projectQaEnabled: true },
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { updateId: 203, messageId: 303 },
+    ));
+
+    await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+      typeof input.text === "string" &&
+      input.text.includes("Codex не успел завершить исследование конкурентов"),
+    ));
+    expect(completeAssistantTurn).toHaveBeenCalledWith(
+      "assistant-turn:5n:8f",
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("notifies the user when background competitor research fails", async () => {
+    const sendMessage = vi.fn();
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const store = new InMemoryTelegramAssistantStore();
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      logger,
+      assistantCodex: {
+        answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
+        researchMarketplaceCompetitors: vi.fn(async () => {
+          throw new Error("competitor research failed");
+        }),
+      },
+      config: { projectQaEnabled: true },
+    });
+
+    await expect(service.handleUpdate(messageUpdate(
+      "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { updateId: 204, messageId: 304 },
+    ))).resolves.toBeUndefined();
+
+    await waitForCondition(() => sendMessage.mock.calls.some(([input]) =>
+      input.text ===
+        "Не удалось завершить исследование конкурентов. Попробуй повторить запрос позже.",
+    ));
+    await waitForCondition(() => logger.warn.mock.calls.some(([message]) =>
+      message === "Telegram assistant background operation failed.",
+    ));
+    await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
+  });
+
+  it("suppresses a late competitor report after cancellation", async () => {
+    const sendMessage = vi.fn();
+    const observability = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-08-18T10:00:00.000Z"),
+    });
+    let resolveResearch: ((value: { summary: string; report: string }) => void) | undefined;
+    let researchResolved = false;
+    const pendingResearch = new Promise<{ summary: string; report: string }>((resolve) => {
+      resolveResearch = resolve;
+    });
+    const researchMarketplaceCompetitors = vi.fn(async () => {
+      const result = await pendingResearch;
+      researchResolved = true;
+      return result;
+    });
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      assistantCodex: {
+        answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
+        researchMarketplaceCompetitors,
+      },
+      config: { projectQaEnabled: true },
+      observability: observability.telemetry,
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { updateId: 205, messageId: 305 },
+    ));
+    await waitForCondition(() => researchMarketplaceCompetitors.mock.calls.length === 1);
+
+    await service.handleUpdate(messageUpdate("отмена", {
+      updateId: 206,
+      messageId: 306,
+      date: 2,
+    }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: "1",
+      replyToMessageId: 306,
+      text: "Действие отменено.",
+    }));
+    resolveResearch?.({
+      summary: "Поздний краткий вывод.",
+      report: "Поздний конкурентный отчёт.",
+    });
+    await waitForCondition(() => researchResolved);
+    await Promise.resolve();
+
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Поздний конкурентный отчёт"),
+    }));
+    expect(observability.counters).toContainEqual(expect.objectContaining({
+      name: "telegram_codex_turns_total",
+      labels: {
+        intent: "competitor_research",
+        outcome: "cancelled",
+      },
+    }));
+    await expect(store.getActiveAssistantTurn("bot_private:1")).resolves.toBeUndefined();
+  });
+
+  it("does not report a background failure after competitor research was cancelled", async () => {
+    const sendMessage = vi.fn();
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const observability = fakeObservability();
+    const store = new InMemoryTelegramAssistantStore({
+      now: () => new Date("2026-08-18T10:00:00.000Z"),
+    });
+    let rejectResearch: ((error: Error) => void) | undefined;
+    let researchSettled = false;
+    const pendingResearch = new Promise<{ summary: string; report: string }>((_resolve, reject) => {
+      rejectResearch = reject;
+    });
+    const researchMarketplaceCompetitors = vi.fn(async () => {
+      try {
+        return await pendingResearch;
+      } finally {
+        researchSettled = true;
+      }
+    });
+    const service = buildAssistant({
+      store,
+      sendMessage,
+      logger,
+      assistantCodex: {
+        answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
+        researchMarketplaceCompetitors,
+      },
+      config: { projectQaEnabled: true },
+      observability: observability.telemetry,
+    });
+
+    await service.handleUpdate(messageUpdate(
+      "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+      { updateId: 207, messageId: 307 },
+    ));
+    await waitForCondition(() => researchMarketplaceCompetitors.mock.calls.length === 1);
+
+    await service.handleUpdate(messageUpdate("отмена", {
+      updateId: 208,
+      messageId: 308,
+      date: 2,
+    }));
+
+    rejectResearch?.(new Error("late research failure"));
+    await waitForCondition(() => researchSettled);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: "Не удалось завершить исследование конкурентов. Попробуй повторить запрос позже.",
+    }));
+    expect(observability.counters).not.toContainEqual(expect.objectContaining({
+      name: "telegram_codex_turns_total",
+      labels: {
+        intent: "competitor_research",
+        outcome: "failure",
+      },
+    }));
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "Telegram assistant background operation failed.",
+      expect.anything(),
+    );
   });
 
   it("does not pass outside-root symlinked docs to assistant Codex sources", async () => {

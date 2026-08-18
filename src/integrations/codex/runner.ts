@@ -415,6 +415,17 @@ const withoutSandboxArgs = (args: readonly string[]): string[] => {
   return filtered;
 };
 
+const withWebSearchArg = (
+  args: readonly string[],
+  enabled: boolean | undefined,
+): string[] => {
+  const result = [...args];
+  if (enabled === true && !result.includes("--search")) {
+    result.push("--search");
+  }
+  return result;
+};
+
 const writeOutputSchemaFile = async (
   tempDir: string,
   outputSchema: CodexOutputSchema | undefined,
@@ -574,6 +585,7 @@ export class CliCodexRunner implements CodexRunner {
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
       outputSchema: options.outputSchema,
+      webSearch: options.webSearch,
     });
   }
 
@@ -589,6 +601,7 @@ export class CliCodexRunner implements CodexRunner {
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
       outputSchema: options.outputSchema,
+      webSearch: options.webSearch,
     });
   }
 
@@ -606,6 +619,7 @@ export class CliCodexRunner implements CodexRunner {
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
       outputSchema: options.outputSchema,
+      webSearch: options.webSearch,
     });
   }
 
@@ -700,6 +714,7 @@ export class CliCodexRunner implements CodexRunner {
     sandbox?: CodexSandbox;
     review?: { baseBranch: string; title?: string };
     outputSchema?: CodexOutputSchema;
+    webSearch?: boolean;
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
     const lastMessagePath = join(tempDir, "last-message.txt");
@@ -731,9 +746,13 @@ export class CliCodexRunner implements CodexRunner {
         input.mode === "review" && input.review
           ? this.buildReviewArgs(lastMessagePath, input.review, outputSchemaPath)
           : this.buildBaseArgs(lastMessagePath, input.sandbox, outputSchemaPath);
-      const codexCliArgs = input.sandbox
+      const configuredCodexCliArgs = input.sandbox
         ? withoutSandboxArgs(this.config.codexCliArgs)
         : this.config.codexCliArgs;
+      const codexCliArgs = withWebSearchArg(
+        configuredCodexCliArgs,
+        input.webSearch,
+      );
       if (input.mode === "resume" && input.threadId) {
         args.push("resume");
         appendImageArgs(args, input.imagePaths);

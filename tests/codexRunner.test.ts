@@ -242,6 +242,41 @@ describe("CliCodexRunner", () => {
     expect(JSON.parse(readFileSync(schemaSnapshotPath, "utf8"))).toEqual(outputSchema);
   });
 
+  it("adds per-run web search as one global argument before codex exec", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Research complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-search' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runInitial("Research this product.", undefined, {
+      webSearch: true,
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args.filter((arg) => arg === "--search")).toHaveLength(1);
+    expect(args.indexOf("--search")).toBeLessThan(args.indexOf("exec"));
+  });
+
   it("overrides configured sandbox for initial codex exec runs", async () => {
     const tempDir = createTempDir();
     const scriptPath = join(tempDir, "codex-runner.cjs");

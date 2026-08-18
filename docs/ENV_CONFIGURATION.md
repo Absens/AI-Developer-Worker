@@ -422,15 +422,24 @@ owner/admin approval; see
 [docs/TELEGRAM_TASK_INTAKE.md](TELEGRAM_TASK_INTAKE.md)
 before enabling this as an auto-execution intake channel.
 
+With `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
+group may send a Wildberries product-card URL matching `/catalog/<numeric-id>/`.
+The assistant immediately acknowledges the request, starts an asynchronous
+read-only Codex run with per-run web search and a strict report schema, then
+returns the report to the originating chat. Competitor research shares the
+project-Q&A daily limit and timeout settings. The first version supports only
+Wildberries and deliberately ignores Telegram Business/Profile automation
+messages for this intent.
+
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `TELEGRAM_ASSISTANT_ENABLED` | `false` | Enables Telegram Assistant configuration. When `true`, `TELEGRAM_ASSISTANT_BOT_TOKEN` is required. Production also requires non-empty chat, user, or role-specific allowlists. |
 | `TELEGRAM_ASSISTANT_BOT_TOKEN` | Not set | Bot token for Telegram Assistant only. Do not confuse it with alert sink `TELEGRAM_BOT_TOKEN`. |
 | `TELEGRAM_ASSISTANT_MODE` | `polling` | Assistant delivery mode: `polling` or `webhook`. |
 | `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Polling interval when mode is `polling`. Positive integer. |
-| `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used only for Telegram project Q&A. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
+| `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used for Telegram project Q&A and Wildberries competitor research. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
 | `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before task creation, ready transitions and Telegram-recorded AI question answers. |
-| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands in the base assistant. Counts against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
+| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands and Wildberries-link competitor research in the base assistant. Both count against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
 | `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables executable task draft sessions, pending create-task actions and direct task writes. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. Set to `false` to block all Telegram task creation before draft or pending-action state is created. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | Empty list | Comma-separated Telegram chat IDs allowed to use the assistant. |
 | `TELEGRAM_ALLOWED_USER_IDS` | Empty list | Comma-separated Telegram user IDs allowed to use the assistant. |
@@ -440,8 +449,8 @@ before enabling this as an auto-execution intake channel.
 | `TELEGRAM_GROUP_MODE` | `mentions_and_replies` | Group chat handling: `private_only`, `mentions_and_replies`, or `all_messages`. |
 | `TELEGRAM_DEFAULT_REPOSITORY` | Not set | Optional default repository name for assistant-created work. |
 | `TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT` | `20` | Per-user daily task creation limit. Positive integer. |
-| `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Per-user daily Codex QA limit. Positive integer. |
-| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for assistant-triggered Codex QA runs. Positive integer. |
+| `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Per-user daily Codex limit shared by project Q&A and competitor research. Positive integer. |
+| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for assistant-triggered project Q&A and competitor-research Codex runs. Positive integer. |
 | `TELEGRAM_CODEX_MAX_CONTEXT_CHARS` | `12000` | Maximum context characters sent to Codex from assistant conversations. Positive integer. |
 | `TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT` | `20` | Maximum queued messages retained per chat. Positive integer. |
 | `TELEGRAM_CONVERSATION_RETENTION_DAYS` | `14` | Conversation retention window. Positive integer. |
