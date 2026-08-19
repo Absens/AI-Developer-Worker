@@ -1,6 +1,9 @@
 name: Apply and verify competitor browser implementation
 
 on:
+  push:
+    branches:
+      - feature/telegram-competitor-browser
   pull_request:
     branches:
       - main
