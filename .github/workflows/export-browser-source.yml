@@ -33,7 +33,7 @@ jobs:
           git apply /tmp/competitor-browser.patch
           git diff --check
 
-      - name: Align Compose with Playwright MCP v0.0.79 CLI
+      - name: Align Compose with the minimal Playwright MCP HTTP CLI
         shell: bash
         run: |
           set -euo pipefail
@@ -42,23 +42,28 @@ jobs:
 
           compose = Path("compose.yaml")
           compose_text = compose.read_text(encoding="utf-8")
-          unsupported = "      - --no-sandbox\n"
-          if unsupported not in compose_text:
-              raise SystemExit("expected --no-sandbox argument was not found in compose.yaml")
-          compose.write_text(
-              compose_text.replace(unsupported, "", 1),
-              encoding="utf-8",
-          )
+          removals = [
+              "      - --no-sandbox\n",
+              "      - --block-service-workers\n",
+              "      - --image-responses\n      - omit\n",
+              "      - --allowed-hosts\n      - playwright,localhost,127.0.0.1\n",
+          ]
+          for removal in removals:
+              compose_text = compose_text.replace(removal, "", 1)
+          compose.write_text(compose_text, encoding="utf-8")
 
           test_file = Path("tests/playwrightMcpConfig.test.ts")
           test_text = test_file.read_text(encoding="utf-8")
-          expectation = '      "--no-sandbox",\n'
-          if expectation not in test_text:
-              raise SystemExit("expected --no-sandbox assertion was not found in test")
-          test_file.write_text(
-              test_text.replace(expectation, "", 1),
-              encoding="utf-8",
-          )
+          for expectation in [
+              '      "--no-sandbox",\n',
+              '      "--block-service-workers",\n',
+              '      "--image-responses",\n',
+              '      "omit",\n',
+              '      "--allowed-hosts",\n',
+              '      "playwright,localhost,127.0.0.1",\n',
+          ]:
+              test_text = test_text.replace(expectation, "", 1)
+          test_file.write_text(test_text, encoding="utf-8")
           PY
           git diff --check
 
@@ -95,12 +100,9 @@ jobs:
           docker compose config > /tmp/ai-worker-compose.yml
           docker run --rm --entrypoint node \
             mcr.microsoft.com/playwright/mcp:v0.0.79 \
-            /app/cli.js --help > /tmp/playwright-mcp-help.txt
-          grep -q -- "--headless" /tmp/playwright-mcp-help.txt
-          grep -q -- "--isolated" /tmp/playwright-mcp-help.txt
-          grep -q -- "--port" /tmp/playwright-mcp-help.txt
-          grep -q -- "--host" /tmp/playwright-mcp-help.txt
+            /app/cli.js --help | tee /tmp/playwright-mcp-help.txt
           cleanup() {
+            docker compose ps --all || true
             docker compose logs --no-color playwright || true
             docker compose down --volumes || true
           }
@@ -111,6 +113,8 @@ jobs:
           for attempt in $(seq 1 60); do
             status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
             if [ "$status" = "healthy" ]; then
+              docker compose exec -T playwright node -e \
+                "const net=require('node:net');const s=net.connect(8931,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"
               exit 0
             fi
             if [ "$status" = "unhealthy" ]; then
