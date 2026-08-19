@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feature/telegram-competitor-browser
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
