@@ -1,0 +1,47 @@
+name: Export competitor browser workspace
+
+on:
+  push:
+    branches:
+      - feature/telegram-competitor-browser
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Baseline typecheck
+        run: npm run typecheck
+      - name: Baseline tests
+        run: npm test
+      - name: Baseline build
+        run: npm run build
+      - name: Package dependencies
+        run: tar -czf node-modules-linux.tar.gz node_modules
+      - name: Upload source workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-worker-browser-source
+          path: .
+          include-hidden-files: true
+          retention-days: 1
+      - name: Upload dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-worker-browser-node-modules
+          path: node-modules-linux.tar.gz
+          retention-days: 1
