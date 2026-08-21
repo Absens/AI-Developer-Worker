@@ -235,16 +235,27 @@ through the internal `TaskTrackerClient`, and task creation requires
 
 When `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
 group can also send a Wildberries product-card URL such as
-`https://www.wildberries.ru/catalog/123456789/detail.aspx`. The bot acknowledges
-the request immediately and runs a read-only Codex competitor-research turn with
-web search. After completion it sends a concise summary to the chat and uploads a
-self-contained `wb-competitor-report-<article>.html` document with the full
-analysis, sources and recommendations. The HTML is rendered by the application
-from structured Codex output and escapes untrusted marketplace content. If
-Telegram document delivery is unavailable or fails, the full report is chunked
-and returned as text instead. This MVP supports Wildberries links only, reuses
-`TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and `TELEGRAM_CODEX_TIMEOUT_SECONDS`, and is
-not enabled for Telegram Business/Profile automation.
+`https://www.wildberries.ru/catalog/123456789/detail.aspx`. The standard Compose
+deployment starts the official Playwright MCP server as an isolated headless
+Chromium sidecar and injects a narrow managed MCP block into the worker's writable
+`CODEX_HOME`. The server remains disabled for ordinary Codex work and is enabled
+with a per-run config override only for competitor research. That run must open
+the exact source URL through Playwright before web search, wait for dynamic
+loading, and confirm the requested article plus a non-empty product title from a
+browser snapshot or network response.
+
+The worker audits the actual `mcp_tool_call` JSONL events emitted by `codex exec`.
+A model-produced `verified` value is accepted only after successful
+`browser_navigate` and either `browser_snapshot` or `browser_network_request`
+calls. If the exact source card is not confirmed, the turn fails closed: the bot
+sends only a verification diagnostic and does not send a speculative summary or
+HTML document. A verified run sends a concise summary and uploads a self-contained
+`wb-competitor-report-<article>.html` document with the full analysis, sources
+and recommendations. The application renders and escapes the HTML; document
+failure falls back to chunked text. This MVP supports Wildberries links only,
+reuses `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and
+`TELEGRAM_CODEX_TIMEOUT_SECONDS`, and is not enabled for Telegram
+Business/Profile automation.
 
 Trusted private Telegram users can create executable low/medium-risk tasks after
 confirmation. The assistant resolves a repository profile, writes

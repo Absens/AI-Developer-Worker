@@ -319,6 +319,7 @@ export interface CodexRunOptions {
   sandbox?: CodexSandbox;
   outputSchema?: CodexOutputSchema;
   webSearch?: boolean;
+  playwrightMcp?: boolean;
 }
 
 export interface CodexReviewRunOptions {
@@ -1019,12 +1020,20 @@ export interface GitLabService {
   }): Promise<MergeRequestInfo>;
 }
 
+export interface CodexMcpToolCall {
+  server: string;
+  tool: string;
+  status: string;
+  error?: string;
+}
+
 export interface CodexExecution {
   process: ProcessResult;
   finalMessage?: string;
   threadId?: string;
   question?: string;
   clarification?: ClarificationQuestion;
+  mcpToolCalls?: CodexMcpToolCall[];
 }
 
 export type CodexProgressEventKind =

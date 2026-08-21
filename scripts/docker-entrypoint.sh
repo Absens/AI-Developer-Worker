@@ -10,4 +10,6 @@ if [ ! -f "${CODEX_HOME_PATH}/auth.json" ] && [ -f "${HOST_CODEX_HOME_PATH}/auth
   cp -a "${HOST_CODEX_HOME_PATH}/." "${CODEX_HOME_PATH}/"
 fi
 
+node /workspace/scripts/configure-playwright-mcp.mjs
+
 exec "$@"

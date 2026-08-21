@@ -8,6 +8,7 @@ import {
   buildCompetitorResearchTelegramResponse,
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
   extractWildberriesProductReference,
+  isCompetitorResearchSourceVerified,
   parseCompetitorResearchOutput,
 } from "../src/domain/telegramAssistant/competitorResearch.js";
 import { renderTelegramResponse } from "../src/integrations/telegram/renderer.js";
@@ -17,6 +18,18 @@ const reference = {
   productId: "123456789",
   sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
 };
+
+const verifiedSource = () => ({
+  status: "verified" as const,
+  requestedProductId: reference.productId,
+  resolvedProductId: reference.productId,
+  productTitle: "Проверенный товар",
+  brand: "Проверенный бренд",
+  evidence: [
+    "Playwright snapshot: карточка содержит артикул 123456789 и название товара.",
+  ],
+  failureReason: null,
+});
 
 describe("extractWildberriesProductReference", () => {
   it.each([
@@ -56,10 +69,26 @@ describe("extractWildberriesProductReference", () => {
 });
 
 describe("competitor research prompt", () => {
-  it("requires a concise summary and sourced full Russian report", () => {
+  it("requires browser verification before any competitor search", () => {
     const prompt = buildCompetitorResearchPrompt(reference);
 
     expect(prompt).toContain(reference.sourceUrl);
+    expect(prompt).toContain("Playwright MCP");
+    expect(prompt).toContain("browser_navigate");
+    expect(prompt).toContain("browser_wait_for");
+    expect(prompt).toContain("browser_snapshot");
+    expect(prompt).toContain("browser_network_requests");
+    expect(prompt).toContain("browser_network_request");
+    expect(prompt).toContain("не используй web search");
+    expect(prompt).toContain(reference.productId);
+    expect(prompt).toContain("sourceVerification.status = failed");
+    expect(prompt).toContain("не ищи конкурентов");
+    expect(prompt).toContain("не делай предположений");
+  });
+
+  it("requires a concise summary and sourced full Russian report after verification", () => {
+    const prompt = buildCompetitorResearchPrompt(reference);
+
     expect(prompt).toContain("русском языке");
     expect(prompt).toContain("краткое резюме");
     expect(prompt).toContain("полный отчёт");
@@ -72,55 +101,179 @@ describe("competitor research prompt", () => {
     expect(prompt).toContain("остатков");
   });
 
-  it("defines a strict summary-and-report output schema", () => {
+  it("defines a strict source-verification-and-report output schema", () => {
     expect(COMPETITOR_RESEARCH_OUTPUT_SCHEMA).toEqual({
       type: "object",
       additionalProperties: false,
-      required: ["summary", "report"],
+      required: ["sourceVerification", "summary", "report"],
       properties: {
+        sourceVerification: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "status",
+            "requestedProductId",
+            "resolvedProductId",
+            "productTitle",
+            "brand",
+            "evidence",
+            "failureReason",
+          ],
+          properties: {
+            status: { type: "string", enum: ["verified", "failed"] },
+            requestedProductId: { type: "string", minLength: 1 },
+            resolvedProductId: { type: ["string", "null"] },
+            productTitle: { type: ["string", "null"] },
+            brand: { type: ["string", "null"] },
+            evidence: {
+              type: "array",
+              items: { type: "string", minLength: 1 },
+            },
+            failureReason: { type: ["string", "null"] },
+          },
+        },
         summary: { type: "string", minLength: 1, maxLength: 2500 },
-        report: { type: "string", minLength: 1 },
+        report: { type: "string" },
       },
     });
   });
 });
 
 describe("parseCompetitorResearchOutput", () => {
-  it("extracts a structured summary and report", () => {
-    expect(parseCompetitorResearchOutput(JSON.stringify({
+  it("extracts a browser-verified structured summary and report", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: verifiedSource(),
       summary: "  Краткий вывод.  ",
       report: "  Готовый отчёт.  ",
-    }))).toEqual({
+    }), reference);
+
+    expect(parsed).toEqual({
+      sourceVerification: verifiedSource(),
       summary: "Краткий вывод.",
       report: "Готовый отчёт.",
     });
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(true);
   });
 
-  it("builds a bounded compatibility summary for report-only JSON", () => {
+  it("keeps an explicit browser verification failure and stops it from becoming valid", () => {
     const parsed = parseCompetitorResearchOutput(JSON.stringify({
-      report: [
-        "## Основные выводы",
-        "Первый важный вывод.",
-        "Второй важный вывод.",
-      ].join("\n"),
-    }));
+      sourceVerification: {
+        status: "failed",
+        requestedProductId: reference.productId,
+        resolvedProductId: null,
+        productTitle: null,
+        brand: null,
+        evidence: ["Playwright получил CAPTCHA вместо карточки."],
+        failureReason: "Wildberries не отдал товарные данные.",
+      },
+      summary: "Исходную карточку подтвердить не удалось.",
+      report: "",
+    }), reference);
 
-    expect(parsed.report).toContain("Первый важный вывод");
-    expect(parsed.summary).toContain("Первый важный вывод");
-    expect(parsed.summary.length).toBeLessThanOrEqual(2500);
+    expect(parsed.sourceVerification.status).toBe("failed");
+    expect(parsed.sourceVerification.failureReason).toBe(
+      "Wildberries не отдал товарные данные.",
+    );
+    expect(parsed.report).toBe("");
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(false);
   });
 
-  it("keeps a non-empty plain-text response for CLI compatibility", () => {
-    expect(parseCompetitorResearchOutput("  Обычный текст отчёта.  ")).toEqual({
-      summary: "Обычный текст отчёта.",
-      report: "Обычный текст отчёта.",
+  it("rejects a nominally verified result for a different article", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: {
+        ...verifiedSource(),
+        resolvedProductId: "987654321",
+      },
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(false);
+  });
+
+  it("rejects verified output without a product title or browser evidence", () => {
+    const noEvidence = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: {
+        ...verifiedSource(),
+        productTitle: " ",
+        evidence: [],
+      },
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(isCompetitorResearchSourceVerified(noEvidence, reference)).toBe(false);
+  });
+
+  it("rejects browser evidence that does not mention the exact requested article", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: {
+        ...verifiedSource(),
+        evidence: ["Playwright snapshot showed a product title and brand."],
+      },
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(false);
+  });
+
+  it("rejects verified output that still contains a failure reason", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: {
+        ...verifiedSource(),
+        failureReason: "Карточка подтверждена только частично.",
+      },
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(false);
+  });
+
+  it("fails closed for legacy report-only JSON", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      report: "## Основные выводы\nПервый важный вывод.",
+    }), reference);
+
+    expect(parsed.sourceVerification).toEqual({
+      status: "failed",
+      requestedProductId: reference.productId,
+      resolvedProductId: null,
+      productTitle: null,
+      brand: null,
+      evidence: [],
+      failureReason: "Codex не вернул структурированную browser-верификацию исходной карточки.",
     });
+    expect(parsed.report).toContain("Первый важный вывод");
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(false);
   });
 
-  it("returns stable diagnostics for empty output", () => {
-    expect(parseCompetitorResearchOutput("   ")).toEqual({
-      summary: "Codex не вернул отчёт по конкурентам.",
-      report: "Codex не вернул отчёт по конкурентам.",
+  it("fails closed for non-empty plain-text CLI output", () => {
+    const parsed = parseCompetitorResearchOutput(
+      "  Текстовый отчёт без browser-верификации.  ",
+      reference,
+    );
+
+    expect(parsed.summary).toBe("Текстовый отчёт без browser-верификации.");
+    expect(parsed.report).toBe("Текстовый отчёт без browser-верификации.");
+    expect(parsed.sourceVerification.status).toBe("failed");
+    expect(isCompetitorResearchSourceVerified(parsed, reference)).toBe(false);
+  });
+
+  it("returns stable failed diagnostics for empty output", () => {
+    expect(parseCompetitorResearchOutput("   ", reference)).toEqual({
+      sourceVerification: {
+        status: "failed",
+        requestedProductId: reference.productId,
+        resolvedProductId: null,
+        productTitle: null,
+        brand: null,
+        evidence: [],
+        failureReason: "Codex не вернул результат исследования конкурентов.",
+      },
+      summary: "Codex не вернул результат исследования конкурентов.",
+      report: "",
     });
   });
 });
@@ -157,6 +310,7 @@ describe("competitor research presentation", () => {
   it("creates a self-contained safe HTML report", () => {
     const html = buildCompetitorResearchHtmlReport({
       reference,
+      sourceVerification: verifiedSource(),
       summary: "Краткий <script>alert('summary')</script> вывод.",
       report: [
         "## Основные конкуренты",
