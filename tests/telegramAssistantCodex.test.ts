@@ -3,15 +3,39 @@ import { describe, expect, it, vi } from "vitest";
 import { TelegramAssistantCodexService } from "../src/domain/telegramAssistant/index.js";
 import { COMPETITOR_RESEARCH_OUTPUT_SCHEMA } from "../src/domain/telegramAssistant/competitorResearch.js";
 
+const competitorReference = {
+  marketplace: "wildberries" as const,
+  productId: "123456789",
+  sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+};
+
+const verifiedSource = () => ({
+  status: "verified" as const,
+  requestedProductId: competitorReference.productId,
+  resolvedProductId: competitorReference.productId,
+  productTitle: "Подтверждённый товар",
+  brand: "Brand",
+  evidence: [
+    "Playwright snapshot: артикул 123456789 и название Подтверждённый товар.",
+  ],
+  failureReason: null,
+});
+
 describe("TelegramAssistantCodexService", () => {
-  it("runs marketplace competitor research with read-only web search and structured output", async () => {
+  it("runs marketplace competitor research with read-only browser verification, web search and structured output", async () => {
+    const sourceVerification = verifiedSource();
     const runInitial = vi.fn(async () => ({
       process: { stdout: "", stderr: "", exitCode: 0 },
       finalMessage: JSON.stringify({
+        sourceVerification,
         summary: "Краткий конкурентный вывод.",
         report: "Конкурентный отчёт.",
       }),
       threadId: "thread_competitors_1",
+      mcpToolCalls: [
+        { server: "playwright", tool: "browser_navigate", status: "completed" },
+        { server: "playwright", tool: "browser_snapshot", status: "completed" },
+      ],
     }));
     const runResume = vi.fn();
     const service = new TelegramAssistantCodexService({
@@ -20,35 +44,40 @@ describe("TelegramAssistantCodexService", () => {
       timeoutSeconds: 30,
     });
 
-    const result = await service.researchMarketplaceCompetitors({
-      marketplace: "wildberries",
-      productId: "123456789",
-      sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
-    });
+    const result = await service.researchMarketplaceCompetitors(competitorReference);
 
     expect(result).toEqual({
+      sourceVerification,
       summary: "Краткий конкурентный вывод.",
       report: "Конкурентный отчёт.",
       threadId: "thread_competitors_1",
     });
     expect(runInitial).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "https://www.wildberries.ru/catalog/123456789/detail.aspx",
-      ),
+      expect.stringContaining(competitorReference.sourceUrl),
       undefined,
       {
         sandbox: "read-only",
         webSearch: true,
+        playwrightMcp: true,
         outputSchema: COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
       },
     );
     expect(runResume).not.toHaveBeenCalled();
   });
 
-  it("keeps a plain competitor report when the CLI does not return JSON", async () => {
+  it("rejects a claimed verification when Codex did not complete Playwright MCP evidence calls", async () => {
     const runInitial = vi.fn(async () => ({
       process: { stdout: "", stderr: "", exitCode: 0 },
-      finalMessage: "  Текстовый отчёт для совместимости.  ",
+      finalMessage: JSON.stringify({
+        sourceVerification: verifiedSource(),
+        summary: "Нельзя доверять этому выводу без browser tool audit.",
+        report: "Спекулятивный конкурентный отчёт.",
+      }),
+      threadId: "thread_competitors_without_browser",
+      mcpToolCalls: [
+        { server: "playwright", tool: "browser_navigate", status: "completed" },
+        { server: "playwright", tool: "browser_snapshot", status: "failed" },
+      ],
     }));
     const service = new TelegramAssistantCodexService({
       codex: { runInitial, runResume: vi.fn() },
@@ -56,17 +85,54 @@ describe("TelegramAssistantCodexService", () => {
       timeoutSeconds: 30,
     });
 
-    await expect(service.researchMarketplaceCompetitors({
-      marketplace: "wildberries",
-      productId: "123456789",
-      sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
-    })).resolves.toEqual({
-      summary: "Текстовый отчёт для совместимости.",
-      report: "Текстовый отчёт для совместимости.",
-    });
+    await expect(service.researchMarketplaceCompetitors(competitorReference))
+      .resolves.toEqual({
+        sourceVerification: {
+          status: "failed",
+          requestedProductId: competitorReference.productId,
+          resolvedProductId: null,
+          productTitle: null,
+          brand: null,
+          evidence: [],
+          failureReason:
+            "Codex не подтвердил исходную карточку успешными вызовами Playwright MCP.",
+        },
+        summary:
+          "Codex не подтвердил исходную карточку успешными вызовами Playwright MCP.",
+        report: "",
+        threadId: "thread_competitors_without_browser",
+      });
   });
 
-  it("returns a bounded competitor research timeout", async () => {
+  it("fails source verification closed when the CLI does not return structured JSON", async () => {
+    const runInitial = vi.fn(async () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: "  Текстовый отчёт без browser-верификации.  ",
+    }));
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+    });
+
+    await expect(service.researchMarketplaceCompetitors(competitorReference))
+      .resolves.toEqual({
+        sourceVerification: {
+          status: "failed",
+          requestedProductId: competitorReference.productId,
+          resolvedProductId: null,
+          productTitle: null,
+          brand: null,
+          evidence: [],
+          failureReason:
+            "Codex не вернул структурированную browser-верификацию исходной карточки.",
+        },
+        summary: "Текстовый отчёт без browser-верификации.",
+        report: "Текстовый отчёт без browser-верификации.",
+      });
+  });
+
+  it("returns a bounded competitor research timeout with failed source verification", async () => {
     vi.useFakeTimers();
     try {
       const runInitial = vi.fn(() => new Promise<never>(() => undefined));
@@ -76,16 +142,23 @@ describe("TelegramAssistantCodexService", () => {
         timeoutSeconds: 1,
       });
 
-      const pending = service.researchMarketplaceCompetitors({
-        marketplace: "wildberries",
-        productId: "123456789",
-        sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
-      });
+      const pending = service.researchMarketplaceCompetitors(competitorReference);
       await vi.advanceTimersByTimeAsync(1000);
 
+      const timeoutMessage =
+        "Codex не успел завершить исследование конкурентов за отведенное время.";
       await expect(pending).resolves.toEqual({
-        summary: "Codex не успел завершить исследование конкурентов за отведенное время.",
-        report: "Codex не успел завершить исследование конкурентов за отведенное время.",
+        sourceVerification: {
+          status: "failed",
+          requestedProductId: competitorReference.productId,
+          resolvedProductId: null,
+          productTitle: null,
+          brand: null,
+          evidence: [],
+          failureReason: timeoutMessage,
+        },
+        summary: timeoutMessage,
+        report: timeoutMessage,
         timedOut: true,
       });
     } finally {

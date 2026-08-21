@@ -3,6 +3,7 @@ import {
   buildCompetitorResearchPrompt,
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
   parseCompetitorResearchOutput,
+  type CompetitorResearchContent,
   type WildberriesProductReference,
 } from "./competitorResearch.js";
 
@@ -24,9 +25,8 @@ export interface AnswerProjectQuestionResult {
 
 export type ResearchMarketplaceCompetitorsInput = WildberriesProductReference;
 
-export interface ResearchMarketplaceCompetitorsResult {
-  summary: string;
-  report: string;
+export interface ResearchMarketplaceCompetitorsResult
+  extends CompetitorResearchContent {
   threadId?: string;
   timedOut?: boolean;
 }
@@ -66,6 +66,14 @@ const EMPTY_ANSWER =
   "Codex не вернул ответ по предоставленным проектным источникам.";
 const COMPETITOR_RESEARCH_TIMEOUT_REPORT =
   "Codex не успел завершить исследование конкурентов за отведенное время.";
+const COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE =
+  "Codex не подтвердил исходную карточку успешными вызовами Playwright MCP.";
+const PLAYWRIGHT_MCP_SERVER = "playwright";
+const PLAYWRIGHT_NAVIGATION_TOOL = "browser_navigate";
+const PLAYWRIGHT_EVIDENCE_TOOLS = new Set([
+  "browser_snapshot",
+  "browser_network_request",
+]);
 const TIMEOUT = Symbol("telegram-assistant-codex-timeout");
 
 export class TelegramAssistantCodexService {
@@ -109,6 +117,7 @@ export class TelegramAssistantCodexService {
         {
           sandbox: "read-only",
           webSearch: true,
+          playwrightMcp: true,
           outputSchema: COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
         },
       ),
@@ -117,15 +126,29 @@ export class TelegramAssistantCodexService {
 
     if (execution === TIMEOUT) {
       return {
+        sourceVerification: {
+          status: "failed",
+          requestedProductId: input.productId,
+          resolvedProductId: null,
+          productTitle: null,
+          brand: null,
+          evidence: [],
+          failureReason: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
+        },
         summary: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
         report: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
         timedOut: true,
       };
     }
 
-    const content = parseCompetitorResearchOutput(execution.finalMessage);
+    const content = parseCompetitorResearchOutput(execution.finalMessage, input);
+    const auditedContent = content.sourceVerification.status === "verified" &&
+      !hasSuccessfulPlaywrightVerification(execution)
+      ? failedPlaywrightAuditContent(input)
+      : content;
+
     return {
-      ...content,
+      ...auditedContent,
       ...(execution.threadId ? { threadId: execution.threadId } : {}),
     };
   }
@@ -199,6 +222,37 @@ export class TelegramAssistantCodexService {
     };
   }
 }
+
+const hasSuccessfulPlaywrightVerification = (
+  execution: CodexExecution,
+): boolean => {
+  const completedTools = new Set(
+    (execution.mcpToolCalls ?? [])
+      .filter((call) =>
+        call.server === PLAYWRIGHT_MCP_SERVER && call.status === "completed"
+      )
+      .map((call) => call.tool),
+  );
+
+  return completedTools.has(PLAYWRIGHT_NAVIGATION_TOOL) &&
+    Array.from(PLAYWRIGHT_EVIDENCE_TOOLS).some((tool) => completedTools.has(tool));
+};
+
+const failedPlaywrightAuditContent = (
+  input: ResearchMarketplaceCompetitorsInput,
+): CompetitorResearchContent => ({
+  sourceVerification: {
+    status: "failed",
+    requestedProductId: input.productId,
+    resolvedProductId: null,
+    productTitle: null,
+    brand: null,
+    evidence: [],
+    failureReason: COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
+  },
+  summary: COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
+  report: "",
+});
 
 const buildProjectQuestionPrompt = (
   input: AnswerProjectQuestionInput,
