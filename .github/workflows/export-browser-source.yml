@@ -28,43 +28,9 @@ jobs:
         run: |
           set -euo pipefail
           cat .github/competitor-browser-patch/part-* | base64 --decode | gzip --decompress > /tmp/competitor-browser.patch
-          echo "9f9b64ecf2aa3ca54655794504daff00ed421d89a45e22b98886c7030b561278  /tmp/competitor-browser.patch" | sha256sum --check
+          echo "2cd92bea57ee8665e9a96f6398624f3b27b50f3150f8bf2b3c46be0dfc35cc70  /tmp/competitor-browser.patch" | sha256sum --check
           git apply --check /tmp/competitor-browser.patch
           git apply /tmp/competitor-browser.patch
-          git diff --check
-
-      - name: Align Compose with the minimal Playwright MCP HTTP CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          compose = Path("compose.yaml")
-          compose_text = compose.read_text(encoding="utf-8")
-          removals = [
-              "      - --no-sandbox\n",
-              "      - --block-service-workers\n",
-              "      - --image-responses\n      - omit\n",
-              "      - --allowed-hosts\n      - playwright,localhost,127.0.0.1\n",
-          ]
-          for removal in removals:
-              compose_text = compose_text.replace(removal, "", 1)
-          compose.write_text(compose_text, encoding="utf-8")
-
-          test_file = Path("tests/playwrightMcpConfig.test.ts")
-          test_text = test_file.read_text(encoding="utf-8")
-          for expectation in [
-              '      "--no-sandbox",\n',
-              '      "--block-service-workers",\n',
-              '      "--image-responses",\n',
-              '      "omit",\n',
-              '      "--allowed-hosts",\n',
-              '      "playwright,localhost,127.0.0.1",\n',
-          ]:
-              test_text = test_text.replace(expectation, "", 1)
-          test_file.write_text(test_text, encoding="utf-8")
-          PY
           git diff --check
 
       - name: Set up Node.js
@@ -97,6 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOST_CODEX_HOME" "$TARGET_REPO_PATH"
+          touch .env
           docker compose config > /tmp/ai-worker-compose.yml
           docker run --rm --entrypoint node \
             mcr.microsoft.com/playwright/mcp:v0.0.79 \
