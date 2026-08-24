@@ -196,12 +196,23 @@ fallback accepts a model-declared verification only when successful Playwright
 calls include `browser_navigate` plus either `browser_snapshot` or
 `browser_network_request`.
 
-`TelegramAssistantService` is the final gate. If the requested and resolved
-articles differ, title/evidence is missing, a failure reason remains, or neither
-trusted CDN evidence nor the fallback MCP call audit exists, the turn is
-completed as `failed` with metric outcome `unverified`. No competitor summary or
-HTML artifact is emitted. This prevents a search-engine inference from silently
-becoming the identity of the source product.
+`TelegramAssistantService` keeps the final fail-closed source gate. If the
+requested and resolved articles differ, title/evidence is missing, a failure
+reason remains, or neither trusted CDN evidence nor the fallback MCP call audit
+exists, the turn is completed as `failed` with metric outcome `unverified`. No
+competitor summary or HTML artifact is emitted. This prevents a search-engine
+inference from silently becoming the identity of the source product.
+
+After the source passes that gate, competitor candidates cross a separate
+Wildberries-only boundary. The structured Codex output accepts only unique
+numeric articles with exact canonical
+`https://www.wildberries.ru/catalog/<article>/detail.aspx` URLs and rejects the
+source article. The worker then verifies every remaining article through the
+same Wildberries `card.json` adapter. Telegram and HTML narratives are rebuilt
+from that verified set, so free-form model text and rejected external products
+cannot become delivered competitors. When fewer than five cards are confirmed,
+the result stays partial and states the limitation instead of filling the gap
+from another marketplace or a search snippet.
 
 ### Telegram Digital Twin
 

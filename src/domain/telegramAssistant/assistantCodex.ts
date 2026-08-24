@@ -2,6 +2,8 @@ import type { CodexExecution, CodexRunner } from "../../models/types.js";
 import {
   buildCompetitorResearchPrompt,
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
+  enforceVerifiedWildberriesCompetitors,
+  isCompetitorResearchSourceVerified,
   parseCompetitorResearchOutput,
   type CompetitorResearchContent,
   type VerifiedWildberriesProduct,
@@ -142,6 +144,7 @@ export class TelegramAssistantCodexService {
           evidence: [],
           failureReason: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
         },
+        competitors: [],
         summary: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
         report: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
         timedOut: true,
@@ -149,12 +152,22 @@ export class TelegramAssistantCodexService {
     }
 
     const content = parseCompetitorResearchOutput(execution.finalMessage, input);
-    const auditedContent = verifiedProduct
+    const sourceAuditedContent = verifiedProduct
       ? applyTrustedSourceVerification(content, verifiedProduct)
       : content.sourceVerification.status === "verified" &&
           !hasSuccessfulPlaywrightVerification(execution)
         ? failedPlaywrightAuditContent(input)
         : content;
+    const auditedContent = isCompetitorResearchSourceVerified(
+        sourceAuditedContent,
+        input,
+      )
+      ? await enforceVerifiedWildberriesCompetitors(
+          sourceAuditedContent,
+          input,
+          this.productVerifier,
+        )
+      : sourceAuditedContent;
 
     return {
       ...auditedContent,
@@ -288,6 +301,7 @@ const failedPlaywrightAuditContent = (
     evidence: [],
     failureReason: COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
   },
+  competitors: [],
   summary: COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
   report: "",
 });

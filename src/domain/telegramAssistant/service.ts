@@ -2168,6 +2168,7 @@ export class TelegramAssistantService {
         content: buildCompetitorResearchHtmlReport({
           reference,
           sourceVerification: result.sourceVerification,
+          competitors: result.competitors,
           summary: result.summary,
           report: result.report,
           generatedAt: new Date().toISOString(),

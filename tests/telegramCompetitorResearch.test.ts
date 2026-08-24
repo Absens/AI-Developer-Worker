@@ -31,6 +31,16 @@ const verifiedSource = () => ({
   failureReason: null,
 });
 
+const validCompetitor = () => ({
+  productId: "987654321",
+  productTitle: "Подтверждённый конкурент",
+  sourceUrl: "https://www.wildberries.ru/catalog/987654321/detail.aspx",
+  relevance: "Тот же тип товара и сценарий использования.",
+  evidence: [
+    "Карточка Wildberries содержит артикул 987654321 и название товара.",
+  ],
+});
+
 describe("extractWildberriesProductReference", () => {
   it.each([
     [
@@ -120,11 +130,24 @@ describe("competitor research prompt", () => {
     expect(prompt).toContain("остатков");
   });
 
+  it("limits discovery and competitor evidence to verified Wildberries product cards", () => {
+    const prompt = buildCompetitorResearchPrompt(reference);
+
+    expect(prompt).toContain("исключительно внутри Wildberries");
+    expect(prompt).toContain("Поисковые системы можно использовать только для обнаружения");
+    expect(prompt).toContain("каноническую ссылку");
+    expect(prompt).toContain("не совпадает с исходным артикулом");
+    expect(prompt).toContain("Ozon");
+    expect(prompt).toContain("Яндекс Маркета");
+    expect(prompt).toContain("AliExpress");
+    expect(prompt).toContain("верни меньше конкурентов");
+  });
+
   it("defines a strict source-verification-and-report output schema", () => {
     expect(COMPETITOR_RESEARCH_OUTPUT_SCHEMA).toEqual({
       type: "object",
       additionalProperties: false,
-      required: ["sourceVerification", "summary", "report"],
+      required: ["sourceVerification", "competitors", "summary", "report"],
       properties: {
         sourceVerification: {
           type: "object",
@@ -151,6 +174,36 @@ describe("competitor research prompt", () => {
             failureReason: { type: ["string", "null"] },
           },
         },
+        competitors: {
+          type: "array",
+          maxItems: 10,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "productId",
+              "productTitle",
+              "sourceUrl",
+              "relevance",
+              "evidence",
+            ],
+            properties: {
+              productId: { type: "string", pattern: "^[0-9]+$" },
+              productTitle: { type: "string", minLength: 1 },
+              sourceUrl: {
+                type: "string",
+                pattern:
+                  "^https://www\\.wildberries\\.ru/catalog/[0-9]+/detail\\.aspx$",
+              },
+              relevance: { type: "string", minLength: 1 },
+              evidence: {
+                type: "array",
+                minItems: 1,
+                items: { type: "string", minLength: 1 },
+              },
+            },
+          },
+        },
         summary: { type: "string", minLength: 1, maxLength: 2500 },
         report: { type: "string" },
       },
@@ -159,6 +212,47 @@ describe("competitor research prompt", () => {
 });
 
 describe("parseCompetitorResearchOutput", () => {
+  it("accepts a separate canonical Wildberries product card candidate", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: verifiedSource(),
+      competitors: [validCompetitor()],
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(parsed.competitors).toEqual([validCompetitor()]);
+  });
+
+  it.each([
+    "https://www.ozon.ru/product/987654321/",
+    "https://market.yandex.ru/product--example/987654321",
+    "https://manufacturer.example/products/987654321",
+  ])("rejects an external product URL as a competitor: %s", (sourceUrl) => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: verifiedSource(),
+      competitors: [{ ...validCompetitor(), sourceUrl }],
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(parsed.competitors).toEqual([]);
+  });
+
+  it("rejects the source article as its own competitor", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: verifiedSource(),
+      competitors: [{
+        ...validCompetitor(),
+        productId: reference.productId,
+        sourceUrl: reference.sourceUrl,
+      }],
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(parsed.competitors).toEqual([]);
+  });
+
   it("extracts a browser-verified structured summary and report", () => {
     const parsed = parseCompetitorResearchOutput(JSON.stringify({
       sourceVerification: verifiedSource(),
@@ -168,6 +262,7 @@ describe("parseCompetitorResearchOutput", () => {
 
     expect(parsed).toEqual({
       sourceVerification: verifiedSource(),
+      competitors: [],
       summary: "Краткий вывод.",
       report: "Готовый отчёт.",
     });
@@ -291,6 +386,7 @@ describe("parseCompetitorResearchOutput", () => {
         evidence: [],
         failureReason: "Codex не вернул результат исследования конкурентов.",
       },
+      competitors: [],
       summary: "Codex не вернул результат исследования конкурентов.",
       report: "",
     });
@@ -330,6 +426,7 @@ describe("competitor research presentation", () => {
     const html = buildCompetitorResearchHtmlReport({
       reference,
       sourceVerification: verifiedSource(),
+      competitors: [validCompetitor()],
       summary: "Краткий <script>alert('summary')</script> вывод.",
       report: [
         "## Основные конкуренты",

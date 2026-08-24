@@ -249,10 +249,17 @@ A model-produced `verified` value is accepted only after successful
 `browser_navigate` and either `browser_snapshot` or `browser_network_request`
 calls. If the exact source card is not confirmed, the turn fails closed: the bot
 sends only a verification diagnostic and does not send a speculative summary or
-HTML document. A verified run sends a concise summary and uploads a self-contained
-`wb-competitor-report-<article>.html` document with the full analysis, sources
-and recommendations. The application renders and escapes the HTML; document
-failure falls back to chunked text. This MVP supports Wildberries links only,
+HTML document. After source verification, competitor candidates are restricted
+to separate canonical Wildberries product-card URLs and are independently
+confirmed through Wildberries `card.json`; search results may discover a card
+but are not accepted as its evidence. External marketplace links, the source
+article itself and unverifiable candidates are discarded. A verified run sends
+a concise summary and uploads a self-contained
+`wb-competitor-report-<article>.html` document rebuilt from the confirmed WB
+cards. If fewer than five cards are confirmed, the summary and report state that
+limitation and do not substitute products from other marketplaces. The
+application renders and escapes the HTML; document failure falls back to chunked
+text. This MVP supports Wildberries links only,
 reuses `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and
 `TELEGRAM_CODEX_TIMEOUT_SECONDS`, and is not enabled for Telegram
 Business/Profile automation.

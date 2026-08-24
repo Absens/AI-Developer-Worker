@@ -48,8 +48,9 @@ describe("TelegramAssistantCodexService", () => {
 
     expect(result).toEqual({
       sourceVerification,
-      summary: "Краткий конкурентный вывод.",
-      report: "Конкурентный отчёт.",
+      competitors: [],
+      summary: expect.stringContaining("0 из 5"),
+      report: expect.stringContaining("Подтверждённых отдельных карточек-конкурентов"),
       threadId: "thread_competitors_1",
     });
     expect(runInitial).toHaveBeenCalledWith(
@@ -97,6 +98,7 @@ describe("TelegramAssistantCodexService", () => {
           failureReason:
             "Codex не подтвердил исходную карточку успешными вызовами Playwright MCP.",
         },
+        competitors: [],
         summary:
           "Codex не подтвердил исходную карточку успешными вызовами Playwright MCP.",
         report: "",
@@ -153,13 +155,105 @@ describe("TelegramAssistantCodexService", () => {
           ],
           failureReason: null,
         },
-        summary: "Краткий конкурентный вывод.",
-        report: "Конкурентный отчёт.",
+        competitors: [],
+        summary: expect.stringContaining("0 из 5"),
+        report: expect.stringContaining("Подтверждённых отдельных карточек-конкурентов"),
         threadId: "thread_competitors_cdn",
       });
     expect(runInitial.mock.calls[0]?.[0]).toContain(
       "карточка уже подтверждена worker",
     );
+  });
+
+  it("returns an honest partial result without external or unverified substitutes", async () => {
+    const validCompetitor = {
+      productId: "987654321",
+      productTitle: "Название из ответа Codex",
+      sourceUrl: "https://www.wildberries.ru/catalog/987654321/detail.aspx",
+      relevance: "Сопоставимый товар той же категории.",
+      evidence: ["Карточка Wildberries 987654321."],
+    };
+    const runInitial = vi.fn(async () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: JSON.stringify({
+        sourceVerification: verifiedSource(),
+        competitors: [
+          validCompetitor,
+          {
+            ...validCompetitor,
+            productId: "555666777",
+            productTitle: "Внешний товар Ozon",
+            sourceUrl: "https://www.ozon.ru/product/555666777/",
+          },
+          {
+            ...validCompetitor,
+            productId: competitorReference.productId,
+            productTitle: "Исходный товар",
+            sourceUrl: competitorReference.sourceUrl,
+          },
+          {
+            ...validCompetitor,
+            productId: "222333444",
+            productTitle: "Неподтверждённая WB-карточка",
+            sourceUrl: "https://www.wildberries.ru/catalog/222333444/detail.aspx",
+          },
+        ],
+        summary: "Конкуренты: Внешний товар Ozon https://www.ozon.ru/product/555666777/",
+        report: "Внешний товар Ozon и исходный товар объявлены конкурентами.",
+      }),
+    }));
+    const sourceProduct = {
+      productId: competitorReference.productId,
+      productTitle: "Подтверждённый исходный товар",
+      brand: "Source Brand",
+      category: "Категория",
+      description: "Описание",
+      attributes: [],
+      sourceUrl: "https://basket-05.wbbasket.ru/source-card.json",
+    };
+    const competitorProduct = {
+      productId: validCompetitor.productId,
+      productTitle: "Подтверждённый WB-конкурент",
+      brand: "Competitor Brand",
+      category: "Категория",
+      description: "Описание конкурента",
+      attributes: [],
+      sourceUrl: "https://basket-06.wbbasket.ru/competitor-card.json",
+    };
+    const verify = vi.fn(async (productId: string) => {
+      if (productId === sourceProduct.productId) {
+        return sourceProduct;
+      }
+      if (productId === competitorProduct.productId) {
+        return competitorProduct;
+      }
+      return undefined;
+    });
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+      productVerifier: { verify },
+    });
+
+    const result = await service.researchMarketplaceCompetitors(competitorReference);
+
+    expect(result.competitors).toEqual([
+      expect.objectContaining({
+        productId: competitorProduct.productId,
+        productTitle: competitorProduct.productTitle,
+        sourceUrl: validCompetitor.sourceUrl,
+      }),
+    ]);
+    expect(result.summary).toContain("1 из 5");
+    expect(result.summary).toContain("Ограничение");
+    expect(result.summary).not.toContain("Ozon");
+    expect(result.report).toContain(validCompetitor.sourceUrl);
+    expect(result.report).not.toContain("ozon.ru");
+    expect(result.report).not.toContain("Внешний товар");
+    expect(result.report).not.toContain("Неподтверждённая WB-карточка");
+    expect(verify).not.toHaveBeenCalledWith("555666777");
+    expect(verify).toHaveBeenCalledWith("222333444");
   });
 
   it("fails source verification closed when the CLI does not return structured JSON", async () => {
@@ -185,6 +279,7 @@ describe("TelegramAssistantCodexService", () => {
           failureReason:
             "Codex не вернул структурированную browser-верификацию исходной карточки.",
         },
+        competitors: [],
         summary: "Текстовый отчёт без browser-верификации.",
         report: "Текстовый отчёт без browser-верификации.",
       });
@@ -215,6 +310,7 @@ describe("TelegramAssistantCodexService", () => {
           evidence: [],
           failureReason: timeoutMessage,
         },
+        competitors: [],
         summary: timeoutMessage,
         report: timeoutMessage,
         timedOut: true,

@@ -30,8 +30,17 @@ export interface CompetitorResearchSourceVerification {
   failureReason: string | null;
 }
 
+export interface CompetitorResearchCompetitor {
+  productId: string;
+  productTitle: string;
+  sourceUrl: string;
+  relevance: string;
+  evidence: string[];
+}
+
 export interface CompetitorResearchContent {
   sourceVerification: CompetitorResearchSourceVerification;
+  competitors: CompetitorResearchCompetitor[];
   summary: string;
   report: string;
 }
@@ -48,6 +57,12 @@ const TRAILING_URL_PUNCTUATION = /[),.;!?\]}]+$/u;
 const WILDBERRIES_PRODUCT_PATH = /^\/catalog\/(\d+)(?:\/detail\.aspx)?\/?$/iu;
 const INLINE_URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
 const MAX_SUMMARY_CHARS = 2500;
+const MAX_COMPETITOR_COUNT = 10;
+const REQUIRED_COMPETITOR_COUNT = 5;
+const NUMERIC_PRODUCT_ID_PATTERN = /^\d+$/u;
+
+const buildCanonicalWildberriesProductUrl = (productId: string): string =>
+  `https://www.wildberries.ru/catalog/${productId}/detail.aspx`;
 
 export const extractWildberriesProductReference = (
   text: string,
@@ -86,7 +101,7 @@ export const extractWildberriesProductReference = (
     return {
       marketplace: "wildberries",
       productId,
-      sourceUrl: `https://www.wildberries.ru/catalog/${productId}/detail.aspx`,
+      sourceUrl: buildCanonicalWildberriesProductUrl(productId),
     };
   }
 
@@ -96,7 +111,7 @@ export const extractWildberriesProductReference = (
 export const COMPETITOR_RESEARCH_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["sourceVerification", "summary", "report"],
+  required: ["sourceVerification", "competitors", "summary", "report"],
   properties: {
     sourceVerification: {
       type: "object",
@@ -123,6 +138,36 @@ export const COMPETITOR_RESEARCH_OUTPUT_SCHEMA = {
         failureReason: { type: ["string", "null"] },
       },
     },
+    competitors: {
+      type: "array",
+      maxItems: MAX_COMPETITOR_COUNT,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "productId",
+          "productTitle",
+          "sourceUrl",
+          "relevance",
+          "evidence",
+        ],
+        properties: {
+          productId: { type: "string", pattern: "^[0-9]+$" },
+          productTitle: { type: "string", minLength: 1 },
+          sourceUrl: {
+            type: "string",
+            pattern:
+              "^https://www\\.wildberries\\.ru/catalog/[0-9]+/detail\\.aspx$",
+          },
+          relevance: { type: "string", minLength: 1 },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
     summary: { type: "string", minLength: 1, maxLength: MAX_SUMMARY_CHARS },
     report: { type: "string" },
   },
@@ -146,13 +191,19 @@ export const buildCompetitorResearchPrompt = (
   ...buildSourceVerificationPrompt(reference, verifiedProduct),
   "",
   "ЭТАП 2 — конкурентное исследование, только если sourceVerification.status = verified:",
+  "Ищи конкурентов исключительно внутри Wildberries.",
+  "Поисковые системы можно использовать только для обнаружения кандидатов; конкурентом и источником сведений о нём может быть только фактически открытая карточка Wildberries.",
+  `Каждый элемент competitors обязан иметь подтверждённый числовой артикул, каноническую ссылку https://www.wildberries.ru/catalog/<article>/detail.aspx и не совпадает с исходным артикулом ${reference.productId}.`,
+  "Не включай в competitors, summary или report товары с Ozon, Яндекс Маркета, AliExpress, сайтов производителей и любых других площадок.",
+  "Если подтверждено меньше 5 карточек Wildberries, верни меньше конкурентов и явно укажи ограничение в summary и report. Не заполняй недостающее количество внешними товарами, поисковыми сниппетами или предположениями.",
+  "Каждый товар, названный конкурентом в summary или report, должен присутствовать в массиве competitors; не добавляй туда группы без отдельной подтверждённой карточки.",
   "Подготовь результат на русском языке в двух представлениях:",
   "- summary: краткое резюме для Telegram объёмом до 2500 символов. Укажи подтверждённый товар, 3 наиболее релевантных конкурента или группы конкурентов, 3 ключевых вывода и 3 приоритетных действия. Не повторяй весь отчёт.",
   "- report: полный отчёт для отдельного HTML-файла.",
   "",
   "Полный отчёт должен:",
   "1. Использовать подтверждённые данные исходной карточки и определить категорию, ценовой сегмент, аудиторию, сценарии использования и ключевые характеристики.",
-  "2. Найти 5–10 релевантных кандидатов: прямых конкурентов, поисковых конкурентов, альтернатив покупателя и сильные эталонные карточки категории.",
+  "2. Найти до 5 подтверждённых карточек Wildberries: прямых конкурентов, поисковых конкурентов, альтернатив покупателя и сильные эталонные карточки категории.",
   "3. Для каждого кандидата объяснить, почему он включён, и указать степень релевантности без ложной точности.",
   "4. Сравнить цену, позиционирование, ассортимент/комплектацию, визуальную подачу, заголовок, описание, отзывы, преимущества и слабые места — только когда данные доступны из источников.",
   "5. Сформулировать выводы: что изменить в исходной карточке, какие УТП проверить и какие три действия имеют наивысший приоритет.",
@@ -163,7 +214,7 @@ export const buildCompetitorResearchPrompt = (
   "- Не выдумывай значения продаж, остатков, выручки, рекламных расходов, конверсии или иных закрытых метрик.",
   "- Не считай похожесть дизайна достаточным доказательством конкуренции: объясняй конкуренцию через товар, запрос, аудиторию, цену или альтернативный сценарий выбора.",
   "- Полный отчёт оформи markdown-подобным текстом: разделы начинай с ##, используй короткие абзацы и списки. Не используй Markdown-таблицы и HTML.",
-  "- Верни JSON строго по переданной output schema: sourceVerification фиксирует проверку источника, summary содержит краткое резюме, report — полный отчёт только для verified-результата.",
+  "- Верни JSON строго по переданной output schema: sourceVerification фиксирует проверку источника, competitors содержит только подтверждённые карточки Wildberries, summary содержит краткое резюме, report — полный отчёт только для verified-результата.",
 ].join("\n");
 
 const buildSourceVerificationPrompt = (
@@ -222,6 +273,7 @@ export const parseCompetitorResearchOutput = (
       parsed.sourceVerification,
       reference,
     );
+    const competitors = normalizeCompetitors(parsed.competitors, reference);
     const summaryValue = typeof parsed.summary === "string"
       ? parsed.summary.trim()
       : "";
@@ -230,6 +282,7 @@ export const parseCompetitorResearchOutput = (
 
     return {
       sourceVerification,
+      competitors,
       summary: normalizeSummary(summaryValue || fallbackSummary),
       report,
     };
@@ -240,6 +293,47 @@ export const parseCompetitorResearchOutput = (
       normalized,
     );
   }
+};
+
+export const enforceVerifiedWildberriesCompetitors = async (
+  content: CompetitorResearchContent,
+  reference: WildberriesProductReference,
+  verifier: WildberriesProductVerifierPort | undefined,
+): Promise<CompetitorResearchContent> => {
+  const verifiedProducts = await Promise.all(
+    content.competitors.map(async (candidate) => {
+      const product = await verifier?.verify(candidate.productId)
+        .catch(() => undefined);
+      if (
+        !product ||
+        product.productId !== candidate.productId ||
+        product.productId === reference.productId
+      ) {
+        return undefined;
+      }
+
+      const brandEvidence = product.brand ? `; бренд ${product.brand}` : "";
+      return {
+        productId: product.productId,
+        productTitle: product.productTitle,
+        sourceUrl: buildCanonicalWildberriesProductUrl(product.productId),
+        relevance: candidate.relevance,
+        evidence: [
+          `Wildberries CDN card.json: ${product.sourceUrl}; артикул ${product.productId}; товар ${product.productTitle}${brandEvidence}.`,
+        ],
+      } satisfies CompetitorResearchCompetitor;
+    }),
+  );
+  const competitors = verifiedProducts.filter(
+    (product): product is CompetitorResearchCompetitor => product !== undefined,
+  );
+
+  return {
+    ...content,
+    competitors,
+    summary: buildVerifiedCompetitorSummary(content.sourceVerification, competitors),
+    report: buildVerifiedCompetitorReport(content.sourceVerification, competitors),
+  };
 };
 
 export const isCompetitorResearchSourceVerified = (
@@ -391,6 +485,7 @@ const failedCompetitorResearchContent = (
   report = "",
 ): CompetitorResearchContent => ({
   sourceVerification: failedSourceVerification(reference, failureReason),
+  competitors: [],
   summary: normalizeSummary(report ? buildCompatibilitySummary(report) : failureReason),
   report,
 });
@@ -447,6 +542,107 @@ const normalizeSourceVerification = (
       : failureReason,
   };
 };
+
+const normalizeCompetitors = (
+  value: unknown,
+  reference: WildberriesProductReference,
+): CompetitorResearchCompetitor[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenProductIds = new Set<string>();
+  const competitors: CompetitorResearchCompetitor[] = [];
+  for (const candidate of value.slice(0, MAX_COMPETITOR_COUNT)) {
+    if (!isRecord(candidate)) {
+      continue;
+    }
+
+    const productId = normalizeRequiredString(candidate.productId);
+    const productTitle = normalizeRequiredString(candidate.productTitle);
+    const sourceUrl = normalizeRequiredString(candidate.sourceUrl);
+    const relevance = normalizeRequiredString(candidate.relevance);
+    const evidence = Array.isArray(candidate.evidence)
+      ? candidate.evidence
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+    if (
+      !NUMERIC_PRODUCT_ID_PATTERN.test(productId) ||
+      productId === reference.productId ||
+      seenProductIds.has(productId) ||
+      sourceUrl !== buildCanonicalWildberriesProductUrl(productId) ||
+      !productTitle ||
+      !relevance ||
+      evidence.length === 0
+    ) {
+      continue;
+    }
+
+    seenProductIds.add(productId);
+    competitors.push({
+      productId,
+      productTitle,
+      sourceUrl,
+      relevance,
+      evidence,
+    });
+  }
+
+  return competitors;
+};
+
+const buildVerifiedCompetitorSummary = (
+  sourceVerification: CompetitorResearchSourceVerification,
+  competitors: CompetitorResearchCompetitor[],
+): string => {
+  const lines = [
+    `Исходный товар Wildberries подтверждён: ${sourceVerification.productTitle ?? sourceVerification.requestedProductId}.`,
+    `Подтверждённые конкуренты Wildberries: ${competitors.length} из ${REQUIRED_COMPETITOR_COUNT}.`,
+    ...competitors.slice(0, 3).map((competitor, index) =>
+      `${index + 1}. ${competitor.productTitle} · артикул ${competitor.productId} · ${competitor.sourceUrl}`
+    ),
+  ];
+  if (competitors.length < REQUIRED_COMPETITOR_COUNT) {
+    lines.push(buildCompetitorShortageLimitation(competitors.length));
+  }
+  return normalizeSummary(lines.join("\n"));
+};
+
+const buildVerifiedCompetitorReport = (
+  sourceVerification: CompetitorResearchSourceVerification,
+  competitors: CompetitorResearchCompetitor[],
+): string => {
+  const sections = [
+    "## Проверенный исходный товар",
+    `${sourceVerification.productTitle ?? sourceVerification.requestedProductId} · артикул ${sourceVerification.requestedProductId}.`,
+    "",
+    "## Подтверждённые конкуренты Wildberries",
+  ];
+  if (competitors.length === 0) {
+    sections.push("Подтверждённых отдельных карточек-конкурентов Wildberries не найдено.");
+  } else {
+    competitors.forEach((competitor, index) => {
+      sections.push(
+        `${index + 1}. ${competitor.productTitle} · артикул ${competitor.productId}`,
+        `- Карточка: ${competitor.sourceUrl}`,
+        `- Релевантность: ${competitor.relevance}`,
+        `- Проверка карточки: ${competitor.evidence[0] ?? "нет данных"}`,
+      );
+    });
+  }
+  sections.push("", "## Ограничения");
+  sections.push(
+    competitors.length < REQUIRED_COMPETITOR_COUNT
+      ? buildCompetitorShortageLimitation(competitors.length)
+      : `Подтверждены все ${REQUIRED_COMPETITOR_COUNT} требуемых карточек Wildberries.`,
+  );
+  return sections.join("\n");
+};
+
+const buildCompetitorShortageLimitation = (verifiedCount: number): string =>
+  `Ограничение: подтверждено ${verifiedCount} из ${REQUIRED_COMPETITOR_COUNT} требуемых карточек Wildberries. Недостающие позиции не заменялись товарами с других площадок или предположениями.`;
 
 const normalizeRequiredString = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
