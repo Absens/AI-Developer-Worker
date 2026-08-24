@@ -36,7 +36,8 @@ COPY web ./web
 RUN npm run web:build
 RUN npm run build
 
-RUN chmod +x ./scripts/docker-entrypoint.sh
+RUN sed -i 's/\r$//' ./scripts/docker-entrypoint.sh \
+  && chmod +x ./scripts/docker-entrypoint.sh
 
 ENTRYPOINT ["./scripts/docker-entrypoint.sh"]
 CMD ["npm", "run", "start"]

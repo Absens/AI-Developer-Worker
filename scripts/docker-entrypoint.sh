@@ -10,6 +10,7 @@ if [ ! -f "${CODEX_HOME_PATH}/auth.json" ] && [ -f "${HOST_CODEX_HOME_PATH}/auth
   cp -a "${HOST_CODEX_HOME_PATH}/." "${CODEX_HOME_PATH}/"
 fi
 
+# Keep the managed Playwright MCP block in sync before starting any command.
 node /workspace/scripts/configure-playwright-mcp.mjs
 
 exec "$@"

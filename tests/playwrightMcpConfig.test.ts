@@ -136,6 +136,8 @@ describe("configurePlaywrightMcpConfig", () => {
       "utf8",
     );
 
+    expect(entrypoint).toMatch(/^#!\/bin\/sh\n/);
+    expect(entrypoint).not.toContain("\r");
     expect(entrypoint.indexOf("configure-playwright-mcp.mjs")).toBeGreaterThan(
       entrypoint.indexOf("Bootstrapping CODEX_HOME"),
     );
