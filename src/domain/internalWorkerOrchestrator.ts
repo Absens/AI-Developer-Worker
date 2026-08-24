@@ -307,9 +307,18 @@ export class InternalWorkerOrchestrator {
     process.on("SIGTERM", shutdown);
     try {
       while (!this.shuttingDown) {
-        const outcome = await this.runOnce();
-        if (outcome !== "processed" && !this.shuttingDown) {
-          await this.interruptibleSleep(this.config.pollIntervalMs);
+        try {
+          const outcome = await this.runOnce();
+          if (outcome !== "processed" && !this.shuttingDown) {
+            await this.interruptibleSleep(this.config.pollIntervalMs);
+          }
+        } catch (error) {
+          this.logger.error("Internal worker cycle failed.", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (!this.shuttingDown) {
+            await this.interruptibleSleep(this.config.pollIntervalMs);
+          }
         }
       }
     } finally {

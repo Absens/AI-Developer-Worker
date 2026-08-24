@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { InternalWorkerOrchestrator } from "../src/domain/internalWorkerOrchestrator.js";
 import {
@@ -440,6 +440,44 @@ const createOrchestrator = (
     undefined,
     yandexBridges,
   );
+
+describe("InternalWorkerOrchestrator polling lifecycle", () => {
+  it("continues polling after a transient Yandex import failure", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const importCandidates = vi
+      .fn<YandexBridge["importCandidates"]>()
+      .mockRejectedValueOnce(new TemporaryIntegrationError("Tracker temporarily unavailable."))
+      .mockImplementationOnce(async () => {
+        process.emit("SIGTERM", "SIGTERM");
+        return { created: 0, updated: 0, commentsImported: 0 };
+      });
+    const bridge = { importCandidates } as unknown as YandexBridge;
+    const orchestrator = new InternalWorkerOrchestrator(
+      {
+        ...createGlobalConfig(),
+        pollIntervalMinutes: 0,
+        pollIntervalMs: 1,
+      },
+      [
+        {
+          profile,
+          config: createAppConfig(),
+          git: new FakeGitService(),
+          gitlab: new FakeGitLabService(),
+          codex: new FakeCodexRunner(),
+        },
+      ],
+      tracker,
+      new Logger(),
+      undefined,
+      undefined,
+      [bridge],
+    );
+
+    await expect(orchestrator.runForever()).resolves.toBeUndefined();
+    expect(importCandidates).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("InternalWorkerOrchestrator Yandex bridge status sync", () => {
   it("syncs Yandex-sourced internal tasks to in_progress immediately after claim", async () => {

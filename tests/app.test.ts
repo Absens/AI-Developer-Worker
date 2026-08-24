@@ -32,6 +32,42 @@ const listenOnEphemeralPort = async (server: Server): Promise<number> =>
     server.listen(0, "127.0.0.1");
   });
 
+const createTelegramWebhookConfigFile = (): string => {
+  const directory = mkdtempSync(join(tmpdir(), "ai-worker-app-telegram-retry-"));
+  cleanupPaths.push(directory);
+  const configFile = join(directory, "worker.config.json");
+  writeFileSync(
+    configFile,
+    JSON.stringify({
+      worker: { id: "worker-1" },
+      taskTracker: { provider: "internal", storage: "memory" },
+      observability: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 9464,
+        baseUrl: "https://worker.example.test",
+      },
+      telegramAssistant: {
+        enabled: true,
+        botToken: "bot-token",
+        mode: "webhook",
+        allowedUserIds: ["101"],
+        webhook: { path: "tg/", secretToken: "hook-secret" },
+      },
+      repositories: [
+        {
+          name: "developer",
+          repoPath: "/workspace/developer",
+          gitlabProjectId: "123",
+          queues: ["DEV"],
+        },
+      ],
+    }),
+    "utf8",
+  );
+  return configFile;
+};
+
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -531,6 +567,75 @@ describe("application wiring", () => {
         },
       },
     ]);
+  });
+
+  it("retries a transient Telegram webhook startup failure", async () => {
+    vi.useFakeTimers();
+    const configFile = createTelegramWebhookConfigFile();
+    let setWebhookAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        if (String(input).endsWith("/setWebhook")) {
+          setWebhookAttempts += 1;
+          if (setWebhookAttempts === 1) {
+            throw new TypeError("fetch failed");
+          }
+        }
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    try {
+      const app = buildApplication({
+        WORKER_CONFIG_FILE: configFile,
+        NODE_ENV: "test",
+        GITLAB_URL: "https://gitlab.example.com/",
+        GITLAB_TOKEN: "gitlab-token",
+      });
+      const startup = app.telegramAssistant.start();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(startup).resolves.toBeUndefined();
+      expect(setWebhookAttempts).toBe(2);
+      await app.telegramAssistant.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a permanent Telegram webhook startup failure", async () => {
+    const configFile = createTelegramWebhookConfigFile();
+    let setWebhookAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        if (String(input).endsWith("/setWebhook")) {
+          setWebhookAttempts += 1;
+        }
+        return new Response(
+          JSON.stringify({ ok: false, description: "Bad Request: invalid webhook" }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }),
+    );
+    const app = buildApplication({
+      WORKER_CONFIG_FILE: configFile,
+      NODE_ENV: "test",
+      GITLAB_URL: "https://gitlab.example.com/",
+      GITLAB_TOKEN: "gitlab-token",
+    });
+
+    await expect(app.telegramAssistant.start()).rejects.toThrow(
+      "Telegram request setWebhook failed with status 400",
+    );
+    expect(setWebhookAttempts).toBe(1);
   });
 
   it.each([

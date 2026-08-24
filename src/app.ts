@@ -37,7 +37,9 @@ import {
 } from "./integrations/internalTracker/cleanup.js";
 import {
   assertPublicHttpsTelegramWebhookBaseUrl,
+  TelegramApiError,
   TelegramClient,
+  TelegramRetryAfterError,
   TelegramUpdatePoller,
 } from "./integrations/telegram/index.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
@@ -54,7 +56,9 @@ import { redactSecrets } from "./observability/redaction.js";
 import { createObservabilityService } from "./observability/service.js";
 import type { TelegramWebhookRoute } from "./observability/server.js";
 import type { ProjectManagerApiDependencies } from "./observability/taskTrackerHumanApi.js";
+import { TemporaryIntegrationError } from "./utils/errors.js";
 import { Logger } from "./utils/logger.js";
+import { withRetry } from "./utils/retry.js";
 
 export interface CleanupController {
   start(): void;
@@ -171,6 +175,48 @@ const createTelegramAssistantCleanupController = (
       timer = undefined;
     },
   };
+};
+
+const retryTelegramStartupRequest = async <T>(
+  method: "setWebhook" | "deleteWebhook",
+  operation: () => Promise<T>,
+  logger: Logger,
+): Promise<T> => {
+  try {
+    return await withRetry(
+      async () => {
+        try {
+          return await operation();
+        } catch (error) {
+          if (error instanceof TelegramRetryAfterError) {
+            throw new TemporaryIntegrationError(
+              error.message,
+              error,
+              error.retryAfterSeconds * 1000,
+            );
+          }
+          if (
+            error instanceof TelegramApiError &&
+            (error.status === 0 || error.status >= 500)
+          ) {
+            throw new TemporaryIntegrationError(error.message, error);
+          }
+          throw error;
+        }
+      },
+      {
+        retries: 3,
+        delayMs: 1_000,
+        label: `telegram:${method}`,
+        logger,
+      },
+    );
+  } catch (error) {
+    if (error instanceof TemporaryIntegrationError && error.cause !== undefined) {
+      throw error.cause;
+    }
+    throw error;
+  }
 };
 
 export const buildTelegramAssistantCodexRuntimeConfig = <
@@ -702,15 +748,23 @@ const createTelegramAssistantController = (
         return;
       }
       if (poller) {
-        await telegramClient.deleteWebhook({ dropPendingUpdates: false });
+        await retryTelegramStartupRequest(
+          "deleteWebhook",
+          () => telegramClient.deleteWebhook({ dropPendingUpdates: false }),
+          logger,
+        );
         poller.start();
       } else if (webhookUrl) {
-        await telegramClient.setWebhook({
-          url: webhookUrl,
-          ...(webhook?.secretToken !== undefined
-            ? { secretToken: webhook.secretToken }
-            : {}),
-        });
+        await retryTelegramStartupRequest(
+          "setWebhook",
+          () => telegramClient.setWebhook({
+            url: webhookUrl,
+            ...(webhook?.secretToken !== undefined
+              ? { secretToken: webhook.secretToken }
+              : {}),
+          }),
+          logger,
+        );
         webhookRegistered = true;
       }
       startNotificationInterval();

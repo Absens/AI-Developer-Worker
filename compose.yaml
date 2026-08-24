@@ -82,6 +82,7 @@ services:
       - "${HOST_CODEX_HOME:?Set HOST_CODEX_HOME in .env}:/host-codex:ro"
       - "${TARGET_REPO_PATH:?Set TARGET_REPO_PATH in .env}:/workspace/project"
       - codex-home:/codex-home
+    restart: unless-stopped
 
 volumes:
   codex-home:
