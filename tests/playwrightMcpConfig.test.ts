@@ -174,7 +174,7 @@ describe("Playwright MCP Docker Compose wiring", () => {
       "--image-responses",
       "omit",
       "--allowed-hosts",
-      "playwright,localhost,127.0.0.1",
+      "playwright:8931,playwright,localhost,127.0.0.1",
       "--port",
       "8931",
       "--host",
