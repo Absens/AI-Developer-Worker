@@ -275,6 +275,44 @@ describe("CliCodexRunner", () => {
     const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
     expect(args.filter((arg) => arg === "--search")).toHaveLength(1);
     expect(args.indexOf("--search")).toBeLessThan(args.indexOf("exec"));
+    expect(args).not.toContain("mcp_servers.playwright.enabled=true");
+  });
+
+  it("enables Playwright MCP for an explicitly opted-in run only", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    const argsPath = join(tempDir, "args.json");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args), 'utf8');`,
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Browser verification complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-playwright' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      new Logger(),
+    );
+
+    await runner.runInitial("Verify this product in the browser.", undefined, {
+      playwrightMcp: true,
+    });
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const configIndex = args.indexOf("--config");
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(args[configIndex + 1]).toBe("mcp_servers.playwright.enabled=true");
+    expect(configIndex).toBeLessThan(args.indexOf("exec"));
   });
 
   it("overrides configured sandbox for initial codex exec runs", async () => {
@@ -734,6 +772,57 @@ describe("CliCodexRunner", () => {
           (entry.context as { line?: string } | undefined)?.line === "tool says hello",
       ),
     ).toBe(true);
+  });
+
+  it("captures MCP tool calls from Codex JSONL events", async () => {
+    const tempDir = createTempDir();
+    const scriptPath = join(tempDir, "codex-runner.cjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('--output-last-message');",
+        "const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;",
+        "if (outputPath) {",
+        "  fs.writeFileSync(outputPath, 'Browser verification complete\\n', 'utf8');",
+        "}",
+        "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-mcp' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'playwright', tool: 'browser_navigate', status: 'completed' } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', status: 'completed' } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'playwright', tool: 'browser_network_request', status: 'failed', error: { message: 'TOKEN=super-secret request failed' } } }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logger = new TestLogger();
+    const runner = new CliCodexRunner(
+      createConfig(tempDir, "node", [scriptPath]),
+      logger,
+    );
+
+    const execution = await runner.runInitial("Verify this product in the browser.");
+
+    expect(execution.mcpToolCalls).toEqual([
+      {
+        server: "playwright",
+        tool: "browser_navigate",
+        status: "completed",
+      },
+      {
+        server: "playwright",
+        tool: "browser_snapshot",
+        status: "completed",
+      },
+      {
+        server: "playwright",
+        tool: "browser_network_request",
+        status: "failed",
+        error: "TOKEN=[redacted] request failed",
+      },
+    ]);
+    expect(JSON.stringify(logger.entries)).not.toContain("super-secret");
   });
 
   it("logs top-level JSONL error messages without failing successful runs", async () => {

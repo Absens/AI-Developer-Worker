@@ -14,6 +14,7 @@ It will start successfully only if all of the following are already true:
 4. Git inside the mounted project can fetch, commit, and push.
 5. `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are valid for the target project.
 6. If the target repo has `husky` or other git hooks, decide whether to keep the default `GIT_COMMIT_NO_VERIFY=true`.
+7. If Wildberries competitor research is enabled, the Playwright MCP sidecar must be healthy and reachable from the worker.
 
 If `CODEX_HOME` is missing or not authenticated, the worker now fails fast on startup before touching Tracker.
 The Docker image builds the Angular task tracker console during `docker build`
@@ -26,8 +27,9 @@ When the container starts:
 1. The worker loads env config.
 2. It runs `codex login status` using `CODEX_HOME`.
 3. If Codex auth is missing, startup fails immediately.
-4. If auth is valid, the worker starts polling Tracker.
-5. When it picks a task, it works in `/workspace/project`, runs `git`, then `codex`, then tests/lint, then push/MR creation.
+4. The container entrypoint idempotently adds or removes its managed Playwright MCP block in `${CODEX_HOME}/config.toml` according to `PLAYWRIGHT_MCP_ENABLED`.
+5. If auth and required MCP initialization are valid, the worker starts polling Tracker.
+6. When it picks a task, it works in `/workspace/project`, runs `git`, then `codex`, then tests/lint, then push/MR creation.
 
 So the container does not perform OAuth login by itself. It only reuses an existing authenticated Codex state.
 
@@ -125,11 +127,31 @@ TELEGRAM_ALLOWED_USER_IDS=111111111
 TELEGRAM_DEVELOPER_USER_IDS=111111111
 TELEGRAM_ALLOWED_CHAT_IDS=
 TELEGRAM_PROJECT_QA_ENABLED=false
+# Standard compose.yaml overrides these values for the worker and starts the sidecar.
+PLAYWRIGHT_MCP_ENABLED=false
+PLAYWRIGHT_MCP_URL=http://playwright:8931/mcp
 TELEGRAM_TASK_CREATION_ENABLED=true
 TELEGRAM_CONVERSATION_RETENTION_DAYS=14
 TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS=300
 TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS=300
 ```
+
+For Wildberries competitor research, use the standard Compose stack rather than
+running only the worker container. Compose starts an isolated Playwright MCP
+Chromium service, waits for its TCP healthcheck, and configures the managed Codex
+MCP block only inside `worker`. The block is disabled by default and competitor
+research enables it only for that Codex invocation:
+
+```bash
+docker compose up -d playwright
+docker compose ps playwright
+docker compose logs --tail=100 playwright
+```
+
+The Playwright service has no host port. A direct `docker run` deployment must
+provide its own Streamable HTTP MCP endpoint and explicitly set
+`PLAYWRIGHT_MCP_ENABLED=true`; otherwise source verification fails closed and no
+competitor report is delivered.
 
 Do not rely on alert-channel `TELEGRAM_BOT_TOKEN` for the assistant. If alerts
 also use Telegram, set both `TELEGRAM_BOT_TOKEN` and

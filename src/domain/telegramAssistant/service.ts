@@ -68,6 +68,7 @@ import {
   buildCompetitorResearchReportFileName,
   buildCompetitorResearchTelegramResponse,
   extractWildberriesProductReference,
+  isCompetitorResearchSourceVerified,
   type WildberriesProductReference,
 } from "./competitorResearch.js";
 import { encryptTelegramAuditText } from "./auditCrypto.js";
@@ -201,6 +202,10 @@ const COMPETITOR_RESEARCH_FAILED_MESSAGE =
   "Не удалось завершить исследование конкурентов. Попробуй повторить запрос позже.";
 const COMPETITOR_RESEARCH_DOCUMENT_FAILED_MESSAGE =
   "Не удалось отправить HTML-файл. Ниже полный отчёт текстом.";
+const COMPETITOR_RESEARCH_SOURCE_UNVERIFIED_MESSAGE =
+  "Не удалось подтвердить точный товар по исходной карточке Wildberries. " +
+  "Анализ остановлен, чтобы не подобрать конкурентов для неверного товара.";
+const MAX_COMPETITOR_RESEARCH_FAILURE_REASON_CHARS = 1000;
 const TASK_SENT_TO_OWNER_APPROVAL_MESSAGE =
   "Задача отправлена owner/admin на подтверждение запуска.";
 const TASK_OWNER_APPROVAL_UNAVAILABLE_MESSAGE =
@@ -210,6 +215,18 @@ const MAX_PROJECT_SOURCE_FILES = 20;
 const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
 const MAX_TASK_SOURCE_COUNT = 5;
 const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена|cancel|не\s+надо)$/iu;
+
+const buildCompetitorResearchSourceUnverifiedMessage = (
+  failureReason: string,
+): string => {
+  const normalizedReason = failureReason.trim().slice(
+    0,
+    MAX_COMPETITOR_RESEARCH_FAILURE_REASON_CHARS,
+  );
+  return normalizedReason
+    ? `${COMPETITOR_RESEARCH_SOURCE_UNVERIFIED_MESSAGE}\n\nПричина: ${normalizedReason}`
+    : COMPETITOR_RESEARCH_SOURCE_UNVERIFIED_MESSAGE;
+};
 
 const inferAssistantTurnIntent = (
   input: TelegramInboundMessage | undefined,
@@ -2028,6 +2045,36 @@ export class TelegramAssistantService {
         return;
       }
 
+      if (
+        result.timedOut !== true &&
+        !isCompetitorResearchSourceVerified(result, reference)
+      ) {
+        const diagnostic = redactSecrets(
+          result.sourceVerification.failureReason ||
+            "Playwright не подтвердил исходную карточку Wildberries.",
+        );
+        const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
+          status: "failed",
+          ...(result.threadId ? { threadId: result.threadId } : {}),
+          diagnostic,
+        });
+        if (!completed) {
+          return;
+        }
+        this.incrementMetric("telegram_codex_turns_total", {
+          intent: "competitor_research",
+          outcome: "unverified",
+        });
+        await this.sendPlainMessage(
+          message,
+          buildCompetitorResearchSourceUnverifiedMessage(diagnostic),
+        );
+        if (drainAfterCompletion) {
+          await this.drainQueuedMessages(message.conversationKey);
+        }
+        return;
+      }
+
       const completed = await this.completeCompetitorResearchTurn(turnId, result);
       if (!completed) {
         return;
@@ -2120,6 +2167,7 @@ export class TelegramAssistantService {
         fileName: buildCompetitorResearchReportFileName(reference),
         content: buildCompetitorResearchHtmlReport({
           reference,
+          sourceVerification: result.sourceVerification,
           summary: result.summary,
           report: result.report,
           generatedAt: new Date().toISOString(),

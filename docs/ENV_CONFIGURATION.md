@@ -61,6 +61,8 @@ Copy-Item .env.example .env
 | `LOCK_REDIS_URL` | Нет | Не задано | Зарезервировано для будущего Redis lock backend. |
 | `LOCK_POSTGRES_URL` | Нет | Не задано | Зарезервировано для будущего PostgreSQL lock backend. |
 | `CODEX_HOME` | Нет | `~/.codex` на текущей машине | Используйте writable Codex auth directory. В Docker обычно это должен быть путь смонтированного volume, например `/codex-home`. |
+| `PLAYWRIGHT_MCP_ENABLED` | Нет | `false` | Управляет только наличием managed Playwright MCP block в `${CODEX_HOME}/config.toml`. Стандартный `compose.yaml` переопределяет значение на `true` для `worker`, но сервер в block остаётся `enabled = false`; runner включает его per-run только для competitor research. Прямые и non-Compose запуски остаются без браузера, пока оператор не подключит MCP endpoint явно. |
+| `PLAYWRIGHT_MCP_URL` | Нет | `http://playwright:8931/mcp` | Streamable HTTP endpoint Playwright MCP. Разрешены только HTTP(S) URL без embedded credentials. Startup script сохраняет весь пользовательский Codex config вне managed block. |
 | `CODEX_CLI_COMMAND` | Нет | `codex` | Укажите executable, который запускает Codex CLI. Оставьте `codex`, если не нужен wrapper launcher. |
 | `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`; для Codex CLI `0.142.0` предпочитайте `never` или `on-request`, а не deprecated `on-failure`. |
 | `CODEX_MODEL` | Нет | Не задано | Необязательное явное имя модели Codex, если нужны воспроизводимые запуски. |
@@ -391,6 +393,26 @@ goal-to-task proposal generation.
 | `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | `200` | Maximum files for the future repository scan path. |
 | `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | `true` | Keeps PM goals behind human approval. In PM-2, approval only changes goal state. |
 
+## Playwright MCP browser runtime
+
+The worker image does not install Chromium or `@playwright/mcp`. The standard
+`compose.yaml` runs the pinned Microsoft Playwright MCP image as an internal-only
+sidecar at `http://playwright:8931/mcp`; no browser port is published to the
+host. The worker entrypoint updates only the delimited
+`AI_WORKER_PLAYWRIGHT_MCP` block in `${CODEX_HOME}/config.toml` and preserves all
+other profiles and MCP servers.
+
+The managed Codex server is configured with `enabled = false` and `required =
+true`. `CliCodexRunner` enables it with a one-run `--config` override only for
+Wildberries competitor research, so developer tasks, project Q&A, reviews and
+Digital Twin runs do not receive browser tools. When enabled for that run, it
+uses automatic approval only for its explicit allowlist and exposes navigation,
+waiting, accessibility snapshot, network inspection, screenshot and close. It
+does not expose click, form-fill, file-upload or arbitrary browser-code tools. If
+the sidecar is unavailable, standard Compose keeps the worker from starting;
+direct/non-Compose deployments must provide their own compatible endpoint before
+setting `PLAYWRIGHT_MCP_ENABLED=true`.
+
 ## Telegram Assistant
 
 Telegram Assistant is disabled by default. When enabled, it starts a Bot API
@@ -424,12 +446,19 @@ before enabling this as an auto-execution intake channel.
 
 With `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
 group may send a Wildberries product-card URL matching `/catalog/<numeric-id>/`.
-The assistant immediately acknowledges the request, starts an asynchronous
-read-only Codex run with per-run web search and a strict report schema, then
-returns the report to the originating chat. Competitor research shares the
-project-Q&A daily limit and timeout settings. The first version supports only
-Wildberries and deliberately ignores Telegram Business/Profile automation
-messages for this intent.
+The assistant immediately acknowledges the request and starts an asynchronous
+read-only Codex run. In the standard Compose deployment, Codex first uses the
+Playwright MCP sidecar to open the exact URL and confirm the exact article and
+product identity from a browser snapshot or network response. Web search and
+competitor analysis are allowed only after that verification.
+
+The runner records successful Playwright `mcp_tool_call` events from Codex JSONL;
+a structured `verified` claim without successful `browser_navigate` plus
+`browser_snapshot` or `browser_network_request` is rejected. Unverified runs mark
+the assistant turn failed and send only the verification diagnostic—no summary
+or HTML report. Competitor research shares the project-Q&A daily limit and
+timeout settings, supports only Wildberries in this version, and deliberately
+ignores Telegram Business/Profile automation messages for this intent.
 
 | Variable | Default | Notes |
 | --- | --- | --- |

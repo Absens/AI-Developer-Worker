@@ -167,6 +167,33 @@ the task must also have execution fields such as `repoPathKey`, `baseBranch` and
 See `docs/TELEGRAM_TASK_INTAKE.md` for the current intake boundary and the
 missing end-to-end work.
 
+### Telegram competitor research and browser verification
+
+Wildberries competitor research reuses the Telegram Assistant turn lifecycle but
+has a stricter data-quality boundary than project Q&A. `compose.yaml` runs the
+official Playwright MCP server as an internal isolated Chromium sidecar. At
+worker startup, `scripts/configure-playwright-mcp.mjs` owns only a delimited
+Playwright section in writable `CODEX_HOME/config.toml`; all other Codex settings
+remain user-owned. The managed server is disabled by default. Only
+`researchMarketplaceCompetitors()` opts its Codex run in through a CLI config
+override; project Q&A, implementation, review and Digital Twin runs remain
+browser-free.
+
+The research flow is browser-first. Codex must navigate to the exact card URL,
+wait for dynamic loading, and derive the requested article and product title
+from an accessibility snapshot or a network response before using web search.
+`CliCodexRunner` also captures completed MCP calls from `codex exec --json`.
+`TelegramAssistantCodexService` accepts a model-declared verification only when
+actual successful Playwright calls include `browser_navigate` plus either
+`browser_snapshot` or `browser_network_request`.
+
+`TelegramAssistantService` is the final gate. If the requested and resolved
+articles differ, title/evidence is missing, a failure reason remains, or the MCP
+call audit fails, the turn is completed as `failed` with metric outcome
+`unverified`. No competitor summary or HTML artifact is emitted. This prevents a
+search-engine inference from silently becoming the identity of the source
+product.
+
 ### Telegram Digital Twin
 
 Telegram Digital Twin is the forward-looking Telegram Assistant direction for
