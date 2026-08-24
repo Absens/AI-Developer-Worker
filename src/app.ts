@@ -42,6 +42,7 @@ import {
 } from "./integrations/telegram/index.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
+import { WildberriesProductVerifier } from "./integrations/wildberries/productVerifier.js";
 import {
   InMemoryYandexBridgeStore,
   PostgresYandexBridgeStore,
@@ -560,6 +561,7 @@ const createTelegramAssistantController = (
         ),
         maxContextChars: config.codexMaxContextChars,
         timeoutSeconds: config.codexTimeoutSeconds,
+        productVerifier: new WildberriesProductVerifier(),
       })
     : undefined;
   const memoryStore = fleetConfig.memory?.enabled

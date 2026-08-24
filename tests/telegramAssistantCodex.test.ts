@@ -104,6 +104,64 @@ describe("TelegramAssistantCodexService", () => {
       });
   });
 
+  it("accepts worker-verified CDN evidence when Playwright cannot open the source page", async () => {
+    const runInitial = vi.fn(async (
+      _prompt: string,
+      _observer: undefined,
+      _options: {
+        sandbox: "read-only";
+        webSearch: true;
+        playwrightMcp: true;
+        outputSchema: typeof COMPETITOR_RESEARCH_OUTPUT_SCHEMA;
+      },
+    ) => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: JSON.stringify({
+        sourceVerification: verifiedSource(),
+        summary: "Краткий конкурентный вывод.",
+        report: "Конкурентный отчёт.",
+      }),
+      threadId: "thread_competitors_cdn",
+      mcpToolCalls: [],
+    }));
+    const sourceProduct = {
+      productId: competitorReference.productId,
+      productTitle: "Подтверждённый товар",
+      brand: "Brand",
+      category: "Категория",
+      description: "Описание",
+      attributes: [{ name: "Состав", value: "хлопок" }],
+      sourceUrl: "https://basket-05.wbbasket.ru/card.json",
+    };
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+      productVerifier: { verify: vi.fn(async () => sourceProduct) },
+    });
+
+    await expect(service.researchMarketplaceCompetitors(competitorReference))
+      .resolves.toEqual({
+        sourceVerification: {
+          status: "verified",
+          requestedProductId: competitorReference.productId,
+          resolvedProductId: competitorReference.productId,
+          productTitle: "Подтверждённый товар",
+          brand: "Brand",
+          evidence: [
+            "Wildberries CDN card.json: https://basket-05.wbbasket.ru/card.json; артикул 123456789; товар Подтверждённый товар; бренд Brand.",
+          ],
+          failureReason: null,
+        },
+        summary: "Краткий конкурентный вывод.",
+        report: "Конкурентный отчёт.",
+        threadId: "thread_competitors_cdn",
+      });
+    expect(runInitial.mock.calls[0]?.[0]).toContain(
+      "карточка уже подтверждена worker",
+    );
+  });
+
   it("fails source verification closed when the CLI does not return structured JSON", async () => {
     const runInitial = vi.fn(async () => ({
       process: { stdout: "", stderr: "", exitCode: 0 },

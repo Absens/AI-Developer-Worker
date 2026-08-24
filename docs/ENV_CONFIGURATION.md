@@ -395,6 +395,16 @@ goal-to-task proposal generation.
 
 ## Playwright MCP browser runtime
 
+Wildberries source-card identity is normally verified before Codex starts. The
+worker reads the public CDN upstream map, selects only an allowlisted
+`basket-NN.wbbasket.ru` shard, fetches `card.json`, and requires its `nm_id` to
+match the requested article exactly. This needs no token, proxy or additional
+environment variable. When Wildberries blocks `detail.aspx` with HTTP 403/498,
+successful CDN verification still lets competitor research continue.
+
+Playwright remains enabled for research and is also the fail-closed fallback if
+the CDN route or payload cannot be verified.
+
 The worker image does not install Chromium or `@playwright/mcp`. The standard
 `compose.yaml` runs the pinned Microsoft Playwright MCP image as an internal-only
 sidecar at `http://playwright:8931/mcp`; no browser port is published to the

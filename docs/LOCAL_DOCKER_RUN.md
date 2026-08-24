@@ -137,10 +137,13 @@ TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS=300
 ```
 
 For Wildberries competitor research, use the standard Compose stack rather than
-running only the worker container. Compose starts an isolated Playwright MCP
-Chromium service, waits for its TCP healthcheck, and configures the managed Codex
-MCP block only inside `worker`. The block is disabled by default and competitor
-research enables it only for that Codex invocation:
+running only the worker container. Before Codex starts, the worker verifies the
+article against the public Wildberries CDN `card.json`; this remains usable when
+the HTML card returns anti-bot HTTP 403/498. Compose also starts an isolated
+Playwright MCP Chromium service for competitor browsing and as the fallback
+source-verification path, waits for its TCP healthcheck, and configures the
+managed Codex MCP block only inside `worker`. The block is disabled by default
+and competitor research enables it only for that Codex invocation:
 
 ```bash
 docker compose up -d playwright
@@ -150,8 +153,9 @@ docker compose logs --tail=100 playwright
 
 The Playwright service has no host port. A direct `docker run` deployment must
 provide its own Streamable HTTP MCP endpoint and explicitly set
-`PLAYWRIGHT_MCP_ENABLED=true`; otherwise source verification fails closed and no
-competitor report is delivered.
+`PLAYWRIGHT_MCP_ENABLED=true`. CDN verification removes the HTML anti-bot page as
+a single point of failure, but if the CDN payload cannot be verified the browser
+fallback still fails closed and no competitor report is delivered.
 
 Do not rely on alert-channel `TELEGRAM_BOT_TOKEN` for the assistant. If alerts
 also use Telegram, set both `TELEGRAM_BOT_TOKEN` and

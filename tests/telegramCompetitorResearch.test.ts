@@ -86,6 +86,25 @@ describe("competitor research prompt", () => {
     expect(prompt).toContain("не делай предположений");
   });
 
+  it("uses worker-verified CDN metadata without requiring a second source-card navigation", () => {
+    const prompt = buildCompetitorResearchPrompt(reference, {
+      productId: reference.productId,
+      productTitle: "Подтверждённый товар",
+      brand: "Brand",
+      category: "Категория",
+      description: "Описание",
+      attributes: [{ name: "Состав", value: "хлопок" }],
+      sourceUrl: "https://basket-05.wbbasket.ru/card.json",
+    });
+
+    expect(prompt).toContain("карточка уже подтверждена worker");
+    expect(prompt).toContain("Подтверждённый товар");
+    expect(prompt).toContain("basket-05.wbbasket.ru/card.json");
+    expect(prompt).not.toContain(
+      "Обязательно используй Playwright MCP до любого поиска конкурентов",
+    );
+  });
+
   it("requires a concise summary and sourced full Russian report after verification", () => {
     const prompt = buildCompetitorResearchPrompt(reference);
 

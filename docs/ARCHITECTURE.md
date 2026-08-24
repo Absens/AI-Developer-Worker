@@ -167,7 +167,7 @@ the task must also have execution fields such as `repoPathKey`, `baseBranch` and
 See `docs/TELEGRAM_TASK_INTAKE.md` for the current intake boundary and the
 missing end-to-end work.
 
-### Telegram competitor research and browser verification
+### Telegram competitor research and source verification
 
 Wildberries competitor research reuses the Telegram Assistant turn lifecycle but
 has a stricter data-quality boundary than project Q&A. `compose.yaml` runs the
@@ -179,20 +179,29 @@ remain user-owned. The managed server is disabled by default. Only
 override; project Q&A, implementation, review and Digital Twin runs remain
 browser-free.
 
-The research flow is browser-first. Codex must navigate to the exact card URL,
-wait for dynamic loading, and derive the requested article and product title
-from an accessibility snapshot or a network response before using web search.
-`CliCodexRunner` also captures completed MCP calls from `codex exec --json`.
-`TelegramAssistantCodexService` accepts a model-declared verification only when
-actual successful Playwright calls include `browser_navigate` plus either
-`browser_snapshot` or `browser_network_request`.
+Before starting Codex, the worker resolves the current Wildberries media shard
+from `https://cdn.wbbasket.ru/api/v3/upstreams` and reads the product's public
+`card.json`. The adapter accepts only `basket-NN.wbbasket.ru` hosts, verifies
+that `nm_id` exactly equals the article from the Telegram URL, and passes the
+bounded title, brand, category, description and attributes to the research
+prompt. This path is independent of `detail.aspx`, which Wildberries may answer
+with anti-bot HTTP 403/498 for an isolated browser.
+
+If CDN verification is unavailable or inconsistent, the flow falls back to the
+original browser-first gate. Codex must navigate to the exact card URL, wait for
+dynamic loading, and derive the requested article and product title from an
+accessibility snapshot or a network response before using web search.
+`CliCodexRunner` captures completed MCP calls from `codex exec --json`, and the
+fallback accepts a model-declared verification only when successful Playwright
+calls include `browser_navigate` plus either `browser_snapshot` or
+`browser_network_request`.
 
 `TelegramAssistantService` is the final gate. If the requested and resolved
-articles differ, title/evidence is missing, a failure reason remains, or the MCP
-call audit fails, the turn is completed as `failed` with metric outcome
-`unverified`. No competitor summary or HTML artifact is emitted. This prevents a
-search-engine inference from silently becoming the identity of the source
-product.
+articles differ, title/evidence is missing, a failure reason remains, or neither
+trusted CDN evidence nor the fallback MCP call audit exists, the turn is
+completed as `failed` with metric outcome `unverified`. No competitor summary or
+HTML artifact is emitted. This prevents a search-engine inference from silently
+becoming the identity of the source product.
 
 ### Telegram Digital Twin
 

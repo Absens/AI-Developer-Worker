@@ -4,7 +4,9 @@ import {
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
   parseCompetitorResearchOutput,
   type CompetitorResearchContent,
+  type VerifiedWildberriesProduct,
   type WildberriesProductReference,
+  type WildberriesProductVerifierPort,
 } from "./competitorResearch.js";
 
 export interface AssistantSource {
@@ -58,6 +60,7 @@ export interface TelegramAssistantCodexServiceOptions {
   codex: Pick<CodexRunner, "runInitial" | "runResume">;
   maxContextChars: number;
   timeoutSeconds: number;
+  productVerifier?: WildberriesProductVerifierPort;
 }
 
 const TIMEOUT_ANSWER =
@@ -80,11 +83,13 @@ export class TelegramAssistantCodexService {
   private readonly codex: Pick<CodexRunner, "runInitial" | "runResume">;
   private readonly maxContextChars: number;
   private readonly timeoutMs: number;
+  private readonly productVerifier?: WildberriesProductVerifierPort;
 
   public constructor(options: TelegramAssistantCodexServiceOptions) {
     this.codex = options.codex;
     this.maxContextChars = Math.max(0, options.maxContextChars);
     this.timeoutMs = Math.max(1, options.timeoutSeconds) * 1000;
+    this.productVerifier = options.productVerifier;
   }
 
   public async answerProjectQuestion(
@@ -110,9 +115,11 @@ export class TelegramAssistantCodexService {
   public async researchMarketplaceCompetitors(
     input: ResearchMarketplaceCompetitorsInput,
   ): Promise<ResearchMarketplaceCompetitorsResult> {
+    const verifiedProduct = await this.productVerifier?.verify(input.productId)
+      .catch(() => undefined);
     const execution = await withTimeout(
       this.codex.runInitial(
-        buildCompetitorResearchPrompt(input),
+        buildCompetitorResearchPrompt(input, verifiedProduct),
         undefined,
         {
           sandbox: "read-only",
@@ -142,10 +149,12 @@ export class TelegramAssistantCodexService {
     }
 
     const content = parseCompetitorResearchOutput(execution.finalMessage, input);
-    const auditedContent = content.sourceVerification.status === "verified" &&
-      !hasSuccessfulPlaywrightVerification(execution)
-      ? failedPlaywrightAuditContent(input)
-      : content;
+    const auditedContent = verifiedProduct
+      ? applyTrustedSourceVerification(content, verifiedProduct)
+      : content.sourceVerification.status === "verified" &&
+          !hasSuccessfulPlaywrightVerification(execution)
+        ? failedPlaywrightAuditContent(input)
+        : content;
 
     return {
       ...auditedContent,
@@ -236,6 +245,35 @@ const hasSuccessfulPlaywrightVerification = (
 
   return completedTools.has(PLAYWRIGHT_NAVIGATION_TOOL) &&
     Array.from(PLAYWRIGHT_EVIDENCE_TOOLS).some((tool) => completedTools.has(tool));
+};
+
+const applyTrustedSourceVerification = (
+  content: CompetitorResearchContent,
+  product: VerifiedWildberriesProduct,
+): CompetitorResearchContent => {
+  if (
+    content.sourceVerification.status !== "verified" ||
+    content.sourceVerification.requestedProductId !== product.productId ||
+    content.sourceVerification.resolvedProductId !== product.productId
+  ) {
+    return content;
+  }
+
+  const brandEvidence = product.brand ? `; бренд ${product.brand}` : "";
+  return {
+    ...content,
+    sourceVerification: {
+      status: "verified",
+      requestedProductId: product.productId,
+      resolvedProductId: product.productId,
+      productTitle: product.productTitle,
+      brand: product.brand,
+      evidence: [
+        `Wildberries CDN card.json: ${product.sourceUrl}; артикул ${product.productId}; товар ${product.productTitle}${brandEvidence}.`,
+      ],
+      failureReason: null,
+    },
+  };
 };
 
 const failedPlaywrightAuditContent = (
