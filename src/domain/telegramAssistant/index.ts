@@ -52,6 +52,8 @@ export {
   parseCompetitorResearchOutput,
   type BuildCompetitorResearchHtmlReportInput,
   type BuildCompetitorResearchTelegramResponseOptions,
+  type CompetitorResearchComparison,
+  type CompetitorResearchCompetitor,
   type CompetitorResearchContent,
   type WildberriesProductReference,
 } from "./competitorResearch.js";

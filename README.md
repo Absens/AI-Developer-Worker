@@ -254,12 +254,15 @@ to separate canonical Wildberries product-card URLs and are independently
 confirmed through Wildberries `card.json`; search results may discover a card
 but are not accepted as its evidence. External marketplace links, the source
 article itself and unverifiable candidates are discarded. A verified run sends
-a concise summary and uploads a self-contained
-`wb-competitor-report-<article>.html` document rebuilt from the confirmed WB
-cards. If fewer than five cards are confirmed, the summary and report state that
-limitation and do not substitute products from other marketplaces. The
-application renders and escapes the HTML; document failure falls back to chunked
-text. This MVP supports Wildberries links only,
+a concise decision summary with named links to confirmed cards and uploads a
+self-contained `wb-competitor-report-<article>.html` document rebuilt from the
+confirmed WB cards. The report shows verification status, trusted brand/category
+metadata, per-card similarities, differences, strengths, weaknesses and a
+concrete opportunity for the source card; raw model prose does not control its
+HTML structure. If fewer than five cards are confirmed, the summary and report
+state that limitation and do not substitute products from other marketplaces.
+The application renders and escapes the HTML; document failure falls back to
+chunked text. This MVP supports Wildberries links only,
 reuses `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and
 `TELEGRAM_CODEX_TIMEOUT_SECONDS`, and is not enabled for Telegram
 Business/Profile automation.

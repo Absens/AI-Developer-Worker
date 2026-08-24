@@ -172,6 +172,13 @@ describe("TelegramAssistantCodexService", () => {
       sourceUrl: "https://www.wildberries.ru/catalog/987654321/detail.aspx",
       relevance: "Сопоставимый товар той же категории.",
       evidence: ["Карточка Wildberries 987654321."],
+      comparison: {
+        similarities: ["Та же категория."],
+        differences: ["Больше предметов в комплекте."],
+        strengths: ["Полнее раскрыта комплектация."],
+        weaknesses: ["Не указаны размеры."],
+        opportunity: "Добавить размеры и комплектацию на первый экран.",
+      },
     };
     const runInitial = vi.fn(async () => ({
       process: { stdout: "", stderr: "", exitCode: 0 },
@@ -243,9 +250,14 @@ describe("TelegramAssistantCodexService", () => {
         productId: competitorProduct.productId,
         productTitle: competitorProduct.productTitle,
         sourceUrl: validCompetitor.sourceUrl,
+        brand: competitorProduct.brand,
+        category: competitorProduct.category,
       }),
     ]);
     expect(result.summary).toContain("1 из 5");
+    expect(result.summary).toContain("Ключевые выводы");
+    expect(result.summary).toContain("Приоритетные действия");
+    expect(result.summary).toContain(validCompetitor.comparison.opportunity);
     expect(result.summary).toContain("Ограничение");
     expect(result.summary).not.toContain("Ozon");
     expect(result.report).toContain(validCompetitor.sourceUrl);

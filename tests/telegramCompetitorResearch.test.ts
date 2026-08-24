@@ -39,6 +39,13 @@ const validCompetitor = () => ({
   evidence: [
     "Карточка Wildberries содержит артикул 987654321 и название товара.",
   ],
+  comparison: {
+    similarities: ["Та же категория и сценарий использования."],
+    differences: ["Комплектация больше на две единицы."],
+    strengths: ["Понятнее описан состав набора."],
+    weaknesses: ["Не раскрыты размеры каждого предмета."],
+    opportunity: "Добавить на первый экран точную комплектацию и размеры.",
+  },
 });
 
 describe("extractWildberriesProductReference", () => {
@@ -141,6 +148,11 @@ describe("competitor research prompt", () => {
     expect(prompt).toContain("Яндекс Маркета");
     expect(prompt).toContain("AliExpress");
     expect(prompt).toContain("верни меньше конкурентов");
+    expect(prompt).toContain("similarities");
+    expect(prompt).toContain("differences");
+    expect(prompt).toContain("strengths");
+    expect(prompt).toContain("weaknesses");
+    expect(prompt).toContain("opportunity");
   });
 
   it("defines a strict source-verification-and-report output schema", () => {
@@ -186,6 +198,7 @@ describe("competitor research prompt", () => {
               "sourceUrl",
               "relevance",
               "evidence",
+              "comparison",
             ],
             properties: {
               productId: { type: "string", pattern: "^[0-9]+$" },
@@ -200,6 +213,40 @@ describe("competitor research prompt", () => {
                 type: "array",
                 minItems: 1,
                 items: { type: "string", minLength: 1 },
+              },
+              comparison: {
+                type: "object",
+                additionalProperties: false,
+                required: [
+                  "similarities",
+                  "differences",
+                  "strengths",
+                  "weaknesses",
+                  "opportunity",
+                ],
+                properties: {
+                  similarities: {
+                    type: "array",
+                    maxItems: 4,
+                    items: { type: "string", minLength: 1 },
+                  },
+                  differences: {
+                    type: "array",
+                    maxItems: 4,
+                    items: { type: "string", minLength: 1 },
+                  },
+                  strengths: {
+                    type: "array",
+                    maxItems: 4,
+                    items: { type: "string", minLength: 1 },
+                  },
+                  weaknesses: {
+                    type: "array",
+                    maxItems: 4,
+                    items: { type: "string", minLength: 1 },
+                  },
+                  opportunity: { type: "string", minLength: 1 },
+                },
               },
             },
           },
@@ -409,6 +456,21 @@ describe("competitor research presentation", () => {
     expect(rendered.disableWebPagePreview).toBe(true);
   });
 
+  it("adds concise named links for verified competitors to Telegram", () => {
+    const competitor = validCompetitor();
+    const rendered = renderTelegramResponse(
+      buildCompetitorResearchTelegramResponse(
+        "Три вывода и три приоритетных действия.",
+        reference,
+        { reportDelivery: "html", competitors: [competitor] },
+      ),
+    );
+
+    expect(rendered.messages[0]).toContain(
+      `<a href="${competitor.sourceUrl}">1. ${competitor.productTitle} · ${competitor.productId}</a>`,
+    );
+  });
+
   it("keeps a chunked text fallback when document delivery is unavailable", () => {
     const rendered = renderTelegramResponse(
       buildCompetitorResearchFallbackTelegramResponse(
@@ -423,19 +485,20 @@ describe("competitor research presentation", () => {
   });
 
   it("creates a self-contained safe HTML report", () => {
+    const unsafeCompetitor = {
+      ...validCompetitor(),
+      productTitle: "Конкурент <script>alert('title')</script>",
+      comparison: {
+        ...validCompetitor().comparison,
+        strengths: ["<img src=x onerror=alert(1)>"],
+      },
+    };
     const html = buildCompetitorResearchHtmlReport({
       reference,
       sourceVerification: verifiedSource(),
-      competitors: [validCompetitor()],
-      summary: "Краткий <script>alert('summary')</script> вывод.",
-      report: [
-        "## Основные конкуренты",
-        "- Конкурент A — https://www.wildberries.ru/catalog/987654321/detail.aspx",
-        "- <img src=x onerror=alert(1)>",
-        "",
-        "## Рекомендации",
-        "1. Улучшить первый экран.",
-      ].join("\n"),
+      competitors: [unsafeCompetitor],
+      summary: "Свободный summary не управляет HTML.",
+      report: "Свободный report не управляет HTML.",
       generatedAt: "2026-08-18T15:30:00.000Z",
     });
 
@@ -443,17 +506,56 @@ describe("competitor research presentation", () => {
     expect(html).toContain("Конкурентный анализ Wildberries");
     expect(html).toContain("123456789");
     expect(html).toContain("2026-08-18T15:30:00.000Z");
-    expect(html).toContain("&lt;script&gt;alert(&#39;summary&#39;)&lt;/script&gt;");
+    expect(html).toContain("&lt;script&gt;alert(&#39;title&#39;)&lt;/script&gt;");
     expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
     expect(html).not.toContain("<script>alert");
     expect(html).not.toContain("<img src=x");
-    expect(html).toContain("<h2>Основные конкуренты</h2>");
+    expect(html).not.toContain("Свободный summary не управляет HTML.");
+    expect(html).not.toContain("Свободный report не управляет HTML.");
     expect(html).toContain("<ul>");
-    expect(html).toContain("<ol>");
+    expect(html).toContain('<ol class="actions-list">');
     expect(html).toContain(
-      '<a href="https://www.wildberries.ru/catalog/987654321/detail.aspx"',
+      'href="https://www.wildberries.ru/catalog/987654321/detail.aspx"',
     );
     expect(html).toContain("Content-Security-Policy");
+  });
+
+  it("renders a decision-oriented report with semantic competitor cards", () => {
+    const competitors = [
+      validCompetitor(),
+      {
+        ...validCompetitor(),
+        productId: "555666777",
+        productTitle: "Второй подтверждённый конкурент",
+        sourceUrl: "https://www.wildberries.ru/catalog/555666777/detail.aspx",
+      },
+    ];
+    const html = buildCompetitorResearchHtmlReport({
+      reference,
+      sourceVerification: verifiedSource(),
+      competitors,
+      summary: [
+        "Подтверждённые конкуренты Wildberries: 2 из 5.",
+        "Ключевые выводы:",
+        "- Комплектации конкурентов описаны точнее.",
+        "Приоритетные действия:",
+        "1. Добавить размеры на первый экран.",
+      ].join("\n"),
+      report: "Этот свободный текст не должен определять структуру HTML.",
+      generatedAt: "2026-08-24T13:05:00.000Z",
+    });
+
+    expect(html).toContain("2 из 5 подтверждены");
+    expect(html.match(/class="competitor-card"/gu)).toHaveLength(2);
+    expect(html).toContain("Сходства");
+    expect(html).toContain("Отличия");
+    expect(html).toContain("Сильные стороны");
+    expect(html).toContain("Риски и слабые места");
+    expect(html).toContain("Возможность для исходной карточки");
+    expect(html).toContain(">Открыть карточку WB</a>");
+    expect(html).toContain("24.08.2026, 13:05 UTC");
+    expect(html).not.toContain("2026-08-24T13:05:00.000Z</time>");
+    expect(html).not.toContain("Этот свободный текст не должен определять структуру HTML.");
   });
 
   it("builds a stable report filename", () => {

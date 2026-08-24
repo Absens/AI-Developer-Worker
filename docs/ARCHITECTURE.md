@@ -214,6 +214,15 @@ cannot become delivered competitors. When fewer than five cards are confirmed,
 the result stays partial and states the limitation instead of filling the gap
 from another marketplace or a search snippet.
 
+The delivery DTO also carries a bounded structured comparison for every accepted
+card: similarities, differences, strengths, weaknesses and one opportunity for
+the source card. The verifier, rather than Codex, supplies the delivered title,
+brand, category, attributes and canonical URL. Telegram renders a short decision
+summary plus named links to confirmed cards. The self-contained HTML renderer
+uses semantic competitor cards, human-readable UTC timestamps, explicit
+verification/partial-result badges and collapsible technical evidence. It does
+not parse the model's free-form `summary` or `report` into trusted HTML.
+
 ### Telegram Digital Twin
 
 Telegram Digital Twin is the forward-looking Telegram Assistant direction for

@@ -11,6 +11,7 @@ import {
   TelegramAssistantService,
   type TelegramAssistantProjectSourceProvider,
   type TelegramAssistantServiceOptions,
+  type CompetitorResearchCompetitor,
   type TelegramPendingAction,
 } from "../src/domain/telegramAssistant/index.js";
 import { parseCallbackData } from "../src/domain/telegramAssistant/service.js";
@@ -118,6 +119,23 @@ const failedCompetitorSource = (
   brand: null,
   evidence: ["Страница открылась без товарных данных."],
   failureReason,
+});
+
+const verifiedCompetitor = (): CompetitorResearchCompetitor => ({
+  productId: "987654321",
+  productTitle: "Конкурент A",
+  sourceUrl: "https://www.wildberries.ru/catalog/987654321/detail.aspx",
+  relevance: "Тот же товарный сценарий и категория.",
+  evidence: ["Wildberries card.json подтвердил артикул 987654321."],
+  comparison: {
+    similarities: ["Тот же сценарий использования."],
+    differences: ["Комплектация описана подробнее."],
+    strengths: ["Понятнее раскрыт состав комплекта."],
+    weaknesses: ["Не указаны размеры каждого предмета."],
+    opportunity: "Добавить точную комплектацию и размеры на первый экран.",
+  },
+  brand: "Competitor Brand",
+  category: "Категория",
 });
 
 const taskFixture = (overrides: Partial<TaskRecord> = {}): TaskRecord => ({
@@ -410,6 +428,7 @@ interface FakeAssistantCodexService {
       ReturnType<typeof failedCompetitorSource>;
     summary: string;
     report: string;
+    competitors?: CompetitorResearchCompetitor[];
     threadId?: string;
     timedOut?: boolean;
   }>;
@@ -1173,6 +1192,7 @@ describe("TelegramAssistantService", () => {
       sawRunningTurn = true;
       return {
         sourceVerification: verifiedCompetitorSource(input.productId),
+        competitors: [verifiedCompetitor()],
         summary: "Найден конкурент A. Главный приоритет — усилить первый экран.",
         report: "## Прямые конкуренты\n- Конкурент A — релевантен.",
         threadId: "thread_competitors_1",
@@ -1228,7 +1248,7 @@ describe("TelegramAssistantService", () => {
       replyToMessageId: 301,
       content: expect.stringContaining("<!doctype html>"),
     }));
-    expect(sendDocument.mock.calls[0]?.[0].content).toContain("Прямые конкуренты");
+    expect(sendDocument.mock.calls[0]?.[0].content).toContain("Подтверждённые конкуренты");
     expect(sendDocument.mock.calls[0]?.[0].content).toContain("Конкурент A");
     await waitForCondition(async () =>
       (await store.getActiveAssistantTurn("bot_private:1")) === undefined,
@@ -1322,6 +1342,7 @@ describe("TelegramAssistantService", () => {
         answerProjectQuestion: vi.fn(async () => ({ answer: "must not run" })),
         researchMarketplaceCompetitors: vi.fn(async () => ({
           sourceVerification: verifiedCompetitorSource(),
+          competitors: [],
           summary: "Краткий вывод для чата.",
           report: "## Полный раздел\n- Детальный вывод для пользователя.",
         })),

@@ -2097,6 +2097,7 @@ export class TelegramAssistantService {
           message,
           buildCompetitorResearchTelegramResponse(result.summary, reference, {
             reportDelivery: documentDeliveryAvailable ? "html" : "text",
+            competitors: result.competitors,
           }),
         );
 

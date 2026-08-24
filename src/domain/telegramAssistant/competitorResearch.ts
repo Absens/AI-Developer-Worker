@@ -36,6 +36,18 @@ export interface CompetitorResearchCompetitor {
   sourceUrl: string;
   relevance: string;
   evidence: string[];
+  comparison: CompetitorResearchComparison;
+  brand?: string | null;
+  category?: string | null;
+  attributes?: Array<{ name: string; value: string }>;
+}
+
+export interface CompetitorResearchComparison {
+  similarities: string[];
+  differences: string[];
+  strengths: string[];
+  weaknesses: string[];
+  opportunity: string;
 }
 
 export interface CompetitorResearchContent {
@@ -55,11 +67,15 @@ const WILDBERRIES_URL_PATTERN =
   /(?:https?:\/\/)?[a-z0-9.-]*wildberries\.ru\/catalog\/\d+(?:\/detail\.aspx)?(?:[^\s<>"']*)?/giu;
 const TRAILING_URL_PUNCTUATION = /[),.;!?\]}]+$/u;
 const WILDBERRIES_PRODUCT_PATH = /^\/catalog\/(\d+)(?:\/detail\.aspx)?\/?$/iu;
-const INLINE_URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
 const MAX_SUMMARY_CHARS = 2500;
 const MAX_COMPETITOR_COUNT = 10;
 const REQUIRED_COMPETITOR_COUNT = 5;
 const NUMERIC_PRODUCT_ID_PATTERN = /^\d+$/u;
+const MAX_COMPARISON_ITEMS = 4;
+const MAX_REPORT_ATTRIBUTES = 6;
+const MAX_ANALYSIS_CHARS = 600;
+const UNSAFE_ANALYSIS_PATTERN =
+  /https?:\/\/|(?:^|\W)(?:ozon|aliexpress)(?:\W|$)|яндекс\s*маркет/iu;
 
 const buildCanonicalWildberriesProductUrl = (productId: string): string =>
   `https://www.wildberries.ru/catalog/${productId}/detail.aspx`;
@@ -150,6 +166,7 @@ export const COMPETITOR_RESEARCH_OUTPUT_SCHEMA = {
           "sourceUrl",
           "relevance",
           "evidence",
+          "comparison",
         ],
         properties: {
           productId: { type: "string", pattern: "^[0-9]+$" },
@@ -164,6 +181,40 @@ export const COMPETITOR_RESEARCH_OUTPUT_SCHEMA = {
             type: "array",
             minItems: 1,
             items: { type: "string", minLength: 1 },
+          },
+          comparison: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "similarities",
+              "differences",
+              "strengths",
+              "weaknesses",
+              "opportunity",
+            ],
+            properties: {
+              similarities: {
+                type: "array",
+                maxItems: MAX_COMPARISON_ITEMS,
+                items: { type: "string", minLength: 1 },
+              },
+              differences: {
+                type: "array",
+                maxItems: MAX_COMPARISON_ITEMS,
+                items: { type: "string", minLength: 1 },
+              },
+              strengths: {
+                type: "array",
+                maxItems: MAX_COMPARISON_ITEMS,
+                items: { type: "string", minLength: 1 },
+              },
+              weaknesses: {
+                type: "array",
+                maxItems: MAX_COMPARISON_ITEMS,
+                items: { type: "string", minLength: 1 },
+              },
+              opportunity: { type: "string", minLength: 1 },
+            },
           },
         },
       },
@@ -197,6 +248,8 @@ export const buildCompetitorResearchPrompt = (
   "Не включай в competitors, summary или report товары с Ozon, Яндекс Маркета, AliExpress, сайтов производителей и любых других площадок.",
   "Если подтверждено меньше 5 карточек Wildberries, верни меньше конкурентов и явно укажи ограничение в summary и report. Не заполняй недостающее количество внешними товарами, поисковыми сниппетами или предположениями.",
   "Каждый товар, названный конкурентом в summary или report, должен присутствовать в массиве competitors; не добавляй туда группы без отдельной подтверждённой карточки.",
+  "Для каждого элемента competitors заполни comparison: similarities и differences — проверяемые сходства и отличия от исходной карточки; strengths и weaknesses — сильные и слабые стороны; opportunity — одно конкретное действие для исходной карточки.",
+  "Поля comparison не должны содержать URL или упоминания других площадок. Основывай их только на исходной карточке и соответствующей подтверждённой карточке Wildberries.",
   "Подготовь результат на русском языке в двух представлениях:",
   "- summary: краткое резюме для Telegram объёмом до 2500 символов. Укажи подтверждённый товар, 3 наиболее релевантных конкурента или группы конкурентов, 3 ключевых вывода и 3 приоритетных действия. Не повторяй весь отчёт.",
   "- report: полный отчёт для отдельного HTML-файла.",
@@ -301,7 +354,9 @@ export const enforceVerifiedWildberriesCompetitors = async (
   verifier: WildberriesProductVerifierPort | undefined,
 ): Promise<CompetitorResearchContent> => {
   const verifiedProducts = await Promise.all(
-    content.competitors.map(async (candidate) => {
+    content.competitors.map(async (
+      candidate,
+    ): Promise<CompetitorResearchCompetitor | undefined> => {
       const product = await verifier?.verify(candidate.productId)
         .catch(() => undefined);
       if (
@@ -318,10 +373,14 @@ export const enforceVerifiedWildberriesCompetitors = async (
         productTitle: product.productTitle,
         sourceUrl: buildCanonicalWildberriesProductUrl(product.productId),
         relevance: candidate.relevance,
+        comparison: candidate.comparison,
+        brand: product.brand,
+        category: product.category,
+        attributes: product.attributes.slice(0, MAX_REPORT_ATTRIBUTES),
         evidence: [
           `Wildberries CDN card.json: ${product.sourceUrl}; артикул ${product.productId}; товар ${product.productTitle}${brandEvidence}.`,
         ],
-      } satisfies CompetitorResearchCompetitor;
+      };
     }),
   );
   const competitors = verifiedProducts.filter(
@@ -353,6 +412,7 @@ export const isCompetitorResearchSourceVerified = (
 
 export interface BuildCompetitorResearchTelegramResponseOptions {
   reportDelivery?: "html" | "text" | "none";
+  competitors?: CompetitorResearchCompetitor[];
 }
 
 export const buildCompetitorResearchTelegramResponse = (
@@ -374,6 +434,11 @@ export const buildCompetitorResearchTelegramResponse = (
       kind: "paragraph",
       text: normalizeSummary(summary),
     },
+    ...(options.competitors ?? []).slice(0, 3).map((competitor, index) => ({
+      kind: "link" as const,
+      label: `${index + 1}. ${competitor.productTitle} · ${competitor.productId}`,
+      url: competitor.sourceUrl,
+    })),
     ...(options.reportDelivery === "none"
       ? []
       : [{
@@ -418,8 +483,22 @@ export const buildCompetitorResearchHtmlReport = (
   const title = `Конкурентный анализ Wildberries · ${input.reference.productId}`;
   const safeTitle = escapeHtml(title);
   const safeGeneratedAt = escapeHtml(input.generatedAt);
+  const generatedAtLabel = escapeHtml(formatGeneratedAt(input.generatedAt));
   const safeSourceUrl = escapeHtml(input.reference.sourceUrl);
   const safeProductId = escapeHtml(input.reference.productId);
+  const safeSourceTitle = escapeHtml(
+    input.sourceVerification.productTitle ?? input.reference.productId,
+  );
+  const verifiedCount = input.competitors.length;
+  const statusLabel = `${verifiedCount} из ${REQUIRED_COMPETITOR_COUNT} подтверждены`;
+  const keyFindings = buildKeyFindings(input.competitors);
+  const priorityActions = buildPriorityActions(input.competitors);
+  const competitorCards = input.competitors.length > 0
+    ? input.competitors.map(renderCompetitorCard).join("\n")
+    : '<p class="empty-state">Подтверждённых карточек-конкурентов пока нет. Недостающие позиции не заменялись предположениями.</p>';
+  const limitation = verifiedCount < REQUIRED_COMPETITOR_COUNT
+    ? buildCompetitorShortageLimitation(verifiedCount)
+    : `Подтверждены все ${REQUIRED_COMPETITOR_COUNT} требуемых карточек Wildberries.`;
 
   return `<!doctype html>
 <html lang="ru">
@@ -430,49 +509,97 @@ export const buildCompetitorResearchHtmlReport = (
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
   <title>${safeTitle}</title>
   <style>
-    :root { color-scheme: light; --bg: #f5f6f8; --surface: #ffffff; --text: #17191c; --muted: #62676f; --line: #e3e6ea; --accent: #6b48ff; --accent-soft: #f0edff; }
+    :root { color-scheme: light; --bg: #f5f6f8; --surface: #ffffff; --text: #17191c; --muted: #62676f; --line: #e3e6ea; --accent: #6b48ff; --accent-dark: #4f32c9; --accent-soft: #f0edff; --success: #157347; --success-soft: #eaf7f0; --warning: #8a5a00; --warning-soft: #fff6dc; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.58 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     main { width: min(1040px, calc(100% - 32px)); margin: 32px auto 64px; }
     .hero, .card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 8px 30px rgba(25, 28, 33, .05); }
     .hero { padding: 34px; }
+    .hero-top, .section-heading, .competitor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
     .eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 13px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
     h1 { margin: 0; font-size: clamp(28px, 5vw, 46px); line-height: 1.12; letter-spacing: -.03em; }
+    h2 { margin: 0; font-size: 25px; line-height: 1.25; letter-spacing: -.015em; }
+    h3 { margin: 0; font-size: 19px; line-height: 1.35; }
     .meta { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 22px; color: var(--muted); font-size: 14px; }
-    .meta a { color: var(--accent); }
+    a { color: var(--accent-dark); overflow-wrap: anywhere; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
     .card { margin-top: 20px; padding: 28px 32px; }
     .summary { border-left: 5px solid var(--accent); background: linear-gradient(135deg, var(--surface), var(--accent-soft)); }
-    h2 { margin: 34px 0 12px; font-size: 25px; line-height: 1.25; letter-spacing: -.015em; }
-    h2:first-child { margin-top: 0; }
-    h3 { margin: 26px 0 10px; font-size: 20px; line-height: 1.3; }
+    .badge { display: inline-flex; align-items: center; white-space: nowrap; border-radius: 999px; padding: 6px 11px; font-size: 13px; font-weight: 750; }
+    .badge.complete { color: var(--success); background: var(--success-soft); }
+    .badge.partial { color: var(--warning); background: var(--warning-soft); }
+    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 22px; }
+    .summary-panel { padding: 20px; background: rgba(255, 255, 255, .72); border: 1px solid rgba(107, 72, 255, .16); border-radius: 14px; }
+    .summary-panel h3 { margin-bottom: 10px; }
+    .source-facts, .product-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 18px 0 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; font-weight: 650; }
+    .competitor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 22px; }
+    .competitor-card { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 15px; background: #fff; break-inside: avoid; }
+    .competitor-index { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 11px; color: var(--accent-dark); background: var(--accent-soft); font-size: 13px; font-weight: 800; }
+    .verified-label { margin: 0 0 4px; color: var(--success); font-size: 12px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
+    .product-facts { margin-top: 16px; font-size: 14px; }
+    .relevance { margin: 18px 0 0; padding: 14px; border-radius: 12px; background: var(--accent-soft); }
+    .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+    .comparison-group { min-width: 0; }
+    .comparison-group h4 { margin: 0 0 6px; font-size: 14px; }
+    .comparison-group ul, .summary-panel ul, .actions-list { margin: 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    .opportunity { margin-top: 18px; padding: 15px; border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 11px 11px 0; }
+    .opportunity strong { display: block; margin-bottom: 4px; }
+    .primary-link { display: inline-block; margin-top: 16px; font-weight: 750; }
+    details { margin-top: 16px; color: var(--muted); font-size: 13px; }
+    summary { cursor: pointer; color: var(--accent-dark); font-weight: 700; }
+    .limitation { border-left: 5px solid #d99a00; background: var(--warning-soft); }
+    .limitation p { margin-bottom: 0; }
+    .empty-state { margin: 22px 0 0; padding: 22px; color: var(--muted); border: 1px dashed var(--line); border-radius: 14px; text-align: center; }
+    .section-heading p { margin: 4px 0 0; color: var(--muted); }
     p { margin: 10px 0; }
-    ul, ol { margin: 10px 0 18px; padding-left: 26px; }
-    li { margin: 7px 0; }
-    a { color: var(--accent); overflow-wrap: anywhere; text-decoration-thickness: 1px; text-underline-offset: 2px; }
-    .summary-text { white-space: pre-wrap; }
     .footer { margin-top: 22px; color: var(--muted); font-size: 13px; text-align: center; }
-    @media (max-width: 640px) { main { width: min(100% - 20px, 1040px); margin-top: 10px; } .hero, .card { border-radius: 14px; padding: 22px; } }
-    @media print { body { background: #fff; } main { width: 100%; margin: 0; } .hero, .card { box-shadow: none; break-inside: avoid; } a { color: inherit; } }
+    @media (max-width: 760px) { .summary-grid, .competitor-grid, .comparison-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) { main { width: min(100% - 20px, 1040px); margin-top: 10px; } .hero, .card { border-radius: 14px; padding: 22px; } .hero-top, .section-heading { display: block; } .hero-top .badge, .section-heading .badge { margin-top: 12px; } .source-facts, .product-facts { grid-template-columns: 1fr; gap: 2px; } dd { margin-bottom: 8px; } }
+    @media print { body { background: #fff; } main { width: 100%; margin: 0; } .hero, .card, .competitor-card { box-shadow: none; } .competitor-card { break-inside: avoid; } a { color: inherit; } details { display: none; } }
   </style>
 </head>
 <body>
   <main>
     <header class="hero">
-      <p class="eyebrow">AI Worker · исследование конкурентов</p>
+      <div class="hero-top">
+        <p class="eyebrow">AI Worker · исследование конкурентов</p>
+        <span class="badge ${verifiedCount < REQUIRED_COMPETITOR_COUNT ? "partial" : "complete"}">${escapeHtml(statusLabel)}</span>
+      </div>
       <h1>${safeTitle}</h1>
       <div class="meta">
         <span>Артикул: <strong>${safeProductId}</strong></span>
-        <span>Сформировано: <time datetime="${safeGeneratedAt}">${safeGeneratedAt}</time></span>
+        <span>Сформировано: <time datetime="${safeGeneratedAt}">${generatedAtLabel}</time></span>
         <span><a href="${safeSourceUrl}" rel="noopener noreferrer">Открыть исходную карточку</a></span>
       </div>
     </header>
     <section class="card summary">
-      <h2>Краткий вывод</h2>
-      <div class="summary-text">${renderInlineText(input.summary)}</div>
+      <div class="section-heading">
+        <div><h2>Решение за минуту</h2><p>Главные наблюдения и следующие действия по подтверждённым карточкам.</p></div>
+      </div>
+      <div class="summary-grid">
+        <article class="summary-panel"><h3>Ключевые выводы</h3>${renderHtmlList(keyFindings, "Недостаточно данных для сравнительных выводов.")}</article>
+        <article class="summary-panel"><h3>Приоритетные действия</h3>${renderHtmlOrderedList(priorityActions, "Повторить поиск позже или уточнить товарную категорию.")}</article>
+      </div>
     </section>
-    <article class="card report-body">
-      ${renderReportBody(input.report)}
-    </article>
+    <section class="card">
+      <div class="section-heading"><div><h2>Проверенный исходный товар</h2><p>Карточка, относительно которой выполнено сравнение.</p></div><span class="badge complete">Источник подтверждён</span></div>
+      <dl class="source-facts">
+        <dt>Название</dt><dd>${safeSourceTitle}</dd>
+        <dt>Артикул</dt><dd>${safeProductId}</dd>
+        ${input.sourceVerification.brand ? `<dt>Бренд</dt><dd>${escapeHtml(input.sourceVerification.brand)}</dd>` : ""}
+      </dl>
+    </section>
+    <section class="card">
+      <div class="section-heading"><div><h2>Подтверждённые конкуренты</h2><p>Только отдельные карточки Wildberries, прошедшие проверку артикула и источника.</p></div><span class="badge ${verifiedCount < REQUIRED_COMPETITOR_COUNT ? "partial" : "complete"}">${escapeHtml(statusLabel)}</span></div>
+      <div class="competitor-grid">${competitorCards}</div>
+    </section>
+    <section class="card limitation">
+      <h2>Источники и ограничения</h2>
+      <p>${escapeHtml(limitation)}</p>
+    </section>
     <p class="footer">Отчёт сформирован автоматически. Проверяйте существенные решения по указанным источникам.</p>
   </main>
 </body>
@@ -561,13 +688,15 @@ const normalizeCompetitors = (
     const productId = normalizeRequiredString(candidate.productId);
     const productTitle = normalizeRequiredString(candidate.productTitle);
     const sourceUrl = normalizeRequiredString(candidate.sourceUrl);
-    const relevance = normalizeRequiredString(candidate.relevance);
+    const relevance = normalizeAnalysisString(candidate.relevance) ||
+      "Сопоставимая подтверждённая карточка Wildberries; детали релевантности требуют ручной проверки.";
     const evidence = Array.isArray(candidate.evidence)
       ? candidate.evidence
           .filter((item): item is string => typeof item === "string")
           .map((item) => item.trim())
           .filter(Boolean)
       : [];
+    const comparison = normalizeCompetitorComparison(candidate.comparison);
     if (
       !NUMERIC_PRODUCT_ID_PATTERN.test(productId) ||
       productId === reference.productId ||
@@ -587,6 +716,7 @@ const normalizeCompetitors = (
       sourceUrl,
       relevance,
       evidence,
+      comparison,
     });
   }
 
@@ -597,12 +727,25 @@ const buildVerifiedCompetitorSummary = (
   sourceVerification: CompetitorResearchSourceVerification,
   competitors: CompetitorResearchCompetitor[],
 ): string => {
+  const keyFindings = competitors.slice(0, 3).map((competitor) =>
+    competitor.comparison.differences[0] ||
+      competitor.comparison.strengths[0] ||
+      competitor.relevance
+  );
+  const priorityActions = uniqueStrings(
+    competitors.map((competitor) => competitor.comparison.opportunity),
+  ).slice(0, 3);
   const lines = [
     `Исходный товар Wildberries подтверждён: ${sourceVerification.productTitle ?? sourceVerification.requestedProductId}.`,
     `Подтверждённые конкуренты Wildberries: ${competitors.length} из ${REQUIRED_COMPETITOR_COUNT}.`,
-    ...competitors.slice(0, 3).map((competitor, index) =>
-      `${index + 1}. ${competitor.productTitle} · артикул ${competitor.productId} · ${competitor.sourceUrl}`
-    ),
+    "Ключевые выводы:",
+    ...(keyFindings.length > 0
+      ? keyFindings.map((finding) => `- ${finding}`)
+      : ["- Недостаточно подтверждённых карточек для сравнительных выводов."]),
+    "Приоритетные действия:",
+    ...(priorityActions.length > 0
+      ? priorityActions.map((action, index) => `${index + 1}. ${action}`)
+      : ["1. Повторить поиск позже или уточнить товарную категорию."]),
   ];
   if (competitors.length < REQUIRED_COMPETITOR_COUNT) {
     lines.push(buildCompetitorShortageLimitation(competitors.length));
@@ -615,6 +758,9 @@ const buildVerifiedCompetitorReport = (
   competitors: CompetitorResearchCompetitor[],
 ): string => {
   const sections = [
+    "## Резюме",
+    `Подтверждено ${competitors.length} из ${REQUIRED_COMPETITOR_COUNT} требуемых карточек Wildberries.`,
+    "",
     "## Проверенный исходный товар",
     `${sourceVerification.productTitle ?? sourceVerification.requestedProductId} · артикул ${sourceVerification.requestedProductId}.`,
     "",
@@ -625,13 +771,34 @@ const buildVerifiedCompetitorReport = (
   } else {
     competitors.forEach((competitor, index) => {
       sections.push(
-        `${index + 1}. ${competitor.productTitle} · артикул ${competitor.productId}`,
+        `### ${index + 1}. ${competitor.productTitle}`,
+        `- Артикул: ${competitor.productId}`,
         `- Карточка: ${competitor.sourceUrl}`,
+        ...(competitor.brand ? [`- Бренд: ${competitor.brand}`] : []),
+        ...(competitor.category ? [`- Категория: ${competitor.category}`] : []),
         `- Релевантность: ${competitor.relevance}`,
-        `- Проверка карточки: ${competitor.evidence[0] ?? "нет данных"}`,
+        ...renderTextReportGroup("Сходства", competitor.comparison.similarities),
+        ...renderTextReportGroup("Отличия", competitor.comparison.differences),
+        ...renderTextReportGroup("Сильные стороны", competitor.comparison.strengths),
+        ...renderTextReportGroup("Риски и слабые места", competitor.comparison.weaknesses),
+        `- Возможность для исходной карточки: ${competitor.comparison.opportunity}`,
+        ...(competitor.attributes ?? []).slice(0, MAX_REPORT_ATTRIBUTES).map((attribute) =>
+          `- ${attribute.name}: ${attribute.value}`
+        ),
+        "- Проверка: карточка Wildberries подтверждена worker.",
+        "",
       );
     });
   }
+  const priorityActions = uniqueStrings(
+    competitors.map((competitor) => competitor.comparison.opportunity),
+  ).slice(0, 3);
+  sections.push("", "## Приоритетные действия");
+  sections.push(
+    ...(priorityActions.length > 0
+      ? priorityActions.map((action, index) => `${index + 1}. ${action}`)
+      : ["1. Повторить поиск позже или уточнить товарную категорию."]),
+  );
   sections.push("", "## Ограничения");
   sections.push(
     competitors.length < REQUIRED_COMPETITOR_COUNT
@@ -643,6 +810,41 @@ const buildVerifiedCompetitorReport = (
 
 const buildCompetitorShortageLimitation = (verifiedCount: number): string =>
   `Ограничение: подтверждено ${verifiedCount} из ${REQUIRED_COMPETITOR_COUNT} требуемых карточек Wildberries. Недостающие позиции не заменялись товарами с других площадок или предположениями.`;
+
+const normalizeCompetitorComparison = (
+  value: unknown,
+): CompetitorResearchComparison => {
+  const comparison = isRecord(value) ? value : {};
+  return {
+    similarities: normalizeAnalysisList(comparison.similarities),
+    differences: normalizeAnalysisList(comparison.differences),
+    strengths: normalizeAnalysisList(comparison.strengths),
+    weaknesses: normalizeAnalysisList(comparison.weaknesses),
+    opportunity: normalizeAnalysisString(comparison.opportunity) ||
+      "Проверить позиционирование и первый экран относительно подтверждённой карточки.",
+  };
+};
+
+const normalizeAnalysisList = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? uniqueStrings(value
+        .map((item) => normalizeAnalysisString(item))
+        .filter((item): item is string => Boolean(item)))
+        .slice(0, MAX_COMPARISON_ITEMS)
+    : [];
+
+const normalizeAnalysisString = (value: unknown): string => {
+  const normalized = normalizeRequiredString(value).slice(0, MAX_ANALYSIS_CHARS);
+  return normalized && !UNSAFE_ANALYSIS_PATTERN.test(normalized) ? normalized : "";
+};
+
+const uniqueStrings = (values: string[]): string[] =>
+  Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+
+const renderTextReportGroup = (label: string, items: string[]): string[] =>
+  items.length > 0
+    ? [`- ${label}: ${items.join("; ")}`]
+    : [`- ${label}: данных недостаточно.`];
 
 const normalizeRequiredString = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
@@ -685,85 +887,96 @@ const escapeHtml = (value: string): string =>
     .replace(/"/gu, "&quot;")
     .replace(/'/gu, "&#39;");
 
-const renderInlineText = (value: string): string => {
-  let cursor = 0;
-  const rendered: string[] = [];
-
-  for (const match of value.matchAll(INLINE_URL_PATTERN)) {
-    const index = match.index;
-    const rawMatch = match[0];
-    if (index === undefined || !rawMatch) {
-      continue;
-    }
-    rendered.push(escapeHtml(value.slice(cursor, index)));
-    const url = rawMatch.replace(TRAILING_URL_PUNCTUATION, "");
-    const trailing = rawMatch.slice(url.length);
-    rendered.push(
-      `<a href="${escapeHtml(url)}" rel="noopener noreferrer">${escapeHtml(url)}</a>`,
-    );
-    rendered.push(escapeHtml(trailing));
-    cursor = index + rawMatch.length;
+const formatGeneratedAt = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
   }
 
-  rendered.push(escapeHtml(value.slice(cursor)));
-  return rendered.join("");
+  const parts = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const valueOf = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${valueOf("day")}.${valueOf("month")}.${valueOf("year")}, ${valueOf("hour")}:${valueOf("minute")} UTC`;
 };
 
-const renderReportBody = (report: string): string => {
-  const output: string[] = [];
-  let listKind: "ul" | "ol" | undefined;
-  let listItems: string[] = [];
+const buildKeyFindings = (
+  competitors: CompetitorResearchCompetitor[],
+): string[] => uniqueStrings(
+  competitors.flatMap((competitor) => [
+    ...competitor.comparison.differences,
+    ...competitor.comparison.strengths,
+    competitor.relevance,
+  ]).map((value) => normalizeAnalysisString(value)).filter(Boolean),
+).slice(0, 3);
 
-  const flushList = (): void => {
-    if (!listKind || listItems.length === 0) {
-      listKind = undefined;
-      listItems = [];
-      return;
-    }
-    output.push(`<${listKind}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${listKind}>`);
-    listKind = undefined;
-    listItems = [];
-  };
+const buildPriorityActions = (
+  competitors: CompetitorResearchCompetitor[],
+): string[] => uniqueStrings(
+  competitors
+    .map((competitor) => normalizeAnalysisString(competitor.comparison.opportunity))
+    .filter(Boolean),
+).slice(0, 3);
 
-  for (const rawLine of report.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line) {
-      flushList();
-      continue;
-    }
+const renderHtmlList = (items: string[], fallback: string): string =>
+  items.length > 0
+    ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : `<p>${escapeHtml(fallback)}</p>`;
 
-    const heading = line.match(/^(#{2,3})\s+(.+)$/u);
-    if (heading?.[1] && heading[2]) {
-      flushList();
-      const tag = heading[1].length === 3 ? "h3" : "h2";
-      output.push(`<${tag}>${renderInlineText(heading[2])}</${tag}>`);
-      continue;
-    }
+const renderHtmlOrderedList = (items: string[], fallback: string): string =>
+  items.length > 0
+    ? `<ol class="actions-list">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>`
+    : `<p>${escapeHtml(fallback)}</p>`;
 
-    const unordered = line.match(/^[-*]\s+(.+)$/u);
-    if (unordered?.[1]) {
-      if (listKind !== "ul") {
-        flushList();
-        listKind = "ul";
-      }
-      listItems.push(renderInlineText(unordered[1]));
-      continue;
-    }
+const renderComparisonGroup = (label: string, items: string[]): string =>
+  `<section class="comparison-group"><h4>${escapeHtml(label)}</h4>${renderHtmlList(
+    items.map((item) => normalizeAnalysisString(item)).filter(Boolean),
+    "Данных недостаточно.",
+  )}</section>`;
 
-    const ordered = line.match(/^\d+[.)]\s+(.+)$/u);
-    if (ordered?.[1]) {
-      if (listKind !== "ol") {
-        flushList();
-        listKind = "ol";
-      }
-      listItems.push(renderInlineText(ordered[1]));
-      continue;
-    }
+const renderCompetitorCard = (
+  competitor: CompetitorResearchCompetitor,
+  index: number,
+): string => {
+  const safeProductTitle = escapeHtml(competitor.productTitle);
+  const safeProductId = escapeHtml(competitor.productId);
+  const safeSourceUrl = escapeHtml(competitor.sourceUrl);
+  const relevance = normalizeAnalysisString(competitor.relevance) ||
+    "Детали релевантности требуют ручной проверки.";
+  const opportunity = normalizeAnalysisString(competitor.comparison.opportunity) ||
+    "Проверить позиционирование и первый экран относительно подтверждённой карточки.";
+  const attributes = (competitor.attributes ?? []).slice(0, MAX_REPORT_ATTRIBUTES);
+  const evidence = competitor.evidence
+    .map((item) => item.trim())
+    .filter(Boolean);
 
-    flushList();
-    output.push(`<p>${renderInlineText(line)}</p>`);
-  }
-
-  flushList();
-  return output.join("\n      ") || `<p>${escapeHtml(EMPTY_COMPETITOR_RESEARCH_REPORT)}</p>`;
+  return `<article class="competitor-card">
+        <div class="competitor-head">
+          <div><p class="verified-label">Карточка WB подтверждена</p><h3>${safeProductTitle}</h3></div>
+          <span class="competitor-index">${index + 1}</span>
+        </div>
+        <dl class="product-facts">
+          <dt>Артикул</dt><dd>${safeProductId}</dd>
+          ${competitor.brand ? `<dt>Бренд</dt><dd>${escapeHtml(competitor.brand)}</dd>` : ""}
+          ${competitor.category ? `<dt>Категория</dt><dd>${escapeHtml(competitor.category)}</dd>` : ""}
+        </dl>
+        <p class="relevance"><strong>Почему конкурент:</strong> ${escapeHtml(relevance)}</p>
+        <div class="comparison-grid">
+          ${renderComparisonGroup("Сходства", competitor.comparison.similarities)}
+          ${renderComparisonGroup("Отличия", competitor.comparison.differences)}
+          ${renderComparisonGroup("Сильные стороны", competitor.comparison.strengths)}
+          ${renderComparisonGroup("Риски и слабые места", competitor.comparison.weaknesses)}
+        </div>
+        ${attributes.length > 0 ? `<section class="comparison-group"><h4>Подтверждённые характеристики</h4><dl class="product-facts">${attributes.map((attribute) => `<dt>${escapeHtml(attribute.name)}</dt><dd>${escapeHtml(attribute.value)}</dd>`).join("")}</dl></section>` : ""}
+        <div class="opportunity"><strong>Возможность для исходной карточки</strong>${escapeHtml(opportunity)}</div>
+        <a class="primary-link" href="${safeSourceUrl}" rel="noopener noreferrer">Открыть карточку WB</a>
+        ${evidence.length > 0 ? `<details><summary>Данные проверки</summary>${evidence.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</details>` : ""}
+      </article>`;
 };
