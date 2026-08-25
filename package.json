@@ -12,6 +12,8 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --env-file=.env --import tsx src/index.ts",
     "memory:validate": "node --import tsx src/memoryValidate.ts",
+    "ozon:bootstrap": "node --import tsx scripts/ozon-session-bootstrap.ts",
+    "ozon:import-state": "node --import tsx scripts/ozon-state-import.ts",
     "preflight": "node --env-file=.env --import tsx src/preflight.ts",
     "start": "node dist/index.js",
     "tracker:migrate": "node --env-file=.env --import tsx scripts/internal-tracker-migrate.ts",
@@ -28,6 +30,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
+    "playwright-core": "1.60.0",
     "tsx": "^4.20.5",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"

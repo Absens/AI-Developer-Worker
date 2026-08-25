@@ -9,6 +9,13 @@ const competitorReference = {
   sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
 };
 
+const ozonReference = {
+  marketplace: "ozon" as const,
+  productId: "3085863400",
+  sourceUrl:
+    "https://www.ozon.ru/product/kuhonnyy-nozh-dlya-myasa-3085863400/",
+};
+
 const verifiedSource = () => ({
   status: "verified" as const,
   requestedProductId: competitorReference.productId,
@@ -22,6 +29,206 @@ const verifiedSource = () => ({
 });
 
 describe("TelegramAssistantCodexService", () => {
+  it("keeps Ozon source verification and competitors inside independently verified Ozon cards", async () => {
+    const sourceProduct = {
+      productId: ozonReference.productId,
+      productTitle: "Кухонный нож для мяса",
+      brand: null,
+      category: "Кухонные ножи",
+      description: "Нож для разделки мяса.",
+      attributes: [{ name: "Материал", value: "Высокоуглеродистая сталь" }],
+      sourceUrl: ozonReference.sourceUrl,
+    };
+    const competitorReference = {
+      marketplace: "ozon" as const,
+      productId: "1753638237",
+      sourceUrl:
+        "https://www.ozon.ru/product/kuhonnyy-shef-nozh-dlya-myasa-1753638237/",
+    };
+    const competitorProduct = {
+      productId: competitorReference.productId,
+      productTitle: "Кухонный шеф-нож для мяса",
+      brand: "Knife Brand",
+      category: sourceProduct.category,
+      description: "Шеф-нож.",
+      attributes: [{ name: "Материал", value: "Сталь" }],
+      sourceUrl: competitorReference.sourceUrl,
+    };
+    const verify = vi.fn(async (reference: typeof ozonReference) => {
+      if (reference.productId === sourceProduct.productId) {
+        return sourceProduct;
+      }
+      if (reference.productId === competitorProduct.productId) {
+        return competitorProduct;
+      }
+      return undefined;
+    });
+    const discover = vi.fn(async () => [competitorReference]);
+    const runInitial = vi.fn(async (
+      _prompt: string,
+      _observer: undefined,
+      _options: { outputSchema?: Record<string, unknown> },
+    ) => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: JSON.stringify({
+        sourceVerification: {
+          status: "verified",
+          requestedProductId: ozonReference.productId,
+          resolvedProductId: ozonReference.productId,
+          productTitle: sourceProduct.productTitle,
+          brand: null,
+          evidence: [`Карточка Ozon подтвердила SKU ${ozonReference.productId}.`],
+          failureReason: null,
+        },
+        competitors: [{
+          productId: "765001988",
+          productTitle: "Товар с Wildberries",
+          sourceUrl: "https://www.wildberries.ru/catalog/765001988/detail.aspx",
+          relevance: "Внешняя площадка.",
+          evidence: ["Сниппет."],
+          comparison: {
+            similarities: [], differences: [], strengths: [], weaknesses: [],
+            opportunity: "Проверить позиционирование.",
+          },
+        }],
+        summary: "Внешний товар нельзя подставлять.",
+        report: "Внешний товар нельзя подставлять.",
+      }),
+    }));
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+      marketplaceResearchers: { ozon: { verify, discover } },
+    });
+
+    const result = await service.researchMarketplaceCompetitors(ozonReference);
+
+    expect(discover).toHaveBeenCalledWith(
+      ozonReference,
+      sourceProduct,
+      10,
+      expect.any(Number),
+    );
+    expect(result.sourceVerification).toEqual(expect.objectContaining({
+      status: "verified",
+      requestedProductId: ozonReference.productId,
+      category: sourceProduct.category,
+    }));
+    expect(result.competitors).toEqual([
+      expect.objectContaining({
+        productId: competitorProduct.productId,
+        sourceUrl: competitorProduct.sourceUrl,
+      }),
+    ]);
+    expect(result.summary).toContain("Подтверждённые конкуренты Ozon: 1 из 5");
+    expect(result.report).not.toContain("wildberries.ru");
+    expect(runInitial.mock.calls[0]?.[1]).toBeUndefined();
+    expect(runInitial.mock.calls[0]?.[2]?.outputSchema).toEqual(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          competitors: expect.objectContaining({
+            items: expect.objectContaining({
+              properties: expect.objectContaining({
+                sourceUrl: expect.objectContaining({ pattern: expect.stringContaining("ozon") }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("fails Ozon source verification closed when the worker verifier is unavailable", async () => {
+    const runInitial = vi.fn(async () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: JSON.stringify({
+        sourceVerification: {
+          status: "verified",
+          requestedProductId: ozonReference.productId,
+          resolvedProductId: ozonReference.productId,
+          productTitle: "Непроверенный товар",
+          brand: null,
+          evidence: [`SKU ${ozonReference.productId}.`],
+          failureReason: null,
+        },
+        competitors: [],
+        summary: "Непроверенный результат.",
+        report: "Непроверенный результат.",
+      }),
+      mcpToolCalls: [
+        { server: "playwright", tool: "browser_navigate", status: "completed" },
+        { server: "playwright", tool: "browser_snapshot", status: "completed" },
+      ],
+    }));
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+    });
+
+    const result = await service.researchMarketplaceCompetitors(ozonReference);
+
+    expect(result.sourceVerification.status).toBe("failed");
+    expect(result.sourceVerification.failureReason).toContain(
+      "Worker не подтвердил исходную карточку Ozon",
+    );
+    expect(result.competitors).toEqual([]);
+    expect(runInitial).not.toHaveBeenCalled();
+  });
+
+  it("rejects an Ozon source product when the verifier returns an external URL", async () => {
+    const runInitial = vi.fn();
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+      marketplaceResearchers: {
+        ozon: {
+          verify: vi.fn(async () => ({
+            productId: ozonReference.productId,
+            productTitle: "Неподтверждённый нож",
+            brand: null,
+            category: "Кухонные ножи",
+            description: null,
+            attributes: [],
+            sourceUrl: "https://shop.example/products/3085863400",
+          })),
+          discover: vi.fn(async () => []),
+        },
+      },
+    });
+
+    const result = await service.researchMarketplaceCompetitors(ozonReference);
+
+    expect(result.sourceVerification.status).toBe("failed");
+    expect(result.competitors).toEqual([]);
+    expect(runInitial).not.toHaveBeenCalled();
+  });
+
+  it("applies the configured timeout to Ozon source verification before Codex", async () => {
+    const runInitial = vi.fn(async () => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: "{}",
+    }));
+    const verify = vi.fn(async () => new Promise<undefined>((resolve) => {
+      setTimeout(() => resolve(undefined), 1_200);
+    }));
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 1,
+      marketplaceResearchers: {
+        ozon: { verify, discover: vi.fn(async () => []) },
+      },
+    });
+
+    const result = await service.researchMarketplaceCompetitors(ozonReference);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.sourceVerification.status).toBe("failed");
+    expect(runInitial).not.toHaveBeenCalled();
+  }, 2_500);
   it("runs marketplace competitor research with read-only browser verification, web search and structured output", async () => {
     const sourceVerification = verifiedSource();
     const runInitial = vi.fn(async () => ({

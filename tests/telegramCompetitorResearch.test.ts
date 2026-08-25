@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildCompetitorResearchFallbackTelegramResponse,
   buildCompetitorResearchHtmlReport,
+  buildCompetitorResearchOutputSchema,
   buildCompetitorResearchPrompt,
   buildCompetitorResearchReportFileName,
   buildCompetitorResearchTelegramResponse,
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
+  enforceVerifiedMarketplaceCompetitors,
+  extractMarketplaceProductReference,
+  extractOzonProductReference,
   extractWildberriesProductReference,
   isCompetitorResearchSourceVerified,
   parseCompetitorResearchOutput,
@@ -17,6 +21,13 @@ const reference = {
   marketplace: "wildberries" as const,
   productId: "123456789",
   sourceUrl: "https://www.wildberries.ru/catalog/123456789/detail.aspx",
+};
+
+const ozonReference = {
+  marketplace: "ozon" as const,
+  productId: "3085863400",
+  sourceUrl:
+    "https://www.ozon.ru/product/kuhonnyy-nozh-dlya-myasa-1-sht-lezvie-33-sm-vysokouglerodistaya-stal-3085863400/",
 };
 
 const verifiedSource = () => ({
@@ -85,7 +96,39 @@ describe("extractWildberriesProductReference", () => {
   });
 });
 
+describe("extractOzonProductReference", () => {
+  it("extracts and canonicalizes a regular Ozon product URL", () => {
+    const text =
+      "Посмотри https://ozon.ru/product/kuhonnyy-nozh-dlya-myasa-1-sht-lezvie-33-sm-vysokouglerodistaya-stal-3085863400/?from=share";
+
+    expect(extractOzonProductReference(text)).toEqual(ozonReference);
+    expect(extractMarketplaceProductReference(text)).toEqual(ozonReference);
+  });
+
+  it.each([
+    "https://ozon.ru/t/7GxaYkf",
+    "https://evilozon.ru/product/nozh-3085863400/",
+    "https://www.ozon.ru/category/nozhi-14515/",
+    "https://www.ozon.ru/product/nozh-without-sku/",
+  ])("rejects unsupported or non-product Ozon input %s", (text) => {
+    expect(extractOzonProductReference(text)).toBeUndefined();
+  });
+});
+
 describe("competitor research prompt", () => {
+  it("limits Ozon research and its output schema exclusively to Ozon cards", () => {
+    const prompt = buildCompetitorResearchPrompt(ozonReference);
+    const schema = buildCompetitorResearchOutputSchema(ozonReference);
+
+    expect(prompt).toContain("исключительно внутри Ozon");
+    expect(prompt).toContain(ozonReference.sourceUrl);
+    expect(prompt).toContain("Wildberries");
+    expect(prompt).toContain("не совпадает с исходным артикулом");
+    expect(schema.properties.competitors.items.properties.sourceUrl.pattern)
+      .toContain("ozon");
+    expect(schema.properties.competitors.items.properties.sourceUrl.pattern)
+      .not.toContain("wildberries");
+  });
   it("requires browser verification before any competitor search", () => {
     const prompt = buildCompetitorResearchPrompt(reference);
 
@@ -259,6 +302,35 @@ describe("competitor research prompt", () => {
 });
 
 describe("parseCompetitorResearchOutput", () => {
+  it("accepts only a separate canonical Ozon card for an Ozon source", () => {
+    const ozonCompetitor = {
+      ...validCompetitor(),
+      productId: "1753638237",
+      productTitle: "Кухонный шеф-нож для мяса",
+      sourceUrl:
+        "https://www.ozon.ru/product/kuhonnyy-shef-nozh-dlya-myasa-1753638237/",
+      evidence: ["Карточка Ozon подтвердила SKU 1753638237."],
+    };
+    const sourceVerification = {
+      ...verifiedSource(),
+      requestedProductId: ozonReference.productId,
+      resolvedProductId: ozonReference.productId,
+      evidence: ["Карточка Ozon подтвердила SKU 3085863400."],
+    };
+
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification,
+      competitors: [
+        ozonCompetitor,
+        { ...ozonCompetitor, productId: ozonReference.productId, sourceUrl: ozonReference.sourceUrl },
+        { ...ozonCompetitor, sourceUrl: "https://www.wildberries.ru/catalog/1753638237/detail.aspx" },
+      ],
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), ozonReference);
+
+    expect(parsed.competitors).toEqual([ozonCompetitor]);
+  });
   it("accepts a separate canonical Wildberries product card candidate", () => {
     const parsed = parseCompetitorResearchOutput(JSON.stringify({
       sourceVerification: verifiedSource(),
@@ -474,7 +546,120 @@ describe("parseCompetitorResearchOutput", () => {
   });
 });
 
+describe("enforceVerifiedMarketplaceCompetitors", () => {
+  const ozonSourceVerification = {
+    status: "verified" as const,
+    requestedProductId: ozonReference.productId,
+    resolvedProductId: ozonReference.productId,
+    productTitle: "Кухонный нож",
+    brand: null,
+    category: "Кухонные ножи",
+    evidence: ["Карточка Ozon подтверждена."],
+    failureReason: null,
+  };
+  const ozonCandidate = (productId: string) => ({
+    productId,
+    productTitle: `Нож ${productId}`,
+    sourceUrl: `https://www.ozon.ru/product/nozh-${productId}/`,
+    relevance: "Та же категория.",
+    evidence: ["Карточка Ozon."],
+    comparison: {
+      similarities: ["Та же категория."],
+      differences: [],
+      strengths: [],
+      weaknesses: [],
+      opportunity: "Уточнить характеристики.",
+    },
+  });
+
+  it("rejects an external URL returned by the marketplace verifier", async () => {
+    const candidate = ozonCandidate("1753638237");
+    const result = await enforceVerifiedMarketplaceCompetitors({
+      sourceVerification: ozonSourceVerification,
+      competitors: [candidate],
+      summary: "До проверки.",
+      report: "До проверки.",
+    }, ozonReference, {
+      verify: vi.fn(async () => ({
+        productId: candidate.productId,
+        productTitle: candidate.productTitle,
+        brand: null,
+        category: ozonSourceVerification.category,
+        description: null,
+        attributes: [],
+        sourceUrl: "https://shop.example/products/1753638237",
+      })),
+      discover: vi.fn(async () => []),
+    });
+
+    expect(result.competitors).toEqual([]);
+    expect(result.summary).not.toContain("shop.example");
+    expect(result.report).not.toContain("shop.example");
+  });
+
+  it("verifies final Ozon candidates sequentially", async () => {
+    const candidates = ["1753638237", "1753638238", "1753638239"]
+      .map(ozonCandidate);
+    let active = 0;
+    let maxConcurrent = 0;
+    const verify = vi.fn(async (candidate: typeof ozonReference) => {
+      active += 1;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return {
+        productId: candidate.productId,
+        productTitle: `Нож ${candidate.productId}`,
+        brand: null,
+        category: ozonSourceVerification.category,
+        description: null,
+        attributes: [],
+        sourceUrl: candidate.sourceUrl,
+      };
+    });
+
+    const result = await enforceVerifiedMarketplaceCompetitors({
+      sourceVerification: ozonSourceVerification,
+      competitors: candidates,
+      summary: "До проверки.",
+      report: "До проверки.",
+    }, ozonReference, { verify, discover: vi.fn(async () => []) });
+
+    expect(result.competitors).toHaveLength(3);
+    expect(maxConcurrent).toBe(1);
+  });
+});
+
 describe("competitor research presentation", () => {
+  it("renders Ozon branding and links without presenting WB competitors", () => {
+    const content = {
+      sourceVerification: {
+        ...verifiedSource(),
+        requestedProductId: ozonReference.productId,
+        resolvedProductId: ozonReference.productId,
+        productTitle: "Кухонный нож для мяса",
+      },
+      competitors: [],
+      summary: "Подтверждённых конкурентов пока нет.",
+      report: "Ограничение: подтверждённых конкурентов пока нет.",
+    };
+    const telegram = renderTelegramResponse(
+      buildCompetitorResearchTelegramResponse(content.summary, ozonReference),
+    );
+    const html = buildCompetitorResearchHtmlReport({
+      ...content,
+      reference: ozonReference,
+      generatedAt: "2026-08-25T00:00:00.000Z",
+    });
+
+    expect(telegram.messages.join("\n")).toContain("Конкурентный анализ Ozon");
+    expect(html).toContain("Конкурентный анализ Ozon");
+    expect(html).toContain(ozonReference.sourceUrl);
+    expect(html).not.toContain("Карточка WB подтверждена");
+    expect(buildCompetitorResearchReportFileName(ozonReference)).toBe(
+      "ozon-competitor-report-3085863400.html",
+    );
+  });
   it("renders only the concise summary in Telegram", () => {
     const rendered = renderTelegramResponse(
       buildCompetitorResearchTelegramResponse(

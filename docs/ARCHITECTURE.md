@@ -169,7 +169,7 @@ missing end-to-end work.
 
 ### Telegram competitor research and source verification
 
-Wildberries competitor research reuses the Telegram Assistant turn lifecycle but
+Marketplace competitor research reuses the Telegram Assistant turn lifecycle but
 has a stricter data-quality boundary than project Q&A. `compose.yaml` runs the
 official Playwright MCP server as an internal isolated Chromium sidecar. At
 worker startup, `scripts/configure-playwright-mcp.mjs` owns only a delimited
@@ -187,6 +187,37 @@ bounded title, brand, category, description and attributes to the research
 prompt. This path is independent of `detail.aspx`, which Wildberries may answer
 with anti-bot HTTP 403/498 for an isolated browser.
 
+For a regular Ozon `/product/<slug>-<sku>/` URL, `OzonProductResearch` calls a
+bounded internal `ozon-research` HTTP service. That broker is the only service on
+both the application network and the private `ozon-browser` network; it uses the
+dedicated Playwright MCP sidecar with a shared browser context. It
+navigates to the exact card and extracts bounded read-only page data with a
+fixed browser evaluation: final URL, Product JSON-LD, breadcrumbs,
+characteristics and Ozon product links. Verification requires the requested SKU
+to match the final canonical URL, JSON-LD `sku` and JSON-LD offer URL. A redirect
+to search, missing title, absent JSON-LD or any SKU mismatch fails closed. Short
+Ozon `/t/` links are outside the initial contract.
+
+Ozon can reject a fresh automation context with an anti-bot challenge or HTTP
+403. The dedicated sidecar may load a pre-warmed anonymous Playwright storage
+state mounted read-only from an absolute host directory outside the repository.
+The local headed bootstrap starts a new Chrome context, never a user profile, and
+saves state only after a browser-side composer API canary returns HTTP 200 and
+the page's primary Product JSON-LD contains the exact requested SKU. Account-like
+cookie or local-storage names reject the state. As an alternative, the local
+unpacked Chrome extension can export only bounded Ozon cookies and Ozon local
+storage from a signed-out trusted profile. A separate importer validates the
+candidate outside the repository, opens it in a fresh context, runs the same exact
+SKU canary and atomically promotes only the resulting sanitized state. The extension
+does not call the network, the importer never logs values, and neither path exposes
+browser state to the worker. The raw MCP endpoint is not on
+the worker/Codex network; only field-whitelisted, count/string/byte-bounded public
+inspection data crosses the broker. The dedicated browser network permits egress
+to Ozon but worker is not attached to it.
+The verifier never trusts a
+search snippet or model-declared identity; a missing, expired or fingerprint-bound
+state still fails closed before Codex.
+
 If CDN verification is unavailable or inconsistent, the flow falls back to the
 original browser-first gate. Codex must navigate to the exact card URL, wait for
 dynamic loading, and derive the requested article and product title from an
@@ -198,8 +229,10 @@ calls include `browser_navigate` plus either `browser_snapshot` or
 
 `TelegramAssistantService` keeps the final fail-closed source gate. If the
 requested and resolved articles differ, title/evidence is missing, a failure
-reason remains, or neither trusted CDN evidence nor the fallback MCP call audit
-exists, the turn is completed as `failed` with metric outcome `unverified`. No
+reason remains, or the marketplace-specific verifier cannot establish the exact
+card, the turn is completed as `failed` with metric outcome `unverified`. Ozon
+does not use the model-declared browser fallback; it requires the worker-owned
+Playwright inspection described above. No
 competitor summary or HTML artifact is emitted. This prevents a search-engine
 inference from silently becoming the identity of the source product.
 
@@ -217,6 +250,20 @@ from that verified set, so free-form model text and rejected external products
 cannot become delivered competitors. When fewer than five cards are confirmed,
 the result stays partial and states the limitation instead of filling the gap
 from another marketplace or a search snippet.
+
+For Ozon, candidates come only from Ozon product links on the verified source
+card. Each candidate is opened and verified in a separate bounded Playwright MCP
+session; same-SKU, cross-marketplace, malformed, unverified and
+category-mismatched cards are discarded. Ozon browser verification runs
+sequentially in both discovery and final-result gates to avoid an unbounded group
+of Chromium sessions. Failed or undefined inspections are evicted immediately;
+successful page inspections have a bounded TTL so one Telegram turn can reuse
+the source data without making a transient challenge permanent. One deadline
+derived from `TELEGRAM_CODEX_TIMEOUT_SECONDS` covers source verification,
+discovery, Codex and final verification. The output schema
+is selected per source marketplace, and the final parser and verification
+boundary independently enforce that every delivered competitor belongs to that
+same marketplace.
 
 The delivery DTO also carries a bounded structured comparison for every accepted
 card: similarities, differences, strengths, weaknesses and one opportunity for

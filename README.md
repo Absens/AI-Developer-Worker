@@ -235,38 +235,65 @@ through the internal `TaskTrackerClient`, and task creation requires
 
 When `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
 group can also send a Wildberries product-card URL such as
-`https://www.wildberries.ru/catalog/123456789/detail.aspx`. The standard Compose
-deployment starts the official Playwright MCP server as an isolated headless
-Chromium sidecar and injects a narrow managed MCP block into the worker's writable
+`https://www.wildberries.ru/catalog/123456789/detail.aspx` or a regular Ozon
+product URL such as `https://www.ozon.ru/product/example-3085863400/`. Ozon
+short links under `/t/` are intentionally outside this first version. The standard Compose
+deployment starts an isolated Playwright browser for Codex and a separate shared
+browser context behind a bounded Ozon research service. Only the first is
+injected as a narrow managed MCP block into the worker's writable
 `CODEX_HOME`. The server remains disabled for ordinary Codex work and is enabled
 with a per-run config override only for competitor research. That run must open
 the exact source URL through Playwright before web search, wait for dynamic
-loading, and confirm the requested article plus a non-empty product title from a
-browser snapshot or network response.
+loading, and confirm the requested article/SKU plus a non-empty product title
+from the actual marketplace card.
 
 The worker audits the actual `mcp_tool_call` JSONL events emitted by `codex exec`.
-A model-produced `verified` value is accepted only after successful
-`browser_navigate` and either `browser_snapshot` or `browser_network_request`
-calls. If the exact source card is not confirmed, the turn fails closed: the bot
+A model-produced `verified` value is never enough for Ozon: the worker opens the
+card through its dedicated Playwright MCP endpoint and requires matching SKU values
+in the canonical URL and Product JSON-LD plus a non-empty title. Wildberries
+retains its CDN `card.json` verifier and audited browser fallback. If the exact
+source card is not confirmed, the turn fails closed: the bot
 sends only a verification diagnostic and does not send a speculative summary or
 HTML document. After source verification, the worker queries the Wildberries
 catalog with the verified source category, resolves a bounded candidate pool and
 independently confirms every candidate through Wildberries `card.json`. Only
 same-category cards continue to analysis, so a `403/498` from `detail.aspx` does
-not erase valid candidates and unrelated WB search hits still fail closed.
-External marketplace links, the source
+not erase valid candidates and unrelated WB search hits still fail closed. For
+Ozon, candidate links come only from the verified Ozon card and every candidate
+is independently opened and checked; redirects to search and missing or
+mismatched SKU data are rejected. Failed inspections are not cached; successful
+page data has a short bounded cache so a temporary challenge does not poison the
+worker until restart. Ozon verification is sequential, and the configured
+Telegram Codex timeout covers source inspection, discovery, analysis and the
+final gate. External marketplace links, the source
 article itself and unverifiable candidates are discarded. A verified run sends
 a concise decision summary with named links to confirmed cards and uploads a
-self-contained `wb-competitor-report-<article>.html` document rebuilt from the
-confirmed WB cards. The report separates trusted Wildberries metadata from
+self-contained `<marketplace>-competitor-report-<article>.html` document rebuilt
+from confirmed same-marketplace cards. The report separates trusted card metadata from
 model-authored analysis, shows a compact competitor matrix, keeps detailed
-comparisons collapsible and gives each card a descriptive WB link. Price,
+comparisons collapsible and gives each card a descriptive marketplace link. Price,
 rating, reviews, sales, stock and photo/video counts are omitted unless the
 worker can verify them from card data; raw model prose does not control the HTML
 structure. If fewer than five cards are confirmed, the summary and report state
 that limitation and do not substitute products from other marketplaces.
+Ozon may answer a fresh automation context with an anti-bot challenge or HTTP 403
+even when the same card opens in a user's browser. An operator can either create a
+new anonymous Chrome state with `npm run ozon:bootstrap`, or export signed-out
+Ozon-only state from an existing trusted Chrome profile with the local unpacked
+extension in `tools/ozon-state-exporter` and run `npm run ozon:import-state`.
+Both paths require an absolute `OZON_STORAGE_STATE_HOST_DIR` outside the repository
+and a canonical `OZON_BOOTSTRAP_CANARY_URL`. The importer additionally requires an
+absolute external `OZON_STATE_CANDIDATE_FILE`. State is written only after the
+browser-side Ozon API returns HTTP 200 and the page contains the requested primary
+SKU. Compose mounts that directory read-only
+into the network-isolated `ozon-playwright` sidecar. The worker and Codex can
+reach only `ozon-research`, which accepts canonical Ozon cards and returns bounded
+public inspection data; they cannot reach the raw MCP endpoint or browser state.
+Never export while signed in or share/commit the candidate file. Recreate only
+that sidecar after refreshing the state;
+if the container-side canary still fails, Ozon research remains fail-closed.
 The application renders and escapes the HTML; document failure falls back to
-chunked text. This MVP supports Wildberries links only,
+chunked text. This flow supports regular Wildberries and Ozon product links,
 reuses `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and
 `TELEGRAM_CODEX_TIMEOUT_SECONDS`, and is not enabled for Telegram
 Business/Profile automation.

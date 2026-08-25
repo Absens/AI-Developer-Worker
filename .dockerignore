@@ -5,7 +5,9 @@ dist
 coverage
 .git
 .env
+.runtime
 web/.angular
 web/test-results
 web/playwright-report
 web/dev-server.log
+ozon-storage-state-candidate-*.json

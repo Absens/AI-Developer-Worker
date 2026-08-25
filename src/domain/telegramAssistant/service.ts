@@ -67,9 +67,9 @@ import {
   buildCompetitorResearchHtmlReport,
   buildCompetitorResearchReportFileName,
   buildCompetitorResearchTelegramResponse,
-  extractWildberriesProductReference,
+  extractMarketplaceProductReference,
   isCompetitorResearchSourceVerified,
-  type WildberriesProductReference,
+  type MarketplaceProductReference,
 } from "./competitorResearch.js";
 import { encryptTelegramAuditText } from "./auditCrypto.js";
 import type { TelegramAssistantProjectSourceProvider } from "./projectSources.js";
@@ -202,9 +202,6 @@ const COMPETITOR_RESEARCH_FAILED_MESSAGE =
   "Не удалось завершить исследование конкурентов. Попробуй повторить запрос позже.";
 const COMPETITOR_RESEARCH_DOCUMENT_FAILED_MESSAGE =
   "Не удалось отправить HTML-файл. Ниже полный отчёт текстом.";
-const COMPETITOR_RESEARCH_SOURCE_UNVERIFIED_MESSAGE =
-  "Не удалось подтвердить точный товар по исходной карточке Wildberries. " +
-  "Анализ остановлен, чтобы не подобрать конкурентов для неверного товара.";
 const MAX_COMPETITOR_RESEARCH_FAILURE_REASON_CHARS = 1000;
 const TASK_SENT_TO_OWNER_APPROVAL_MESSAGE =
   "Задача отправлена owner/admin на подтверждение запуска.";
@@ -218,20 +215,24 @@ const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена|cancel|н�
 
 const buildCompetitorResearchSourceUnverifiedMessage = (
   failureReason: string,
+  reference: MarketplaceProductReference,
 ): string => {
+  const message =
+    `Не удалось подтвердить точный товар по исходной карточке ${reference.marketplace === "wildberries" ? "Wildberries" : "Ozon"}. ` +
+    "Анализ остановлен, чтобы не подобрать конкурентов для неверного товара.";
   const normalizedReason = failureReason.trim().slice(
     0,
     MAX_COMPETITOR_RESEARCH_FAILURE_REASON_CHARS,
   );
   return normalizedReason
-    ? `${COMPETITOR_RESEARCH_SOURCE_UNVERIFIED_MESSAGE}\n\nПричина: ${normalizedReason}`
-    : COMPETITOR_RESEARCH_SOURCE_UNVERIFIED_MESSAGE;
+    ? `${message}\n\nПричина: ${normalizedReason}`
+    : message;
 };
 
 const inferAssistantTurnIntent = (
   input: TelegramInboundMessage | undefined,
 ): "project_question" | "competitor_research" =>
-  extractWildberriesProductReference(input?.text ?? input?.redactedText ?? "")
+  extractMarketplaceProductReference(input?.text ?? input?.redactedText ?? "")
     ? "competitor_research"
     : "project_question";
 
@@ -1969,7 +1970,7 @@ export class TelegramAssistantService {
     text: string,
     options: MessageProcessingOptions = {},
   ): Promise<AfterConversationLockOperation | undefined> {
-    const reference = extractWildberriesProductReference(text);
+    const reference = extractMarketplaceProductReference(text);
     if (
       message.source === "business" ||
       !reference ||
@@ -2024,7 +2025,7 @@ export class TelegramAssistantService {
   private async runCompetitorResearchTurn(
     message: TelegramInboundMessage,
     turnId: string,
-    reference: WildberriesProductReference,
+    reference: MarketplaceProductReference,
     drainAfterCompletion: boolean,
   ): Promise<void> {
     try {
@@ -2051,7 +2052,7 @@ export class TelegramAssistantService {
       ) {
         const diagnostic = redactSecrets(
           result.sourceVerification.failureReason ||
-            "Playwright не подтвердил исходную карточку Wildberries.",
+            `Playwright не подтвердил исходную карточку ${reference.marketplace === "wildberries" ? "Wildberries" : "Ozon"}.`,
         );
         const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
           status: "failed",
@@ -2067,7 +2068,7 @@ export class TelegramAssistantService {
         });
         await this.sendPlainMessage(
           message,
-          buildCompetitorResearchSourceUnverifiedMessage(diagnostic),
+          buildCompetitorResearchSourceUnverifiedMessage(diagnostic, reference),
         );
         if (drainAfterCompletion) {
           await this.drainQueuedMessages(message.conversationKey);
@@ -2156,7 +2157,7 @@ export class TelegramAssistantService {
   private async trySendCompetitorResearchDocument(
     message: TelegramInboundMessage,
     result: ResearchMarketplaceCompetitorsResult,
-    reference: WildberriesProductReference,
+    reference: MarketplaceProductReference,
   ): Promise<boolean> {
     if (!this.telegram.sendDocument) {
       return false;
@@ -2175,7 +2176,7 @@ export class TelegramAssistantService {
           generatedAt: new Date().toISOString(),
         }),
         mimeType: "text/html; charset=utf-8",
-        caption: `Полный конкурентный анализ WB · ${reference.productId}`,
+        caption: `Полный конкурентный анализ ${reference.marketplace === "wildberries" ? "WB" : "Ozon"} · ${reference.productId}`,
         ...(message.messageId ? { replyToMessageId: message.messageId } : {}),
         ...(message.businessConnectionId
           ? { businessConnectionId: message.businessConnectionId }

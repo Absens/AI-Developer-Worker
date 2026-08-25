@@ -44,11 +44,14 @@ export {
 export {
   buildCompetitorResearchFallbackTelegramResponse,
   buildCompetitorResearchHtmlReport,
+  buildCompetitorResearchOutputSchema,
   buildCompetitorResearchPrompt,
   buildCompetitorResearchReportFileName,
   buildCompetitorResearchTelegramResponse,
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
   extractWildberriesProductReference,
+  extractMarketplaceProductReference,
+  extractOzonProductReference,
   parseCompetitorResearchOutput,
   type BuildCompetitorResearchHtmlReportInput,
   type BuildCompetitorResearchTelegramResponseOptions,
@@ -56,6 +59,10 @@ export {
   type CompetitorResearchCompetitor,
   type CompetitorResearchContent,
   type WildberriesProductReference,
+  type MarketplaceProductReference,
+  type MarketplaceProductResearchPort,
+  type OzonProductReference,
+  type VerifiedMarketplaceProduct,
 } from "./competitorResearch.js";
 export {
   canHandleBusinessMessage,

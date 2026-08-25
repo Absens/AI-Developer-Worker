@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildApplication,
   buildTelegramAssistantCodexRuntimeConfig,
+  resolveOzonResearchUrl,
   runApplicationRuntime,
 } from "../src/app.js";
 import { InMemoryTelegramAssistantStore } from "../src/domain/telegramAssistant/index.js";
@@ -94,6 +95,23 @@ afterEach(async () => {
 });
 
 describe("application wiring", () => {
+  it("keeps the credential-bearing Ozon browser endpoint separate from Codex MCP", () => {
+    expect(resolveOzonResearchUrl({
+      PLAYWRIGHT_MCP_ENABLED: "true",
+      PLAYWRIGHT_MCP_URL: "http://playwright:8931/mcp",
+    })).toBeUndefined();
+    expect(resolveOzonResearchUrl({
+      PLAYWRIGHT_MCP_ENABLED: "true",
+      PLAYWRIGHT_MCP_URL: "http://playwright:8931/mcp",
+      OZON_RESEARCH_URL: "http://ozon-research:8933",
+    })).toBe("http://ozon-research:8933/");
+    expect(() => resolveOzonResearchUrl({
+      PLAYWRIGHT_MCP_ENABLED: "true",
+      PLAYWRIGHT_MCP_URL: "http://playwright:8931/mcp",
+      OZON_RESEARCH_URL: "http://user:secret@ozon-research:8933",
+    })).toThrow(/credentials/i);
+  });
+
   it("clamps Telegram assistant Codex process timeout to the Telegram timeout", () => {
     const workerRuntimeConfig = { codexTimeoutMs: 30 * 60 * 1000 };
     const telegramConfig = { codexTimeoutSeconds: 120 };

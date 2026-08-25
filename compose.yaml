@@ -46,6 +46,65 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  ozon-playwright:
+    image: mcr.microsoft.com/playwright/mcp:v0.0.79
+    init: true
+    entrypoint: ["node"]
+    command:
+      - /app/cli.js
+      - --headless
+      - --browser
+      - chromium
+      - --no-sandbox
+      - --shared-browser-context
+      - --storage-state
+      - /ozon-state/storage-state.json
+      - --image-responses
+      - omit
+      - --allowed-hosts
+      - ozon-playwright:8932,ozon-playwright,localhost,127.0.0.1
+      - --port
+      - "8932"
+      - --host
+      - 0.0.0.0
+    volumes:
+      - "${OZON_STORAGE_STATE_HOST_DIR:-${USERPROFILE:-${HOME}}/.ai-developer/ozon-anonymous}:/ozon-state:ro"
+    networks:
+      - ozon-browser
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          const net=require('node:net');const socket=net.connect(8932,'127.0.0.1',()=>{socket.end();process.exit(0)});socket.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  ozon-research:
+    build: .
+    entrypoint: ["node"]
+    command: ["dist/integrations/ozon/researchServer.js"]
+    environment:
+      OZON_BROWSER_MCP_URL: http://ozon-playwright:8932/mcp
+      OZON_RESEARCH_PORT: "8933"
+    depends_on:
+      ozon-playwright:
+        condition: service_healthy
+    networks:
+      - default
+      - ozon-browser
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8933/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   migrate:
     build: .
     env_file:
@@ -69,10 +128,13 @@ services:
       TASK_TRACKER_DATABASE_URL: postgres://tracker:tracker@postgres:5432/ai_developer_tasks
       PLAYWRIGHT_MCP_ENABLED: "true"
       PLAYWRIGHT_MCP_URL: http://playwright:8931/mcp
+      OZON_RESEARCH_URL: http://ozon-research:8933
     depends_on:
       postgres:
         condition: service_healthy
       playwright:
+        condition: service_healthy
+      ozon-research:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -87,3 +149,6 @@ services:
 volumes:
   codex-home:
   tracker-postgres:
+
+networks:
+  ozon-browser:

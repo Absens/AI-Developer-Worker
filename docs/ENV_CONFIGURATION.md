@@ -63,6 +63,10 @@ Copy-Item .env.example .env
 | `CODEX_HOME` | Нет | `~/.codex` на текущей машине | Используйте writable Codex auth directory. В Docker обычно это должен быть путь смонтированного volume, например `/codex-home`. |
 | `PLAYWRIGHT_MCP_ENABLED` | Нет | `false` | Управляет только наличием managed Playwright MCP block в `${CODEX_HOME}/config.toml`. Стандартный `compose.yaml` переопределяет значение на `true` для `worker`, но сервер в block остаётся `enabled = false`; runner включает его per-run только для competitor research. Прямые и non-Compose запуски остаются без браузера, пока оператор не подключит MCP endpoint явно. |
 | `PLAYWRIGHT_MCP_URL` | Нет | `http://playwright:8931/mcp` | Streamable HTTP endpoint Playwright MCP. Разрешены только HTTP(S) URL без embedded credentials. Startup script сохраняет весь пользовательский Codex config вне managed block. |
+| `OZON_RESEARCH_URL` | Нет | Не задано | Bounded HTTP endpoint Ozon research broker. Compose задаёт `http://ozon-research:8933`. Raw Playwright MCP и storage state остаются в отдельной dedicated non-published Docker network с egress; worker/Codex к ней не подключены. |
+| `OZON_STORAGE_STATE_HOST_DIR` | Для рабочего Ozon | `${USERPROFILE}`/`${HOME}` `/.ai-developer/ozon-anonymous` | Абсолютный каталог хоста вне репозитория с анонимным `storage-state.json`. Bootstrap принимает только явно заданный абсолютный внешний каталог. Compose монтирует его только для чтения в dedicated Ozon sidecar. |
+| `OZON_BOOTSTRAP_CANARY_URL` | Только bootstrap | Не задано | Точная каноническая карточка `https://www.ozon.ru/product/<slug>-<sku>/`, проверяемая до сохранения анонимного состояния. |
+| `OZON_STATE_CANDIDATE_FILE` | Только импорт из extension | Не задано | Абсолютный путь вне репозитория к локальному JSON, экспортированному `tools/ozon-state-exporter`. Импорт ограничивает размер и состав, запрещает внешние домены и account-like имена и не активирует состояние до canary. |
 | `CODEX_CLI_COMMAND` | Нет | `codex` | Укажите executable, который запускает Codex CLI. Оставьте `codex`, если не нужен wrapper launcher. |
 | `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`; для Codex CLI `0.149.1` предпочитайте `never` или `on-request`, а не deprecated `on-failure`. |
 | `CODEX_MODEL` | Нет | Не задано | Необязательное явное имя модели Codex, если нужны воспроизводимые запуски. |
@@ -405,16 +409,73 @@ successful CDN verification still lets competitor research continue.
 Playwright remains enabled for research and is also the fail-closed fallback if
 the CDN route or payload cannot be verified.
 
+Ozon research has no CDN fallback. For regular `/product/<slug>-<sku>/` links,
+the worker uses `OZON_RESEARCH_URL` and requires the bounded broker plus dedicated browser
+to return the exact card's Product JSON-LD. An anti-bot challenge, HTTP 403,
+redirect, missing JSON-LD or SKU mismatch fails closed before Codex is called.
+No personal browser cookies or search snippets are used as a substitute.
+The same `TELEGRAM_CODEX_TIMEOUT_SECONDS` budget covers the complete Ozon flow,
+including worker-owned browser verification before and after Codex.
+
+To warm an anonymous Ozon session, close any authenticated assumptions and run:
+
+```powershell
+$env:OZON_STORAGE_STATE_HOST_DIR = "C:\absolute\path\outside\developer\ozon"
+$env:OZON_BOOTSTRAP_CANARY_URL = "https://www.ozon.ru/product/example-3085863400/"
+npm run ozon:bootstrap
+```
+
+The command launches a fresh visible Chrome context. Do not sign in. Complete a
+challenge if shown and press Enter only after the card loads. The script saves no
+state unless the browser-side composer API returns HTTP 200, non-empty widgets
+and the exact primary Product JSON-LD SKU. Account-like cookie/local-storage
+names reject the save, and cookie values are never printed. Mount the resulting
+directory read-only and recreate the `ozon-playwright` sidecar to reload it. A
+state created by host Chrome can remain bound to that fingerprint; successful
+bootstrap is therefore not proof that Linux Chromium will pass. Keep Ozon
+fail-closed until a sidecar canary succeeds.
+
+If the same signed-out Ozon card already opens in a trusted Chrome profile, load
+`tools/ozon-state-exporter` through `chrome://extensions` as an unpacked extension.
+Its manifest is limited to Ozon hosts, and its popup has no network transport.
+After signing out of Ozon, export from a canonical product card and import locally:
+
+```powershell
+$env:OZON_STATE_CANDIDATE_FILE = "C:\Users\you\Downloads\ozon-storage-state-candidate.json"
+$env:OZON_STORAGE_STATE_HOST_DIR = "C:\absolute\path\outside\developer\ozon"
+$env:OZON_BOOTSTRAP_CANARY_URL = "https://www.ozon.ru/product/example-3085863400/"
+npm run ozon:import-state
+```
+
+The candidate is treated as sensitive even though authenticated-looking state is
+rejected. Do not send or commit it. The importer resolves the real file path,
+enforces a 512 KiB limit and a bounded Ozon-only schema, opens a fresh visible
+Chrome context with that state, and atomically replaces `storage-state.json` only
+after the same exact-card canary succeeds. It logs counts and status, never values.
+
+Refreshing is transactional: a failed canary or anonymous-state gate does not
+create or replace `storage-state.json`; an existing last-known-good state remains
+in place. A successful refresh writes a temporary file in the same directory and
+atomically renames it over the previous state.
+
 The worker image does not install Chromium or `@playwright/mcp`. The standard
-`compose.yaml` runs the pinned Microsoft Playwright MCP image as an internal-only
-sidecar at `http://playwright:8931/mcp`; no browser port is published to the
-host. The worker entrypoint updates only the delimited
+`compose.yaml` runs pinned non-published browser sidecars; no browser port is
+published to the host. The generic endpoint is
+`http://playwright:8931/mcp`. The worker entrypoint updates only the delimited
 `AI_WORKER_PLAYWRIGHT_MCP` block in `${CODEX_HOME}/config.toml` and preserves all
 other profiles and MCP servers.
 
+The worker-facing Ozon endpoint is the bounded broker at
+`http://ozon-research:8933`. The raw `http://ozon-playwright:8932/mcp` endpoint
+uses a shared context and read-only `/ozon-state/storage-state.json`, but exists
+only on the dedicated `ozon-browser` network. That network has external egress
+for Ozon, while worker/Codex are not members. The broker accepts only canonical
+Ozon card URLs and returns bounded public inspection data. Worker/Codex are not
+attached to that browser network, so arbitrary model tools cannot access state.
+
 The managed Codex server is configured with `enabled = false` and `required =
 true`. `CliCodexRunner` enables it with a one-run `--config` override only for
-Wildberries competitor research, so developer tasks, project Q&A, reviews and
+marketplace competitor research, so developer tasks, project Q&A, reviews and
 Digital Twin runs do not receive browser tools. When enabled for that run, it
 uses automatic approval only for its explicit allowlist and exposes navigation,
 waiting, accessibility snapshot, network inspection, screenshot and close. It
@@ -455,19 +516,20 @@ owner/admin approval; see
 before enabling this as an auto-execution intake channel.
 
 With `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
-group may send a Wildberries product-card URL matching `/catalog/<numeric-id>/`.
-The assistant immediately acknowledges the request and starts an asynchronous
-read-only Codex run. In the standard Compose deployment, Codex first uses the
-Playwright MCP sidecar to open the exact URL and confirm the exact article and
-product identity from a browser snapshot or network response. Web search and
-competitor analysis are allowed only after that verification.
+group may send a Wildberries product-card URL matching `/catalog/<numeric-id>/`
+or a regular Ozon URL matching `/product/<slug>-<sku>/`. The assistant
+immediately acknowledges the request and starts asynchronous read-only research.
+Wildberries normally uses worker-owned CDN verification with audited Playwright
+as its fallback; Ozon requires worker-owned inspection through its dedicated
+Playwright MCP sidecar. Web search and competitor analysis are allowed only after exact product
+identity is confirmed.
 
 The runner records successful Playwright `mcp_tool_call` events from Codex JSONL;
 a structured `verified` claim without successful `browser_navigate` plus
 `browser_snapshot` or `browser_network_request` is rejected. Unverified runs mark
 the assistant turn failed and send only the verification diagnostic—no summary
 or HTML report. Competitor research shares the project-Q&A daily limit and
-timeout settings, supports only Wildberries in this version, and deliberately
+timeout settings, supports Wildberries and regular Ozon product links, and deliberately
 ignores Telegram Business/Profile automation messages for this intent.
 
 | Variable | Default | Notes |

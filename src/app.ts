@@ -47,6 +47,10 @@ import { YandexTrackerClient } from "./integrations/tracker/client.js";
 import { WildberriesCompetitorDiscovery } from "./integrations/wildberries/competitorDiscovery.js";
 import { WildberriesProductVerifier } from "./integrations/wildberries/productVerifier.js";
 import {
+  createOzonResearchHttpInspector,
+  OzonProductResearch,
+} from "./integrations/ozon/productResearch.js";
+import {
   InMemoryYandexBridgeStore,
   PostgresYandexBridgeStore,
   YandexBridge,
@@ -110,6 +114,32 @@ export interface ApplicationRuntime {
   assertRepositoryReady(): Promise<void>;
   assertCodexAuthenticated(): Promise<void>;
 }
+
+export const resolveOzonResearchUrl = (
+  environment: NodeJS.ProcessEnv,
+): string | undefined => {
+  const rawOzonUrl = environment.OZON_RESEARCH_URL?.trim();
+  if (!rawOzonUrl) {
+    return undefined;
+  }
+
+  let ozonUrl: URL;
+  try {
+    ozonUrl = new URL(rawOzonUrl);
+  } catch {
+    throw new Error("OZON_RESEARCH_URL must be a valid HTTP(S) URL.");
+  }
+  if (!["http:", "https:"].includes(ozonUrl.protocol)) {
+    throw new Error("OZON_RESEARCH_URL must be a valid HTTP(S) URL.");
+  }
+  if (ozonUrl.username || ozonUrl.password) {
+    throw new Error(
+      "OZON_RESEARCH_URL must not contain embedded credentials.",
+    );
+  }
+
+  return ozonUrl.href;
+};
 
 const noopCleanupController: CleanupController = {
   start(): void {},
@@ -598,6 +628,12 @@ const createTelegramAssistantController = (
   const telegramClient = new TelegramClient({ botToken: config.botToken });
   const primaryRepository = fleetConfig.repositories[0];
   const wildberriesProductVerifier = new WildberriesProductVerifier();
+  const ozonResearchUrl = resolveOzonResearchUrl(process.env);
+  const ozonProductResearch = ozonResearchUrl
+    ? new OzonProductResearch({
+        inspect: createOzonResearchHttpInspector({ baseUrl: ozonResearchUrl }),
+      })
+    : undefined;
   const assistantCodex = primaryRepository
     ? new TelegramAssistantCodexService({
         codex: new CliCodexRunner(
@@ -611,6 +647,9 @@ const createTelegramAssistantController = (
         timeoutSeconds: config.codexTimeoutSeconds,
         productVerifier: wildberriesProductVerifier,
         productDiscovery: new WildberriesCompetitorDiscovery(),
+        ...(ozonProductResearch
+          ? { marketplaceResearchers: { ozon: ozonProductResearch } }
+          : {}),
       })
     : undefined;
   const memoryStore = fleetConfig.memory?.enabled

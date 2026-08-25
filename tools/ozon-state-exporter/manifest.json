@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Ozon Anonymous State Exporter",
+  "version": "1.0.0",
+  "description": "Exports a bounded anonymous Ozon-only browser state to a local JSON file.",
+  "permissions": ["cookies", "scripting"],
+  "host_permissions": [
+    "https://ozon.ru/*",
+    "https://*.ozon.ru/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Export anonymous Ozon state"
+  }
+}

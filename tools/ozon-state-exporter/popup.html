@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Ozon State Exporter</title>
+    <style>
+      body { width: 320px; margin: 0; padding: 16px; font: 14px/1.45 system-ui, sans-serif; color: #172033; }
+      h1 { margin: 0 0 8px; font-size: 17px; }
+      p { margin: 0 0 12px; }
+      button { width: 100%; padding: 10px; border: 0; border-radius: 8px; color: white; background: #1264e5; cursor: pointer; }
+      button:disabled { opacity: .55; cursor: wait; }
+      #status { margin-top: 10px; white-space: pre-wrap; color: #49556a; }
+      .warning { color: #9b2c2c; }
+    </style>
+  </head>
+  <body>
+    <h1>Экспорт Ozon state</h1>
+    <p>Откройте обычную карточку Ozon и выйдите из аккаунта. Данные никуда не отправляются.</p>
+    <button id="export" type="button">Экспортировать anonymous state</button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <script src="sanitizer.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,5 +1,5 @@
 import type { TelegramIntent } from "./types.js";
-import { extractWildberriesProductReference } from "./competitorResearch.js";
+import { extractMarketplaceProductReference } from "./competitorResearch.js";
 
 export interface RouteTelegramIntentOptions {
   projectQaEnabled?: boolean;
@@ -50,7 +50,7 @@ export const routeTelegramIntent = (
       safetyLevel: "confirm_write",
     });
   }
-  if (extractWildberriesProductReference(rawText)) {
+  if (extractMarketplaceProductReference(rawText)) {
     return buildIntent("competitor_research", rawText, {
       confidence: 1,
       safetyLevel: "read_only",

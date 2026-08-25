@@ -1,14 +1,16 @@
 import type { CodexExecution, CodexRunner } from "../../models/types.js";
 import {
   addVerifiedDiscoveredCompetitors,
+  buildCompetitorResearchOutputSchema,
   buildCompetitorResearchPrompt,
-  COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
-  enforceVerifiedWildberriesCompetitors,
+  enforceVerifiedMarketplaceCompetitors,
+  extractOzonProductReference,
   isCompetitorResearchSourceVerified,
   parseCompetitorResearchOutput,
   type CompetitorResearchContent,
-  type VerifiedWildberriesProduct,
-  type WildberriesProductReference,
+  type MarketplaceProductReference,
+  type MarketplaceProductResearchPort,
+  type VerifiedMarketplaceProduct,
   type WildberriesProductDiscoveryPort,
   type WildberriesProductVerifierPort,
 } from "./competitorResearch.js";
@@ -29,7 +31,7 @@ export interface AnswerProjectQuestionResult {
   timedOut?: boolean;
 }
 
-export type ResearchMarketplaceCompetitorsInput = WildberriesProductReference;
+export type ResearchMarketplaceCompetitorsInput = MarketplaceProductReference;
 
 export interface ResearchMarketplaceCompetitorsResult
   extends CompetitorResearchContent {
@@ -66,6 +68,9 @@ export interface TelegramAssistantCodexServiceOptions {
   timeoutSeconds: number;
   productVerifier?: WildberriesProductVerifierPort;
   productDiscovery?: WildberriesProductDiscoveryPort;
+  marketplaceResearchers?: Partial<
+    Record<MarketplaceProductReference["marketplace"], MarketplaceProductResearchPort>
+  >;
 }
 
 const TIMEOUT_ANSWER =
@@ -76,6 +81,8 @@ const COMPETITOR_RESEARCH_TIMEOUT_REPORT =
   "Codex не успел завершить исследование конкурентов за отведенное время.";
 const COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE =
   "Codex не подтвердил исходную карточку успешными вызовами Playwright MCP.";
+const OZON_SOURCE_VERIFICATION_UNAVAILABLE =
+  "Worker не подтвердил исходную карточку Ozon фактическими данными страницы.";
 const PLAYWRIGHT_MCP_SERVER = "playwright";
 const PLAYWRIGHT_NAVIGATION_TOOL = "browser_navigate";
 const PLAYWRIGHT_EVIDENCE_TOOLS = new Set([
@@ -92,6 +99,9 @@ export class TelegramAssistantCodexService {
   private readonly timeoutMs: number;
   private readonly productVerifier?: WildberriesProductVerifierPort;
   private readonly productDiscovery?: WildberriesProductDiscoveryPort;
+  private readonly marketplaceResearchers: Partial<
+    Record<MarketplaceProductReference["marketplace"], MarketplaceProductResearchPort>
+  >;
 
   public constructor(options: TelegramAssistantCodexServiceOptions) {
     this.codex = options.codex;
@@ -99,6 +109,7 @@ export class TelegramAssistantCodexService {
     this.timeoutMs = Math.max(1, options.timeoutSeconds) * 1000;
     this.productVerifier = options.productVerifier;
     this.productDiscovery = options.productDiscovery;
+    this.marketplaceResearchers = options.marketplaceResearchers ?? {};
   }
 
   public async answerProjectQuestion(
@@ -124,11 +135,46 @@ export class TelegramAssistantCodexService {
   public async researchMarketplaceCompetitors(
     input: ResearchMarketplaceCompetitorsInput,
   ): Promise<ResearchMarketplaceCompetitorsResult> {
-    const verifiedProduct = await this.productVerifier?.verify(input.productId)
-      .catch(() => undefined);
-    const verifiedDiscoveredProducts = verifiedProduct
-      ? await this.discoverVerifiedCompetitors(verifiedProduct)
+    const deadlineAt = Date.now() + this.timeoutMs;
+    const remainingTimeoutMs = (): number =>
+      Math.max(1, deadlineAt - Date.now());
+    const marketplaceResearch = this.resolveMarketplaceResearch(input);
+    const verification = marketplaceResearch
+      ? await withTimeout(
+          marketplaceResearch.verify(input, deadlineAt).catch(() => undefined),
+          remainingTimeoutMs(),
+        )
+      : undefined;
+    if (verification === TIMEOUT) {
+      return competitorResearchTimeoutResult(input);
+    }
+    const verifiedProduct = verification && isTrustedVerifiedSourceProduct(
+        input,
+        verification,
+      )
+      ? verification
+      : undefined;
+    if (input.marketplace === "ozon" && !verifiedProduct) {
+      return failedMarketplaceVerificationContent(
+        input,
+        OZON_SOURCE_VERIFICATION_UNAVAILABLE,
+      );
+    }
+    const discovery = verifiedProduct
+      ? await withTimeout(
+          this.discoverVerifiedCompetitors(
+            input,
+            verifiedProduct,
+            marketplaceResearch,
+            deadlineAt,
+          ),
+          remainingTimeoutMs(),
+        )
       : [];
+    if (discovery === TIMEOUT) {
+      return competitorResearchTimeoutResult(input);
+    }
+    const verifiedDiscoveredProducts = discovery;
     const execution = await withTimeout(
       this.codex.runInitial(
         buildCompetitorResearchPrompt(
@@ -141,33 +187,19 @@ export class TelegramAssistantCodexService {
           sandbox: "read-only",
           webSearch: true,
           playwrightMcp: true,
-          outputSchema: COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
+          outputSchema: buildCompetitorResearchOutputSchema(input),
         },
       ),
-      this.timeoutMs,
+      remainingTimeoutMs(),
     );
 
     if (execution === TIMEOUT) {
-      return {
-        sourceVerification: {
-          status: "failed",
-          requestedProductId: input.productId,
-          resolvedProductId: null,
-          productTitle: null,
-          brand: null,
-          evidence: [],
-          failureReason: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
-        },
-        competitors: [],
-        summary: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
-        report: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
-        timedOut: true,
-      };
+      return competitorResearchTimeoutResult(input);
     }
 
     const content = parseCompetitorResearchOutput(execution.finalMessage, input);
     const sourceAuditedContent = verifiedProduct
-      ? applyTrustedSourceVerification(content, verifiedProduct)
+      ? applyTrustedSourceVerification(content, input, verifiedProduct)
       : content.sourceVerification.status === "verified" &&
           !hasSuccessfulPlaywrightVerification(execution)
         ? failedPlaywrightAuditContent(input)
@@ -175,20 +207,29 @@ export class TelegramAssistantCodexService {
     const discoveryAuditedContent = verifiedProduct
       ? addVerifiedDiscoveredCompetitors(
           sourceAuditedContent,
+          input,
           verifiedProduct,
           verifiedDiscoveredProducts,
         )
       : sourceAuditedContent;
-    const auditedContent = isCompetitorResearchSourceVerified(
+    const audit = isCompetitorResearchSourceVerified(
         discoveryAuditedContent,
         input,
       )
-      ? await enforceVerifiedWildberriesCompetitors(
-          discoveryAuditedContent,
-          input,
-          this.productVerifier,
+      ? await withTimeout(
+          enforceVerifiedMarketplaceCompetitors(
+            discoveryAuditedContent,
+            input,
+            marketplaceResearch,
+            deadlineAt,
+          ),
+          remainingTimeoutMs(),
         )
       : discoveryAuditedContent;
+    if (audit === TIMEOUT) {
+      return competitorResearchTimeoutResult(input);
+    }
+    const auditedContent = audit;
 
     return {
       ...auditedContent,
@@ -197,32 +238,75 @@ export class TelegramAssistantCodexService {
   }
 
   private async discoverVerifiedCompetitors(
-    sourceProduct: VerifiedWildberriesProduct,
-  ): Promise<VerifiedWildberriesProduct[]> {
-    if (!this.productDiscovery || !this.productVerifier || !sourceProduct.category) {
+    reference: MarketplaceProductReference,
+    sourceProduct: VerifiedMarketplaceProduct,
+    research: MarketplaceProductResearchPort | undefined,
+    deadlineAt: number,
+  ): Promise<VerifiedMarketplaceProduct[]> {
+    if (!research || !sourceProduct.category) {
       return [];
     }
-    const productIds = await this.productDiscovery.discover(
+    const candidates = await research.discover(
+      reference,
       sourceProduct,
       MAX_DISCOVERY_CANDIDATES,
+      deadlineAt,
     ).catch(() => []);
-    const uniqueProductIds = Array.from(new Set(productIds))
-      .filter((productId) => productId !== sourceProduct.productId)
+    const uniqueCandidates = Array.from(
+      new Map(candidates.map((candidate) => [candidate.productId, candidate])).values(),
+    )
+      .filter((candidate) =>
+        candidate.marketplace === reference.marketplace &&
+        candidate.productId !== sourceProduct.productId
+      )
       .slice(0, MAX_DISCOVERY_CANDIDATES);
-    const products = await Promise.all(
-      uniqueProductIds.map((productId) =>
-        this.productVerifier?.verify(productId).catch(() => undefined)
-      ),
-    );
+    const products = reference.marketplace === "ozon"
+      ? await verifyCandidatesSequentially(
+          uniqueCandidates,
+          research,
+          deadlineAt,
+        )
+      : await Promise.all(
+          uniqueCandidates.map((candidate) =>
+            research.verify(candidate, deadlineAt).catch(() => undefined)
+          ),
+        );
     const sourceCategory = normalizeCategory(sourceProduct.category);
     return products.filter(
-      (product): product is VerifiedWildberriesProduct =>
+      (product): product is VerifiedMarketplaceProduct =>
         Boolean(
           product &&
             product.productId !== sourceProduct.productId &&
             normalizeCategory(product.category) === sourceCategory,
         ),
     ).slice(0, MAX_VERIFIED_DISCOVERED_COMPETITORS);
+  }
+
+  private resolveMarketplaceResearch(
+    reference: MarketplaceProductReference,
+  ): MarketplaceProductResearchPort | undefined {
+    const configured = this.marketplaceResearchers[reference.marketplace];
+    if (configured) {
+      return configured;
+    }
+    if (reference.marketplace !== "wildberries" || !this.productVerifier) {
+      return undefined;
+    }
+    return {
+      verify: (candidate) => this.productVerifier!.verify(candidate.productId),
+      discover: async (candidate, sourceProduct, limit) => {
+        const productIds = await this.productDiscovery?.discover(
+          sourceProduct,
+          limit,
+        ) ?? [];
+        return productIds.map((productId) => ({
+          marketplace: "wildberries" as const,
+          productId,
+          sourceUrl:
+            `https://www.wildberries.ru/catalog/${productId}/detail.aspx`,
+        })).filter((product) => product.productId !== candidate.productId);
+      },
+    };
   }
 
   public async answerAsDigitalTwin(
@@ -312,7 +396,8 @@ const hasSuccessfulPlaywrightVerification = (
 
 const applyTrustedSourceVerification = (
   content: CompetitorResearchContent,
-  product: VerifiedWildberriesProduct,
+  reference: MarketplaceProductReference,
+  product: VerifiedMarketplaceProduct,
 ): CompetitorResearchContent => {
   if (
     content.sourceVerification.status !== "verified" ||
@@ -323,6 +408,9 @@ const applyTrustedSourceVerification = (
   }
 
   const brandEvidence = product.brand ? `; бренд ${product.brand}` : "";
+  const evidence = reference.marketplace === "wildberries"
+    ? `Wildberries CDN card.json: ${product.sourceUrl}; артикул ${product.productId}; товар ${product.productTitle}${brandEvidence}.`
+    : `Карточка Ozon: ${product.sourceUrl}; SKU ${product.productId}; товар ${product.productTitle}${brandEvidence}.`;
   return {
     ...content,
     sourceVerification: {
@@ -333,16 +421,40 @@ const applyTrustedSourceVerification = (
       brand: product.brand,
       category: product.category,
       attributes: product.attributes,
-      evidence: [
-        `Wildberries CDN card.json: ${product.sourceUrl}; артикул ${product.productId}; товар ${product.productTitle}${brandEvidence}.`,
-      ],
+      evidence: [evidence],
       failureReason: null,
     },
   };
 };
 
+const isTrustedVerifiedSourceProduct = (
+  reference: MarketplaceProductReference,
+  product: VerifiedMarketplaceProduct,
+): boolean => {
+  if (product.productId !== reference.productId || !product.productTitle.trim()) {
+    return false;
+  }
+  if (reference.marketplace !== "ozon") {
+    return true;
+  }
+  const productReference = extractOzonProductReference(product.sourceUrl);
+  return Boolean(
+    productReference &&
+      productReference.productId === reference.productId &&
+      productReference.sourceUrl === product.sourceUrl,
+  );
+};
+
 const failedPlaywrightAuditContent = (
   input: ResearchMarketplaceCompetitorsInput,
+): CompetitorResearchContent => failedMarketplaceVerificationContent(
+  input,
+  COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
+);
+
+const failedMarketplaceVerificationContent = (
+  input: ResearchMarketplaceCompetitorsInput,
+  failureReason: string,
 ): CompetitorResearchContent => ({
   sourceVerification: {
     status: "failed",
@@ -351,12 +463,44 @@ const failedPlaywrightAuditContent = (
     productTitle: null,
     brand: null,
     evidence: [],
-    failureReason: COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
+    failureReason,
   },
   competitors: [],
-  summary: COMPETITOR_RESEARCH_BROWSER_AUDIT_FAILURE,
+  summary: failureReason,
   report: "",
 });
+
+const competitorResearchTimeoutResult = (
+  input: ResearchMarketplaceCompetitorsInput,
+): ResearchMarketplaceCompetitorsResult => ({
+  sourceVerification: {
+    status: "failed",
+    requestedProductId: input.productId,
+    resolvedProductId: null,
+    productTitle: null,
+    brand: null,
+    evidence: [],
+    failureReason: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
+  },
+  competitors: [],
+  summary: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
+  report: COMPETITOR_RESEARCH_TIMEOUT_REPORT,
+  timedOut: true,
+});
+
+const verifyCandidatesSequentially = async (
+  candidates: MarketplaceProductReference[],
+  research: MarketplaceProductResearchPort,
+  deadlineAt?: number,
+): Promise<Array<VerifiedMarketplaceProduct | undefined>> => {
+  const products: Array<VerifiedMarketplaceProduct | undefined> = [];
+  for (const candidate of candidates) {
+    products.push(
+      await research.verify(candidate, deadlineAt).catch(() => undefined),
+    );
+  }
+  return products;
+};
 
 const buildProjectQuestionPrompt = (
   input: AnswerProjectQuestionInput,
@@ -437,10 +581,10 @@ const truncateContext = (value: string, maxContextChars: number): string => {
 const normalizeCategory = (value: string | null): string =>
   value?.trim().toLocaleLowerCase("ru-RU").replace(/ё/gu, "е") ?? "";
 
-const withTimeout = async (
-  promise: Promise<CodexExecution>,
+const withTimeout = async <T>(
+  promise: Promise<T>,
   timeoutMs: number,
-): Promise<CodexExecution | typeof TIMEOUT> => {
+): Promise<T | typeof TIMEOUT> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<typeof TIMEOUT>((resolve) => {
     timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);

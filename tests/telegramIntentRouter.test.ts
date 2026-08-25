@@ -80,6 +80,7 @@ describe("routeTelegramIntent", () => {
   it.each([
     "https://www.wildberries.ru/catalog/123456789/detail.aspx",
     "Найди конкурентов для wildberries.ru/catalog/123456789/detail.aspx",
+    "https://www.ozon.ru/product/kuhonnyy-nozh-dlya-myasa-3085863400/",
   ])("routes Wildberries product research %s", (text) => {
     expect(routeTelegramIntent(text, { projectQaEnabled: true }).name).toBe(
       "competitor_research",

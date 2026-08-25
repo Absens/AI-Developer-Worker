@@ -4,3 +4,5 @@ coverage/
 .env
 .codex-home/
 .worktrees/
+.runtime/
+ozon-storage-state-candidate-*.json

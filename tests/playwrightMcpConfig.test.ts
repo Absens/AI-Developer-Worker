@@ -197,7 +197,62 @@ describe("Playwright MCP Docker Compose wiring", () => {
     expect(worker?.environment?.PLAYWRIGHT_MCP_URL).toBe(
       "http://playwright:8931/mcp",
     );
+    expect(worker?.environment?.OZON_RESEARCH_URL).toBe(
+      "http://ozon-research:8933",
+    );
     expect(worker?.depends_on?.playwright?.condition).toBe("service_healthy");
+    expect(worker?.depends_on?.["ozon-research"]?.condition).toBe(
+      "service_healthy",
+    );
+    expect(worker?.environment?.OZON_BROWSER_MCP_URL).toBeUndefined();
     expect(compose.services?.migrate?.environment?.PLAYWRIGHT_MCP_ENABLED).toBeUndefined();
+  });
+
+  it("isolates Ozon storage state in a dedicated non-published browser sidecar", async () => {
+    const compose = parseYaml(await readFile(join(process.cwd(), "compose.yaml"), "utf8")) as {
+      services?: Record<string, Record<string, unknown>>;
+    };
+    const ozonPlaywright = compose.services?.["ozon-playwright"] as {
+      image?: string;
+      entrypoint?: string[];
+      command?: string[];
+      ports?: unknown;
+      volumes?: string[];
+      healthcheck?: { test?: string[] };
+      networks?: string[];
+    } | undefined;
+
+    expect(ozonPlaywright).toBeDefined();
+    expect(ozonPlaywright?.image).toBe(
+      "mcr.microsoft.com/playwright/mcp:v0.0.79",
+    );
+    expect(ozonPlaywright?.command).toEqual(expect.arrayContaining([
+      "--headless",
+      "--shared-browser-context",
+      "--storage-state",
+      "/ozon-state/storage-state.json",
+      "--port",
+      "8932",
+    ]));
+    expect(ozonPlaywright?.command).not.toEqual(expect.arrayContaining([
+      "--isolated",
+      "--block-service-workers",
+    ]));
+    expect(ozonPlaywright?.ports).toBeUndefined();
+    expect(ozonPlaywright?.volumes?.join(" ")).toContain("/ozon-state:ro");
+    expect(ozonPlaywright?.healthcheck?.test?.join(" ")).toContain("8932");
+    expect(ozonPlaywright?.networks).toEqual(["ozon-browser"]);
+    const research = compose.services?.["ozon-research"] as {
+      environment?: Record<string, string>;
+      networks?: string[];
+      ports?: unknown;
+    };
+    expect(research.environment?.OZON_BROWSER_MCP_URL).toBe(
+      "http://ozon-playwright:8932/mcp",
+    );
+    expect(research.networks).toEqual(expect.arrayContaining(["default", "ozon-browser"]));
+    expect(research.ports).toBeUndefined();
+    expect((compose as { networks?: Record<string, { internal?: boolean }> })
+      .networks?.["ozon-browser"]?.internal).not.toBe(true);
   });
 });
