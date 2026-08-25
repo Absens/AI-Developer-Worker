@@ -203,9 +203,13 @@ exists, the turn is completed as `failed` with metric outcome `unverified`. No
 competitor summary or HTML artifact is emitted. This prevents a search-engine
 inference from silently becoming the identity of the source product.
 
-After the source passes that gate, competitor candidates cross a separate
-Wildberries-only boundary. The structured Codex output accepts only unique
-numeric articles with exact canonical
+After the source passes that gate, `WildberriesCompetitorDiscovery` queries the
+Wildberries catalog using the verified source category. The worker resolves the
+bounded article pool through the existing `card.json` verifier and retains only
+cards whose verified category matches the source. These trusted candidates are
+provided to Codex and also seed the post-processing result, so WB `detail.aspx`
+`403/498` responses cannot erase otherwise valid competitors. The structured
+Codex output still accepts only unique numeric articles with exact canonical
 `https://www.wildberries.ru/catalog/<article>/detail.aspx` URLs and rejects the
 source article. The worker then verifies every remaining article through the
 same Wildberries `card.json` adapter. Telegram and HTML narratives are rebuilt

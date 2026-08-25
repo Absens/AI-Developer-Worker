@@ -44,6 +44,7 @@ import {
 } from "./integrations/telegram/index.js";
 import { createRuntimeTrackerClient } from "./integrations/tracker/factory.js";
 import { YandexTrackerClient } from "./integrations/tracker/client.js";
+import { WildberriesCompetitorDiscovery } from "./integrations/wildberries/competitorDiscovery.js";
 import { WildberriesProductVerifier } from "./integrations/wildberries/productVerifier.js";
 import {
   InMemoryYandexBridgeStore,
@@ -596,6 +597,7 @@ const createTelegramAssistantController = (
 
   const telegramClient = new TelegramClient({ botToken: config.botToken });
   const primaryRepository = fleetConfig.repositories[0];
+  const wildberriesProductVerifier = new WildberriesProductVerifier();
   const assistantCodex = primaryRepository
     ? new TelegramAssistantCodexService({
         codex: new CliCodexRunner(
@@ -607,7 +609,8 @@ const createTelegramAssistantController = (
         ),
         maxContextChars: config.codexMaxContextChars,
         timeoutSeconds: config.codexTimeoutSeconds,
-        productVerifier: new WildberriesProductVerifier(),
+        productVerifier: wildberriesProductVerifier,
+        productDiscovery: new WildberriesCompetitorDiscovery(),
       })
     : undefined;
   const memoryStore = fleetConfig.memory?.enabled

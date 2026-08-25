@@ -249,10 +249,12 @@ A model-produced `verified` value is accepted only after successful
 `browser_navigate` and either `browser_snapshot` or `browser_network_request`
 calls. If the exact source card is not confirmed, the turn fails closed: the bot
 sends only a verification diagnostic and does not send a speculative summary or
-HTML document. After source verification, competitor candidates are restricted
-to separate canonical Wildberries product-card URLs and are independently
-confirmed through Wildberries `card.json`; search results may discover a card
-but are not accepted as its evidence. External marketplace links, the source
+HTML document. After source verification, the worker queries the Wildberries
+catalog with the verified source category, resolves a bounded candidate pool and
+independently confirms every candidate through Wildberries `card.json`. Only
+same-category cards continue to analysis, so a `403/498` from `detail.aspx` does
+not erase valid candidates and unrelated WB search hits still fail closed.
+External marketplace links, the source
 article itself and unverifiable candidates are discarded. A verified run sends
 a concise decision summary with named links to confirmed cards and uploads a
 self-contained `wb-competitor-report-<article>.html` document rebuilt from the

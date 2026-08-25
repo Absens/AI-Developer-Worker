@@ -1,5 +1,6 @@
 import type { CodexExecution, CodexRunner } from "../../models/types.js";
 import {
+  addVerifiedDiscoveredCompetitors,
   buildCompetitorResearchPrompt,
   COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
   enforceVerifiedWildberriesCompetitors,
@@ -8,6 +9,7 @@ import {
   type CompetitorResearchContent,
   type VerifiedWildberriesProduct,
   type WildberriesProductReference,
+  type WildberriesProductDiscoveryPort,
   type WildberriesProductVerifierPort,
 } from "./competitorResearch.js";
 
@@ -63,6 +65,7 @@ export interface TelegramAssistantCodexServiceOptions {
   maxContextChars: number;
   timeoutSeconds: number;
   productVerifier?: WildberriesProductVerifierPort;
+  productDiscovery?: WildberriesProductDiscoveryPort;
 }
 
 const TIMEOUT_ANSWER =
@@ -79,6 +82,8 @@ const PLAYWRIGHT_EVIDENCE_TOOLS = new Set([
   "browser_snapshot",
   "browser_network_request",
 ]);
+const MAX_DISCOVERY_CANDIDATES = 10;
+const MAX_VERIFIED_DISCOVERED_COMPETITORS = 5;
 const TIMEOUT = Symbol("telegram-assistant-codex-timeout");
 
 export class TelegramAssistantCodexService {
@@ -86,12 +91,14 @@ export class TelegramAssistantCodexService {
   private readonly maxContextChars: number;
   private readonly timeoutMs: number;
   private readonly productVerifier?: WildberriesProductVerifierPort;
+  private readonly productDiscovery?: WildberriesProductDiscoveryPort;
 
   public constructor(options: TelegramAssistantCodexServiceOptions) {
     this.codex = options.codex;
     this.maxContextChars = Math.max(0, options.maxContextChars);
     this.timeoutMs = Math.max(1, options.timeoutSeconds) * 1000;
     this.productVerifier = options.productVerifier;
+    this.productDiscovery = options.productDiscovery;
   }
 
   public async answerProjectQuestion(
@@ -119,9 +126,16 @@ export class TelegramAssistantCodexService {
   ): Promise<ResearchMarketplaceCompetitorsResult> {
     const verifiedProduct = await this.productVerifier?.verify(input.productId)
       .catch(() => undefined);
+    const verifiedDiscoveredProducts = verifiedProduct
+      ? await this.discoverVerifiedCompetitors(verifiedProduct)
+      : [];
     const execution = await withTimeout(
       this.codex.runInitial(
-        buildCompetitorResearchPrompt(input, verifiedProduct),
+        buildCompetitorResearchPrompt(
+          input,
+          verifiedProduct,
+          verifiedDiscoveredProducts,
+        ),
         undefined,
         {
           sandbox: "read-only",
@@ -158,21 +172,57 @@ export class TelegramAssistantCodexService {
           !hasSuccessfulPlaywrightVerification(execution)
         ? failedPlaywrightAuditContent(input)
         : content;
+    const discoveryAuditedContent = verifiedProduct
+      ? addVerifiedDiscoveredCompetitors(
+          sourceAuditedContent,
+          verifiedProduct,
+          verifiedDiscoveredProducts,
+        )
+      : sourceAuditedContent;
     const auditedContent = isCompetitorResearchSourceVerified(
-        sourceAuditedContent,
+        discoveryAuditedContent,
         input,
       )
       ? await enforceVerifiedWildberriesCompetitors(
-          sourceAuditedContent,
+          discoveryAuditedContent,
           input,
           this.productVerifier,
         )
-      : sourceAuditedContent;
+      : discoveryAuditedContent;
 
     return {
       ...auditedContent,
       ...(execution.threadId ? { threadId: execution.threadId } : {}),
     };
+  }
+
+  private async discoverVerifiedCompetitors(
+    sourceProduct: VerifiedWildberriesProduct,
+  ): Promise<VerifiedWildberriesProduct[]> {
+    if (!this.productDiscovery || !this.productVerifier || !sourceProduct.category) {
+      return [];
+    }
+    const productIds = await this.productDiscovery.discover(
+      sourceProduct,
+      MAX_DISCOVERY_CANDIDATES,
+    ).catch(() => []);
+    const uniqueProductIds = Array.from(new Set(productIds))
+      .filter((productId) => productId !== sourceProduct.productId)
+      .slice(0, MAX_DISCOVERY_CANDIDATES);
+    const products = await Promise.all(
+      uniqueProductIds.map((productId) =>
+        this.productVerifier?.verify(productId).catch(() => undefined)
+      ),
+    );
+    const sourceCategory = normalizeCategory(sourceProduct.category);
+    return products.filter(
+      (product): product is VerifiedWildberriesProduct =>
+        Boolean(
+          product &&
+            product.productId !== sourceProduct.productId &&
+            normalizeCategory(product.category) === sourceCategory,
+        ),
+    ).slice(0, MAX_VERIFIED_DISCOVERED_COMPETITORS);
   }
 
   public async answerAsDigitalTwin(
@@ -383,6 +433,9 @@ const truncateContext = (value: string, maxContextChars: number): string => {
 
   return `${value.slice(0, maxContextChars)}\n[project context truncated]`;
 };
+
+const normalizeCategory = (value: string | null): string =>
+  value?.trim().toLocaleLowerCase("ru-RU").replace(/ё/gu, "е") ?? "";
 
 const withTimeout = async (
   promise: Promise<CodexExecution>,

@@ -169,6 +169,82 @@ describe("TelegramAssistantCodexService", () => {
     );
   });
 
+  it("keeps same-category WB catalog candidates when detail pages return 498", async () => {
+    const sourceProduct = {
+      productId: competitorReference.productId,
+      productTitle: "Подстаканник никелированный Танк",
+      brand: "Мои Подарки",
+      category: "Подстаканники",
+      description: "Подарочный подстаканник.",
+      attributes: [{ name: "Материал", value: "никелированная сталь" }],
+      sourceUrl: "https://basket-14.wbbasket.ru/source-card.json",
+    };
+    const relevantProduct = {
+      productId: "765001988",
+      productTitle: "Два подстаканника со стаканами в комплекте",
+      brand: "VERMONIKA",
+      category: "Подстаканники",
+      description: "Набор подстаканников.",
+      attributes: [{ name: "Комплектация", value: "2 подстаканника" }],
+      sourceUrl: "https://basket-14.wbbasket.ru/relevant-card.json",
+    };
+    const irrelevantProduct = {
+      productId: "28436956",
+      productTitle: "Краска по ткани эффект замши",
+      brand: "Другой бренд",
+      category: "Краски для рисования",
+      description: "Краска.",
+      attributes: [],
+      sourceUrl: "https://basket-01.wbbasket.ru/irrelevant-card.json",
+    };
+    const runInitial = vi.fn(async (_prompt: string) => ({
+      process: { stdout: "", stderr: "", exitCode: 0 },
+      finalMessage: JSON.stringify({
+        sourceVerification: verifiedSource(),
+        competitors: [],
+        summary: "detail.aspx кандидатов вернул 498.",
+        report: "Подтверждённых конкурентов нет.",
+      }),
+    }));
+    const discover = vi.fn(async () => [
+      relevantProduct.productId,
+      irrelevantProduct.productId,
+    ]);
+    const verify = vi.fn(async (productId: string) => {
+      if (productId === sourceProduct.productId) {
+        return sourceProduct;
+      }
+      if (productId === relevantProduct.productId) {
+        return relevantProduct;
+      }
+      if (productId === irrelevantProduct.productId) {
+        return irrelevantProduct;
+      }
+      return undefined;
+    });
+    const service = new TelegramAssistantCodexService({
+      codex: { runInitial, runResume: vi.fn() },
+      maxContextChars: 2000,
+      timeoutSeconds: 30,
+      productVerifier: { verify },
+      productDiscovery: { discover },
+    });
+
+    const result = await service.researchMarketplaceCompetitors(competitorReference);
+
+    expect(discover).toHaveBeenCalledWith(sourceProduct, 10);
+    expect(runInitial.mock.calls[0]?.[0]).toContain(relevantProduct.productTitle);
+    expect(result.competitors).toEqual([
+      expect.objectContaining({
+        productId: relevantProduct.productId,
+        productTitle: relevantProduct.productTitle,
+        category: relevantProduct.category,
+      }),
+    ]);
+    expect(result.summary).toContain("1 из 5");
+    expect(result.report).not.toContain(irrelevantProduct.productTitle);
+  });
+
   it("returns an honest partial result without external or unverified substitutes", async () => {
     const validCompetitor = {
       productId: "987654321",
