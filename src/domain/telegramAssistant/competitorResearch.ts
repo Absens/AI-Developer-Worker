@@ -26,6 +26,8 @@ export interface CompetitorResearchSourceVerification {
   resolvedProductId: string | null;
   productTitle: string | null;
   brand: string | null;
+  category?: string | null;
+  attributes?: Array<{ name: string; value: string }>;
   evidence: string[];
   failureReason: string | null;
 }
@@ -76,6 +78,8 @@ const MAX_REPORT_ATTRIBUTES = 6;
 const MAX_ANALYSIS_CHARS = 600;
 const UNSAFE_ANALYSIS_PATTERN =
   /https?:\/\/|(?:^|\W)(?:ozon|aliexpress)(?:\W|$)|яндекс\s*маркет/iu;
+const UNSUPPORTED_ANALYSIS_FACT_PATTERN =
+  /(?:^|[^\p{L}])(?:цен(?:а|ы|е|у|ой)|ценов\p{L}*)(?:$|[^\p{L}])|рейтинг|отзыв|фото|видео|медиаконтент|поисков\w*\s+выдач|сертификат|verified|₽|рубл|продаж|остатк|выручк|конверси|реклам/iu;
 
 const buildCanonicalWildberriesProductUrl = (productId: string): string =>
   `https://www.wildberries.ru/catalog/${productId}/detail.aspx`;
@@ -250,6 +254,8 @@ export const buildCompetitorResearchPrompt = (
   "Каждый товар, названный конкурентом в summary или report, должен присутствовать в массиве competitors; не добавляй туда группы без отдельной подтверждённой карточки.",
   "Для каждого элемента competitors заполни comparison: similarities и differences — проверяемые сходства и отличия от исходной карточки; strengths и weaknesses — сильные и слабые стороны; opportunity — одно конкретное действие для исходной карточки.",
   "Поля comparison не должны содержать URL или упоминания других площадок. Основывай их только на исходной карточке и соответствующей подтверждённой карточке Wildberries.",
+  "Не включай в relevance, similarities, differences, strengths или weaknesses цену, рейтинг, отзывы, количество фото/видео, продажи, остатки или сведения поисковой выдачи: worker не подтверждает эти поля карточки. Если данных нет в переданном card.json, считай их недоступными.",
+  "comparison и relevance являются аналитическими выводами, а не подтверждением факта. Формулируй их как наблюдения без ложной точности; подтверждёнными считаются только поля, которые worker получил из card.json.",
   "Подготовь результат на русском языке в двух представлениях:",
   "- summary: краткое резюме для Telegram объёмом до 2500 символов. Укажи подтверждённый товар, 3 наиболее релевантных конкурента или группы конкурентов, 3 ключевых вывода и 3 приоритетных действия. Не повторяй весь отчёт.",
   "- report: полный отчёт для отдельного HTML-файла.",
@@ -490,9 +496,12 @@ export const buildCompetitorResearchHtmlReport = (
     input.sourceVerification.productTitle ?? input.reference.productId,
   );
   const verifiedCount = input.competitors.length;
-  const statusLabel = `${verifiedCount} из ${REQUIRED_COMPETITOR_COUNT} подтверждены`;
+  const statusLabel = buildVerifiedCardsLabel(verifiedCount);
   const keyFindings = buildKeyFindings(input.competitors);
   const priorityActions = buildPriorityActions(input.competitors);
+  const comparisonMatrix = renderCompetitorMatrix(input.competitors);
+  const sourceAttributes = (input.sourceVerification.attributes ?? [])
+    .slice(0, MAX_REPORT_ATTRIBUTES);
   const competitorCards = input.competitors.length > 0
     ? input.competitors.map(renderCompetitorCard).join("\n")
     : '<p class="empty-state">Подтверждённых карточек-конкурентов пока нет. Недостающие позиции не заменялись предположениями.</p>';
@@ -540,6 +549,7 @@ export const buildCompetitorResearchHtmlReport = (
     .verified-label { margin: 0 0 4px; color: var(--success); font-size: 12px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
     .product-facts { margin-top: 16px; font-size: 14px; }
     .relevance { margin: 18px 0 0; padding: 14px; border-radius: 12px; background: var(--accent-soft); }
+    .analysis-label { display: inline-flex; margin-top: 16px; padding: 4px 9px; border-radius: 999px; color: var(--accent-dark); background: var(--accent-soft); font-size: 12px; font-weight: 750; }
     .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
     .comparison-group { min-width: 0; }
     .comparison-group h4 { margin: 0 0 6px; font-size: 14px; }
@@ -550,15 +560,25 @@ export const buildCompetitorResearchHtmlReport = (
     .primary-link { display: inline-block; margin-top: 16px; font-weight: 750; }
     details { margin-top: 16px; color: var(--muted); font-size: 13px; }
     summary { cursor: pointer; color: var(--accent-dark); font-weight: 700; }
+    .comparison-details { padding-top: 2px; border-top: 1px solid var(--line); }
+    .comparison-details[open] { padding-bottom: 6px; }
+    .matrix-wrap { margin-top: 20px; overflow-x: auto; border: 1px solid var(--line); border-radius: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    caption.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); background: #fafbfc; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .matrix-status { color: var(--success); font-weight: 750; white-space: nowrap; }
+    .trust-note { margin-top: 16px; padding: 14px 16px; border-radius: 12px; color: var(--muted); background: #f7f8fa; font-size: 14px; }
     .limitation { border-left: 5px solid #d99a00; background: var(--warning-soft); }
     .limitation p { margin-bottom: 0; }
     .empty-state { margin: 22px 0 0; padding: 22px; color: var(--muted); border: 1px dashed var(--line); border-radius: 14px; text-align: center; }
     .section-heading p { margin: 4px 0 0; color: var(--muted); }
     p { margin: 10px 0; }
     .footer { margin-top: 22px; color: var(--muted); font-size: 13px; text-align: center; }
-    @media (max-width: 760px) { .summary-grid, .competitor-grid, .comparison-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 760px) { .summary-grid, .competitor-grid, .comparison-grid { grid-template-columns: 1fr; } .matrix-wrap { overflow: visible; } .matrix-wrap table { table-layout: fixed; } .matrix-wrap th:nth-child(1), .matrix-wrap td:nth-child(1), .matrix-wrap th:nth-child(3), .matrix-wrap td:nth-child(3), .matrix-wrap th:nth-child(4), .matrix-wrap td:nth-child(4) { display: none; } .matrix-wrap th:last-child, .matrix-wrap td:last-child { width: 108px; } }
     @media (max-width: 640px) { main { width: min(100% - 20px, 1040px); margin-top: 10px; } .hero, .card { border-radius: 14px; padding: 22px; } .hero-top, .section-heading { display: block; } .hero-top .badge, .section-heading .badge { margin-top: 12px; } .source-facts, .product-facts { grid-template-columns: 1fr; gap: 2px; } dd { margin-bottom: 8px; } }
-    @media print { body { background: #fff; } main { width: 100%; margin: 0; } .hero, .card, .competitor-card { box-shadow: none; } .competitor-card { break-inside: avoid; } a { color: inherit; } details { display: none; } }
+    @media print { body { background: #fff; } main { width: 100%; margin: 0; } .hero, .card, .competitor-card { box-shadow: none; } .competitor-card { break-inside: avoid; } a { color: inherit; } details, details > * { display: block !important; } }
   </style>
 </head>
 <body>
@@ -572,7 +592,7 @@ export const buildCompetitorResearchHtmlReport = (
       <div class="meta">
         <span>Артикул: <strong>${safeProductId}</strong></span>
         <span>Сформировано: <time datetime="${safeGeneratedAt}">${generatedAtLabel}</time></span>
-        <span><a href="${safeSourceUrl}" rel="noopener noreferrer">Открыть исходную карточку</a></span>
+        <span><a href="${safeSourceUrl}" target="_blank" rel="noopener noreferrer">Открыть исходную карточку</a></span>
       </div>
     </header>
     <section class="card summary">
@@ -580,25 +600,30 @@ export const buildCompetitorResearchHtmlReport = (
         <div><h2>Решение за минуту</h2><p>Главные наблюдения и следующие действия по подтверждённым карточкам.</p></div>
       </div>
       <div class="summary-grid">
-        <article class="summary-panel"><h3>Ключевые выводы</h3>${renderHtmlList(keyFindings, "Недостаточно данных для сравнительных выводов.")}</article>
+        <article class="summary-panel"><h3>Аналитические выводы</h3>${renderHtmlList(keyFindings, "Недостаточно данных для сравнительных выводов.")}</article>
         <article class="summary-panel"><h3>Приоритетные действия</h3>${renderHtmlOrderedList(priorityActions, "Повторить поиск позже или уточнить товарную категорию.")}</article>
       </div>
     </section>
     <section class="card">
-      <div class="section-heading"><div><h2>Проверенный исходный товар</h2><p>Карточка, относительно которой выполнено сравнение.</p></div><span class="badge complete">Источник подтверждён</span></div>
+      <div class="section-heading"><div><h2>Проверенный исходный товар</h2><p>Карточка, относительно которой выполнено сравнение.</p></div><span class="badge complete">Карточка WB подтверждена</span></div>
       <dl class="source-facts">
         <dt>Название</dt><dd>${safeSourceTitle}</dd>
         <dt>Артикул</dt><dd>${safeProductId}</dd>
         ${input.sourceVerification.brand ? `<dt>Бренд</dt><dd>${escapeHtml(input.sourceVerification.brand)}</dd>` : ""}
+        ${input.sourceVerification.category ? `<dt>Категория</dt><dd>${escapeHtml(input.sourceVerification.category)}</dd>` : ""}
       </dl>
+      ${sourceAttributes.length > 0 ? `<section class="comparison-group"><h3>Подтверждённые характеристики</h3>${renderTrustedAttributes(sourceAttributes)}</section>` : '<p class="trust-note">Дополнительные характеристики исходной карточки не были подтверждены.</p>'}
     </section>
+    ${input.competitors.length > 0 ? `<section class="card matrix-card"><div class="section-heading"><div><h2>Обзор конкурентов</h2><p>Компактная навигация по подтверждённым карточкам и доверенным WB-метаданным.</p></div></div>${comparisonMatrix}</section>` : ""}
     <section class="card">
-      <div class="section-heading"><div><h2>Подтверждённые конкуренты</h2><p>Только отдельные карточки Wildberries, прошедшие проверку артикула и источника.</p></div><span class="badge ${verifiedCount < REQUIRED_COMPETITOR_COUNT ? "partial" : "complete"}">${escapeHtml(statusLabel)}</span></div>
+      <div class="section-heading"><div><h2>Подтверждённые конкуренты</h2><p>Карточки и метаданные подтверждены Wildberries; сравнение ниже является аналитическим выводом.</p></div><span class="badge ${verifiedCount < REQUIRED_COMPETITOR_COUNT ? "partial" : "complete"}">${escapeHtml(statusLabel)}</span></div>
+      <p class="trust-note"><strong>Граница доверия:</strong> Подтверждение карточки не означает автоматического подтверждения аналитических выводов.</p>
       <div class="competitor-grid">${competitorCards}</div>
     </section>
     <section class="card limitation">
       <h2>Источники и ограничения</h2>
       <p>${escapeHtml(limitation)}</p>
+      <p>Цена, рейтинг, отзывы, продажи, остатки и количество фото или видео не показываются без подтверждения соответствующими данными карточки Wildberries.</p>
     </section>
     <p class="footer">Отчёт сформирован автоматически. Проверяйте существенные решения по указанным источникам.</p>
   </main>
@@ -763,8 +788,13 @@ const buildVerifiedCompetitorReport = (
     "",
     "## Проверенный исходный товар",
     `${sourceVerification.productTitle ?? sourceVerification.requestedProductId} · артикул ${sourceVerification.requestedProductId}.`,
+    ...(sourceVerification.brand ? [`- Бренд: ${sourceVerification.brand}`] : []),
+    ...(sourceVerification.category ? [`- Категория: ${sourceVerification.category}`] : []),
+    ...(sourceVerification.attributes ?? []).slice(0, MAX_REPORT_ATTRIBUTES)
+      .map((attribute) => `- ${attribute.name}: ${attribute.value}`),
     "",
     "## Подтверждённые конкуренты Wildberries",
+    "Карточки и метаданные подтверждены Wildberries. Сравнение и рекомендации ниже являются аналитическими выводами.",
   ];
   if (competitors.length === 0) {
     sections.push("Подтверждённых отдельных карточек-конкурентов Wildberries не найдено.");
@@ -776,7 +806,7 @@ const buildVerifiedCompetitorReport = (
         `- Карточка: ${competitor.sourceUrl}`,
         ...(competitor.brand ? [`- Бренд: ${competitor.brand}`] : []),
         ...(competitor.category ? [`- Категория: ${competitor.category}`] : []),
-        `- Релевантность: ${competitor.relevance}`,
+        `- Аналитический вывод о релевантности: ${competitor.relevance}`,
         ...renderTextReportGroup("Сходства", competitor.comparison.similarities),
         ...renderTextReportGroup("Отличия", competitor.comparison.differences),
         ...renderTextReportGroup("Сильные стороны", competitor.comparison.strengths),
@@ -804,6 +834,8 @@ const buildVerifiedCompetitorReport = (
     competitors.length < REQUIRED_COMPETITOR_COUNT
       ? buildCompetitorShortageLimitation(competitors.length)
       : `Подтверждены все ${REQUIRED_COMPETITOR_COUNT} требуемых карточек Wildberries.`,
+    "Подтверждение карточки не означает автоматического подтверждения аналитических выводов.",
+    "Цена, рейтинг, отзывы, продажи, остатки и количество фото или видео не показываются без подтверждения соответствующими данными карточки Wildberries.",
   );
   return sections.join("\n");
 };
@@ -820,7 +852,7 @@ const normalizeCompetitorComparison = (
     differences: normalizeAnalysisList(comparison.differences),
     strengths: normalizeAnalysisList(comparison.strengths),
     weaknesses: normalizeAnalysisList(comparison.weaknesses),
-    opportunity: normalizeAnalysisString(comparison.opportunity) ||
+    opportunity: normalizeRecommendationString(comparison.opportunity) ||
       "Проверить позиционирование и первый экран относительно подтверждённой карточки.",
   };
 };
@@ -834,6 +866,15 @@ const normalizeAnalysisList = (value: unknown): string[] =>
     : [];
 
 const normalizeAnalysisString = (value: unknown): string => {
+  const normalized = normalizeRequiredString(value).slice(0, MAX_ANALYSIS_CHARS);
+  return normalized &&
+      !UNSAFE_ANALYSIS_PATTERN.test(normalized) &&
+      !UNSUPPORTED_ANALYSIS_FACT_PATTERN.test(normalized)
+    ? normalized
+    : "";
+};
+
+const normalizeRecommendationString = (value: unknown): string => {
   const normalized = normalizeRequiredString(value).slice(0, MAX_ANALYSIS_CHARS);
   return normalized && !UNSAFE_ANALYSIS_PATTERN.test(normalized) ? normalized : "";
 };
@@ -910,20 +951,38 @@ const formatGeneratedAt = (value: string): string => {
 const buildKeyFindings = (
   competitors: CompetitorResearchCompetitor[],
 ): string[] => uniqueStrings(
-  competitors.flatMap((competitor) => [
-    ...competitor.comparison.differences,
-    ...competitor.comparison.strengths,
-    competitor.relevance,
-  ]).map((value) => normalizeAnalysisString(value)).filter(Boolean),
+  competitors.map((competitor) =>
+    competitor.comparison.differences[0] ||
+      competitor.comparison.strengths[0] ||
+      competitor.relevance
+  ).map((value) => normalizeAnalysisString(value)).filter(Boolean),
 ).slice(0, 3);
 
 const buildPriorityActions = (
   competitors: CompetitorResearchCompetitor[],
 ): string[] => uniqueStrings(
   competitors
-    .map((competitor) => normalizeAnalysisString(competitor.comparison.opportunity))
+    .map((competitor) =>
+      normalizeRecommendationString(competitor.comparison.opportunity)
+    )
     .filter(Boolean),
 ).slice(0, 3);
+
+const buildVerifiedCardsLabel = (count: number): string => {
+  const modulo100 = count % 100;
+  const modulo10 = count % 10;
+  const noun = modulo100 >= 11 && modulo100 <= 14
+    ? "карточек"
+    : modulo10 === 1
+    ? "карточка"
+    : modulo10 >= 2 && modulo10 <= 4
+    ? "карточки"
+    : "карточек";
+  const verb = modulo10 === 1 && modulo100 !== 11
+    ? "подтверждена"
+    : "подтверждены";
+  return `${count} ${noun} WB ${verb}`;
+};
 
 const renderHtmlList = (items: string[], fallback: string): string =>
   items.length > 0
@@ -941,6 +1000,29 @@ const renderComparisonGroup = (label: string, items: string[]): string =>
     "Данных недостаточно.",
   )}</section>`;
 
+const renderTrustedAttributes = (
+  attributes: Array<{ name: string; value: string }>,
+): string => `<dl class="product-facts">${attributes
+  .slice(0, MAX_REPORT_ATTRIBUTES)
+  .map((attribute) =>
+    `<dt>${escapeHtml(attribute.name)}</dt><dd>${escapeHtml(attribute.value)}</dd>`
+  )
+  .join("")}</dl>`;
+
+const renderCompetitorMatrix = (
+  competitors: CompetitorResearchCompetitor[],
+): string => `<div class="matrix-wrap"><table>
+        <caption class="visually-hidden">Подтверждённые карточки конкурентов Wildberries</caption>
+        <thead><tr><th scope="col">№</th><th scope="col">Конкурент</th><th scope="col">Бренд</th><th scope="col">Категория</th><th scope="col">Проверка</th></tr></thead>
+        <tbody>${competitors.map((competitor, index) => `<tr>
+          <td>${index + 1}</td>
+          <td><a href="${escapeHtml(competitor.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(competitor.productTitle)}</a><br><small>Арт. ${escapeHtml(competitor.productId)}</small></td>
+          <td>${escapeHtml(competitor.brand ?? "Нет данных")}</td>
+          <td>${escapeHtml(competitor.category ?? "Нет данных")}</td>
+          <td class="matrix-status">Карточка WB</td>
+        </tr>`).join("")}</tbody>
+      </table></div>`;
+
 const renderCompetitorCard = (
   competitor: CompetitorResearchCompetitor,
   index: number,
@@ -950,7 +1032,7 @@ const renderCompetitorCard = (
   const safeSourceUrl = escapeHtml(competitor.sourceUrl);
   const relevance = normalizeAnalysisString(competitor.relevance) ||
     "Детали релевантности требуют ручной проверки.";
-  const opportunity = normalizeAnalysisString(competitor.comparison.opportunity) ||
+  const opportunity = normalizeRecommendationString(competitor.comparison.opportunity) ||
     "Проверить позиционирование и первый экран относительно подтверждённой карточки.";
   const attributes = (competitor.attributes ?? []).slice(0, MAX_REPORT_ATTRIBUTES);
   const evidence = competitor.evidence
@@ -967,16 +1049,23 @@ const renderCompetitorCard = (
           ${competitor.brand ? `<dt>Бренд</dt><dd>${escapeHtml(competitor.brand)}</dd>` : ""}
           ${competitor.category ? `<dt>Категория</dt><dd>${escapeHtml(competitor.category)}</dd>` : ""}
         </dl>
+        <span class="analysis-label">Аналитический вывод</span>
         <p class="relevance"><strong>Почему конкурент:</strong> ${escapeHtml(relevance)}</p>
-        <div class="comparison-grid">
-          ${renderComparisonGroup("Сходства", competitor.comparison.similarities)}
-          ${renderComparisonGroup("Отличия", competitor.comparison.differences)}
-          ${renderComparisonGroup("Сильные стороны", competitor.comparison.strengths)}
-          ${renderComparisonGroup("Риски и слабые места", competitor.comparison.weaknesses)}
+        <div class="comparison-grid compact-comparison">
+          ${renderComparisonGroup("Главные отличия", competitor.comparison.differences.slice(0, 2))}
+          ${renderComparisonGroup("Сильные стороны", competitor.comparison.strengths.slice(0, 2))}
         </div>
-        ${attributes.length > 0 ? `<section class="comparison-group"><h4>Подтверждённые характеристики</h4><dl class="product-facts">${attributes.map((attribute) => `<dt>${escapeHtml(attribute.name)}</dt><dd>${escapeHtml(attribute.value)}</dd>`).join("")}</dl></section>` : ""}
         <div class="opportunity"><strong>Возможность для исходной карточки</strong>${escapeHtml(opportunity)}</div>
-        <a class="primary-link" href="${safeSourceUrl}" rel="noopener noreferrer">Открыть карточку WB</a>
+        <details class="comparison-details"><summary>Полное сравнение и подтверждённые характеристики</summary>
+          <div class="comparison-grid">
+            ${renderComparisonGroup("Сходства", competitor.comparison.similarities)}
+            ${renderComparisonGroup("Отличия", competitor.comparison.differences)}
+            ${renderComparisonGroup("Сильные стороны", competitor.comparison.strengths)}
+            ${renderComparisonGroup("Риски и слабые места", competitor.comparison.weaknesses)}
+          </div>
+          ${attributes.length > 0 ? `<section class="comparison-group"><h4>Подтверждённые характеристики WB</h4>${renderTrustedAttributes(attributes)}</section>` : '<p>Дополнительные характеристики карточки не подтверждены.</p>'}
+        </details>
+        <a class="primary-link" href="${safeSourceUrl}" target="_blank" rel="noopener noreferrer">Открыть «${safeProductTitle}» на WB</a>
         ${evidence.length > 0 ? `<details><summary>Данные проверки</summary>${evidence.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</details>` : ""}
       </article>`;
 };

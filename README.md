@@ -256,11 +256,13 @@ but are not accepted as its evidence. External marketplace links, the source
 article itself and unverifiable candidates are discarded. A verified run sends
 a concise decision summary with named links to confirmed cards and uploads a
 self-contained `wb-competitor-report-<article>.html` document rebuilt from the
-confirmed WB cards. The report shows verification status, trusted brand/category
-metadata, per-card similarities, differences, strengths, weaknesses and a
-concrete opportunity for the source card; raw model prose does not control its
-HTML structure. If fewer than five cards are confirmed, the summary and report
-state that limitation and do not substitute products from other marketplaces.
+confirmed WB cards. The report separates trusted Wildberries metadata from
+model-authored analysis, shows a compact competitor matrix, keeps detailed
+comparisons collapsible and gives each card a descriptive WB link. Price,
+rating, reviews, sales, stock and photo/video counts are omitted unless the
+worker can verify them from card data; raw model prose does not control the HTML
+structure. If fewer than five cards are confirmed, the summary and report state
+that limitation and do not substitute products from other marketplaces.
 The application renders and escapes the HTML; document failure falls back to
 chunked text. This MVP supports Wildberries links only,
 reuses `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` and

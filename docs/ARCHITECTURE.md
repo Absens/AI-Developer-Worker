@@ -219,9 +219,12 @@ card: similarities, differences, strengths, weaknesses and one opportunity for
 the source card. The verifier, rather than Codex, supplies the delivered title,
 brand, category, attributes and canonical URL. Telegram renders a short decision
 summary plus named links to confirmed cards. The self-contained HTML renderer
-uses semantic competitor cards, human-readable UTC timestamps, explicit
-verification/partial-result badges and collapsible technical evidence. It does
-not parse the model's free-form `summary` or `report` into trusted HTML.
+separates trusted card metadata from analytical conclusions, adds a compact
+competitor matrix, human-readable UTC timestamps, explicit verification/partial
+result badges and collapsible comparison/evidence details. Unsupported model
+claims about price, rating, reviews, sales, stock or photo/video counts are
+discarded at the structured-output boundary. The renderer does not parse the
+model's free-form `summary` or `report` into trusted HTML.
 
 ### Telegram Digital Twin
 

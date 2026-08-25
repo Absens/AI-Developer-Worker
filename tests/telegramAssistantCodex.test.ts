@@ -150,6 +150,8 @@ describe("TelegramAssistantCodexService", () => {
           resolvedProductId: competitorReference.productId,
           productTitle: "Подтверждённый товар",
           brand: "Brand",
+          category: "Категория",
+          attributes: [{ name: "Состав", value: "хлопок" }],
           evidence: [
             "Wildberries CDN card.json: https://basket-05.wbbasket.ru/card.json; артикул 123456789; товар Подтверждённый товар; бренд Brand.",
           ],
@@ -157,7 +159,9 @@ describe("TelegramAssistantCodexService", () => {
         },
         competitors: [],
         summary: expect.stringContaining("0 из 5"),
-        report: expect.stringContaining("Подтверждённых отдельных карточек-конкурентов"),
+        report: expect.stringMatching(
+          /Категория: Категория[\s\S]*Состав: хлопок[\s\S]*Подтверждённых отдельных карточек-конкурентов[\s\S]*Подтверждение карточки не означает автоматического подтверждения аналитических выводов/u,
+        ),
         threadId: "thread_competitors_cdn",
       });
     expect(runInitial.mock.calls[0]?.[0]).toContain(
@@ -254,6 +258,10 @@ describe("TelegramAssistantCodexService", () => {
         category: competitorProduct.category,
       }),
     ]);
+    expect(result.sourceVerification).toEqual(expect.objectContaining({
+      category: sourceProduct.category,
+      attributes: sourceProduct.attributes,
+    }));
     expect(result.summary).toContain("1 из 5");
     expect(result.summary).toContain("Ключевые выводы");
     expect(result.summary).toContain("Приоритетные действия");

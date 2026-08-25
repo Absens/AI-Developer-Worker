@@ -281,6 +281,8 @@ const applyTrustedSourceVerification = (
       resolvedProductId: product.productId,
       productTitle: product.productTitle,
       brand: product.brand,
+      category: product.category,
+      attributes: product.attributes,
       evidence: [
         `Wildberries CDN card.json: ${product.sourceUrl}; артикул ${product.productId}; товар ${product.productTitle}${brandEvidence}.`,
       ],

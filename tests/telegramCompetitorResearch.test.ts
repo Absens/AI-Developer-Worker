@@ -270,6 +270,40 @@ describe("parseCompetitorResearchOutput", () => {
     expect(parsed.competitors).toEqual([validCompetitor()]);
   });
 
+  it("drops unsupported commercial metrics and search-snippet claims from analysis", () => {
+    const parsed = parseCompetitorResearchOutput(JSON.stringify({
+      sourceVerification: verifiedSource(),
+      competitors: [{
+        ...validCompetitor(),
+        relevance: "Высокая релевантность, рейтинг 5.0 в поисковой выдаче.",
+        comparison: {
+          similarities: ["Та же категория."],
+          differences: [
+            "У конкурента 1404 отзыва и рейтинг 5.0 в поисковой выдаче.",
+            "Материал отличается от исходной карточки.",
+          ],
+          strengths: [
+            "У конкурента 10 фото и видео.",
+            "Подарочная коробка указана в характеристиках карточки.",
+          ],
+          weaknesses: ["Цена конкурента подтверждена: 4 788 ₽."],
+          opportunity: "Добавить понятную информацию о комплектации.",
+        },
+      }],
+      summary: "Краткий вывод.",
+      report: "Полный отчёт.",
+    }), reference);
+
+    expect(parsed.competitors[0]?.relevance).toContain("требуют ручной проверки");
+    expect(parsed.competitors[0]?.comparison).toEqual({
+      similarities: ["Та же категория."],
+      differences: ["Материал отличается от исходной карточки."],
+      strengths: ["Подарочная коробка указана в характеристиках карточки."],
+      weaknesses: [],
+      opportunity: "Добавить понятную информацию о комплектации.",
+    });
+  });
+
   it.each([
     "https://www.ozon.ru/product/987654321/",
     "https://market.yandex.ru/product--example/987654321",
@@ -522,17 +556,40 @@ describe("competitor research presentation", () => {
 
   it("renders a decision-oriented report with semantic competitor cards", () => {
     const competitors = [
-      validCompetitor(),
+      {
+        ...validCompetitor(),
+        comparison: {
+          ...validCompetitor().comparison,
+          differences: [
+            "Первое отличие первого конкурента.",
+            "Второе отличие первого конкурента не должно вытеснять остальных.",
+          ],
+        },
+        brand: "Первый бренд",
+        category: "Первая категория",
+        attributes: [{ name: "Материал", value: "хлопок" }],
+      },
       {
         ...validCompetitor(),
         productId: "555666777",
         productTitle: "Второй подтверждённый конкурент",
         sourceUrl: "https://www.wildberries.ru/catalog/555666777/detail.aspx",
+        comparison: {
+          ...validCompetitor().comparison,
+          differences: ["Первое отличие второго конкурента."],
+        },
       },
     ];
     const html = buildCompetitorResearchHtmlReport({
       reference,
-      sourceVerification: verifiedSource(),
+      sourceVerification: {
+        ...verifiedSource(),
+        category: "Исходная категория",
+        attributes: [
+          { name: "Материал изделия", value: "сталь" },
+          { name: "Комплектация", value: "1 предмет" },
+        ],
+      },
       competitors,
       summary: [
         "Подтверждённые конкуренты Wildberries: 2 из 5.",
@@ -545,14 +602,32 @@ describe("competitor research presentation", () => {
       generatedAt: "2026-08-24T13:05:00.000Z",
     });
 
-    expect(html).toContain("2 из 5 подтверждены");
+    expect(html).toContain("2 карточки WB подтверждены");
     expect(html.match(/class="competitor-card"/gu)).toHaveLength(2);
+    expect(html).toContain("Обзор конкурентов");
+    expect(html).toContain("<table");
+    expect(html).toContain("Исходная категория");
+    expect(html).toContain("Материал изделия");
+    expect(html).toContain("сталь");
+    expect(html).toContain("Аналитический вывод");
+    expect(html).toContain('class="comparison-details"');
     expect(html).toContain("Сходства");
     expect(html).toContain("Отличия");
     expect(html).toContain("Сильные стороны");
     expect(html).toContain("Риски и слабые места");
     expect(html).toContain("Возможность для исходной карточки");
-    expect(html).toContain(">Открыть карточку WB</a>");
+    expect(html).toContain(
+      ">Открыть «Подтверждённый конкурент» на WB</a>",
+    );
+    expect(html).not.toContain(">Открыть карточку WB</a>");
+    expect(html).toContain("Первое отличие первого конкурента.");
+    expect(html).toContain("Первое отличие второго конкурента.");
+    expect(html).not.toContain(
+      "Второе отличие первого конкурента не должно вытеснять остальных.</li><li>",
+    );
+    expect(html).toContain(
+      "Подтверждение карточки не означает автоматического подтверждения аналитических выводов.",
+    );
     expect(html).toContain("24.08.2026, 13:05 UTC");
     expect(html).not.toContain("2026-08-24T13:05:00.000Z</time>");
     expect(html).not.toContain("Этот свободный текст не должен определять структуру HTML.");
