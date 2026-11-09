@@ -1,26 +1,28 @@
 import type { AppConfig } from "../../models/types.js";
 import { ConfigurationError } from "../../utils/errors.js";
+import { buildExecutionEnvironment } from "../../utils/executionEnvironment.js";
 import { Logger } from "../../utils/logger.js";
 import { runCommand } from "../../utils/shell.js";
 
 export const getCodexShellEnv = (
   config: AppConfig,
   extraEnv: NodeJS.ProcessEnv = {},
-): NodeJS.ProcessEnv => ({
-  CODEX_HOME: config.codexHome,
+): NodeJS.ProcessEnv => buildExecutionEnvironment("codex", {
   ...extraEnv,
+  CODEX_HOME: config.codexHome,
 });
 
 export const assertCodexAuthenticated = async (
   config: AppConfig,
   logger: Logger,
 ): Promise<void> => {
-  if (process.env.CODEX_API_KEY?.trim()) {
+  const env = getCodexShellEnv(config);
+  if (env.CODEX_API_KEY?.trim()) {
     logger.info("Using CODEX_API_KEY authentication for Codex CLI.");
     return;
   }
 
-  const openAiApiKeyPresent = Boolean(process.env.OPENAI_API_KEY?.trim());
+  const openAiApiKeyPresent = Boolean(env.OPENAI_API_KEY?.trim());
   if (openAiApiKeyPresent) {
     logger.info(
       "OPENAI_API_KEY is present; still checking Codex CLI auth preflight.",
@@ -37,7 +39,7 @@ export const assertCodexAuthenticated = async (
     command: config.codexCliCommand,
     args: [...config.codexCliArgs, "login", "status"],
     cwd: config.repoPath,
-    env: getCodexShellEnv(config),
+    env,
   });
 
   const combinedOutput = `${result.stdout}\n${result.stderr}`.trim();

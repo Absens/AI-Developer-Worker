@@ -1,5 +1,6 @@
 import type { AppConfig, GitService } from "../../models/types.js";
 import { ConfigurationError, PermanentTaskError } from "../../utils/errors.js";
+import { buildExecutionEnvironment } from "../../utils/executionEnvironment.js";
 import { Logger } from "../../utils/logger.js";
 import { runShellCommand } from "../../utils/shell.js";
 
@@ -349,14 +350,16 @@ export class RepositoryGitService implements GitService {
     };
   }
 
-  private run(command: string, env = this.remoteAuthEnv) {
+  private run(command: string, env?: NodeJS.ProcessEnv) {
+    const needsRemoteAuth = /^git (?:fetch|pull|push|ls-remote)(?:\s|$)/.test(command);
     this.logger.info("Running git command.", { command });
     return runShellCommand(command, {
       cwd: this.config.repoPath,
-      env: {
-        ...(env ?? {}),
+      env: buildExecutionEnvironment("git", {
+        ...(needsRemoteAuth ? this.remoteAuthEnv : {}),
+        ...env,
         ...(this.commitIdentityEnv ?? {}),
-      },
+      }),
     });
   }
 }
