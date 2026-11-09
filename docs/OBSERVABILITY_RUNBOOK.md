@@ -1,22 +1,18 @@
-# Observability Runbook
+# Наблюдаемость, API, метрики и уведомления
 
-Phase 6 adds a process-local observability server for one worker process. It exposes health probes, Prometheus metrics, an in-memory or JSONL-backed recent event store, and optional webhook-style alerts.
+Воркер может запускать локальный HTTP-сервер для liveness/readiness, Prometheus-метрик, событий и человеческого API/Angular UI. По умолчанию observability **выключена**. Не публикуйте служебный интерфейс в Интернет без проверенной авторизации и reverse proxy.
 
-Observability is disabled by default. Enable it only on a trusted interface or behind a private reverse proxy.
+## Быстрое включение
 
-## Quick Enablement
-
-Start with metrics and probes only:
+Для локального запуска начните с loopback-интерфейса:
 
 ```env
 OBSERVABILITY_ENABLED=true
-OBSERVABILITY_HOST=0.0.0.0
+OBSERVABILITY_HOST=127.0.0.1
 OBSERVABILITY_PORT=9464
 METRICS_ENABLED=true
 ALERTS_ENABLED=false
 ```
-
-Then verify:
 
 ```bash
 curl http://localhost:9464/healthz
@@ -24,21 +20,21 @@ curl http://localhost:9464/readyz
 curl http://localhost:9464/metrics
 ```
 
-In `WORKER_PREFLIGHT_ONLY=true`, the server is not started. In `WORKER_RUN_ONCE=true`, endpoints exist only while the single run is active and close before process exit.
+При `WORKER_PREFLIGHT_ONLY=true` сервер не запускается; при `WORKER_RUN_ONCE=true` доступен лишь в течение одного цикла.
 
-## Endpoints
+## HTTP endpoints
 
-| Endpoint | Purpose |
+| Endpoint | Для чего |
 | --- | --- |
-| `/healthz` | Cheap liveness check. Does not call Tracker, GitLab, Git, or Codex. |
-| `/readyz` | Readiness check. Returns `503` until startup repository and Codex checks pass, and flips not-ready during shutdown. |
-| `/metrics` | Prometheus text exposition when `METRICS_ENABLED=true`. |
+| `/healthz` | Быстрая проверка «процесс жив»; без запросов в Tracker/GitLab/Codex |
+| `/readyz` | Готовность: возвращает `503` до завершения проверок или при shutdown |
+| `/metrics` | Метрики Prometheus при `METRICS_ENABLED=true` |
+| `/tasks` | Angular-консоль (при включении UI и наличии собранных assets) |
+| `/api` | JSON API для human workflow; требует авторизации |
 
-Unsupported methods return `405`; unknown paths return `404`.
+Неизвестные пути возвращают `404`, неподдерживаемые HTTP-методы — `405`.
 
-## Configuration
-
-Core server settings:
+## Основная конфигурация
 
 ```env
 OBSERVABILITY_ENABLED=false
@@ -53,7 +49,7 @@ HEALTH_PATH=/healthz
 READY_PATH=/readyz
 ```
 
-Internal task UI/API:
+Консоль и API:
 
 ```env
 TASK_TRACKER_UI_ENABLED=false
@@ -68,31 +64,16 @@ TASK_TRACKER_AGENT_TOKEN=
 TASK_TRACKER_SYSTEM_TOKEN=
 ```
 
-When enabled with `TASK_TRACKER_PROVIDER=internal`, `/tasks` serves the Angular
-console when `TASK_TRACKER_UI_STATIC_DIR` points at a built bundle. The server
-validates that directory at startup and serves Angular deep links without
-swallowing `/api`, `/metrics`, `/healthz`, or `/readyz`. There is no embedded
-task UI fallback after Phase 8D; if the UI is enabled without a static bundle,
-`/tasks` returns a clear `503` and JSON API routes keep working.
+Для `TASK_TRACKER_PROVIDER=internal` путь `/tasks` обслуживается из Angular bundle. Если assets отсутствуют, UI отдаёт `503`, но JSON API продолжает работать. `index.html` и SPA fallback не кэшируются, versioned JS/CSS получают immutable caching; отсутствующие assets возвращают `404`.
 
-Static cache behavior:
-
-- `index.html` and Angular route fallbacks use `cache-control: no-store`;
-- hashed Angular JS/CSS/media files use long immutable cache headers;
-- non-hashed files under `/tasks/assets` use conservative short caching;
-- missing assets return `404` rather than `index.html`.
-
-Local Angular development:
+Локальная разработка:
 
 ```bash
-npm install --prefix web
+npm --prefix web ci
 npm run web:dev
 ```
 
-The Angular dev server runs at `http://127.0.0.1:4200/tasks` and proxies `/api`
-to the Node.js observability server on `http://127.0.0.1:9464`.
-
-Production bundle:
+Angular dev server: `http://127.0.0.1:4200/tasks`, прокси `/api` → backend `http://127.0.0.1:9464`. Production-сборка:
 
 ```bash
 npm run web:typecheck
@@ -101,18 +82,11 @@ npm run web:build
 npm run web:e2e
 ```
 
-Docker builds this bundle into the image and sets
-`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
-You can still mount a prebuilt bundle and override `TASK_TRACKER_UI_STATIC_DIR`
-for self-hosted deployments.
+Docker-образ собирает Angular и задаёт `TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
 
-Writes require backend authorization. In `trusted_proxy` mode, put the server
-behind a proxy that injects the trusted user and role headers. In `bearer`
-mode, use service clients or a reverse proxy that injects `Authorization`; the
-Angular app does not provide a token entry field and does not store bearer
-tokens in browser storage. `localhost` mode is development-only.
+**Авторизация:** Angular не сохраняет bearer tokens. Для локальной отладки допустим ограниченный localhost mode; для удалённого доступа — защищённый reverse proxy, который удаляет входящие от клиента служебные заголовки и самостоятельно добавляет проверенные идентификатор/роль, либо подставляет разрешённый `Authorization`. Роль, показанная в UI, **не заменяет backend access control**. Не допускайте прямого доступа к HTTP API с поддельными `x-task-tracker-*` заголовками.
 
-Event store:
+## События
 
 ```env
 OBSERVABILITY_EVENT_STORE=memory
@@ -121,9 +95,11 @@ OBSERVABILITY_EVENT_RETENTION=1000
 # OBSERVABILITY_EVENT_STORE_FILE=/workspace/ai-developer-events/events.jsonl
 ```
 
-File store writes a bounded JSONL snapshot and reloads it on restart. Persistence failures are counted in `ai_developer_observability_dropped_events_total` and do not fail task processing.
+Для file store используется ограниченный JSONL snapshot, который загружается при старте. Ошибки сохранения учитываются в `ai_developer_observability_dropped_events_total`, но не останавливают обработку задач.
 
-Alerts:
+Task timeline во внутреннем трекере — детальный аудит задачи. Observability event store — сводная телеметрия fleet. При изменении событий синхронизируйте [lifecycleMapping.ts](../src/observability/lifecycleMapping.ts), чтобы совпадали task ID, worker, repository, lease, переходы и категории ошибок.
+
+## Уведомления и алерты
 
 ```env
 ALERTS_ENABLED=false
@@ -138,12 +114,7 @@ ALERT_VALIDATION_FAILURE_WINDOW_SECONDS=3600
 ALERT_VALIDATION_FAILURE_THRESHOLD=3
 ```
 
-Supported channels are `webhook`, `slack`, and `telegram`. Slack uses `SLACK_WEBHOOK_URL`; Telegram uses `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
-
-Alert Telegram delivery is not Telegram Assistant. Alert channels send one-way
-operator notifications and use `TELEGRAM_BOT_TOKEN`. Telegram Assistant uses
-`TELEGRAM_ASSISTANT_BOT_TOKEN`, stores conversation references with retention,
-and can create internal tracker writes only after role/confirmation checks.
+Доступные каналы: `webhook`, `slack` (`SLACK_WEBHOOK_URL`), `telegram` (`TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`). Канал однонаправленных alerts **отличается** от Telegram Assistant, которому нужен отдельный `TELEGRAM_ASSISTANT_BOT_TOKEN` и права на операции с задачами.
 
 ## Fleet YAML
 
@@ -168,73 +139,37 @@ alerts:
       urlEnv: ALERT_WEBHOOK_URL
 ```
 
+Адрес `0.0.0.0` в примере допустим только внутри защищённой сети/прокси, не как публичный сервис.
+
 ## Prometheus
 
-Scrape example:
+Пример scrape:
 
 ```yaml
 scrape_configs:
   - job_name: ai-developer
     static_configs:
-      - targets:
-          - worker-1:9464
-          - worker-2:9464
+      - targets: [worker-1:9464, worker-2:9464]
 ```
 
-Recommended first panels:
+Полезные метрики:
 
-- `ai_developer_worker_state`
-- `ai_developer_active_task`
-- `ai_developer_tasks_total`
-- `ai_developer_task_duration_seconds_bucket`
-- `ai_developer_codex_duration_seconds_bucket`
-- `ai_developer_validation_gate_failures_total`
-- `ai_developer_queue_depth`
-- `ai_developer_alerts_total`
-- `ai_developer_task_tracker_queue_depth`
-- `ai_developer_task_tracker_claim_latency_seconds_bucket`
-- `ai_developer_task_tracker_lease_conflicts_total`
-- `ai_developer_task_tracker_sync_lag_seconds`
-- `ai_developer_task_tracker_cleanup_deleted_total`
-- `ai_developer_task_tracker_proposals`
+- `ai_developer_worker_state`, `ai_developer_active_task`, `ai_developer_tasks_total`;
+- `ai_developer_task_duration_seconds_bucket`, `ai_developer_codex_duration_seconds_bucket`;
+- `ai_developer_validation_gate_failures_total`, `ai_developer_queue_depth`, `ai_developer_alerts_total`;
+- `ai_developer_task_tracker_queue_depth`, `ai_developer_task_tracker_claim_latency_seconds_bucket`;
+- `ai_developer_task_tracker_lease_conflicts_total`, `ai_developer_task_tracker_sync_lag_seconds`;
+- `ai_developer_task_tracker_cleanup_deleted_total`, `ai_developer_task_tracker_proposals`.
 
-Telegram Assistant metrics are emitted without raw message text, issue keys, or
-chat content in labels:
+Telegram-метрики (без текста сообщений и ключей задач в labels): `telegram_updates_received_total`, `telegram_updates_processed_total{outcome}`, `telegram_messages_sent_total{outcome}`, `telegram_intents_total{intent,outcome}`, `telegram_codex_turns_total{intent,outcome}`, `telegram_pending_actions_total{state}`, `telegram_rate_limited_total{direction}`, `telegram_processing_duration_seconds{intent}`, `telegram_queued_messages_total{outcome}`, `telegram_notification_delivery_total{outcome}` и `telegram_polling_lease_skipped_total`.
 
-- `telegram_updates_received_total`
-- `telegram_updates_processed_total{outcome}`
-- `telegram_messages_sent_total{outcome}`
-- `telegram_intents_total{intent,outcome}`
-- `telegram_codex_turns_total{intent,outcome}`
-- `telegram_pending_actions_total{state}`
-- `telegram_rate_limited_total{direction}`
-- `telegram_processing_duration_seconds{intent}`
-- `telegram_queued_messages_total{outcome}`
-- `telegram_notification_delivery_total{outcome}`
-- `telegram_polling_lease_skipped_total`
+Для здоровья Bot API следите за `telegram_updates_processed_total{outcome="failure"}` и `telegram_rate_limited_total`; для зависших подтверждений — `telegram_pending_actions_total{state="pending"}`. `direction="inbound"` относится к getUpdates/webhook и пользовательским лимитам, `outbound` — к sendMessage/callback retry-after.
 
-Use `telegram_updates_processed_total{outcome="failure"}` and
-`telegram_rate_limited_total` for Bot API health, and
-`telegram_pending_actions_total{state="pending"}` for stale confirmation
-backlog. `direction="inbound"` means getUpdates/webhook processing or user daily
-limits; `direction="outbound"` means sendMessage/callback delivery hit Telegram
-`retry_after`.
+Не добавляйте в метрики/labels имена задач, команды, локальные пути, тексты логов и секреты.
 
-Prometheus labels intentionally exclude issue keys, branch names, commands, local paths, and diagnostics.
+## Docker и проверки доступности
 
-## Task Timeline Mapping
-
-The internal task timeline is the audit-grade history for one task. The
-observability event store remains optimized for fleet telemetry. When both
-stores describe the same lifecycle transition, the shared mapper in
-[src/observability/lifecycleMapping.ts](/C:/Users/gabba/projects/developer/src/observability/lifecycleMapping.ts)
-preserves task id, worker id, repository, lease ids, status transition, and
-failure classification. Do not introduce new lifecycle names
-without updating that mapper and its tests.
-
-## Docker and Probes
-
-Compose snippet:
+Пример Compose-фрагмента:
 
 ```yaml
 ports:
@@ -246,84 +181,27 @@ environment:
   METRICS_ENABLED: "true"
 ```
 
-Kubernetes-style probes:
+Для Kubernetes liveness: `GET /healthz`; readiness: `GET /readyz` на порту `9464`.
 
-```yaml
-livenessProbe:
-  httpGet:
-    path: /healthz
-    port: 9464
-readinessProbe:
-  httpGet:
-    path: /readyz
-    port: 9464
-```
+## Telegram Assistant: эксплуатация и безопасность
 
-## Security Notes
+Preflight проверяет `TELEGRAM_ASSISTANT_ENABLED`, token, совместимость с internal tracker, HTTPS base URL для webhook и доступность route. Предупреждает об пустых allowlists, отсутствии ролей записи, `groupMode=all_messages`, небезопасном Business/Profile auto-reply и неправильной конфигурации Q&A.
 
-- Keep `OBSERVABILITY_HOST=127.0.0.1` unless the worker runs on a private network.
-- The Angular task tracker console is the primary human workflow UI for
-  creating, answering, approving, retrying, and supervising internal tracker
-  tasks.
-- The backend human API remains the authorization boundary; Angular role-aware
-  controls are only usability hints.
-- Event messages and details pass through secret redaction and diagnostic truncation.
-- Human API responses may show issue keys and MR URLs; metrics labels do not.
-- Telegram Assistant must use allowlists. Chat/user allowlists grant read access;
-  write actions require developer/operator/admin user IDs and confirmation.
-- Assistant conversation refs, queued messages, and pending actions are retained
-  for `TELEGRAM_CONVERSATION_RETENTION_DAYS` and purged on the assistant cleanup
-  cadence. Admin maintenance can purge those records plus assistant turns for one
-  conversation without deleting internal tracker tasks.
-- Profile automation must not expose internal project data to business chats
-  unless owner consent, `can_reply`, read rights, and project Q&A policy are all
-  configured. Keep `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL=true`
-  unless a production owner has approved auto-replies.
+- Chat/user allowlist разрешает чтение, действия на запись требуют отдельных developer/operator/admin user IDs и подтверждения.
+- Ссылки на сообщения, pending actions и subscriptions хранятся в течение `TELEGRAM_CONVERSATION_RETENTION_DAYS` и очищаются по расписанию.
+- Доступ к внутренним данным из Business chats возможен только при согласии владельца, `can_reply`, правилах чтения и Q&A.
+- `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL=true` — рекомендуемая политика для реального окружения.
+- `TELEGRAM_DIGITAL_TWIN_*` создаёт долговременные Codex-сессии; заранее определите согласие, persona version, reset policy, параметры шифрования и `TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` / `TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS`.
+- События задач (`ready`, `claimed`, `awaiting_human`, MR, failed, done) возвращаются подписчикам без сырых логов. Ответ в активном Telegram prompt соотносится с конкретным вопросом задачи и при необходимости требует `TELEGRAM_CONFIRM_WRITE_ACTIONS=true`.
 
-## Telegram Assistant Operations
+Документация Telegram Bot API: [getUpdates](https://core.telegram.org/bots/api#getupdates), [setWebhook](https://core.telegram.org/bots/api#setwebhook), [sendMessage](https://core.telegram.org/bots/api#sendmessage), [answerCallbackQuery](https://core.telegram.org/bots/api#answercallbackquery), [privacy mode](https://core.telegram.org/bots/features#privacy-mode), [Business users](https://core.telegram.org/bots/features#business-users).
 
-Preflight adds a `telegram assistant` check when the assistant is enabled. It
-fails for missing assistant token, task creation without the internal tracker,
-webhook mode without an HTTP route, webhook mode without a public absolute
-`OBSERVABILITY_BASE_URL`, and accidental use of alert-only `TELEGRAM_BOT_TOKEN`.
-It warns for empty production allowlists, write-enabled configs with no
-developer/operator/admin users, `groupMode=all_messages`, profile automation
-auto-reply, project Q&A without readable repository docs/source roots, and
-profile Q&A without owner approval.
-
-Digital Twin mode is the long-running Business/Secretary-chat path behind
-`TELEGRAM_DIGITAL_TWIN_*`. Operationally it should be monitored separately from
-ordinary task commands because it creates durable per-contact Codex sessions,
-stores delivery/audit state, and may auto-reply on behalf of the owner. Before
-enabling it in production, document owner consent, allowed owner/chat/user IDs,
-persona profile versioning, session reset policy, and whether encrypted full
-text retention is allowed. Cleanup uses the same Telegram Assistant retention
-cadence and prunes redacted/full-text Digital Twin audit according to
-`TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` and
-`TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS`.
-
-Telegram task subscriptions receive lifecycle notifications for queued, claimed,
-awaiting human answer, merge-request ready, failed and done/accepted events.
-Notification payloads are redacted and should not contain raw validation logs or
-secrets. When a task waits for a human answer, Telegram Assistant stores an
-active prompt for the exact task question; a reply in that subscribed
-conversation records the answer directly or through the normal confirmation
-flow when `TELEGRAM_CONFIRM_WRITE_ACTIONS=true`.
-
-Bot API references:
-
-- [getUpdates](https://core.telegram.org/bots/api#getupdates) for polling.
-- [setWebhook](https://core.telegram.org/bots/api#setwebhook) for webhook mode.
-- [sendMessage](https://core.telegram.org/bots/api#sendmessage) for replies and notifications.
-- [answerCallbackQuery](https://core.telegram.org/bots/api#answercallbackquery) for inline-button acknowledgements.
-- [Privacy mode](https://core.telegram.org/bots/features#privacy-mode) for group chats; prefer `mentions_and_replies`.
-- [Business/Secretary bot features](https://core.telegram.org/bots/features#business-users) for profile automation consent and `can_reply` behavior.
-
-## Rollback
-
-Rollback is config-only:
+## Отключение
 
 ```env
 ALERTS_ENABLED=false
 OBSERVABILITY_ENABLED=false
 ```
+
+Если human API/UI настроен отдельно, изменение `OBSERVABILITY_ENABLED` может быть недостаточным для его отключения: проверьте `TASK_TRACKER_UI_ENABLED` и reverse proxy. При отключении HTTP-сервера не удаляйте данные PostgreSQL или историю задач.
+

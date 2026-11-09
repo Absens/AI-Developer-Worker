@@ -1,464 +1,172 @@
-# Docker-only server deployment plan
+# План серверного развёртывания только в Docker
+
+> **Статус: проектное предложение, не реализованный runbook.** В текущем `main` основной `compose.yaml` требует `HOST_CODEX_HOME` и `TARGET_REPO_PATH` и монтирует локальный checkout. Описанные ниже `compose.server.yaml`, `RepositoryWorkspaceService` и URL-first fleet config **пока не считаются доступными функциями**. Для действующего запуска используйте [локальный Docker runbook](LOCAL_DOCKER_RUN.md).
 
 ## Цель
 
-Перевести сервис в режим, где для production-запуска не нужен checkout репозитория на host-машине. Оператор должен указывать GitLab repository URL, токены и параметры проверок, а сервис сам должен создавать и поддерживать checkout внутри Docker volume, запускать Codex CLI, выполнять проверки, публиковать branch/MR и отдавать админку через домен.
+Получить серверный AI-Developer, которому для работы не нужен checkout репозитория на хосте. Администратор указывает URL GitLab, credentials, параметры модели и quality gates; воркер сам клонирует репозитории в Docker volume, запускает Codex, публикует MR, а web-консоль доступна по HTTPS-домену через защищённый reverse proxy.
 
-Целевое состояние:
+Желаемые свойства:
 
-- `TARGET_REPO_PATH` и bind mount host checkout больше не нужны.
-- `HOST_CODEX_HOME` и копирование host `~/.codex` не используются в production.
-- Все stateful данные находятся в Docker volumes или внешних managed сервисах.
-- Админка доступна по HTTPS-домену через reverse proxy.
-- Codex auth работает в headless/server-сценарии без ручного доступа к файловой системе host.
+- Нет обязательного `TARGET_REPO_PATH` и bind mount хостового checkout.
+- Нет копирования `HOST_CODEX_HOME` из рабочей машины администратора.
+- Состояние — в Docker volumes или отдельных managed хранилищах.
+- `/tasks` и `/api` доступны только через TLS + проверенную авторизацию.
+- GitLab, Codex и PostgreSQL учётные данные изолированы от команд агента.
 
-## Текущее состояние
+## Что есть сейчас
 
-Что уже есть:
+- Docker-образ собирает Node.js worker и Angular console.
+- `compose.yaml` содержит `postgres`, `migrate`, `worker`.
+- Поддерживаются `GIT_REPOSITORY_URL`, `GIT_REPOSITORY_TOKEN` и переписывание remote на HTTPS **для уже существующего checkout**.
+- Доступны `CODEX_API_KEY` или вход `codex login --device-auth` в выделенном томе.
+- Внутренний task tracker работает с PostgreSQL, UI — по `/tasks`, API — по `/api`, наблюдаемость — по `/healthz`, `/readyz` и `/metrics`.
 
-- Docker image собирает worker и Angular console.
-- `compose.yaml` поднимает `postgres`, `migrate` и `worker`.
-- Worker умеет работать с `GIT_REPOSITORY_URL`, `GIT_REPOSITORY_TOKEN` и переписывать remote на HTTPS.
-- `CODEX_API_KEY` уже может пропускать `codex login status` preflight.
-- Альтернативно можно выполнить `codex login --device-auth` в dedicated Docker volume `codex-home`.
-- Внутренний tracker и UI уже рассчитаны на PostgreSQL и `/tasks`.
-- Observability server уже отдает `/healthz`, `/readyz`, `/metrics`, а Angular console использует `/tasks` и `/api/*`.
+Что отсутствует в полном серверном сценарии:
 
-Что мешает полностью контейнерному серверному запуску:
+- Штатное клонирование репозитория в новый пустой Docker volume перед `assertRepositoryReady()`.
+- URL-first конфигурация fleet без `repositories[].repoPath`.
+- Стабильный логический repository key для leases вместо привязки к абсолютному пути.
+- Готовый production Compose с TLS/SSO и без host checkout.
+- Стратегия toolchains для разных репозиториев: Node/pnpm, Python, Go, Java, browsers и т. д.
+- Достаточно строгая изоляция секретов и среды выполнения Codex.
 
-- `compose.yaml` требует `TARGET_REPO_PATH` и монтирует готовый host checkout в `/workspace/project`.
-- `RepositoryGitService.assertRepositoryReady()` предполагает, что `repoPath` уже является рабочим git checkout.
-- Fleet config требует `repositories[].repoPath`.
-- Repository lease сейчас привязан к нормализованному `repoPath`, а не к стабильному logical repository key.
-- Docker image содержит только базовые инструменты (`node`, `git`, `curl`, `jq`, `ripgrep`, `openssh-client`). Для целевых репозиториев могут понадобиться отдельные runtimes: pnpm/yarn, Python, Go, Java, Docker CLI, browsers, Playwright dependencies и т.д.
-- Production auth для админки пока описан как reverse-proxy concern, но готового compose-профиля с доменом, TLS и headers нет.
-
-## Целевая архитектура
-
-Минимальная production-схема:
+## Предлагаемая схема
 
 ```text
 Internet
-  |
-  v
-reverse-proxy container (Caddy/Traefik/Nginx, TLS, auth)
-  |
-  v
-worker container
-  |-- /tasks, /api, /metrics, /healthz, /readyz
-  |-- codex exec
-  |-- git clone/fetch/push
-  |
-  +-- repo-workspaces volume: /workspace/repos/<repository-key>
-  +-- codex-home volume or CODEX_API_KEY secret
-  +-- memory/events volumes
-  |
-postgres container or managed PostgreSQL
+   │ HTTPS, auth
+   ▼
+Reverse proxy (Caddy / Traefik / Nginx)
+   │ internal Docker network
+   ▼
+AI-Developer control plane
+   ├─ /tasks /api /healthz /readyz /metrics
+   ├─ task orchestration / project manager
+   ├─ repository workspaces → volume
+   ├─ Codex executor → отдельная изолированная среда
+   ├─ memory / events → volumes
+   └─ PostgreSQL → managed service или отдельный container
 ```
 
-Recommended volumes:
+Публичные порты принадлежат только reverse proxy. Базовый воркер, БД, внутренние токены и метрики доступны по приватной сети.
 
-- `tracker-postgres`: internal tracker database.
-- `repo-workspaces`: cloned target repositories.
-- `codex-home-worker-1`: Codex auth state if OAuth/device auth is used.
-- `ai-developer-memory`: optional repository memory.
-- `ai-developer-events`: optional JSONL observability event store.
+Рекомендуемые volumes:
 
-Only the reverse proxy should publish public ports. The worker should listen on an internal Docker network.
+- `tracker-postgres` — данные задач.
+- `repo-workspaces` — клонированные репозитории.
+- `codex-home-worker-1` — Codex auth (только при OAuth/device auth).
+- `ai-developer-memory` — локальная память.
+- `ai-developer-events` — события наблюдаемости.
 
-## Repository URL mode
+## Этап 1. Загрузка репозитория по URL
 
-Add a first-class repository workspace lifecycle.
-
-### Configuration changes
-
-Keep backward compatibility with `REPO_PATH`, but add URL-first configuration:
+**Предлагаемая, ещё не реализованная конфигурация:**
 
 ```env
 REPOSITORY_WORKSPACE_ROOT=/workspace/repos
-GIT_REPOSITORY_URL=https://gitlab.example.com/group/project.git
-REPOSITORY_NAME=group-project
+REPOSITORY_NAME=client-application
+GIT_REPOSITORY_URL=https://gitlab.example.com/platform/client-application.git
 BASE_BRANCH=main
 ```
 
-For fleet config:
+Для fleet в будущем:
 
 ```yaml
 repositories:
   - name: client-application
     gitRepositoryUrl: https://gitlab.example.com/platform/client-application.git
     checkoutPath: /workspace/repos/client-application
-    gitlabProjectId: platform%2Fclient-application
+    gitlabProjectId: "42"
     baseBranch: main
     queues: [FRONTEND]
     tags: [ai_dev]
     testCommand: npm test
     lintCommand: npm run lint
-    typeCheckCommand: npm run typecheck
-    buildCommand: npm run build
 ```
 
-Plan:
+Создать `RepositoryWorkspaceService` до проверки `RepositoryGitService.assertRepositoryReady()`. Он должен:
 
-1. Make `repoPath` optional when `gitRepositoryUrl` is present.
-2. Derive `repoPath` from `REPOSITORY_WORKSPACE_ROOT` plus sanitized repository name.
-3. Keep explicit `repoPath` for local/backward-compatible launches.
-4. Use repository `name` or canonical repository URL as the lease key, not the absolute checkout path.
+1. Создать workspace root, разрешить стабильный путь по repository key.
+2. Если `.git` отсутствует — безопасно выполнить `git clone` с нужной веткой и GitLab credentials.
+3. При существующем checkout проверить remote URL и готовность ветки.
+4. Настроить Git commit identity и допустимый `safe.directory` только для конкретного checkout.
+5. Обновить refs (`git fetch --all --prune`), проверить отсутствие конфликтующего dirty state.
+6. Сохранить task branches для возобновления после рестарта.
 
-### Workspace bootstrap
+**Нельзя автоматически удалять или делать hard reset существующего checkout.** Для восстановления повреждённого workspace нужен отдельный явный maintenance action.
 
-Add a `RepositoryWorkspaceService` before `RepositoryGitService.assertRepositoryReady()`:
+Приёмочные критерии: новый пустой volume получает clone без checkout на хосте; после рестарта используется тот же clone; прямой режим с `REPO_PATH` продолжает работать.
 
-1. Ensure `REPOSITORY_WORKSPACE_ROOT` exists.
-2. Resolve a stable checkout path for the repository.
-3. If path does not contain `.git`, run `git clone --branch <baseBranch> <url> <repoPath>` using the same HTTPS auth extraheader mechanism.
-4. If path already contains `.git`, validate that `origin` matches the configured URL or rewrite it.
-5. Configure `git config --global --add safe.directory <repoPath>` inside the container.
-6. Configure commit identity from `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`.
-7. Run `git fetch --all --prune`.
-8. Refuse to continue if the checkout is dirty on a non-task branch.
-9. Expose clear preflight diagnostics for clone/auth/branch failures.
+## Этап 2. Воспроизводимый runtime целевых проектов
 
-Important behavior:
+Клонировать Git — недостаточно. Для проверок нужно окружение проекта: `pnpm`, Go, Python, JDK, браузеры и т. д.
 
-- Do not delete or reset an existing checkout automatically.
-- Add an explicit maintenance command later, for example `npm run repo:reset -- <repository-name>`, if corrupted checkouts need cleanup.
-- Preserve task branches across restarts so the worker can resume safely.
+Для MVP допускается расширяемый Dockerfile под целевой стек. Дальше предпочтительнее `executorImage` для каждого профиля и короткоживущие изолированные исполнители.
 
-## Target repository toolchains
+Не монтируйте Docker socket в основной воркер без отдельного security review: это фактически может дать доступ к хосту. Сохраняйте logs/artifacts отдельно от checkout.
 
-The worker can clone any Git repository, but it cannot reliably test any repository unless the required runtime exists in the container.
+## Этап 3. Авторизация Codex и секреты
 
-MVP approach:
+Серверный вариант не должен копировать `~/.codex` администратора при старте.
 
-- Keep one worker image, but allow a deployment-specific Dockerfile to extend it.
-- Document examples:
-  - Node frontend image with `pnpm`, browsers and Playwright dependencies.
-  - Go backend image.
-  - Python backend image.
-- Treat `TEST_COMMAND`, `LINT_COMMAND`, `TYPE_CHECK_COMMAND`, `BUILD_COMMAND` as commands executed inside that image.
+- API credential из vault/secret manager или Docker secret — один из вариантов для headless.
+- OAuth/device auth допускается через отдельный `CODEX_HOME` на один активный воркер.
+- При использовании `OPENAI_API_KEY` проверьте поддерживаемый процесс `codex login --with-api-key`.
+- Preflight должен проверять не только наличие ключа, но и реальную способность CLI совершить безопасный запрос.
+- **Не передавайте GitLab, Tracker и другие инфраструктурные секреты в окружение, доступное командам Codex**. Требуются минимальные полномочия, изоляция executor и доставка секретов только нужным инструментам.
 
-Next step after MVP:
+## Этап 4. Production Compose и домен
 
-- Add per-repository `executorImage` support.
-- Worker schedules Codex/validation in a short-lived executor container with mounted `repo-workspaces`, `codex-home`, memory and artifacts.
-- Avoid mounting the Docker socket into the main worker unless there is a clear isolation design and security review.
+Целевой `compose.server.yaml` должен включать: PostgreSQL, миграции, воркер, рабочие volumes и reverse proxy с TLS. Он не должен требовать `HOST_CODEX_HOME` и `TARGET_REPO_PATH`.
 
-## Codex authorization strategy
-
-Production recommendation:
-
-1. Prefer `CODEX_API_KEY` as a Docker secret or environment secret for headless server operation.
-2. Keep `CODEX_HOME=/codex-home` writable, but do not depend on copying host auth.
-3. Remove `HOST_CODEX_HOME` from production compose.
-4. Keep OAuth/device auth as an explicit maintenance flow, not startup behavior.
-
-Supported modes:
-
-### Mode A: API key auth
-
-Use this for server deployments where secrets are managed by Docker, CI/CD, Vault or a cloud secret manager.
-
-```env
-CODEX_API_KEY=...
-CODEX_HOME=/codex-home
-```
-
-The current code already treats `CODEX_API_KEY` as sufficient for auth preflight. Add a stronger preflight check that runs a minimal non-mutating `codex exec` probe when feasible, because simply seeing the env var does not prove that the installed Codex CLI accepts it.
-
-### Mode B: dedicated Codex OAuth volume
-
-Use this when API key auth is not desired.
-
-```bash
-docker compose run --rm --entrypoint codex worker login --device-auth
-docker compose run --rm --entrypoint codex worker login status
-```
-
-Rules:
-
-- One active worker gets one dedicated `CODEX_HOME` volume.
-- Do not share the same `auth.json` between host Codex and worker Codex.
-- Do not copy host `~/.codex` for long-running workers.
-- For multiple workers, use separate volumes: `codex-home-worker-1`, `codex-home-worker-2`, etc.
-
-### Mode C: persisted API-key login
-
-If only `OPENAI_API_KEY` is available:
-
-```bash
-printenv OPENAI_API_KEY | codex login --with-api-key
-```
-
-Wrap this in a documented one-shot init/maintenance command rather than doing it implicitly on every container start.
-
-## Server admin access through a domain
-
-Use the existing Angular console under `/tasks` as the primary admin UI.
-
-Required runtime settings:
+Runtime-параметры после реализации:
 
 ```env
 TASK_TRACKER_PROVIDER=internal
 TASK_TRACKER_STORAGE=postgres
-TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
 TASK_TRACKER_UI_ENABLED=true
 TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser
 TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
-
 OBSERVABILITY_ENABLED=true
 OBSERVABILITY_HOST=0.0.0.0
 OBSERVABILITY_PORT=9464
-
-TASK_TRACKER_SYSTEM_TOKEN=...
-TASK_TRACKER_AGENT_TOKEN=...
 ```
 
-Reverse proxy responsibilities:
+Backend в этом примере не должен публиковать `9464` напрямую во внешнюю сеть. Reverse proxy проверяет вход, удаляет клиентские `x-task-tracker-user` / `x-task-tracker-role` и добавляет **свои подтверждённые** identity headers. `/metrics` оставьте приватным.
 
-- Terminate TLS for `https://admin.example.com`.
-- Forward `/tasks`, `/api`, `/metrics`, `/healthz`, `/readyz` to the worker.
-- Protect browser access with SSO, Basic Auth, mTLS or another trusted auth layer.
-- Inject trusted identity headers expected by the backend, for example:
-  - `x-task-tracker-user`
-  - `x-task-tracker-role`
-- Keep `/metrics` private or expose it only to Prometheus on an internal network.
+Тест приёмки: админка на `https://admin.example.com/tasks`, worker ready, миграции выполнены, поддельные клиентские заголовки не позволяют получить чужую роль.
 
-Do not expose the worker container directly to the internet.
+## Этап 5. Fleet и координация
 
-## Compose target
+Для URL-first fleet нужно:
 
-Create a production compose variant, for example `compose.server.yaml`:
+- Разрешить конфигурацию без обязательного `repoPath`, если задан `gitRepositoryUrl`.
+- Использовать стабильный `repositoryKey` или нормализованное имя для memory/leases.
+- Не допускать двух разных профилей, случайно резолвящихся в один checkout.
+- Поддерживать отдельные token refs для разных GitLab проектов.
+- Проверить две очереди и два репозитория в одном `repo-workspaces` volume.
 
-```yaml
-services:
-  postgres:
-    image: postgres:16-alpine
-    volumes:
-      - tracker-postgres:/var/lib/postgresql/data
+## План реализации и проверки
 
-  migrate:
-    image: ai-developer-worker:server
-    env_file: [.env.server]
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["node", "--import", "tsx", "scripts/internal-tracker-migrate.ts"]
-    restart: "no"
+| Очерёдность | Основные файлы и тесты |
+| --- | --- |
+| Workspace bootstrap | `src/config.ts`, `src/models/types.ts`, новый git workspace adapter, `src/app.ts`, preflight, тесты git/конфигурации |
+| Server Compose | `compose.server.yaml`, `deploy/Caddyfile.example`, Docker runbook-и |
+| Auth hardening | Reverse proxy, серверный preflight, API auth и role mapping |
+| Multi-repo | Fleet config, repository context/lock backend, integration/smoke tests |
+| Executor isolation | Контракт runtime toolchains, ephemeral executor, log/artifact paths |
 
-  worker:
-    image: ai-developer-worker:server
-    env_file: [.env.server]
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    volumes:
-      - repo-workspaces:/workspace/repos
-      - codex-home-worker-1:/codex-home
-      - ai-developer-memory:/workspace/ai-developer-memory
-      - ai-developer-events:/workspace/ai-developer-events
-    expose:
-      - "9464"
+Перед запуском в production: test/typecheck/build, Docker build, контейнерный preflight, одноразовый task run, проверка backup/restore и ручная проверка ролей. Rollback должен оставлять PostgreSQL volume и архивы задач нетронутыми.
 
-  proxy:
-    image: caddy:2
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - worker
+## Основные риски
 
-volumes:
-  tracker-postgres:
-  repo-workspaces:
-  codex-home-worker-1:
-  ai-developer-memory:
-  ai-developer-events:
-  caddy-data:
-  caddy-config:
-```
+1. Codex credentials могут формально присутствовать, но не работать в runtime.
+2. В образе нет нужного runtime/toolchain для тестов чужого репозитория.
+3. Dirty checkout блокирует выполнение или может быть повреждён автоматическим reset.
+4. Незащищённый `/api` позволит изменять задачи; доверенные заголовки без proxy boundary небезопасны.
+5. Общий OAuth `CODEX_HOME` даёт конфликты refresh token.
+6. Наследование переменных окружения и слишком широкие sandbox-права создают риск утечки секретов.
 
-This compose file should not contain `TARGET_REPO_PATH` or `HOST_CODEX_HOME`.
+**Рекомендуемый MVP:** один репозиторий, URL-first clone, безопасная авторизация, отдельный исполнитель, миграции и приватный proxy. Мульти-репозиторный fleet — после проверки первого сквозного сценария.
 
-## Implementation phases
-
-### Phase 1: URL-first repository bootstrap
-
-Files to touch:
-
-- `src/models/types.ts`
-- `src/config.ts`
-- `src/integrations/git/service.ts`
-- new `src/integrations/git/workspace.ts`
-- `src/app.ts`
-- `src/domain/preflight.ts`
-- `tests/config.test.ts`
-- `tests/gitService.test.ts`
-- new `tests/repositoryWorkspace.test.ts`
-- `tests/worker.smoke.test.ts`
-
-Tasks:
-
-1. Add `REPOSITORY_WORKSPACE_ROOT` and optional `REPOSITORY_NAME`.
-2. Allow `repoPath` to be derived when `GIT_REPOSITORY_URL` is set.
-3. Add workspace bootstrap logic for clone/existing checkout validation.
-4. Share HTTPS auth env construction between clone, fetch and push.
-5. Update preflight to distinguish clone failures from repository readiness failures.
-6. Add smoke test that starts from a bare remote URL and no pre-created checkout.
-
-Acceptance criteria:
-
-- Worker can start with only `GIT_REPOSITORY_URL`, `GIT_REPOSITORY_TOKEN`, `REPOSITORY_WORKSPACE_ROOT` and normal GitLab settings.
-- A fresh `repo-workspaces` volume receives a valid clone.
-- A restarted worker reuses the existing clone.
-- Existing local `REPO_PATH` behavior still works.
-
-### Phase 2: Production compose without host mounts
-
-Files to touch:
-
-- `compose.server.yaml`
-- `deploy/Caddyfile.example`
-- `docs/LOCAL_DOCKER_RUN.md`
-- `docs/ENV_CONFIGURATION.md`
-- `docs/CODEX_AUTH_TROUBLESHOOTING.md`
-- `README.md`
-
-Tasks:
-
-1. Add `compose.server.yaml` with `repo-workspaces`, `codex-home`, PostgreSQL and reverse proxy volumes.
-2. Remove host Codex bootstrap from the server path.
-3. Keep current `compose.yaml` as local legacy/dev compose, or rename it to `compose.local.yaml`.
-4. Document `.env.server` with URL-first repository settings.
-5. Document one-shot commands for migrations, preflight, Codex login and first run.
-
-Acceptance criteria:
-
-- `docker compose -f compose.server.yaml up -d` does not require a host repository path.
-- `docker compose -f compose.server.yaml run --rm worker npm run preflight` verifies clone, Codex auth, GitLab and target commands.
-- Admin UI is reachable through the proxy on the configured domain.
-
-### Phase 3: Admin auth and domain hardening
-
-Files to touch:
-
-- `deploy/Caddyfile.example` or `deploy/nginx.conf.example`
-- `docs/OBSERVABILITY_RUNBOOK.md`
-- `docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md`
-- possibly `src/domain/preflight.ts`
-
-Tasks:
-
-1. Add reverse proxy examples for TLS and trusted headers.
-2. Add preflight checks that reject public UI exposure without `TASK_TRACKER_SYSTEM_TOKEN` and `TASK_TRACKER_AGENT_TOKEN`.
-3. Document role mapping for admin/operator/viewer.
-4. Keep metrics internal by default.
-
-Acceptance criteria:
-
-- Public browser traffic never reaches the worker directly.
-- UI write actions require a trusted authenticated identity.
-- `/readyz` reports not-ready when startup clone/auth checks fail.
-
-### Phase 4: Fleet and multi-repository support
-
-Files to touch:
-
-- `src/config.ts`
-- `src/domain/lockBackend.ts`
-- `src/domain/fleetOrchestrator.ts`
-- `src/domain/repositoryContext.ts`
-- `docs/FLEET_OPERATIONAL_RUNBOOK.md`
-- fleet-related tests
-
-Tasks:
-
-1. Make `repositories[].gitRepositoryUrl` enough to derive checkout path.
-2. Add stable `repositoryKey` or `repoPathKey` derived from repository name.
-3. Change repository leases to use stable repository key, not absolute checkout path.
-4. Support per-repository token env references if one global token is not enough.
-5. Add smoke coverage for two repositories in one `repo-workspaces` volume.
-
-Acceptance criteria:
-
-- Fleet mode can manage multiple URL-configured repositories without host mounts.
-- Changing checkout root does not invalidate repository memory or lease identity.
-- Two profiles cannot accidentally resolve to the same checkout path unless explicitly configured.
-
-### Phase 5: Executor/runtime strategy
-
-Files to touch:
-
-- `src/models/types.ts`
-- `src/config.ts`
-- new executor integration files
-- Docker/deploy docs
-
-Tasks:
-
-1. Decide whether MVP production deployments extend the worker image or use separate executor images.
-2. Add `executorImage` only if there is a clear isolation design.
-3. Define artifact paths for validation logs and Codex raw logs outside the target checkout.
-4. Document per-stack image recipes.
-
-Acceptance criteria:
-
-- Target repository commands run in a reproducible container environment.
-- Operators do not need to install language runtimes on the server host.
-- The worker image does not silently claim support for repositories whose runtime is missing.
-
-## Operational runbook after implementation
-
-First server setup:
-
-1. Build or pull the production worker image.
-2. Create `.env.server` with GitLab, Tracker/internal tracker, Codex and repository URL settings.
-3. Start PostgreSQL.
-4. Run migrations.
-5. Initialize Codex auth:
-   - Prefer setting `CODEX_API_KEY` as a secret, or
-   - run `codex login --device-auth` into the worker-specific `codex-home` volume.
-6. Run preflight.
-7. Start worker and proxy.
-8. Verify:
-   - `https://admin.example.com/tasks`
-   - `https://admin.example.com/readyz`
-   - internal Prometheus scrape for `/metrics`
-
-Routine operations:
-
-- Rotate GitLab and Codex secrets through Docker/secret manager, then restart worker.
-- Back up PostgreSQL with `pg_dump`.
-- Back up `codex-home` only if OAuth mode is used and the backup is encrypted.
-- Do not back up `repo-workspaces` as critical data; it can be recreated from Git.
-- Monitor clone/fetch failures, Codex timeout rate, validation failure rate and queue age.
-
-## Main risks
-
-- Codex auth can fail silently if only an env var is checked. Add a real CLI probe for production preflight.
-- Cloned repositories may require tooling not present in the base image. Treat runtime images as part of repository onboarding.
-- Long-lived dirty checkouts can block work. Provide explicit maintenance/reset commands instead of automatic destructive cleanup.
-- Exposing `/api` without trusted proxy auth would allow task mutation from the internet. Keep the worker private and let the proxy own browser auth.
-- Multiple workers sharing one `CODEX_HOME` OAuth volume can trigger token reuse failures. Use API key auth or one auth volume per active worker.
-
-## Recommended MVP scope
-
-Implement these first:
-
-1. URL-first clone into `repo-workspaces` volume for single-repository mode.
-2. Server compose without `TARGET_REPO_PATH` and `HOST_CODEX_HOME`.
-3. Codex production auth documentation with `CODEX_API_KEY` as the preferred path.
-4. Caddy or Nginx reverse proxy example for `admin.example.com`.
-5. Smoke test proving no host checkout is required.
-
-Leave these for the next iteration:
-
-- Dynamic repository onboarding from the UI.
-- Per-repository executor containers.
-- SSH deploy keys.
-- Automatic GitLab project ID discovery from repository URL.
-- Horizontal worker fleet with multiple Codex auth volumes.

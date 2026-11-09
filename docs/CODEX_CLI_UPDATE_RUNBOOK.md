@@ -1,101 +1,38 @@
-# Codex CLI Update Runbook
+# Обновление Codex CLI: инструкция для сопровождающего
 
-This runbook explains how to safely update the worker's Codex CLI integration when `@openai/codex` changes behavior, flags, auth flow, or output shape.
+При изменении версии `@openai/codex` недостаточно пересобрать Docker: важны auth, формат JSONL, `exec`, `resume`, `review` и обработка ошибок. Эта инструкция описывает процедуру обновления без потери совместимости воркера.
 
-Use it whenever you:
+**Версия, зафиксированная в текущем `Dockerfile`: `@openai/codex@0.149.1`.** Она была проверена в рамках проекта 24 августа 2026 года. Это **не утверждение**, что на сегодняшний день версия последняя или лучшая. В production используйте конкретную проверенную версию, а не `@latest`.
 
-- rebuild the Docker image with a newer Codex CLI,
-- change the installed Codex version intentionally,
-- notice that Codex auth, `codex exec`, or `resume` behavior changed,
-- want to validate that a newer Codex release did not silently break the worker.
+## На какие контракты опирается воркер
 
-Current target for this repository, checked on 2026-08-24:
+1. `codex login status` возвращает код `0` при успешной авторизации.
+2. `codex exec --json` выдаёт JSONL-события в `stdout`.
+3. `codex exec --output-last-message <file>` сохраняет финальный ответ.
+4. `thread.started.thread_id` даёт идентификатор для `codex exec resume <threadId>`.
+5. `--sandbox`, `--model`, `--profile` поддерживаются запуском `exec`.
+6. `codex exec --help` / `resume --help` позволяют передать `--image` для скриншотов Tracker.
+7. Необязательная самопроверка использует `codex exec review` с `--base`, `--uncommitted`, `--json`, `--output-last-message`, `--skip-git-repo-check`, `--ephemeral`.
 
-- stable production target: `@openai/codex@0.149.1`
-- production images should keep an explicit semver pin, not `@latest`
+Сломанный CLI-контракт может проявиться **только во время исполнения** при успешно прошедшей TypeScript-сборке.
 
-Upstream release notes reviewed for `0.130.0` -> `0.149.1`:
+## Какие файлы менять вместе
 
-- [0.131.0](https://github.com/openai/codex/releases/tag/rust-v0.131.0) added `codex doctor`, improved auth and sandbox reliability, and introduced profile-v2 work.
-- [0.132.0](https://github.com/openai/codex/releases/tag/rust-v0.132.0) added `--output-schema` support to `codex exec resume`.
-- [0.134.0](https://github.com/openai/codex/releases/tag/rust-v0.134.0) made `--profile` the primary profile selector and rejected legacy profile configs through migration guidance.
-- [0.136.0](https://github.com/openai/codex/releases/tag/rust-v0.136.0) improved `CODEX_API_KEY` remote registration and ChatGPT auth refresh diagnostics.
-- [0.137.0](https://github.com/openai/codex/releases/tag/rust-v0.137.0), [0.138.0](https://github.com/openai/codex/releases/tag/rust-v0.138.0), and [0.139.0](https://github.com/openai/codex/releases/tag/rust-v0.139.0) primarily changed TUI, plugin, MCP, sandbox, image, auth, and Desktop/App Server behavior.
-- [0.140.0](https://developers.openai.com/codex/changelog) added `/usage`, `/goal`, permanent session deletion, Claude import, Bedrock auth, SQLite state repair, MCP reliability fixes, and large-repository responsiveness improvements.
-- [0.141.0](https://developers.openai.com/codex/changelog) focused on remote executors, plugin MCP activation, app-server child threads and rate-limit credits, hook-trust behavior in `codex exec`, Windows sandbox fixes, SQLite WAL-reset pinning, and TLS proxy compatibility.
-- [0.142.0](https://developers.openai.com/codex/changelog) added usage-limit reset credits, remote plugin organization and recommendations, rollout token budgets, app-server delegation controls, indexed web-search mode, scheduled reminders/time tools, and fixes for exec-server/MCP disconnects, remote environment paths, plugin loading, subagent errors, and goal-first thread persistence.
-- [0.147.0](https://developers.openai.com/codex/changelog) upgraded the MCP SDK, completed the newer MCP client protocol support, and improved MCP tool discovery and server startup behavior.
-- [0.149.1](https://developers.openai.com/codex/changelog) is the stable production pin validated by this repository on 2026-08-24.
-- The non-interactive `exec --json`, `resume`, `review`, `--output-last-message`, and image-attachment contracts used by this worker remain present in `0.149.1`.
+- [Dockerfile](../Dockerfile) — pin версии.
+- [src/config.ts](../src/config.ts) — аргументы и проверки конфигурации.
+- [auth.ts](../src/integrations/codex/auth.ts) — проверка авторизации.
+- [runner.ts](../src/integrations/codex/runner.ts) — запуск, JSONL и resume.
+- [orchestrator.ts](../src/domain/orchestrator.ts) и [internalWorkerOrchestrator.ts](../src/domain/internalWorkerOrchestrator.ts) — интеграция runtime.
+- [codexRunner.test.ts](../tests/codexRunner.test.ts), [worker.smoke.test.ts](../tests/worker.smoke.test.ts) — регрессии.
+- [`.env.example`](../.env.example), [README](../README.md) и [ENV_CONFIGURATION.md](ENV_CONFIGURATION.md) — операционные объяснения.
 
-## What this worker depends on
+## Порядок обновления
 
-The current integration relies on these Codex CLI behaviors:
-
-1. `codex login status` exits with `0` when auth is usable.
-2. `codex exec --json` emits JSONL events to `stdout`.
-3. `codex exec --output-last-message <file>` writes the final assistant message to a file.
-4. `codex exec resume <threadId>` continues a previous non-interactive session id emitted by `thread.started.thread_id`.
-5. `--sandbox`, `--model`, and `--profile` remain valid `codex exec` flags.
-6. `codex exec --help` and `codex exec resume --help` include `--image` so Tracker screenshot context can be passed to the model.
-7. `codex exec review --help` exposes `--base`, `--uncommitted`, `--json`, `--output-last-message`, `--skip-git-repo-check`, and `--ephemeral` for the optional self-review gate.
-
-If any of those contracts change, the worker may still build but fail at runtime.
-
-## Files to review after a Codex CLI update
-
-Always review these files together:
-
-- [Dockerfile](/C:/Users/gabba/projects/developer/Dockerfile)
-- [config.ts](/C:/Users/gabba/projects/developer/src/config.ts)
-- [auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts)
-- [runner.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/runner.ts)
-- [orchestrator.ts](/C:/Users/gabba/projects/developer/src/domain/orchestrator.ts)
-- [codexRunner.test.ts](/C:/Users/gabba/projects/developer/tests/codexRunner.test.ts)
-- [worker.smoke.test.ts](/C:/Users/gabba/projects/developer/tests/worker.smoke.test.ts)
-
-## Recommended update procedure
-
-### 1. Check the target Codex CLI version
-
-On the host:
+### 1. Сверьте установленную и целевую версии
 
 ```bash
 npm view @openai/codex version
-```
-
-Inside the built image or local environment:
-
-```bash
 codex --version
-```
-
-The Docker image pins `@openai/codex@0.149.1` by default through `CODEX_CLI_VERSION`.
-Build the target image explicitly after this runbook passes:
-
-```bash
-docker build --build-arg CODEX_CLI_VERSION=0.149.1 -t ai-developer-worker:codex-0.149.1 .
-```
-
-Do not replace the pin with `@latest`. `codex update` exists for local CLI installations, but pinned Docker runtime images should not self-update during build or startup.
-
-### 2. Review upstream CLI surface before changing this repo
-
-Run the automated static contract verifier:
-
-```bash
-npm run verify:codex-cli
-```
-
-To verify a version before installing it globally or rebuilding Docker, run the verifier through a launcher:
-
-```bash
-CODEX_CLI_COMMAND=npx CODEX_CLI_ARGS_JSON='["-y","@openai/codex@0.149.1"]' npm run verify:codex-cli
-```
-
-For manual inspection, also check the current help output:
-
-```bash
 codex --help
 codex exec --help
 codex exec resume --help
@@ -103,131 +40,78 @@ codex exec review --help
 codex login status --help
 ```
 
-Confirm that these flags and subcommands still exist:
+Перед bump прочитайте upstream release notes — особенно изменения MCP, песочницы, авторизации и non-interactive JSONL. Исторические заметки по версиям 0.130–0.149 сохранены в [официальном changelog Codex](https://developers.openai.com/codex/changelog).
 
-- `exec`
-- `exec resume`
-- `--json`
-- `--output-last-message`
-- `--sandbox`
-- `--model`
-- `--profile`
-- `--image`
-- `codex exec review --help`
-- `--base`
-- `--uncommitted`
-- `--json`
-- `--output-last-message`
-- `--skip-git-repo-check`
-- `--ephemeral`
-- `login status`
+### 2. Выполните статическую проверку контракта
 
-If any of them changed, update the worker before rebuilding production images.
+```bash
+npm run verify:codex-cli
+```
 
-### 3. Re-check auth expectations
+При проверке конкретной версии через npm launcher:
 
-Validate both supported auth paths:
+```bash
+CODEX_CLI_COMMAND=npx CODEX_CLI_ARGS_JSON='["-y","@openai/codex@0.149.1"]' npm run verify:codex-cli
+```
+
+Проверьте наличие `exec`, `exec resume`, `review`, `--json`, `--output-last-message`, `--sandbox`, `--model`, `--profile`, `--image` и всех флагов ревью. Набор актуален для существующего в репозитории контракта; в новой версии CLI он может отличаться.
+
+### 3. Проверьте авторизацию
 
 ```bash
 codex login status
 ```
 
-and, if API key auth is used:
-
-```bash
-echo $CODEX_API_KEY
-```
-
-The worker treats these as valid auth sources:
-
-- `CODEX_HOME` with a working Codex login
-- `CODEX_API_KEY`
-
-`OPENAI_API_KEY` alone does not skip the worker preflight. If you want to use an
-OpenAI API key through Codex CLI auth storage, persist it first:
+Воркер поддерживает собственный `CODEX_HOME` с действующей сессией или `CODEX_API_KEY` согласно текущему preflight. Один `OPENAI_API_KEY` сам по себе может быть недостаточен для прохождения preflight; для сохранения ключа в Codex CLI:
 
 ```bash
 printenv OPENAI_API_KEY | codex login --with-api-key
 ```
 
-If upstream changes auth precedence or stops supporting `CODEX_API_KEY`, update [auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts).
+**Не печатайте реальный API-ключ через `echo` и не переносите общий `auth.json` между активными средами.** При проблемах см. [auth troubleshooting](CODEX_AUTH_TROUBLESHOOTING.md).
 
-### 4. Re-check non-interactive output format
+### 4. Проверьте JSONL и файловый ответ
 
-Run a minimal `exec` command against a disposable repo or temp folder:
+Используйте временный безопасный каталог, не production checkout:
 
 ```bash
 codex exec --json --output-last-message /tmp/codex-last.txt --skip-git-repo-check "say hello"
 ```
 
-Confirm:
+Убедитесь, что: `stdout` содержит JSONL, событие `thread.started` содержит `thread_id`, итог записан в файл, ошибки имеют ожидаемые `error.message` или `message`. Если контракт изменён — обновите `src/integrations/codex/runner.ts` и тесты.
 
-- `stdout` is still JSONL
-- a `thread.started` event still exposes a `thread_id`
-- the final assistant message is still written to the output file
-- error events still appear in JSON mode in a parseable form, including both nested `error.message` and top-level `message`
-
-If JSONL event names or fields changed, update [runner.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/runner.ts).
-
-### 5. Re-check resume semantics
-
-Verify that a thread started with `codex exec` can still be resumed with:
+### 5. Проверьте продолжение сессии
 
 ```bash
 codex exec resume <threadId> "continue"
 ```
 
-If resume behavior changes, inspect:
+Проверьте позицию `resume` в аргументах и перенос `threadId`. Изменения требуют согласованной правки runner и orchestrators.
 
-- how `threadId` is emitted in JSONL
-- whether `resume` still accepts the same positional shape (`codex exec ... resume <SESSION_ID>`)
-- whether extra flags must move before or after `resume`
+### 6. Сверьте конфигурацию
 
-If needed, update both [runner.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/runner.ts) and [orchestrator.ts](/C:/Users/gabba/projects/developer/src/domain/orchestrator.ts).
+| Переменная | Назначение |
+| --- | --- |
+| `CODEX_CLI_COMMAND` | Исполняемый файл или launcher |
+| `CODEX_CLI_ARGS_JSON` | Глобальные аргументы **до** `exec` |
+| `CODEX_EXEC_ARGS_JSON` | Аргументы самого `codex exec` |
+| `CODEX_SANDBOX` | Режим sandbox |
+| `CODEX_MODEL`, `CODEX_PROFILE` | Выбор модели/профиля |
+| `CODEX_QUESTION_MARKER` | Маркер уточняющего вопроса |
 
-### 6. Re-check worker config contract
+Для CLI 0.149.1 глобальные аргументы могут выглядеть как `["--search","--ask-for-approval","never"]`. Не используйте deprecated `on-failure` без проверки нового CLI. Пример `CODEX_EXEC_ARGS_JSON`: `["--add-dir","/workspace/shared"]`.
 
-These env vars define the integration surface:
-
-- `CODEX_CLI_COMMAND`
-- `CODEX_CLI_ARGS_JSON`
-- `CODEX_SANDBOX`
-- `CODEX_MODEL`
-- `CODEX_PROFILE`
-- `CODEX_EXEC_ARGS_JSON`
-- `CODEX_QUESTION_MARKER`
-
-`CODEX_CLI_ARGS_JSON` is for launcher/global Codex args that must appear before
-`exec`, for example `["--search","--ask-for-approval","never"]`.
-In Codex CLI `0.149.1`, examples should prefer `never` or `on-request`; avoid
-`--ask-for-approval on-failure`, which is deprecated in the help output.
-`CODEX_EXEC_ARGS_JSON` is for flags accepted by `codex exec --help`, for example
-`["--add-dir","/workspace/shared"]`.
-
-If Codex changes how launcher args or exec args should be passed, update:
-
-- [.env.example](/C:/Users/gabba/projects/developer/.env.example)
-- [README.md](/C:/Users/gabba/projects/developer/README.md)
-- [config.ts](/C:/Users/gabba/projects/developer/src/config.ts)
-
-## Required verification after any update
-
-Run these commands in this repo:
+## Обязательные проверки перед выпуском
 
 ```bash
 npm run verify:codex-cli
 npm run typecheck
 npm test
 npm run build
-```
-
-If the CLI/output/auth contract changed, also run the focused tests first:
-
-```bash
 npx vitest run tests/codexAuth.test.ts tests/codexRunner.test.ts tests/orchestrator.test.ts tests/worker.smoke.test.ts
 ```
 
-Container verification for the pinned image:
+Сборка и статическая проверка контейнера для версии, зафиксированной в репозитории:
 
 ```bash
 docker build --build-arg CODEX_CLI_VERSION=0.149.1 -t ai-developer-worker:codex-0.149.1 .
@@ -236,46 +120,21 @@ docker run --rm --entrypoint codex ai-developer-worker:codex-0.149.1 exec --help
 docker run --rm --entrypoint npm ai-developer-worker:codex-0.149.1 run verify:codex-cli
 ```
 
-Run the live/auth probe only in a disposable environment with valid network and Codex auth:
+Live-контракт с реальной авторизацией запускайте только в одноразовой изолированной среде:
 
 ```bash
-docker run --rm \
-  -e CODEX_CONTRACT_LIVE=1 \
-  -e CODEX_HOME=/tmp/codex-home \
-  -v codex-home:/tmp/codex-home \
-  --entrypoint npm \
-  ai-developer-worker:codex-0.149.1 \
-  run verify:codex-cli
+docker run --rm -e CODEX_CONTRACT_LIVE=1 -e CODEX_HOME=/tmp/codex-home -v codex-home:/tmp/codex-home --entrypoint npm ai-developer-worker:codex-0.149.1 run verify:codex-cli
 ```
 
-Rollback build command for the previous known-good line:
+## Риски и откат
+
+Самые частые поломки после обновления: новый exit code `login status`, несовместимые JSONL event types, пустой `--output-last-message`, другой порядок аргументов `resume`, новые разрешения sandbox, интерактивный first-run setup и несовместимый `review`.
+
+Обратная сборка на предыдущей зафиксированной версии (исторический пример):
 
 ```bash
 docker build --build-arg CODEX_CLI_VERSION=0.142.0 -t ai-developer-worker:codex-0.142.0 .
 ```
 
-## Common breakpoints to look for
+Использовать предыдущую версию в production можно **только если она всё ещё поддерживается и проверена**. Решение о выпуске принимается по результатам тестов, а не по факту успешной Docker-сборки.
 
-Most Codex CLI update regressions will show up in one of these places:
-
-1. `login status` still exists but exit behavior changed.
-2. `exec --json` still runs but JSONL field names changed.
-3. `--output-last-message` still exists but the file is empty or delayed.
-4. `resume` still exists but expects different argument ordering.
-5. sandbox defaults changed and the worker unexpectedly loses write access.
-6. profile/model flags moved or changed names.
-7. the CLI starts requiring a first-run interactive setup that the container cannot satisfy.
-8. global flags such as `--search` or `--ask-for-approval` are put after `exec` and fail argument parsing.
-9. `codex exec review` loses JSONL or `--output-last-message` support, which breaks the optional self-review gate.
-
-## Practical rule
-
-Do not treat a Codex CLI update as "just rebuild Docker".
-
-For this worker, a Codex update is safe only after:
-
-1. checking upstream CLI help and behavior,
-2. re-validating auth,
-3. re-validating `exec` JSON/output behavior,
-4. re-validating `resume`,
-5. running this repo's tests and build.

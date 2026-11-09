@@ -1,327 +1,143 @@
-# Local Docker Runbook
+# Локальный запуск в Docker
 
-This document explains behavior, prerequisites, and failure modes for local Docker runs on any platform. If you are on Windows and want copy-paste PowerShell commands, use [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md).
+Этот документ описывает локальный запуск AI Developer Worker. Для Windows-команд см. [PowerShell quickstart](WINDOWS_POWERSHELL_QUICKSTART.md).
 
-## Short answer
+**Коротко:** просто собрать образ недостаточно. Нужны авторизованный Codex, реальные git credentials целевого репозитория, корректный `.env` и работающие команды quality gates.
 
-If you just build the image and run the container without preparation, it will not reliably work immediately.
+## Перед запуском
 
-It will start successfully only if all of the following are already true:
+1. Node.js ≥22 (для локальной разработки) и установленный Docker.
+2. Действительный git checkout проекта, который воркер будет изменять.
+3. Доступ к GitLab, задачам Yandex Tracker или внутреннему трекеру.
+4. Выделенный writable каталог `CODEX_HOME` с авторизацией внутри контейнера.
+5. Команды `TEST_COMMAND`, `LINT_COMMAND` и включённых дополнительных проверок должны существовать в целевом репозитории.
+6. У пользователя Git должны быть права `fetch`, `pull` и `push`.
 
-1. `codex-cli` authentication is available inside the container through a writable `CODEX_HOME`.
-2. The target repository is mounted into `/workspace/project`.
-3. Tracker and GitLab credentials are present in `.env`.
-4. Git inside the mounted project can fetch, commit, and push.
-5. `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are valid for the target project.
-6. If the target repo has `husky` or other git hooks, decide whether to keep the default `GIT_COMMIT_NO_VERIFY=true`.
+В примерах `.env.example` по умолчанию используются Yandex Tracker и `CODEX_SANDBOX=danger-full-access`. Последнее значение даёт агенту широкие права на выполнение команд: для недоверенных задач сначала организуйте изоляцию файлов, сети и секретов.
 
-If `CODEX_HOME` is missing or not authenticated, the worker now fails fast on startup before touching Tracker.
-The Docker image builds the Angular task tracker console during `docker build`
-and includes it at `/workspace/web/dist/task-tracker-console/browser`.
+## Как устроен старт
 
-## What happens on startup
+При старте воркер читает конфигурацию, проверяет авторизацию через `codex login status` и готовность среды, затем запускает цикл задач. Если авторизации нет, startup прекращается до обработки Tracker. OAuth login автоматически при штатном старте **не выполняется**.
 
-When the container starts:
+Для одной задачи: полученная задача → анализ → git checkout/ветка → `codex exec` → quality gates → commit/push/MR → запись результата в tracker. Внутренний трекер работает через PostgreSQL и миграции.
 
-1. The worker loads env config.
-2. It runs `codex login status` using `CODEX_HOME`.
-3. If Codex auth is missing, startup fails immediately.
-4. If auth is valid, the worker starts polling Tracker.
-5. When it picks a task, it works in `/workspace/project`, runs `git`, then `codex`, then tests/lint, then push/MR creation.
-
-So the container does not perform OAuth login by itself. It only reuses an existing authenticated Codex state.
-
-## Recommended local setup
-
-### 1. Confirm Codex access
-
-On the host machine, this is a quick way to confirm that Codex is installed and
-your account can authenticate:
+## 1. Подготовить образ и окружение
 
 ```bash
-codex login status
+docker build -t ai-developer-worker .
+cp .env.example .env
 ```
 
-Expected result: output contains `Logged in`.
+Заполните в `.env` `TRACKER_*` (для direct Yandex), `GITLAB_*`, `TRACKER_STATUS_MAP_FILE`, `WORKER_ID`, `TEST_COMMAND`, `LINT_COMMAND`, `CODEX_CLI_COMMAND` и переменные целевого репозитория. Не помещайте `.env` в Git.
 
-If not, authenticate on the host first:
+В `TRACKER_STATUS_MAP_FILE` поле `statuses` должно соответствовать реальным статусам, а `transition` служит подсказкой для поиска перехода, не постоянным идентификатором.
 
-```bash
-codex login
-```
-
-or for headless flow:
-
-```bash
-codex login --device-auth
-```
-
-For the worker itself, still create a separate Docker `CODEX_HOME` and run
-`codex login` inside that volume in step 4.
-
-### 2. Prepare `.env`
-
-Create `.env` from `.env.example` and set:
-
-- Tracker credentials
-- `TRACKER_ORG_HEADER`
-- `TRACKER_DEFAULT_QUEUE`
-- GitLab credentials
-- `TRACKER_STATUS_MAP_FILE`
-- `CODEX_CLI_COMMAND`
-- `CODEX_CLI_ARGS_JSON`
-- `CODEX_SANDBOX` (recommended: `danger-full-access` for this worker)
-- `TEST_COMMAND`
-- `LINT_COMMAND`
-- `GIT_COMMIT_NO_VERIFY`
-- `WORKER_ID`
-
-At minimum, verify that:
-
-- `CODEX_CLI_COMMAND exec --json` actually works in non-interactive mode
-- `TEST_COMMAND` exists in the mounted target repo
-- `LINT_COMMAND` exists in the mounted target repo
-- `GIT_COMMIT_NO_VERIFY=false` only if you intentionally want repo hooks to run inside the worker
-
-For `TRACKER_STATUS_MAP_FILE`, point to a JSON file. Inside that file, keep `statuses` aligned with the actual Tracker issue states. Treat `transition` as a matcher hint, not as a permanent execute-id.
-
-For production internal tracker mode, set:
+**Если используете internal tracker**, задайте:
 
 ```env
 TASK_TRACKER_PROVIDER=internal
 TASK_TRACKER_STORAGE=postgres
-TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+TASK_TRACKER_DATABASE_URL=postgres://tracker:YOUR_PASSWORD@postgres:5432/ai_developer_tasks
 TASK_TRACKER_UI_ENABLED=true
 TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser
 TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
 ```
 
-Then apply migrations before starting the continuous worker:
+Это пример production-параметров, а не работающая настройка авторизации «из коробки»: доверенный reverse proxy должен проверять пользователя и подставлять разрешённые заголовки. Для локальной разработки можно ограничиться доступом на localhost. Сначала выполните миграции и preflight:
 
 ```bash
-docker compose run --rm worker npm run tracker:migrate
-docker compose run --rm worker npm run preflight
+npm run tracker:migrate
+npm run preflight
 ```
 
-Retention, backup/restore and rollback details are in
-[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
+При работе через Compose сначала запустите PostgreSQL и обеспечьте доступ к БД; `docker compose up --build` включает отдельный `migrate` сервис. Прочитайте [runbook PostgreSQL](INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
 
-The Angular console is served at `/tasks` and its JSON API at `/api`. The old
-embedded task UI is not present; if you enable the UI without a static bundle,
-`/tasks` returns `503`. For browser access in production, put the worker behind
-a trusted proxy that injects user and role headers. Bearer mode is for service
-clients or proxy-injected `Authorization`, not for browser token storage.
+## 2. Авторизовать Codex в отдельном томе
 
-Optional Telegram Assistant local configuration:
-
-```env
-TASK_TRACKER_PROVIDER=internal
-TELEGRAM_ASSISTANT_ENABLED=true
-TELEGRAM_ASSISTANT_BOT_TOKEN=123456:assistant-token
-TELEGRAM_ASSISTANT_MODE=polling
-# Optional Telegram-only model override. Use the canonical lowercase model id.
-TELEGRAM_CODEX_MODEL=gpt-5.3-codex-spark
-TELEGRAM_ALLOWED_USER_IDS=111111111
-TELEGRAM_DEVELOPER_USER_IDS=111111111
-TELEGRAM_ALLOWED_CHAT_IDS=
-TELEGRAM_PROJECT_QA_ENABLED=false
-TELEGRAM_TASK_CREATION_ENABLED=true
-TELEGRAM_CONVERSATION_RETENTION_DAYS=14
-TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS=300
-TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS=300
-```
-
-Do not rely on alert-channel `TELEGRAM_BOT_TOKEN` for the assistant. If alerts
-also use Telegram, set both `TELEGRAM_BOT_TOKEN` and
-`TELEGRAM_ASSISTANT_BOT_TOKEN` explicitly, even when they intentionally share
-the same value. Keep `.env`, Compose overrides, and shell history out of git.
-
-Webhook mode additionally needs a reachable HTTP server and public base URL:
-
-```env
-OBSERVABILITY_ENABLED=true
-OBSERVABILITY_HOST=0.0.0.0
-OBSERVABILITY_BASE_URL=https://worker.example.com
-TELEGRAM_ASSISTANT_MODE=webhook
-TELEGRAM_WEBHOOK_PATH=/telegram/webhook
-TELEGRAM_WEBHOOK_SECRET_TOKEN=change-me
-```
-
-Preflight rejects webhook mode without a path and public absolute base URL.
-Polling mode uses Telegram
-[getUpdates](https://core.telegram.org/bots/api#getupdates); webhook mode uses
-[setWebhook](https://core.telegram.org/bots/api#setwebhook). Replies use
-[sendMessage](https://core.telegram.org/bots/api#sendmessage), inline buttons
-must be acknowledged with
-[answerCallbackQuery](https://core.telegram.org/bots/api#answercallbackquery),
-and group deployments should understand Telegram
-[privacy mode](https://core.telegram.org/bots/features#privacy-mode). Business
-profile automation follows Telegram
-[Business/Secretary bot](https://core.telegram.org/bots/features#business-users)
-rules and requires owner consent plus `can_reply`.
-
-Security defaults:
-
-- Chat/user allowlists allow read operations; developer/operator/admin user IDs
-  are required for write confirmations.
-- `groupMode=mentions_and_replies` is the safe group default. Avoid
-  `all_messages` unless the group explicitly agrees to full message processing.
-- Message refs are redacted before storage and retained according to
-  `TELEGRAM_CONVERSATION_RETENTION_DAYS`.
-- Profile automation blocks internal project data unless project Q&A is enabled
-  for that profile and owner approval policy allows it.
-- Task creation uses `externalRefs` and the internal tracker; it does not use
-  `idempotencyKey` or the human HTTP API.
-
-### 3. Prepare the project mount
-
-The worker expects a real git clone of the target project at:
-
-```text
-/workspace/project
-```
-
-So you must mount a real repository, not just any folder.
-
-The repo must also already have working git credentials for:
-
-- `git fetch`
-- `git pull`
-- `git push`
-
-### 4. Prepare Codex auth for the container
-
-Recommended mode: dedicated Docker volume.
-
-Create the volume:
+Проверьте Codex на хосте: `codex login status`. Но **не делите `auth.json` с хостом** при длительном запуске.
 
 ```bash
 docker volume create codex-home
 ```
 
-Log in directly inside that volume:
+После сборки образа выполните вход в выделенный том. Для PowerShell:
 
 ```powershell
-docker run --rm -it `
-  --entrypoint codex `
-  -e CODEX_HOME=/codex-home `
-  -v "codex-home:/codex-home" `
-  ai-developer-worker `
-  login --device-auth
+docker run --rm -it --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/codex-home" ai-developer-worker login --device-auth
+docker run --rm --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/codex-home" ai-developer-worker login status
 ```
 
-This lets the container use the same OpenAI account with its own independent
-Codex auth state instead of reusing a copied host `auth.json`.
+Для Compose том `codex-home` создаётся автоматически (имя с префиксом Compose project). Авторизуйте именно его:
 
-If you use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml), you
-can log in into the Compose volume without running the normal entrypoint:
-
-```powershell
+```bash
 docker compose run --rm --entrypoint codex worker login --device-auth
+docker compose run --rm --entrypoint codex worker login status
 ```
 
-The compose entrypoint can still bootstrap from `HOST_CODEX_HOME` when
-`/codex-home/auth.json` is missing. Treat that as a convenience for short local
-debugging, not as the preferred long-running worker auth flow. If host Codex is
-also running, a copied `auth.json` can later fail with `refresh_token_reused`.
-See [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md).
+`scripts/docker-entrypoint.sh` может первоначально скопировать auth из `HOST_CODEX_HOME`, если нет `/codex-home/auth.json`. Это допустимо для короткой локальной отладки, но при параллельной работе хостового Codex может вызвать `refresh_token_reused`. См. [диагностику](CODEX_AUTH_TROUBLESHOOTING.md).
 
-## First local test
+## 3. Подключить целевой репозиторий
 
-Run one cycle first:
+Стандартный контейнер ожидает реальный checkout в `/workspace/project`.
+
+В `.env` для Compose укажите абсолютные пути хоста:
+
+```env
+HOST_CODEX_HOME=C:/Users/YOUR_USER/.codex
+TARGET_REPO_PATH=C:/work/target-repository
+REPO_PATH=/workspace/project
+CODEX_HOME=/codex-home
+```
+
+`compose.yaml` монтирует checkout и отдельный Codex volume. Если Git remote настроен по SSH, при необходимости задайте `GIT_REPOSITORY_URL` и отдельный `GIT_REPOSITORY_TOKEN` для HTTPS. Проверяйте Git push **из контейнера**, а не только с хоста.
+
+## 4. Первый запуск: один цикл
+
+Временно установите `WORKER_RUN_ONCE=true` в `.env`.
 
 ```bash
-docker run --rm \
-  --env-file .env \
-  -e WORKER_RUN_ONCE=true \
-  -e CODEX_HOME=/codex-home \
-  -v codex-home:/codex-home \
-  -v /absolute/path/to/project:/workspace/project \
-  ai-developer-worker
+docker compose up --build
 ```
 
-This is the safest way to validate:
-
-- Codex auth is visible in the container
-- env is correct
-- repo mount is correct
-- git credentials work
-- the worker can start without auth/config failures
-
-Only after that should you run the continuous loop.
-
-## Continuous local run
+Либо запустите собранный образ напрямую, задав путь к checkout:
 
 ```bash
-docker run --rm \
-  --env-file .env \
-  -e CODEX_HOME=/codex-home \
-  -v codex-home:/codex-home \
-  -v /absolute/path/to/project:/workspace/project \
-  ai-developer-worker
+docker run --rm --env-file .env -e WORKER_RUN_ONCE=true -e CODEX_HOME=/codex-home -v codex-home:/codex-home -v /absolute/path/to/project:/workspace/project ai-developer-worker
 ```
 
-## When it will work immediately
+Проверьте логи, корректность Codex auth, git fetch/push, статусы задач и проверки качества. После успешного one-shot включите непрерывную обработку `WORKER_RUN_ONCE=false`.
 
-It will work immediately if:
+## UI и Telegram
 
-- you already have a valid `.env`,
-- you already initialized `codex-home` with worker-specific Codex auth,
-- your mounted project is a working git clone,
-- that clone already has valid remote auth,
-- your configured commands are correct for that project.
+Docker-образ содержит Angular-сборку в `/workspace/web/dist/task-tracker-console/browser`. При `TASK_TRACKER_UI_ENABLED=true` UI обслуживается по `/tasks`, JSON API — по `/api`. Без собранных assets маршрут UI возвращает ошибку, а не старый встроенный интерфейс.
 
-In that case, yes: build image, run container, and it should start working without extra manual steps.
+Telegram Assistant доступен только при включении соответствующих настроек и с `TASK_TRACKER_PROVIDER=internal`:
 
-## When it will not work immediately
-
-It will not work immediately if at least one of these is missing:
-
-- no Codex auth inside container
-- no repo mounted into `/workspace/project`
-- wrong `.env`
-- wrong `TRACKER_STATUS_MAP_FILE`
-- broken `CODEX_CLI_COMMAND`
-- missing `TEST_COMMAND` or `LINT_COMMAND`
-- no git push access from inside the mounted repo
-
-Most likely first-time failure modes are:
-
-1. `codex login status` fails because `CODEX_HOME` is empty.
-2. `git pull` or `git push` fails because repo credentials are not set up.
-3. test/lint commands do not exist in the target project.
-4. repository git hooks assume a developer workstation environment and should be bypassed with `GIT_COMMIT_NO_VERIFY=true`.
-
-## Direct host bind mount option
-
-This also works for local debugging:
-
-```bash
-docker run --rm \
-  --env-file .env \
-  -e CODEX_HOME=/codex-home \
-  -v /absolute/path/to/your/.codex:/codex-home \
-  -v /absolute/path/to/project:/workspace/project \
-  ai-developer-worker
+```env
+TELEGRAM_ASSISTANT_ENABLED=true
+TELEGRAM_ASSISTANT_BOT_TOKEN=SET_SECURELY
+TELEGRAM_ASSISTANT_MODE=polling
+TELEGRAM_ALLOWED_USER_IDS=111111111
+TELEGRAM_DEVELOPER_USER_IDS=111111111
+TELEGRAM_TASK_CREATION_ENABLED=true
+TELEGRAM_PROJECT_QA_ENABLED=false
 ```
 
-But it is not the default recommendation because:
+Webhook требует публичный HTTPS base URL, отдельный секрет, включённый observability server и права на приём запросов. Telegram-бот уведомлений использует отдельный ключ `TELEGRAM_BOT_TOKEN`. Не включайте Digital Twin или обработку всех групповых сообщений без согласия и политики хранения данных.
 
-- the container writes into the same auth state as the host,
-- refresh-token updates can interfere with the host login state,
-- it increases the blast radius if the container environment is compromised.
+Подробнее — [Telegram intake](TELEGRAM_TASK_INTAKE.md) и [наблюдаемость](OBSERVABILITY_RUNBOOK.md).
 
-Use it only for short-lived local debugging when that tradeoff is acceptable.
+## Типичные проблемы
 
-## Practical recommendation
+| Симптом | Что проверить |
+| --- | --- |
+| `codex login status` не проходит | Выделенный том, `CODEX_HOME` и повторная авторизация |
+| `refresh_token_reused` | Раздельность auth state хоста и контейнера |
+| `git push` / `pull` падает | Remote, токен, доступ из контейнера |
+| Ошибка Tracker/GitLab | URL, токены, очередь, карта статусов |
+| Test/lint сразу завершается | Команды в целевом checkout и зависимости |
+| Git hooks падают | `GIT_COMMIT_NO_VERIFY` и окружение hooks |
+| `/tasks` недоступен | `OBSERVABILITY_ENABLED`, `TASK_TRACKER_UI_ENABLED` и статические assets |
 
-For local bring-up, do this in order:
+**Важно:** демонстрационный Compose использует bind mount хостового репозитория и простые локальные учётные данные PostgreSQL. Это не готовое защищённое production-развёртывание. Серверное целевое решение отдельно описано в [плане](DOCKER_ONLY_SERVER_PLAN.md).
 
-1. `codex login status` on the host.
-2. Fill in `.env`.
-3. Create a dedicated `codex-home` volume and run `codex login` inside it.
-4. Run the container once with `WORKER_RUN_ONCE=true`.
-5. Inspect logs.
-6. Switch to continuous run only after the one-shot run succeeds.
-
-For the exact Windows PowerShell command sequence, see [docs/WINDOWS_POWERSHELL_QUICKSTART.md](/C:/Users/gabba/projects/developer/docs/WINDOWS_POWERSHELL_QUICKSTART.md).

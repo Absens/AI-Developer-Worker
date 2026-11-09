@@ -1,8 +1,10 @@
 # Руководство по настройке окружения
 
+> Актуальная конфигурация определяется [`src/config.ts`](../src/config.ts) и [`.env.example`](../.env.example). Здесь собраны пояснения для оператора; исторические фазовые названия сохранены только там, где помогают найти соответствующий код. Запуск worker с `danger-full-access` и унаследованными инфраструктурными токенами требует отдельной изоляции.
+
 Это руководство объединяет все переменные окружения, которые используются кодом воркера и вспомогательными скриптами в этом репозитории.
 
-Конфигурация приложения во время выполнения загружается в [src/config.ts](/C:/Users/gabba/projects/developer/src/config.ts). Интеграция merge request с GitLab реализована в [src/integrations/gitlab/client.ts](/C:/Users/gabba/projects/developer/src/integrations/gitlab/client.ts) и использует только:
+Конфигурация приложения во время выполнения загружается в [src/config.ts](../src/config.ts). Интеграция merge request с GitLab реализована в [src/integrations/gitlab/client.ts](../src/integrations/gitlab/client.ts) и использует только:
 
 - `GITLAB_URL`
 - `GITLAB_TOKEN`
@@ -28,7 +30,7 @@ Copy-Item .env.example .env
 3. Оставьте необязательные значения без изменений, если не нужно переопределять значения по умолчанию.
 4. Запустите однократный старт с `WORKER_RUN_ONCE=true`, чтобы проверить конфигурацию перед включением цикла опроса.
 
-Для статусов Tracker в репозитории уже есть пример файла [config/trackerStatusMap.example.json](/C:/Users/gabba/projects/developer/config/trackerStatusMap.example.json). В `.env` укажите путь к нему в `TRACKER_STATUS_MAP_FILE`, а затем замените примерные статусы и подсказки переходов на реальные значения из вашего рабочего процесса в Tracker.
+Для статусов Tracker в репозитории уже есть пример файла [config/trackerStatusMap.example.json](../config/trackerStatusMap.example.json). В `.env` укажите путь к нему в `TRACKER_STATUS_MAP_FILE`, а затем замените примерные статусы и подсказки переходов на реальные значения из вашего рабочего процесса в Tracker.
 
 ## Переменные времени выполнения, используемые воркером
 
@@ -54,7 +56,7 @@ Copy-Item .env.example .env
 | `REPO_PATH` | Нет | `/workspace/project` | Оставьте значение по умолчанию в Docker. Переопределяйте только если воркер должен использовать другой локальный путь checkout. |
 | `BASE_BRANCH` | Нет | `main` | Задайте ветку, в которую должны целиться feature branches и merge requests. |
 | `POLL_INTERVAL_MINUTES` | Нет | `30` | Выберите частоту опроса Tracker воркером. Значение должно быть положительным целым числом. |
-| `WORKER_CONFIG_FILE` | Нет | Не задано | Необязательная fleet-конфигурация YAML или JSON. Если она не указана, значения из `.env` преобразуются в один профиль репозитория по умолчанию. См. [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md). |
+| `WORKER_CONFIG_FILE` | Нет | Не задано | Необязательная fleet-конфигурация YAML или JSON. Если она не указана, значения из `.env` преобразуются в один профиль репозитория по умолчанию. См. [docs/FLEET_OPERATIONAL_RUNBOOK.md](FLEET_OPERATIONAL_RUNBOOK.md). |
 | `LOCK_BACKEND` | Нет | `tracker` | Backend координации. `tracker` пишет lease-комментарии в Tracker; `none` отключает locks и не пишет `AI LEASE:` comments, что подходит только для одного worker-а. `redis` и `postgres` зарезервированы и завершаются ошибкой до реализации. |
 | `LOCK_TTL_SECONDS` | Нет | `900` | Lease TTL для task и repository locks. Истекшие leases не блокируют другого воркера. |
 | `LOCK_HEARTBEAT_SECONDS` | Нет | `60` | Интервал продления lease во время работы Codex, validation и publish. |
@@ -65,7 +67,7 @@ Copy-Item .env.example .env
 | `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`; для Codex CLI `0.149.1` предпочитайте `never` или `on-request`, а не deprecated `on-failure`. |
 | `CODEX_MODEL` | Нет | Не задано | Необязательное явное имя модели Codex, если нужны воспроизводимые запуски. |
 | `CODEX_PROFILE` | Нет | Не задано | Необязательное имя profile из локальной конфигурации Codex. |
-| `CODEX_SANDBOX` | Нет | `danger-full-access` | Выберите одно из значений: `read-only`, `workspace-write` или `danger-full-access`. |
+| `CODEX_SANDBOX` | Нет | `danger-full-access` | Варианты: `read-only`, `workspace-write`, `danger-full-access`. Значение по умолчанию даёт агенту широкие права и **не рекомендовано для недоверенного кода / корпоративного production** без изоляции файлов, сети и секретов. |
 | `CODEX_EXEC_ARGS_JSON` | Нет | `[]` | JSON-массив дополнительных аргументов, которые принимает `codex exec --help`, например `--add-dir /workspace/shared`. Не помещайте сюда launcher/global flags. |
 | `CODEX_SELF_REVIEW_ENABLED` | Нет | `false` | When `true`, run `codex exec review` after quality gates and before publishing a merge request. Blocking findings are sent through the Codex fix loop. |
 | `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS` | Нет | `1` | Positive integer. Maximum number of Codex fix attempts for blocking self-review findings before the task fails without publishing. |
@@ -101,17 +103,17 @@ Copy-Item .env.example .env
 | `TASK_TRACKER_CLEANUP_INTERVAL_SECONDS` | Нет | `3600` | Интервал cleanup job. |
 | `TASK_TRACKER_METRICS_ENABLED` | Нет | `true` | Включает internal tracker metrics: queue depth, claim latency, sync, proposals и cleanup. |
 | `TASK_TRACKER_REDACTION_ENABLED` | Нет | `true` | Включает redaction перед записью task events/comments/diagnostics и digest export. |
-| `PROJECT_MANAGER_ENABLED` | Нет | `false` | Включает Project Manager Agent. Требует `TASK_TRACKER_PROVIDER=internal`; PM-2 хранит goal records и manual PM API, но не создает executable tasks/proposals. |
-| `PROJECT_MANAGER_RUN_ONCE` | Нет | `false` | Зарезервировано для будущего PM entrypoint/scheduler. В PM-2 manual run доступен через `POST /api/project-manager/runs`. |
-| `PROJECT_MANAGER_INTERVAL_MINUTES` | Нет | `1440` | Зарезервировано для будущего scheduler. В PM-2 periodic PM analysis еще не подключен. |
+| `PROJECT_MANAGER_ENABLED` | Нет | `false` | Включает Project Manager для internal tracker: анализ проектов, цели, предложения и replanning. Действия ограничиваются policy/approval. |
+| `PROJECT_MANAGER_RUN_ONCE` | Нет | `false` | Режим разового выполнения PM, если поддерживается текущим runtime; manual API: `POST /api/project-manager/runs`. |
+| `PROJECT_MANAGER_INTERVAL_MINUTES` | Нет | `1440` | Период анализа Project Manager при включённом планировщике. |
 | `PROJECT_MANAGER_FOCUS_AREAS_JSON` | Нет | `[]` | JSON-массив focus areas для global PM prompt, например `["stability","test coverage"]`. |
-| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | Нет | `5` | Максимальное количество goal candidates, которое prompt просит вернуть за один run. Hard cap: `20`. PM-2 сохраняет non-duplicate candidates как `ProjectGoal`. |
-| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | Нет | `5` | Максимальное количество task proposal candidates на goal в prompt. Hard cap: `20`. PM-2 хранит их как nested drafts, но не вызывает proposal pipeline. |
-| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | Нет | `proposal_only` | Default autonomy level для будущих PM proposals. PM-2 task proposals еще не создает. |
-| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | Нет | `false` | Зарезервировано для будущего auto-approval low-risk proposals. PM-2 не делает автоматического task approval. |
+| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | Нет | `5` | Максимум предлагаемых целей за запуск (жёсткий предел: `20`). |
+| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | Нет | `5` | Максимум предложений задач на одну цель (жёсткий предел: `20`). |
+| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | Нет | `proposal_only` | Политика автономности по умолчанию: предложения требуют подтверждения и не становятся исполняемыми автоматически. |
+| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | Нет | `false` | Не включайте автоматическое согласование без проверки разрешённых типов задач и правил конкретного репозитория. |
 | `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | Нет | `["documentation","tests_only","dependency_update"]` | JSON-массив типов task proposals, разрешенных для PM prompt/policy. |
-| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | Нет | `false` | Зарезервировано для repository scanning. PM-2 анализирует internal task snapshot и не сканирует репозиторий для создания tasks. |
-| `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | Нет | `200` | Верхний предел файлов для будущего repository scan path. |
+| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | Нет | `false` | Включает сбор сигналов из репозитория, когда поддерживается текущим Project Manager runtime. |
+| `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | Нет | `200` | Лимит числа файлов, рассматриваемых при scan репозитория. |
 | `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | Нет | `true` | Требует human approval для PM goals. В PM-2 approval меняет только goal state и не создает task proposals. |
 | `MEMORY_ENABLED` | Нет | `false` | Включает repository memory Phase 5. Оставьте выключенным, пока `npm run memory:validate` не проходит для `MEMORY_DIR`. |
 | `MEMORY_DIR` | Нет | `/workspace/ai-developer-memory` | Локальное хранилище memory вне целевого репозитория. Воркер пишет per-repository файлы в `repositories/<sanitized RepositoryProfile.name>/`. |
@@ -224,15 +226,15 @@ typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visu
 
 `LINT_COMMAND` и `TEST_COMMAND` сохраняют значения по умолчанию. Остальные gates пропускаются, если соответствующая command environment variable не задана. Любой configured gate с ненулевым exit блокирует publish и передает gate command, stdout и stderr обратно в Codex fix prompt.
 
-When `CODEX_SELF_REVIEW_ENABLED=true`, the worker runs `codex exec review --base <BASE_BRANCH> --uncommitted` after quality gates pass and before publishing the merge request. Blocking self-review findings are fed into the same Codex fix prompt path, quality gates run again, and self-review reruns. If findings remain after `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS`, the task fails without creating or updating the merge request.
+При `CODEX_SELF_REVIEW_ENABLED=true` поддерживающий этот режим конвейер выполняет `codex exec review` после локальных проверок и до MR. Блокирующие замечания направляются в цикл исправлений. Эта самопроверка не заменяет независимое GitLab-ревью и не обязательно включается во всех runtime-режимах.
 
-### Review task finalization
+### Приёмка задачи после GitLab MR
 
-When a task is in logical `review`, the worker periodically checks the associated GitLab merge request. If GitLab reports the MR as merged, the worker treats that as code-delivery evidence, not human acceptance. In direct Yandex mode, the external issue remains in logical `review`; configure that logical status to the Yandex status `Тестируется`. In internal-tracker mode, the task moves to `human_testing`, which also syncs to external logical `review`. The internal task moves to `done` only after the external Yandex task is manually resolved.
+В статусе `review` воркер периодически проверяет GitLab MR. Слияние MR подтверждает доставку кода, **но не человеческую приёмку**. В direct Yandex задача остаётся в логическом `review` (обычно «Тестируется»), во внутреннем трекере переходит в `human_testing`. Финальное `done` требует ручного принятия.
 
-If the MR is closed without merge, the task moves to a human hold state instead of being marked complete. Open MRs keep the existing unresolved review discussion handling.
+Если MR закрыт без слияния, задача переходит в ожидание решения человека. Открытые MR продолжают обрабатываться циклом review feedback.
 
-The `GITLAB_TOKEN` must be able to read merged and closed merge requests, not only opened MRs. New `AI MR` comments include the MR IID; older comments are still resolved through the MR URL or source branch.
+Токен `GITLAB_TOKEN` должен читать не только открытые, но и merged/closed MR. В новых комментариях `AI MR` сохраняется MR IID; старые записи можно сопоставить по URL или source branch.
 
 Coverage parsing поддерживает такой Istanbul/Vitest-style summary:
 
@@ -263,7 +265,7 @@ WORKER_RUN_ONCE=true
 
 Этот режим предназначен для intake очереди. Он не заменяет `TASK_MODE=analyze_only`: `analyze_only` применяется уже внутри dev-flow, а `TASK_INTAKE_REVIEW_ENABLED` проверяет задачи до начала работы. Повторный комментарий не создается, если учитываемые входные данные задачи не изменились после последнего `AI TASK REVIEW:`: заголовок, описание, очередь, теги, приоритет, дедлайн, компоненты и человеческие комментарии.
 
-## Phase 4: маршрутизация задач
+## Маршрутизация задач
 
 Перед реализацией Codex теперь должен вернуть одну структурированную строку:
 
@@ -279,13 +281,13 @@ AI_ANALYSIS: {"confidence":82,"taskType":"frontend_ui_fix","recommendedMode":"im
 
 Dependency filtering выполняется до получения leases. Воркер читает issue fields `blockedBy` и Tracker links, когда они доступны; blockers должны иметь логический статус `done`, если `DEPENDENCY_UNKNOWN_STATUS_POLICY` не ослаблена.
 
-## Phase 5: MVP memory
+## Локальная память репозиториев
 
 Repository memory по умолчанию выключена. Когда `MEMORY_ENABLED=true`, analysis и implementation prompts получают компактную секцию `Repository context`, собранную из approved `prompt-rules.json`, manual `knowledge.json` и similar `failures.jsonl` entries. Fix, review-fix, decomposition, bootstrap и review-learning promotion намеренно не входят в MVP path.
 
-Перед включением memory в production запустите `npm run memory:validate`. Lifecycle, schema examples, approval workflow и cleanup procedure описаны в [docs/MEMORY_LIFECYCLE.md](/C:/Users/gabba/projects/developer/docs/MEMORY_LIFECYCLE.md).
+Перед включением memory в production запустите `npm run memory:validate`. Lifecycle, schema examples, approval workflow и cleanup procedure описаны в [docs/MEMORY_LIFECYCLE.md](MEMORY_LIFECYCLE.md).
 
-## Phase 6: MVP observability
+## Наблюдаемость и метрики
 
 Observability по умолчанию выключена. Когда `OBSERVABILITY_ENABLED=true`, воркер запускает один HTTP-сервер для `/healthz`, `/readyz`, `/metrics` и optional alerts. Сервер стартует до startup checks, а readiness становится `ok` только после успешных проверок repository и Codex auth.
 
@@ -297,9 +299,9 @@ METRICS_ENABLED=true
 ALERTS_ENABLED=false
 ```
 
-Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/OBSERVABILITY_RUNBOOK.md).
+Полные endpoint contracts, Prometheus scrape examples, Docker/Compose snippets и alert setup описаны в [docs/OBSERVABILITY_RUNBOOK.md](OBSERVABILITY_RUNBOOK.md).
 
-## Phase 8D: Angular internal task UI
+## Angular UI для внутреннего трекера
 
 При `TASK_TRACKER_PROVIDER=internal` можно включить human UI/API. Angular
 console является primary human UI; старый embedded HTML task UI удален.
@@ -320,14 +322,14 @@ backend routes. Если `TASK_TRACKER_UI_ENABLED=true`, но
 `TASK_TRACKER_UI_STATIC_DIR` не задан, `/tasks` возвращает явный `503` вместо
 fallback UI, а JSON API routes продолжают работать.
 
-Angular dev server proxies `/api` к Node.js server:
+Angular dev server проксирует `/api` в Node.js backend:
 
 ```bash
-npm install --prefix web
+npm --prefix web ci
 npm run web:dev
 ```
 
-Production bundle build and checks:
+Проверки и сборка production bundle:
 
 ```bash
 npm run web:typecheck
@@ -336,20 +338,13 @@ npm run web:build
 npm run web:e2e
 ```
 
-Docker builds the Angular bundle into the image and sets
-`TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`.
-Self-hosted deployments may still mount a prebuilt bundle at that path or
-override the variable.
+Docker включает Angular bundle в образ и задаёт `TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`. Можно подключить заранее собранный bundle и переопределить путь.
 
-Mutations require backend authorization. Browser deployments should use
-trusted proxy headers or localhost development mode. Bearer mode is intended
-for service clients or a reverse proxy that injects `Authorization`; the
-Angular app does not store bearer tokens in browser storage.
+Все операции записи требуют авторизации backend. Для браузера используйте localhost development mode или доверенный reverse proxy. Bearer-токены предназначены для сервисных клиентов либо подставляются самим proxy; Angular не хранит их в браузере.
 
-## Phase 7H: internal tracker hardening
+## Защита внутреннего PostgreSQL-трекера
 
-Production internal mode requires PostgreSQL, applied migrations, and passing
-preflight:
+Для production internal tracker необходимы PostgreSQL, применённые миграции и успешный preflight:
 
 ```bash
 npm run tracker:migrate
@@ -358,124 +353,91 @@ npm run preflight
 
 `TASK_TRACKER_STORAGE=memory` остается только для unit tests и local smoke.
 Cleanup, retention, redaction, metrics, backup/restore и rollback описаны в
-[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
+[docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
 
-## Project Manager Agent
+## Агент Project Manager
 
-Project Manager Agent is disabled by default with `PROJECT_MANAGER_ENABLED=false`.
-When enabled, it requires `TASK_TRACKER_PROVIDER=internal`; the direct Yandex
-provider remains unsupported for PM runs.
+Project Manager по умолчанию выключен (`PROJECT_MANAGER_ENABLED=false`) и работает только с `TASK_TRACKER_PROVIDER=internal`. Он анализирует состояние задач и репозиториев, формирует цели, предложения задач и может пересматривать планы. Права на действия определяются политикой автономности; `proposal_only` не означает автоматического исполнения задачи без подтверждения.
 
-PM-2 reads internal tracker state, builds a project signal snapshot, asks Codex
-for a single `PROJECT_ANALYSIS:` response, validates that response, stores the
-analysis/run records, and materializes non-duplicate goal candidates as
-`ProjectGoal` records. Goals can be read, approved, or rejected through the
-human API.
+Не используйте старые PM-2 описания как описание всех возможностей: подсистема развивалась по нескольким этапам. Актуальные domain boundaries описаны в [архитектуре](ARCHITECTURE.md), детальный исходный план в [roadmap](PROJECT_MANAGER_SUBSYSTEM_ROADMAP.md) имеет исторический характер.
 
-PM-2 does not create task proposals, executable tasks, branches, commits, merge
-requests, or tracker comments. Goal approval only changes goal state; PM-3 owns
-goal-to-task proposal generation.
-
-| Variable | Default | Notes |
+| Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
-| `PROJECT_MANAGER_ENABLED` | `false` | Enables the Project Manager Agent. Must be used with `TASK_TRACKER_PROVIDER=internal`. |
-| `PROJECT_MANAGER_RUN_ONCE` | `false` | Reserved for a future PM entrypoint/scheduler. In PM-2, manual runs are exposed through `POST /api/project-manager/runs`. |
-| `PROJECT_MANAGER_INTERVAL_MINUTES` | `1440` | Reserved for a future scheduler; periodic PM analysis is not wired in PM-2. |
-| `PROJECT_MANAGER_FOCUS_AREAS_JSON` | `[]` | JSON array of global PM prompt focus areas, for example `["stability","test coverage"]`. |
-| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | `5` | Maximum goal candidates requested from Codex per run. Hard cap: `20`; PM-2 stores non-duplicate candidates as `ProjectGoal`. |
-| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | `5` | Maximum task proposal candidates requested per goal. Hard cap: `20`; PM-2 stores them as nested drafts, not task proposals. |
-| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | `proposal_only` | Default future autonomy level for PM-created task proposals. |
-| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | `false` | Reserved for future low-risk task proposal approval; PM-2 does not auto-create or auto-approve tasks. |
-| `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | `["documentation","tests_only","dependency_update"]` | JSON array of task types allowed by PM prompt/policy. |
-| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | `false` | Reserved for future repository scanning; PM-2 analyzes internal task snapshots. |
-| `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | `200` | Maximum files for the future repository scan path. |
-| `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | `true` | Keeps PM goals behind human approval. In PM-2, approval only changes goal state. |
+| `PROJECT_MANAGER_ENABLED` | `false` | Включение Project Manager; нужен internal tracker |
+| `PROJECT_MANAGER_RUN_ONCE` | `false` | Разовый запуск, если используется соответствующий runtime |
+| `PROJECT_MANAGER_INTERVAL_MINUTES` | `1440` | Интервал периодического анализа |
+| `PROJECT_MANAGER_FOCUS_AREAS_JSON` | `[]` | Приоритетные темы анализа, например `["stability","test coverage"]` |
+| `PROJECT_MANAGER_MAX_GOALS_PER_RUN` | `5` | Лимит целей за запуск (до `20`) |
+| `PROJECT_MANAGER_MAX_TASK_PROPOSALS_PER_GOAL` | `5` | Лимит предложений задач на цель (до `20`) |
+| `PROJECT_MANAGER_DEFAULT_AUTONOMY_LEVEL` | `proposal_only` | Политика предложения и согласования задач |
+| `PROJECT_MANAGER_AUTO_APPROVE_LOW_RISK` | `false` | Опциональное согласование ограниченных low-risk предложений |
+| `PROJECT_MANAGER_ALLOWED_TASK_TYPES_JSON` | `["documentation","tests_only","dependency_update"]` | Разрешённые типы задач |
+| `PROJECT_MANAGER_REPOSITORY_SCAN_ENABLED` | `false` | Сканирование исходников для анализа |
+| `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | `200` | Ограничение количества файлов |
+| `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | `true` | Ручное подтверждение целей |
 
-## Telegram Assistant
+## Telegram Assistant: настройки и доступ
 
-Telegram Assistant is disabled by default. When enabled, it starts a Bot API
-poller or webhook route, stores redacted conversation references, and talks to
-the internal task tracker through `TaskTrackerClient`.
+Telegram Assistant выключен по умолчанию. При включении он обрабатывает сообщения через polling или webhook, сохраняет ссылки на разговоры с redaction и обращается к задачам через внутренний `TaskTrackerClient`. Токен `TELEGRAM_ASSISTANT_BOT_TOKEN` не следует путать с `TELEGRAM_BOT_TOKEN` для alerts; конфигурация `telegramAssistant.*` в fleet может быть переопределена env-переменными.
 
-Use `TELEGRAM_ASSISTANT_BOT_TOKEN` for the assistant bot token. This is separate
-from alert-channel `TELEGRAM_BOT_TOKEN`; if alerts and the assistant use the same
-Telegram bot, operators may set both env vars to the same token value, but
-routing and config ownership remain separate.
+Доверенные пользователи личных чатов могут создавать исполняемые low/medium-risk задачи после подтверждения. High-risk и Business/Digital Twin заявки требуют согласования владельца. Для каждой такой задачи должны быть известны `repositoryName`, `repoPathKey`, `baseBranch` и `queue`; затем она переводится в `ready`. Подробнее — [Telegram intake](TELEGRAM_TASK_INTAKE.md).
 
-All env values override the same fields in fleet config under
-`telegramAssistant.*`.
+Digital Twin (`TELEGRAM_DIGITAL_TWIN_*`) хранит длительные Codex-сессии по контактам и может отвечать от имени владельца. Без заранее настроенного согласия владельца, прав `can_reply`, политики хранения и шифрования audit такой режим включать нельзя.
 
-Digital Twin settings under `TELEGRAM_DIGITAL_TWIN_*` are part of the Telegram
-Assistant namespace, but they should be treated as a separate product direction.
-They model owner-approved Telegram Business/Secretary sessions with durable
-Codex thread continuity, per-contact delivery/audit state, persona versioning
-and explicit retention controls. Keep the mode disabled until owner consent,
-allowed chats/users, audit retention and encrypted full-text policy are decided
-for the deployment.
-
-Telegram task creation can now create execution-ready internal tasks for
-trusted private users and owner-approved Business/TWIN proposals. The assistant
-resolves repository execution fields, creates the task through the internal
-`TaskTrackerClient`, and marks approved executable tasks `ready` for the normal
-worker queue. High-risk private tasks and Business/TWIN task requests require
-owner/admin approval; see
-[docs/TELEGRAM_TASK_INTAKE.md](TELEGRAM_TASK_INTAKE.md)
-before enabling this as an auto-execution intake channel.
-
-| Variable | Default | Notes |
+| Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
-| `TELEGRAM_ASSISTANT_ENABLED` | `false` | Enables Telegram Assistant configuration. When `true`, `TELEGRAM_ASSISTANT_BOT_TOKEN` is required. Production also requires non-empty chat, user, or role-specific allowlists. |
-| `TELEGRAM_ASSISTANT_BOT_TOKEN` | Not set | Bot token for Telegram Assistant only. Do not confuse it with alert sink `TELEGRAM_BOT_TOKEN`. |
-| `TELEGRAM_ASSISTANT_MODE` | `polling` | Assistant delivery mode: `polling` or `webhook`. |
-| `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Polling interval when mode is `polling`. Positive integer. |
-| `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used only for Telegram project Q&A. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
-| `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before task creation, ready transitions and Telegram-recorded AI question answers. |
-| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands in the base assistant. Counts against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
-| `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables executable task draft sessions, pending create-task actions and direct task writes. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. Set to `false` to block all Telegram task creation before draft or pending-action state is created. |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | Empty list | Comma-separated Telegram chat IDs allowed to use the assistant. |
-| `TELEGRAM_ALLOWED_USER_IDS` | Empty list | Comma-separated Telegram user IDs allowed to use the assistant. |
-| `TELEGRAM_DEVELOPER_USER_IDS` | Empty list | Comma-separated user IDs with developer role. |
-| `TELEGRAM_OPERATOR_USER_IDS` | Empty list | Comma-separated user IDs with operator role. |
-| `TELEGRAM_ADMIN_USER_IDS` | Empty list | Comma-separated user IDs with admin role. |
-| `TELEGRAM_GROUP_MODE` | `mentions_and_replies` | Group chat handling: `private_only`, `mentions_and_replies`, or `all_messages`. |
-| `TELEGRAM_DEFAULT_REPOSITORY` | Not set | Optional default repository name for assistant-created work. |
-| `TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT` | `20` | Per-user daily task creation limit. Positive integer. |
-| `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Per-user daily Codex QA limit. Positive integer. |
-| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for assistant-triggered Codex QA runs. Positive integer. |
-| `TELEGRAM_CODEX_MAX_CONTEXT_CHARS` | `12000` | Maximum context characters sent to Codex from assistant conversations. Positive integer. |
-| `TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT` | `20` | Maximum queued messages retained per chat. Positive integer. |
-| `TELEGRAM_CONVERSATION_RETENTION_DAYS` | `14` | Conversation retention window. Positive integer. |
-| `TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS` | `300` | Maximum age for inbound Telegram messages before they are acknowledged without automation. Use `0` to disable. |
-| `TELEGRAM_WEBHOOK_PATH` | Not set | Required when `TELEGRAM_ASSISTANT_MODE=webhook`. Webhook config is rejected in polling mode. |
-| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Not set | Required when `TELEGRAM_ASSISTANT_MODE=webhook`. Telegram sends it in `X-Telegram-Bot-Api-Secret-Token`; keep it separate from bot tokens. |
-| `TELEGRAM_MEDIA_ENABLED` | `false` | Enables assistant media attachment metadata handling. |
-| `TELEGRAM_MEDIA_MAX_BYTES` | `10485760` | Maximum accepted assistant media size. Positive integer. |
-| `TELEGRAM_MEDIA_ALLOWED_MIME_TYPES` | `image/png,image/jpeg,image/webp,text/plain` | Comma-separated allowed MIME types. |
-| `TELEGRAM_DIGITAL_TWIN_ENABLED` | `false` | Enables full-access per-contact digital twin sessions for Telegram Business/Secretary chats. |
-| `TELEGRAM_DIGITAL_TWIN_AUTO_REPLY_ENABLED` | `true` | When enabled, allowed business messages receive immediate automatic digital twin replies. |
-| `TELEGRAM_DIGITAL_TWIN_FULL_ACCESS` | `true` | Documents that the digital twin may use full configured project context after access gates pass. |
-| `TELEGRAM_DIGITAL_TWIN_SESSION_TTL_DAYS` | `0` | Forced session reset age in days. `0` means no forced reset; Codex compaction is allowed to preserve long-running threads. |
-| `TELEGRAM_DIGITAL_TWIN_SUMMARY_REFRESH_MESSAGE_INTERVAL` | `20` | Number of messages after which the session is marked for summary refresh. |
-| `TELEGRAM_DIGITAL_TWIN_MAX_RECENT_MESSAGES` | `20` | Recent audit messages included when bootstrapping or recovering a digital twin thread. |
-| `TELEGRAM_DIGITAL_TWIN_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for a digital twin Codex turn. |
-| `TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` | `30` | Retention for redacted digital twin audit text. |
-| `TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS` | `0` | Retention for encrypted full text. `0` disables full text persistence. |
-| `TELEGRAM_DIGITAL_TWIN_AUDIT_ENCRYPTION_KEY_ENV` | Empty | Name of an environment variable containing a base64 32-byte AES key for encrypted full audit text. |
-| `TELEGRAM_DIGITAL_TWIN_PERSONA_PROFILE_VERSION` | `default` | Version marker for the owner persona/style prompt. Changing it starts a fresh thread with recovery context. |
-| `TELEGRAM_DIGITAL_TWIN_OWNER_STYLE_PROMPT` | Empty | Owner style instructions included in new digital twin sessions. |
-| `TELEGRAM_PROFILE_AUTOMATION_ENABLED` | `false` | Enables profile automation settings separately from the base assistant. |
-| `TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED` | `false` | Enables profile automation auto-replies when owner consent and Telegram business `can_reply` rights allow it. |
-| `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL` | `true` | Requires owner approval for profile automation actions. |
-| `TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED` | `false` | Enables project Q&A in profile automation. Keep owner approval enabled unless production consent is documented. |
-| `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS` | Empty list | Comma-separated owner user IDs allowed for profile automation. |
-| `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS` | Empty list | Comma-separated chat IDs allowed for profile automation. |
-| `TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS` | Inherits `TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS` | Maximum age for business/profile messages before they are saved as processed without auto-replying. Use `0` to disable. |
+| `TELEGRAM_ASSISTANT_ENABLED` | `false` | Включает Telegram Assistant. При включении необходим токен и ограниченные allowlists. |
+| `TELEGRAM_ASSISTANT_BOT_TOKEN` | Не задано | Токен Telegram Assistant; отдельно от alert-токена `TELEGRAM_BOT_TOKEN`. |
+| `TELEGRAM_ASSISTANT_MODE` | `polling` | Режим доставки: `polling` или `webhook`. |
+| `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Период опроса Bot API в секундах. |
+| `TELEGRAM_CODEX_MODEL` | Не задано | Модель Codex только для Telegram Q&A; если не задана, используется `CODEX_MODEL`. |
+| `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Требует подтверждения изменений и ответов на вопросы задач. |
+| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Разрешает запросы по проекту через Codex; учитывает дневной лимит. |
+| `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Разрешает создание черновиков и задач через internal tracker; нужны роли записи. |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | Пустой список | Разрешённые ID чатов через запятую. |
+| `TELEGRAM_ALLOWED_USER_IDS` | Пустой список | Разрешённые ID пользователей через запятую. |
+| `TELEGRAM_DEVELOPER_USER_IDS` | Пустой список | ID пользователей с ролью developer. |
+| `TELEGRAM_OPERATOR_USER_IDS` | Пустой список | ID пользователей с ролью operator. |
+| `TELEGRAM_ADMIN_USER_IDS` | Пустой список | ID пользователей с ролью admin. |
+| `TELEGRAM_GROUP_MODE` | `mentions_and_replies` | Обработка групп: `private_only`, `mentions_and_replies` или `all_messages`. |
+| `TELEGRAM_DEFAULT_REPOSITORY` | Не задано | Репозиторий по умолчанию при создании задач. |
+| `TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT` | `20` | Дневной лимит новых задач на пользователя. |
+| `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Дневной лимит вызовов Codex Q&A на пользователя. |
+| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Тайм-аут вызова Codex из Telegram, секунды. |
+| `TELEGRAM_CODEX_MAX_CONTEXT_CHARS` | `12000` | Лимит символов контекста для Codex. |
+| `TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT` | `20` | Максимум ожидающих сообщений на чат. |
+| `TELEGRAM_CONVERSATION_RETENTION_DAYS` | `14` | Срок хранения истории Telegram, дни. |
+| `TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS` | `300` | Максимальный возраст входящего сообщения; `0` отключает фильтр. |
+| `TELEGRAM_WEBHOOK_PATH` | Не задано | Обязательный путь при `webhook`; в polling не используется. |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Не задано | Секрет webhook, передаётся в заголовке `X-Telegram-Bot-Api-Secret-Token`. |
+| `TELEGRAM_MEDIA_ENABLED` | `false` | Разрешает обработку метаданных вложений. |
+| `TELEGRAM_MEDIA_MAX_BYTES` | `10485760` | Максимальный размер вложения, байты. |
+| `TELEGRAM_MEDIA_ALLOWED_MIME_TYPES` | `image/png,image/jpeg,image/webp,text/plain` | Разрешённые MIME-типы через запятую. |
+| `TELEGRAM_DIGITAL_TWIN_ENABLED` | `false` | Включает долговременные сессии Digital Twin для Business/Secretary. |
+| `TELEGRAM_DIGITAL_TWIN_AUTO_REPLY_ENABLED` | `true` | Автоматические ответы разрешённым Business-контактам после проверок. |
+| `TELEGRAM_DIGITAL_TWIN_FULL_ACCESS` | `true` | Разрешает полный допустимый проектный контекст после проверки доступа. |
+| `TELEGRAM_DIGITAL_TWIN_SESSION_TTL_DAYS` | `0` | Возраст принудительного сброса сессии; `0` — без ограничения. |
+| `TELEGRAM_DIGITAL_TWIN_SUMMARY_REFRESH_MESSAGE_INTERVAL` | `20` | Интервал обновления краткого содержания сессии. |
+| `TELEGRAM_DIGITAL_TWIN_MAX_RECENT_MESSAGES` | `20` | Число последних сообщений для восстановления контекста. |
+| `TELEGRAM_DIGITAL_TWIN_CODEX_TIMEOUT_SECONDS` | `120` | Тайм-аут ответа Codex в Digital Twin. |
+| `TELEGRAM_DIGITAL_TWIN_REDACTED_RETENTION_DAYS` | `30` | Срок хранения обезличенной audit-истории, дни. |
+| `TELEGRAM_DIGITAL_TWIN_FULL_TEXT_RETENTION_DAYS` | `0` | Срок хранения зашифрованного текста; `0` — выключено. |
+| `TELEGRAM_DIGITAL_TWIN_AUDIT_ENCRYPTION_KEY_ENV` | Пусто | Имя env-переменной с 32-байтовым AES-ключом в base64. |
+| `TELEGRAM_DIGITAL_TWIN_PERSONA_PROFILE_VERSION` | `default` | Версия persona; при смене создаётся новая сессия с контекстом. |
+| `TELEGRAM_DIGITAL_TWIN_OWNER_STYLE_PROMPT` | Пусто | Правила стиля ответов от имени владельца. |
+| `TELEGRAM_PROFILE_AUTOMATION_ENABLED` | `false` | Включает настройки Business/Profile автоматизации. |
+| `TELEGRAM_PROFILE_AUTOMATION_AUTO_REPLY_ENABLED` | `false` | Разрешает автоматический ответ только с согласия владельца и `can_reply`. |
+| `TELEGRAM_PROFILE_AUTOMATION_REQUIRE_OWNER_APPROVAL` | `true` | Требует подтверждения владельца для действий профиля. |
+| `TELEGRAM_PROFILE_AUTOMATION_PROJECT_QA_ENABLED` | `false` | Разрешает Q&A из Business/Profile при действующих правах. |
+| `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_OWNER_IDS` | Пустой список | Допустимые ID владельцев. |
+| `TELEGRAM_PROFILE_AUTOMATION_ALLOWED_CHAT_IDS` | Пустой список | Допустимые ID Business-чатов. |
+| `TELEGRAM_PROFILE_AUTOMATION_MAX_MESSAGE_AGE_SECONDS` | Наследует `TELEGRAM_MAX_INBOUND_MESSAGE_AGE_SECONDS` | Предельный возраст Business-сообщения перед обработкой; `0` — без фильтра. |
 
-## Режим fleet
+## Работа с несколькими репозиториями (fleet)
 
 Задайте `WORKER_CONFIG_FILE` с YAML- или JSON-файлом, когда один процесс воркера должен управлять несколькими репозиториями. Config file содержит repository-specific values, такие как `repoPath`, `gitlabProjectId`, queues, tags, base branch и quality gate commands. Global secrets по-прежнему можно ссылать через переменные окружения с полями вроде `tracker.tokenEnv`, `tracker.orgIdEnv`, `gitlab.urlEnv` и `gitlab.tokenEnv`.
 
-Fleet mode использует комментарии Tracker `AI LEASE:` для task и repository leases. Task lease предотвращает duplicate processing одной задачи, а repository lease сериализует mutations одного и того же checkout path. Полные examples и caveats находятся в [docs/FLEET_OPERATIONAL_RUNBOOK.md](/C:/Users/gabba/projects/developer/docs/FLEET_OPERATIONAL_RUNBOOK.md).
+Fleet mode использует комментарии Tracker `AI LEASE:` для task и repository leases. Task lease предотвращает duplicate processing одной задачи, а repository lease сериализует mutations одного и того же checkout path. Полные examples и caveats находятся в [docs/FLEET_OPERATIONAL_RUNBOOK.md](FLEET_OPERATIONAL_RUNBOOK.md).
 
 ## Формат `TRACKER_STATUS_MAP_FILE`
 
@@ -526,12 +488,12 @@ Fleet mode использует комментарии Tracker `AI LEASE:` дл�
 
 | Переменная | Где используется | Назначение |
 | --- | --- | --- |
-| `HOST_CODEX_HOME` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host Codex auth directory, смонтированная read-only в `/host-codex`, чтобы Compose мог автоматически bootstrap `/codex-home` при первом старте. |
-| `TARGET_REPO_PATH` | [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml) | Host path, смонтированный в `/workspace/project` при запуске через Docker Compose. |
-| `CODEX_API_KEY` | [src/integrations/codex/auth.ts](/C:/Users/gabba/projects/developer/src/integrations/codex/auth.ts) | Если задан, воркер пропускает `codex login status` и предполагает прямую Codex auth по API key. Это быстрый startup shortcut: он проверяет наличие переменной, но не доказывает валидность ключа. |
+| `HOST_CODEX_HOME` | [compose.yaml](../compose.yaml) | Host Codex auth directory, смонтированная read-only в `/host-codex`, чтобы Compose мог автоматически bootstrap `/codex-home` при первом старте. |
+| `TARGET_REPO_PATH` | [compose.yaml](../compose.yaml) | Host path, смонтированный в `/workspace/project` при запуске через Docker Compose. |
+| `CODEX_API_KEY` | [src/integrations/codex/auth.ts](../src/integrations/codex/auth.ts) | Если задан, воркер пропускает `codex login status` и предполагает прямую Codex auth по API key. Это быстрый startup shortcut: он проверяет наличие переменной, но не доказывает валидность ключа. |
 | `OPENAI_API_KEY` | Operational setup | Сам по себе не пропускает worker auth preflight. Чтобы использовать его с Codex auth storage, перед запуском воркера выполните `printenv OPENAI_API_KEY \| codex login --with-api-key`. |
-| `SOURCE_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Source directory, которую копирует bootstrap script. По умолчанию текущий пользовательский `~/.codex`. |
-| `TARGET_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](/C:/Users/gabba/projects/developer/scripts/bootstrap-codex-home.mjs) | Destination directory, в которую пишет bootstrap script. По умолчанию `.codex-home` в текущем репозитории. |
+| `SOURCE_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](../scripts/bootstrap-codex-home.mjs) | Source directory, которую копирует bootstrap script. По умолчанию текущий пользовательский `~/.codex`. |
+| `TARGET_CODEX_HOME` | [scripts/bootstrap-codex-home.mjs](../scripts/bootstrap-codex-home.mjs) | Destination directory, в которую пишет bootstrap script. По умолчанию `.codex-home` в текущем репозитории. |
 
 ## Значения GitLab: как быстрее их получить
 
@@ -606,7 +568,7 @@ curl --header "PRIVATE-TOKEN: <token>" \
 
 Если этот request успешен, такой же token shape должен работать для read path воркера. Также стоит проверить, что он может создать merge request в вашем окружении, прежде чем полагаться на него в production.
 
-## Git commit identity внутри Docker
+## Автор Git-коммитов внутри Docker
 
 Воркер может fetch и push с repository credentials, но позже все равно упасть на `git commit`, если git author identity отсутствует в смонтированном checkout. Обычно это выглядит как `Author identity unknown` и fallback host вроде `root@container-id.(none)`.
 
@@ -628,7 +590,7 @@ GIT_AUTHOR_EMAIL=ai-worker@example.com
 
 Теперь startup воркера проверяет `git var GIT_AUTHOR_IDENT`, поэтому такая misconfiguration должна fail fast до начала обработки задач.
 
-## Git hooks на commit и push воркера
+## Git hooks при commit и push
 
 Воркер уже проверяет состояние репозитория через `TEST_COMMAND` и `LINT_COMMAND`. Чтобы избежать failures из-за developer-local hook stacks внутри смонтированных репозиториев, commit и push воркера по умолчанию используют `--no-verify`.
 
@@ -646,7 +608,7 @@ GIT_COMMIT_NO_VERIFY=false
 
 Допустимые значения: `true`, `false`, `1`, `0`, `yes` и `no`.
 
-## Рекомендуемый validation flow
+## Рекомендуемый порядок проверок
 
 1. Заполните `.env`.
 2. Запустите `codex login status` на host, задайте `CODEX_API_KEY` или сохраните `OPENAI_API_KEY` через `printenv OPENAI_API_KEY | codex login --with-api-key`.

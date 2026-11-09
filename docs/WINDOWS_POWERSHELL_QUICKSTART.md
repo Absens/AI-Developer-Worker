@@ -1,141 +1,57 @@
-# Windows PowerShell Quickstart
+# Быстрый запуск в Windows PowerShell
 
-This document is the Windows command companion to [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md). Use the local Docker runbook for detailed behavior, prerequisites, and failure analysis.
+Это практическое дополнение к [Docker runbook](LOCAL_DOCKER_RUN.md). Команды выполняются из корня репозитория `AI-Developer-Worker`, где лежат `Dockerfile` и `compose.yaml`.
 
-## Before you start
+## 1. Предварительная проверка
 
-Make sure the prerequisites from [docs/LOCAL_DOCKER_RUN.md](/C:/Users/gabba/projects/developer/docs/LOCAL_DOCKER_RUN.md) are satisfied. Most importantly: the worker must have its own authenticated `CODEX_HOME`, `.env` must be valid, and the mounted target repo must be a working git clone with push access.
-
-## Copy-paste steps
-
-### 1. Check Codex login on the host
+Проверьте Docker Desktop и Codex на хосте:
 
 ```powershell
+docker version
 codex login status
-```
+``
 
-Expected result: output contains `Logged in`.
+Результат `Logged in` на хосте **не заменяет** отдельную авторизацию контейнера. Репозиторий, с которым будет работать агент, должен быть реальным git clone с fetch/push доступом.
 
-### 2. Go to the worker project
-
-```powershell
-Set-Location C:\Users\gabba\projects\developer
-```
-
-### 3. Build the image
+## 2. Подготовьте рабочую директорию и образ
 
 ```powershell
+Set-Location C:\work\AI-Developer-Worker
 docker build -t ai-developer-worker .
-```
+``
 
-This build also runs the Angular console build and includes the static bundle
-inside the image at `/workspace/web/dist/task-tracker-console/browser`.
+Замените путь на фактический. Docker-образ собирает backend и Angular-консоль.
 
-### 4. Create a dedicated Docker volume for Codex auth
+## 3. Отдельный Codex auth volume
 
 ```powershell
 docker volume create codex-home
-```
+docker run --rm -it --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/codex-home" ai-developer-worker login --device-auth
+docker run --rm --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/codex-home" ai-developer-worker login status
+``
 
-Log in directly inside that volume. You can use the same OpenAI account as your
-host Codex, but the worker needs its own auth state:
+Авторизация должна происходить в **томе воркера**, а не через совместное использование хостового `auth.json`.
 
-```powershell
-docker run --rm -it `
-  --entrypoint codex `
-  -e CODEX_HOME=/codex-home `
-  -v "codex-home:/codex-home" `
-  ai-developer-worker `
-  login --device-auth
-```
-
-### 5. Create `.env`
+## 4. Настройте окружение
 
 ```powershell
 Copy-Item .env.example .env
 notepad .env
-```
+``
 
-Set these fields carefully:
+Для режима Yandex проверьте `TRACKER_TOKEN`, `TRACKER_ORG_ID`, `TRACKER_STATUS_MAP_FILE`, `TRACKER_DEFAULT_QUEUE`. Для GitLab — `GITLAB_URL`, `GITLAB_TOKEN`, `GITLAB_PROJECT_ID`. Также задайте `WORKER_ID`, `TEST_COMMAND`, `LINT_COMMAND` и `CODEX_CLI_COMMAND`.
 
-- `HOST_CODEX_HOME`
-- `TARGET_REPO_PATH`
-- `GITLAB_URL`
-- `GITLAB_TOKEN`
-- `GITLAB_PROJECT_ID`
-- `GIT_REPOSITORY_TOKEN`
-- `GIT_REPOSITORY_URL`
-
-Minimum fields to verify:
-
-- `TRACKER_TOKEN`
-- `TRACKER_ORG_ID`
-- `TRACKER_ORG_HEADER`
-- `TRACKER_DEFAULT_QUEUE`
-- `TRACKER_STATUS_MAP_FILE`
-- `GITLAB_URL`
-- `GITLAB_TOKEN`
-- `GITLAB_PROJECT_ID`
-- `CODEX_CLI_COMMAND`
-- `CODEX_CLI_ARGS_JSON`
-- `CODEX_SANDBOX` (recommended: `danger-full-access`)
-- `TEST_COMMAND`
-- `LINT_COMMAND`
-- `GIT_COMMIT_NO_VERIFY`
-- `WORKER_ID`
-
-For `TRACKER_STATUS_MAP_FILE`, use a path to a JSON file. In that file, `statuses` should match the real Tracker states. `transition` is only a hint used to find an allowed workflow transition.
-
-With Compose, the worker can copy auth automatically from `HOST_CODEX_HOME`
-into the named Docker volume on the first start if `/codex-home/auth.json` is
-missing. For long-running workers, prefer logging in directly inside the worker
-volume instead. A copied host `auth.json` can become stale when host Codex is
-also running and may fail with `refresh_token_reused`.
-
-For internal tracker production mode, set:
-
-```env
-TASK_TRACKER_PROVIDER=internal
-TASK_TRACKER_STORAGE=postgres
-TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
-TASK_TRACKER_UI_ENABLED=true
-TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser
-TASK_TRACKER_HUMAN_AUTH_MODE=trusted_proxy
-```
-
-Apply migrations and run preflight before continuous processing:
+Путь к целевому репозиторию:
 
 ```powershell
-docker compose run --rm worker npm run tracker:migrate
-docker compose run --rm worker npm run preflight
-```
+$TargetRepo = "C:\work\my-target-repository"
+``
 
-With the UI enabled, open `http://localhost:9464/tasks`. The old embedded task
-UI is not served anymore; missing Angular assets produce an explicit error.
-For production browser access, use trusted proxy headers. Do not put bearer
-tokens into browser storage.
+Если его remote использует SSH и воркер должен переключиться на HTTPS, задайте в `.env` `GIT_REPOSITORY_URL`, `GIT_REPOSITORY_USERNAME=oauth2` и `GIT_REPOSITORY_TOKEN`. Не добавляйте реальный token в README, скриншоты или историю команд.
 
-### 6. Set the path to the target project
+**Предупреждение:** значение `CODEX_SANDBOX=danger-full-access` в шаблоне разрешает очень широкий набор действий. Для корпоративной среды необходимы отдельные права, изоляция и ограничения секретов.
 
-Replace this path with the repository the worker should modify:
-
-```powershell
-$TargetRepo = "C:\ABSOLUTE\PATH\TO\YOUR\PROJECT"
-```
-
-This must be a real git clone with working fetch/pull/push credentials.
-
-For GitLab repositories that currently use an SSH remote, set:
-
-```env
-GIT_REPOSITORY_TOKEN=your-project-access-token
-GIT_REPOSITORY_USERNAME=oauth2
-GIT_REPOSITORY_URL=https://repo.tools-indigolab.ru/platform/client-application.git
-```
-
-The worker will rewrite `origin` from SSH to HTTPS on startup and use that token for `fetch`, `pull`, and `push`.
-
-### 8. First run: one-shot
+## 5. Первый запуск одним циклом
 
 ```powershell
 docker run --rm `
@@ -143,82 +59,53 @@ docker run --rm `
   -e WORKER_RUN_ONCE=true `
   -e CODEX_HOME=/codex-home `
   -v "codex-home:/codex-home" `
-  -v "${TargetRepo}:/workspace/project" `
+  -v "$($TargetRepo):/workspace/project" `
   ai-developer-worker
-```
+``
 
-Use this first run to confirm:
+В этом примере символ переноса строки PowerShell — обратная кавычка, а не `\`. Проверяйте, что после символа переноса нет пробелов.
 
-- Codex auth is visible in the container
-- Tracker config is valid
-- GitLab config is valid
-- the mounted project path is correct
-- git credentials inside that mounted repo work
-- `CODEX_CLI_COMMAND`, `TEST_COMMAND`, and `LINT_COMMAND` are correct
-- `GIT_COMMIT_NO_VERIFY=false` only if you explicitly want repository hooks to run in the container
+Убедитесь, что контейнер может читать checkout, выполнить `codex login status` и работать с GitLab/Tracker. Только после успешного one-shot переходите на непрерывный запуск.
 
-### 9. Continuous run
+## 6. Постоянный запуск
 
 ```powershell
 docker run --rm `
   --env-file .env `
+  -e WORKER_RUN_ONCE=false `
   -e CODEX_HOME=/codex-home `
   -v "codex-home:/codex-home" `
-  -v "${TargetRepo}:/workspace/project" `
+  -v "$($TargetRepo):/workspace/project" `
   ai-developer-worker
-```
+``
 
-## Compose option
+## Альтернатива: Docker Compose
 
-You can also use [compose.yaml](/C:/Users/gabba/projects/developer/compose.yaml). Set both `HOST_CODEX_HOME` and `TARGET_REPO_PATH` in `.env` first, then run:
-
-Use slash-style path syntax there, for example:
+В `.env` обязательно заполните:
 
 ```env
-HOST_CODEX_HOME=C:/Users/your-user/.codex
-TARGET_REPO_PATH=C:/work/my-project
-```
+HOST_CODEX_HOME=C:/Users/YOUR_USER/.codex
+TARGET_REPO_PATH=C:/work/my-target-repository
+REPO_PATH=/workspace/project
+``
 
 ```powershell
-docker compose up --build
-```
-
-For a one-shot run, override `WORKER_RUN_ONCE=true` in `.env` before starting Compose.
-
-If the Compose volume is empty or stale, initialize it directly:
-
-```powershell
+docker compose build
 docker compose run --rm --entrypoint codex worker login --device-auth
 docker compose run --rm --entrypoint codex worker login status
-```
+docker compose up --build
+``
 
-For the `refresh_token_reused` recovery flow, see [docs/CODEX_AUTH_TROUBLESHOOTING.md](/C:/Users/gabba/projects/developer/docs/CODEX_AUTH_TROUBLESHOOTING.md).
+Для внутреннего PostgreSQL-трекера `compose.yaml` содержит `postgres` и `migrate`. Если включён `TASK_TRACKER_PROVIDER=internal`, убедитесь в доступности БД и корректной конфигурации UI/auth. При `OBSERVABILITY_ENABLED=true` и включённой консоли локальный интерфейс может быть доступен по `http://localhost:9464/tasks`.
 
-## Direct host auth mount
+## Что делать при ошибке
 
-For short local debugging you can mount the host `.codex` directly:
+- `Codex CLI is not authenticated` → проверить auth внутри выделенного тома.
+- `refresh_token_reused` → не использовать скопированное состояние параллельно с хостом; см. [инструкцию](CODEX_AUTH_TROUBLESHOOTING.md).
+- `git pull`/`git push` → проверить токен GitLab и HTTPS remote.
+- `npm test`/`lint` → проверить команду и зависимости в *целевом* репозитории.
+- `husky`/`lint-staged` → проверить `GIT_COMMIT_NO_VERIFY`, не выключать hooks вслепую.
+- `/tasks` возвращает ошибку → проверить observability, UI config, прокси и assets.
 
-```powershell
-docker run --rm `
-  --env-file .env `
-  -e WORKER_RUN_ONCE=true `
-  -e CODEX_HOME=/codex-home `
-  -v "${env:USERPROFILE}\.codex:/codex-home" `
-  -v "${TargetRepo}:/workspace/project" `
-  ai-developer-worker
-```
+Подробный перечень переменных — [ENV_CONFIGURATION.md](ENV_CONFIGURATION.md).
 
-This is less safe than the dedicated `codex-home` volume because the container writes into the same auth state as the host.
-
-## Most common first-run failures
-
-1. `Codex CLI is not authenticated`:
-   `CODEX_HOME` was not mounted or the copied auth state is missing/invalid.
-2. `git pull` or `git push` fails:
-   the mounted repo does not have working remote credentials.
-3. tests or lint fail immediately:
-   `TEST_COMMAND` or `LINT_COMMAND` do not match the target project.
-4. `git commit` or `git push` fails on `husky` / `lint-staged`:
-   keep `GIT_COMMIT_NO_VERIFY=true` unless those hooks are intentionally supported in the container.
-4. Tracker/GitLab HTTP errors:
-   `.env` contains wrong credentials or wrong URLs.
