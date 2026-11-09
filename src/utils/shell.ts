@@ -2,10 +2,12 @@ import { spawn } from "node:child_process";
 
 import type { ProcessResult } from "../models/types.js";
 import { TemporaryIntegrationError } from "./errors.js";
+import { buildExecutionEnvironment } from "./executionEnvironment.js";
 
 export interface ShellOptions {
   cwd: string;
   stdin?: string;
+  /** Complete trusted environment; never merged with process.env. Omit for the project profile. */
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   maxBufferBytes?: number;
@@ -50,7 +52,7 @@ const runProcess = async (options: InternalCommandOptions): Promise<ProcessResul
   new Promise((resolve, reject) => {
     const child = spawn(options.command, options.args ?? [], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: options.env ?? buildExecutionEnvironment("project"),
       shell: options.shell,
       stdio: "pipe",
     });
