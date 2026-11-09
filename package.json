@@ -17,6 +17,7 @@
     "tracker:migrate": "node --env-file=.env --import tsx scripts/internal-tracker-migrate.ts",
     "test": "vitest run",
     "test:smoke": "vitest run tests/worker.smoke.test.ts",
+    "test:postgres": "node --import tsx scripts/run-postgres-tests.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:codex-cli": "node scripts/verify-codex-cli-contract.mjs",
     "web:dev": "npm --prefix web run start",
