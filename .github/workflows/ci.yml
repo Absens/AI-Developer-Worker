@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Typecheck backend
+        run: npm run typecheck
+      - name: Unit and smoke tests
+        # npm test includes tests/worker.smoke.test.ts and Telegram smoke tests.
+        run: npm test
+      - name: Build backend
+        run: npm run build
+
+  web:
+    name: Angular
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - name: Install backend dependencies
+        # web/package.json depends on the root package through file:..
+        run: npm ci
+      - name: Install Angular dependencies
+        run: npm --prefix web ci
+      - name: Locate Chrome for Karma
+        run: |
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$chrome"
+          "$chrome" --version
+          printf 'CHROME_BIN=%s\n' "$chrome" >> "$GITHUB_ENV"
+      - name: Typecheck Angular
+        run: npm run web:typecheck
+      - name: Angular unit tests
+        run: npm run web:test
+      - name: Build Angular
+        run: npm run web:build
+
+  web_e2e:
+    name: Browser E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Install Angular dependencies
+        run: npm --prefix web ci
+      - name: Install Chromium and system dependencies
+        working-directory: web
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Build and test console against mock API
+        env:
+          PLAYWRIGHT_HTML_OPEN: never
+        run: npm --prefix web run e2e -- --reporter=list,html --forbid-only
+      - name: Upload browser diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  required:
+    name: CI required
+    if: ${{ always() }}
+    needs: [backend, web, web_e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every check to succeed
+        env:
+          CI_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module <<'NODE'
+          const required = ["backend", "web", "web_e2e"];
+          const results = JSON.parse(process.env.CI_JOB_RESULTS ?? "{}");
+          let failed = false;
+          for (const job of required) {
+            const result = results?.[job]?.result;
+            console.log(`${job}: ${result ?? "missing"}`);
+            if (result !== "success") failed = true;
+          }
+          if (failed) {
+            console.error("Every required job must finish with success.");
+            process.exit(1);
+          }
+          NODE
