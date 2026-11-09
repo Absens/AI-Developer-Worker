@@ -1,307 +1,353 @@
-# AI Developer Worker — система ИИ-разработки
+# AI Developer Worker
 
-Node.js/TypeScript воркер для AI-разработки: он забирает задачи из Yandex Tracker или внутреннего task tracker, запускает Codex CLI в целевом репозитории, валидирует результат и создает или переиспользует merge request в GitLab.
+**Self-hosted платформа для выполнения задач разработки с помощью ИИ.** Система объединяет AI-исполнителя на базе Codex CLI, собственный трекер задач, GitLab workflow, управление целями проекта, Telegram-интерфейс, веб-консоль и инструменты эксплуатации.
 
-Проект запускается локально или в Docker. Основной сценарий: задача → анализ → изменения в checkout → quality gates → GitLab MR → обновление статуса и истории. **Готовый MR не означает автоматический деплой или бизнес-приёмку:** систему нужно интегрировать с отдельным контуром ревью и развёртывания.
+В отличие от простого запуска Codex по промпту, AI Developer Worker управляет **полным жизненным циклом инженерной задачи**: получает её из очереди, анализирует, проверяет зависимости, выполняет изменения в Git, запускает проверки, создаёт Merge Request, обрабатывает замечания и передаёт результат человеку на приёмку. Состояние задачи сохраняется между запусками.
 
-Активная документация на русском собрана в [указателе docs/README.md](docs/README.md). Исследование конкурентов Wildberries/Ozon удалено из `main` и сохранено в отдельной ветке [`archive/competitor-research-2026`](https://github.com/Absens/AI-Developer-Worker/tree/archive/competitor-research-2026).
+**Важно о границах:** сейчас это платформа **AI-assisted software engineering**, а не полностью автономный DevOps-контур. Слияние MR, production-деплой и бизнес-приёмка не выполняются автоматически одним только воркером. Встроенного корпоративного MCP-шлюза и автоматического BugLens/Sentry → проверенный баг → деплой тоже пока нет.
 
-## Что делает воркер
+[Быстрый старт](#быстрый-старт) · [Возможности](#возможности) · [Архитектура](#архитектура) · [Веб-консоль](#веб-консоль) · [Документация](#документация)
 
-За один цикл воркер:
+## Для каких задач подходит
 
-1. Восстанавливает незавершенную задачу текущего `WORKER_ID`, если такая есть.
-2. Иначе выбирает подходящую задачу через Yandex queue/tag или internal tracker claim queue с учетом lease-aware priority scoring.
-3. Делает структурированный анализ задачи, сохраняет `AI ANALYSIS:` в Tracker или structured decision во внутреннем tracker и выбирает режим обработки.
-4. Проверяет зависимости `blockedBy` до получения lease и до изменения git-состояния.
-5. Переводит задачу по логическим статусам из `TRACKER_STATUS_MAP_FILE`.
-6. Готовит ветку `feature/ai-task-{tracker_id}` в локальном checkout целевого репозитория.
-7. Запускает `codex exec`, затем настроенные проверки качества.
-8. Создает commit, push, merge request и обновляет task tracker.
+- **Автоматизация разработки:** дать агенту задачу на исправление бага, доработку интерфейса, API, рефакторинг, документацию или тесты — получить код и MR, а не только рекомендацию.
+- **Управление потоком задач:** принимать задания от людей, Yandex Tracker, Telegram или внутренних систем, контролировать очередь, блокировки, вопросы, ошибки и повторные попытки.
+- **Работа с несколькими проектами:** выбирать репозиторий и команды проверки по профилю, не позволять нескольким воркерам одновременно менять один checkout.
+- **Контроль AI-изменений:** хранить решения, историю запусков, проверок и MR, оставляя людям точки подтверждения и приёмки.
+- **Анализ и планирование развития:** запускать Project Manager для анализа состояния проекта, постановки целей, предложения задач и перепланирования.
 
-Если Codex не может продолжить без бизнес-уточнения, он возвращает одну строку `AI_QUESTION:`. Воркер сохраняет `threadId`, переводит задачу в ожидание ответа и позже возобновляет тот же Codex-сеанс после команды человека.
+Проект ориентирован на команды, у которых уже есть Git-репозитории, GitLab и реальный процесс постановки задач. Для автономной работы с недоверенным кодом нужна дополнительная изоляция.
 
-## Архитектура и поток данных
+## Возможности
 
-Точка входа [src/index.ts](src/index.ts) загружает конфигурацию, запускает observability/cleanup, проверяет готовность целевого репозитория и Codex auth, затем вызывает orchestrator в one-shot или continuous режиме.
+Состояние в таблице относится к **реализации в `main`**, а не к историческим планам в `docs/superpowers/`.
 
-Основные runtime-режимы:
+| Подсистема | Что реализовано | По умолчанию / ограничения |
+| --- | --- | --- |
+| **AI-исполнитель** | Анализ задачи, выбор сценария, Codex `exec` / `resume`, внесение изменений, доработки после ошибок | Нужны Codex CLI, доступ к репозиторию и конфигурация |
+| **Git и GitLab** | Ветки, commit/push, создание и повторное использование MR, обработка review discussions, отслеживание merge/close | Merge выполняется отдельно |
+| **Проверки качества** | Typecheck, lint, tests, build, security scan, SAST, coverage, visual regression; цикл исправлений | Выполняются только настроенные команды; необязательные gates могут быть пропущены |
+| **Внутренний Task Tracker** | Задачи и ревизии, статусы, планы и шаги, зависимости, вопросы, события, `agent_runs`, `quality_gate_runs`, MR records, proposals | Для production нужен PostgreSQL; в памяти — для тестов |
+| **Очередь и координация** | Приоритеты, атомарный claim и lease, heartbeat, защита одного checkout, восстановление обработки | Механизмы различаются для internal и прямого Yandex |
+| **Yandex Tracker** | Прямой источник задач либо синхронизация через Yandex bridge | Внутренний трекер может работать без Yandex |
+| **Веб-консоль** | Очередь, создание/просмотр задач, команды человека, proposals, operations, цели проекта | Angular UI и human API включаются отдельно |
+| **Project Manager** | Анализ сигналов, цели, стратегия, перепланирование, предложения задач, подтверждения | Только internal tracker; выключен по умолчанию, `proposal_only` |
+| **Telegram Assistant** | Статусы, вопросы по проекту, создание задач с подтверждениями, уведомления, ответы на вопросы агента | Требует internal tracker; выключен по умолчанию |
+| **Telegram Digital Twin** | Опциональные Business/Secretary-сессии, контекст по контактам, согласование явных заявок | Нужны согласие владельца, allowlists и контроль хранения данных |
+| **Память репозиториев** | Локальные знания о коде, утверждённые prompt rules, похожие ошибки, результаты review learning | Файловое хранилище, выключено по умолчанию |
+| **Fleet mode** | Несколько профилей репозиториев, маршрутизация по очередям и тегам, блокировки и приоритеты | Не означает автоматическое клонирование URL в пустой volume |
+| **Наблюдаемость** | Health/readiness, Prometheus-метрики, timeline событий, alerts, redaction, cleanup/retention | Выключена по умолчанию; внешний доступ требует защиты |
 
-- **Direct Yandex mode**: `WorkerOrchestrator` использует Yandex Tracker как очередь задач и runtime state store. Технические события пишутся структурированными комментариями `AI STATUS`, `AI QUESTION`, `AI MR`, `AI REVIEW`, `AI LEASE`, `AI ANALYSIS` и `AI DECOMPOSITION`.
-- **Internal tracker mode**: `InternalWorkerOrchestrator` работает с внутренней task-моделью, atomic claim/lease, task events, decisions, validations и MR records. PostgreSQL - production storage, in-memory storage используется только для тестов и локальных smoke-сценариев.
-- **Fleet mode**: `WORKER_CONFIG_FILE` описывает несколько repository profiles. Для каждого профиля строится отдельный runtime context с собственным `repoPath`, `baseBranch`, GitLab project id, queues/tags и quality gates.
+### Как выглядит работа над одной задачей
 
-Упрощенный поток:
+Например, сотрудник создаёт задачу «исправить некорректный расчёт суммы заказа» через веб-консоль или доверенный Telegram-чат.
 
-```text
-Task source -> Orchestrator -> Codex CLI -> Quality gates -> Git/GitLab -> Task tracker
+1. **Постановка.** Система сохраняет описание, критерии приёмки, проект, приоритет и источник задачи. Для Telegram проверяются права и необходимость согласования.
+2. **Выбор задачи.** Worker получает её из очереди с учётом приоритета, зависимостей и lease репозитория.
+3. **Анализ.** Codex определяет тип задачи, сложность, режим обработки и необходимый контекст. Если данных недостаточно — задаёт вопрос, не продолжая работу вслепую.
+4. **Реализация.** Codex работает в целевом checkout, изменяет файлы и при необходимости возобновляет сохранённую сессию.
+5. **Валидация.** Запускаются настроенные проверки. Ошибки могут возвращаться Codex для исправления в пределах лимита попыток.
+6. **Публикация.** Worker создаёт ветку и GitLab MR, записывает ссылку, результаты и события в трекер.
+7. **Ревью и приёмка.** При наличии замечаний в GitLab worker может продолжить цикл исправлений. После merge внутренняя задача переходит в `human_testing`; закрывается как `done` после приёмки человеком.
+
+Это пример предусмотренного процесса, **не обещание**, что любая задача будет выполнена корректно или что система сама воспроизведёт любой баг.
+
+## Архитектура
+
+```mermaid
+flowchart TD
+    A["Веб-консоль / Human API"] --> T["Internal Task Tracker"]
+    B["Telegram Assistant"] --> T
+    C["Yandex Tracker через bridge"] <--> T
+    Y["Yandex Tracker (прямой режим)"] --> WY["WorkerOrchestrator / FleetOrchestrator"]
+    T --> WI["InternalWorkerOrchestrator"]
+    WI --> E["Codex CLI + Git checkout"]
+    WY --> E
+    E --> Q["Quality gates / fix loop"]
+    Q --> G["GitLab: branch, MR, review"]
+    G --> T
+    G --> Y
+    PM["Project Manager"] <--> T
+    M["Repository memory"] -.-> E
+    O["Observability / metrics / alerts"] -.-> WI
+    O -.-> WY
 ```
 
-## Структура проекта
+Основные технологии: **Node.js 22+, TypeScript, Codex CLI, PostgreSQL, Git/GitLab, Angular 20 + PrimeNG, Vitest**. Playwright используется в браузерных E2E-тестах веб-консоли. В `Dockerfile` зафиксирован `@openai/codex@0.149.1` — это версия репозитория, не обязательно последняя upstream.
 
-- [src/](src/) - runtime-код воркера.
-- [src/domain/](src/domain/) - оркестрация, маршрутизация задач, сборка prompt-ов и проверки качества.
-- [src/integrations/](src/integrations/) - адаптеры Tracker, internal tracker, Yandex bridge, GitLab, Git и Codex.
-- [src/observability/](src/observability/) - health/readiness, метрики и оповещения.
-- [src/utils/](src/utils/) - запуск shell-команд, retry, логирование и общие helper-ы.
-- [tests/](tests/) - unit и smoke tests на Vitest.
-- [web/](web/) - Angular human console для internal task tracker.
-- [scripts/](scripts/) - операционные helper-ы, включая bootstrap Codex auth.
-- [docs/](docs/) - runbook-и по окружению, Docker, fleet mode, memory и observability.
-- [config/](config/) - пример карты статусов Tracker.
+### Режимы источников задач
+
+| Режим | Источник истины | Когда использовать |
+| --- | --- | --- |
+| `TASK_TRACKER_PROVIDER=yandex` | Задачи, статусы и структурированные комментарии Yandex Tracker | Уже работаете в Yandex и не хотите переносить задачи |
+| `TASK_TRACKER_PROVIDER=internal` + `TASK_INTAKE_MODE=standalone` | Собственный трекер, обычно PostgreSQL | Хотите управлять задачами через встроенные API и UI |
+| `TASK_INTAKE_MODE=yandex_integration` | Internal tracker, Yandex — источник/зеркало | Нужна внутренняя модель исполнения с Yandex-интеграцией |
+| `TASK_INTAKE_MODE=hybrid` | Internal tracker и несколько источников intake | Совместная работа native и импортированных задач |
+| `TASK_INTAKE_MODE=system_only` | Internal tracker | Постановка через сервисные интеграции |
+| `TASK_INTAKE_MODE=ai_proposed` | Internal tracker с политикой предложений | Управляемое создание задач ИИ |
+
+`YANDEX_SYNC_ENABLED=true` предназначен для `yandex_integration` или `hybrid`. Параметры конкретного режима — в [настройке окружения](docs/ENV_CONFIGURATION.md).
+
+### Жизненный цикл внутренней задачи
+
+У задачи есть полноценная state machine, не только «ожидает / выполняется / готово».
+
+```text
+new → triage → ready → claimed → analyzing
+                                    ├─ implementing → validating → review → human_testing → done
+                                    ├─ decomposing
+                                    └─ awaiting_human → resume
+
+Дополнительные состояния: fixing_review, blocked, failed, cancelled.
+```
+
+В PostgreSQL хранятся ревизии задания и критерии приёмки, события и сообщения, планы и шаги, решения ИИ, записи запусков, результаты проверок, связи с MR и внешними источниками. Есть идемпотентность, ограничения переходов состояний и разделение полей по владельцу (human / external source / worker / policy).
+
+Вызовы для работы с задачами инкапсулированы в `TaskTrackerClient` / `AgentWorkflowService`. Реализация PostgreSQL использует атомарный claim/lease; вместо этого в прямом Yandex-режиме есть механизм `AI LEASE:` на основе комментариев. Эти механизмы не тождественны.
+
+Подробнее: [архитектура](docs/ARCHITECTURE.md) · [PostgreSQL и миграции](docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
+
+## Подсистемы крупным планом
+
+### 1. AI-исполнитель и GitLab workflow
+
+Оркестраторы поддерживают анализ задачи, декомпозицию, реализацию, ожидание ответа, повторные попытки исправления, публикацию MR и работу с review feedback.
+
+Режим `TASK_MODE`:
+- `auto` — решение по результату структурированного `AI_ANALYSIS:` с проверкой уверенности;
+- `implement` — принудительная реализация после анализа;
+- `decompose` — разбиение задачи на подзадачи;
+- `analyze_only` — сохранить анализ, не менять код;
+- `human` — передать решение человеку.
+
+При недостатке сведений агент возвращает `AI_QUESTION:` и сохраняет `threadId`. Продолжение запускается явным действием человека: `/resume`, `/resume A`, `/resume freeform: ...`, `/skip` или `/cancel`. Обычный комментарий не должен случайно возобновлять работу.
+
+**Предварительный intake review** (`TASK_INTAKE_REVIEW_ENABLED`) оценивает качество постановки задачи и может вернуть `ready`, `needs_clarification`, `needs_decomposition` или `reject_as_invalid`. Это **не полноценная автоматическая проверка реальности бага по Sentry/браузеру**.
+
+**Quality gates:** `typecheck → lint → tests → build → security_scan → sast → coverage → visual_regression`. Вы задаёте команды целевого проекта; если команда gate не сконфигурирована, соответствующий этап может быть пропущен. Самопроверка `CODEX_SELF_REVIEW_ENABLED` существует в поддерживающем её (direct Yandex) конвейере и по умолчанию выключена; она не заменяет независимое ревью всех MR.
+
+### 2. Внутренний трекер и операции человека
+
+Собственная доменная модель задач позволяет не зависеть от статусов внешнего трекера. Встроенный API поддерживает задачи, массовое создание, комментарии, историю, команды на изменение состояния, предложения ИИ, операции и цели.
+
+В зависимости от роли и состояния доступны действия вроде `mark-ready`, `resume`, `hold`, `cancel`, `retry`, `force-reanalysis`, `approve-decomposition`, `approve-proposal` и `reject-proposal`. У API есть роли `viewer`, `developer`, `operator` и `admin`. Для production необходимо отдельно обеспечить корректную аутентификацию и проектные ограничения доступа.
+
+### 3. Project Manager Agent
+
+Это **не отдельный Codex, который самовольно создаёт задачи**, а подсистема управляемого планирования поверх внутреннего трекера. Она собирает сигналы о состоянии проекта, запускает структурированный анализ Codex, сохраняет результаты и формирует:
+
+- **Цели:** проблема, ожидаемый результат, метрики успеха, приоритет, риск и evidence.
+- **Предложения задач:** проект, тип работы, критерии приёмки, основания и связь с целью.
+- **Replanning:** продолжить, разделить, приостановить, завершить, создать follow-up или запросить решение человека.
+- **Strategy:** анализ продукта и техники, альтернативные направления, риски, возможности и вопросы для руководителя.
+
+Цели имеют состояния `proposed / approved / active / completed / rejected / stale`. Запуски анализа, replanning и strategy сохраняются. Подсистема работает с internal tracker и по умолчанию выключена (`PROJECT_MANAGER_ENABLED=false`). Базовый уровень автономности — `proposal_only`; автоматическое выполнение low-risk задач требует отдельно разрешённой политики.
+
+[Устройство Project Manager](docs/ARCHITECTURE.md#project-manager-agent) · [Исторический план](docs/PROJECT_MANAGER_SUBSYSTEM_ROADMAP.md).
+
+### 4. Telegram Assistant и Digital Twin
+
+Telegram — дополнительный способ работать с платформой, а не отдельный executor:
+
+- уточнить статус задачи и получить уведомления;
+- задать вопрос о проекте через Codex при включённом Q&A;
+- сформировать черновик задачи и подтвердить его;
+- согласовать high-risk задачу через owner/admin;
+- ответить на вопрос ИИ для задачи в `awaiting_human`;
+- при отдельном включении Business/Digital Twin поддерживать контекст общения по контактам.
+
+Telegram-задача получает `repositoryName`, `repoPathKey`, `baseBranch`, `queue`. Доверенные low/medium-risk заявки после подтверждения могут перейти в `ready` и попасть в обычную очередь; high-risk и внешние Business-заявки требуют согласования. Оценка риска в Telegram **эвристическая и не гарантирует безопасность изменений**.
+
+Digital Twin использует долговременные Codex-сессии, персональные настройки и audit/retention. Держите его выключенным, пока нет согласия владельца, корректных allowlists, ограничений прав и политики хранения переписки.
+
+[Telegram: сценарии и права](docs/TELEGRAM_TASK_INTAKE.md) · [Метрики и эксплуатация](docs/OBSERVABILITY_RUNBOOK.md).
+
+### 5. Fleet, память и наблюдаемость
+
+**Fleet mode.** Конфигурация `WORKER_CONFIG_FILE` задаёт профили репозиториев: checkout, base branch, GitLab project ID, очереди, теги и команды проверки. Есть приоритеты, coordination/lease и recovery. Текущий стандартный Compose всё ещё предполагает заранее существующий checkout — «clone только по URL в пустой volume» описан в [плане](docs/DOCKER_ONLY_SERVER_PLAN.md), но не готов как штатный режим.
+
+**Repository memory.** При `MEMORY_ENABLED=true` анализ и реализация используют компактные проектные знания из `knowledge.json`, утверждённые правила `prompt-rules.json` и похожие ошибки из `failures.jsonl`. Память локальная, файловая и рекомендательная: текущий код и новые человеческие инструкции важнее. Проверка — `npm run memory:validate`.
+
+**Observability.** Опциональный HTTP-сервер предоставляет `/healthz`, `/readyz`, `/metrics`, события и алерты. Поддерживаются Prometheus и уведомления через webhook, Slack или Telegram. В internal mode есть retention/cleanup для истории, логов и артефактов, а также runbook резервного копирования PostgreSQL.
+
+## Веб-консоль
+
+В `web/` находится интерфейс на **Angular + PrimeNG**, который используется для управления задачами и процессами с участием человека.
+
+| Раздел | Что можно делать |
+| --- | --- |
+| **Очередь** (`/tasks`) | Просматривать и фильтровать задачи, переходить к деталям |
+| **Новая задача** (`/tasks/new`) | Создавать задачу через human API |
+| **Карточка задачи** (`/tasks/:taskId`) | Смотреть ревизии, события, результаты работы и выполнять разрешённые команды |
+| **Предложения** (`/tasks/proposals`) | Смотреть, утверждать или отклонять AI proposals |
+| **Операции** (`/tasks/operations`) | Следить за состоянием воркеров, очередей и leases |
+| **Цели** (`/tasks/goals`) | Просматривать и согласовывать цели Project Manager |
+| **Детали цели** (`/tasks/goals/:goalId`) | Работа с выбранной целью и связанными задачами |
+
+Для работы с API и UI требуются включённый internal tracker и правильно настроенная авторизация. В development Angular проксирует `/api` к Node.js HTTP-серверу.
+
+[README веб-консоли](web/README.md) · [Авторизация и observability](docs/OBSERVABILITY_RUNBOOK.md).
 
 ## Быстрый старт
 
-1. Установите зависимости из lockfile: `npm ci`.
-2. Скопируйте [.env.example](.env.example) в `.env` и заполните Tracker, GitLab, Codex и git-настройки.
-3. Проверьте `TRACKER_STATUS_MAP_FILE`; пример лежит в [config/trackerStatusMap.example.json](config/trackerStatusMap.example.json).
-4. Подготовьте локальный checkout целевого репозитория и убедитесь, что в нем настроены fetch/push credentials.
-5. Выполните preflight: `npm run preflight`.
-6. Первый рабочий запуск делайте с `WORKER_RUN_ONCE=true`.
-7. Переключайте воркер в непрерывный режим только после успешного one-shot запуска.
+Ниже — **локальный** сценарий. Для полноценной настройки Docker, токенов и серверного развёртывания используйте [операционные руководства](docs/README.md).
 
-Контейнер не выполняет OAuth login при старте. Если `CODEX_HOME` отсутствует или не аутентифицирован, startup завершается до того, как воркер начнет менять Tracker или GitLab.
+### Требования
 
-## Запуск в Docker
+- Node.js **22+**, npm, Git и доступный Codex CLI;
+- доступ к GitLab и права на чтение/публикацию изменений целевого репозитория;
+- авторизация Codex (проверка: `codex login status` либо поддерживаемый API-key режим);
+- Yandex Tracker **или** внутренний PostgreSQL task tracker;
+- рабочие команды проверок именно для **целевого** репозитория.
 
-Соберите образ:
+### 1. Подготовьте зависимости и конфигурацию
 
 ```bash
-docker build -t ai-developer-worker .
+npm ci
+cp .env.example .env
 ```
 
-Для Docker Compose задайте в `.env`:
+В `.env` настройте GitLab (`GITLAB_URL`, `GITLAB_TOKEN`, `GITLAB_PROJECT_ID`), checkout (`REPO_PATH`, `BASE_BRANCH`), Codex (`CODEX_HOME`, `CODEX_CLI_COMMAND`), рабочие команды (`TEST_COMMAND`, `LINT_COMMAND`) и ID воркера. Убедитесь, что Git внутри среды исполнения умеет делать `fetch` и `push`.
+
+При использовании прямого Yandex-режима настройте `TRACKER_TOKEN`, `TRACKER_ORG_ID`, `TRACKER_DEFAULT_QUEUE` и `TRACKER_STATUS_MAP_FILE`. Пример карты — [config/trackerStatusMap.example.json](config/trackerStatusMap.example.json).
+
+### 2. Выберите источник задач
+
+**Вариант A: прямой Yandex Tracker.** Оставьте `TASK_TRACKER_PROVIDER=yandex` (значение примера конфигурации), задайте credentials и проверьте статусы/переходы.
+
+**Вариант B: собственный трекер.** Для production с PostgreSQL задайте:
 
 ```env
-HOST_CODEX_HOME=C:/Users/you/.codex
-TARGET_REPO_PATH=C:/path/to/target/repository
-CODEX_HOME=/codex-home
-REPO_PATH=/workspace/project
-WORKER_RUN_ONCE=true
+TASK_TRACKER_PROVIDER=internal
+TASK_TRACKER_STORAGE=postgres
+TASK_INTAKE_MODE=standalone
+YANDEX_SYNC_ENABLED=false
+TASK_TRACKER_DATABASE_URL=postgres://tracker:YOUR_PASSWORD@localhost:5432/ai_developer_tasks
 ```
 
-Затем запустите:
+`YOUR_PASSWORD` и URL здесь — **пример**, создайте пользователя и базу в своём PostgreSQL. Демо-Compose использует другой адрес внутри сети контейнеров. Перед обработкой задач:
 
 ```bash
+npm run tracker:migrate
+npm run preflight
+```
+
+Внутренние задачи затем создаются через API/UI, Telegram или разрешённые системные источники. Не нужно обязательно подключать Yandex, если выбран `standalone`.
+
+### 3. Выполните preflight и один безопасный цикл
+
+```bash
+npm run preflight
+```
+
+Для первого запуска задайте в `.env` `WORKER_RUN_ONCE=true` и запустите:
+
+```bash
+npm run dev
+```
+
+`npm run preflight` не берёт задачи из очереди. Однако если заданы `TRACKER_PREFLIGHT_ISSUE_KEY` или `GITLAB_PREFLIGHT_SOURCE_BRANCH`, preflight может выполнить специально настроенные проверки **записи в тестовые сущности**. Не направляйте их на реальные рабочие задачи или ветки.
+
+Убедитесь, что preflight не сообщает блокирующих ошибок, затем проверьте GitLab MR, логи, статус задачи и результаты gates. После этого можно установить `WORKER_RUN_ONCE=false` для непрерывного polling.
+
+**Внимание:** `WORKER_RUN_ONCE=true` означает один рабочий цикл, а не dry-run: если в очереди есть подходящая задача, воркер может изменить код, сделать push и создать MR. Для проверки **без исполнения** используйте только `npm run preflight`.
+
+### Docker Compose
+
+В репозитории есть `compose.yaml` с `postgres`, `migrate` и `worker`. Он ориентирован на локальное окружение: требуются `HOST_CODEX_HOME` и `TARGET_REPO_PATH` (bind mount checkout). Перед `docker compose up --build` подготовьте `.env`, отдельную авторизацию Codex внутри тома и данные GitLab.
+
+```bash
+docker compose config
 docker compose up --build
 ```
 
-Для долгоживущего воркера предпочтительнее отдельный writable volume `CODEX_HOME`, а не прямой bind mount host `~/.codex`. Подробности и Windows-команды есть в [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) и [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md).
+**Демо-конфигурация не является защищённым production-шаблоном:** в ней есть простые учётные данные PostgreSQL и прямой проброс порта. Для постоянной эксплуатации необходимы корректные секреты, ограничение сети, изоляция executor и закрытый reverse proxy. Инструкция: [локальный Docker](docs/LOCAL_DOCKER_RUN.md) · [Windows PowerShell](docs/WINDOWS_POWERSHELL_QUICKSTART.md) · [план server-only режима](docs/DOCKER_ONLY_SERVER_PLAN.md).
 
-## Команды разработки
+## Основные команды
 
-- `npm ci` - установить зависимости из `package-lock.json`.
-- `npm run typecheck` - запустить строгую проверку TypeScript без emit.
-- `npm test` - запустить весь набор Vitest.
-- `npm run test:smoke` - запустить end-to-end smoke test с mock Tracker/GitLab и реальным git flow.
-- `npm run build` - собрать production bundle в `dist/`.
-- `npm run verify:codex-cli` - проверить статический контракт установленного Codex CLI.
-- `npm run dev` - запустить воркер через `tsx` с `.env`.
-- `npm run start` - запустить собранный bundle из `dist/`.
-- `npm run tracker:migrate` - применить PostgreSQL migrations для internal task tracker.
-- `npm run web:typecheck` - проверить Angular console TypeScript.
-- `npm run web:test` - запустить Angular unit tests.
-- `npm run web:build` - собрать Angular console в `web/dist/task-tracker-console/browser`.
-- `npm run web:e2e` - собрать Angular console и запустить Playwright critical-flow smoke tests.
-- `npm run preflight` - проверить конфигурацию, Codex auth, git, Tracker, GitLab и target commands без обработки очереди.
-- `npm run memory:validate` - проверить файловое хранилище repository memory.
-- `npm run bootstrap:codex-home` - скопировать существующую Codex auth directory в целевой путь или mounted volume.
+| Команда | Назначение |
+| --- | --- |
+| `npm ci` | Зависимости backend из lockfile |
+| `npm run dev` / `npm run start` | Запуск из TypeScript / сборки `dist/` |
+| `npm run preflight` | Проверка конфигурации и интеграций без обработки очереди |
+| `npm run tracker:migrate` | Применить миграции PostgreSQL |
+| `npm run typecheck` | Проверка типов backend |
+| `npm test` | Vitest backend |
+| `npm run test:smoke` | Smoke-проверки task/Git workflow с mock integrations |
+| `npm run build` | Сборка backend |
+| `npm run verify:codex-cli` | Проверка CLI-контракта Codex |
+| `npm run memory:validate` | Проверка данных repository memory |
+| `npm --prefix web ci` | Установить зависимости Angular из отдельного lockfile |
+| `npm run web:dev` | Запуск Angular dev server |
+| `npm run web:typecheck` / `npm run web:test` | Типы и тесты Angular |
+| `npm run web:build` / `npm run web:e2e` | Сборка UI и браузерные E2E-тесты |
 
-Проект требует Node.js `>=22.0.0`.
+При изменении интеграций запускать только `npm run build` недостаточно: выполняйте целевые тесты и smoke.
 
-## Основная конфигурация
-
-Минимально нужны:
-
-- `TRACKER_TOKEN`
-- `TRACKER_ORG_ID`
-- `TRACKER_STATUS_MAP_FILE`
-- `GITLAB_URL`
-- `GITLAB_TOKEN`
-- `GITLAB_PROJECT_ID`
-- `MAX_FIX_ATTEMPTS`
-- `WORKER_ID`
-
-Часто настраиваются:
-
-- `TRACKER_TAG=ai_dev`
-- `TRACKER_DEFAULT_QUEUE=FRONTEND`
-- `REPO_PATH=/workspace/project`
-- `BASE_BRANCH=main`
-- `GIT_REMOTE_NAME=origin`
-- `GIT_REPOSITORY_URL` и `GIT_REPOSITORY_TOKEN` для HTTPS git auth bootstrap.
-- `GIT_AUTHOR_NAME` и `GIT_AUTHOR_EMAIL` для commit identity внутри Docker.
-- `TEST_COMMAND`, `LINT_COMMAND`, `TYPE_CHECK_COMMAND`, `BUILD_COMMAND` и другие проверки качества целевого репозитория.
-- `POLL_INTERVAL_MINUTES=30`
-- `CODEX_HOME=/codex-home`
-- `CODEX_CLI_COMMAND=codex`
-- `CODEX_CLI_ARGS_JSON=[]`
-- `CODEX_EXEC_ARGS_JSON=[]`
-- `CODEX_SELF_REVIEW_ENABLED=false` — необязательная самопроверка перед публикацией MR через `codex exec review` (проверяйте, поддерживается ли она в выбранном runtime-режиме).
-- `CODEX_SELF_REVIEW_MAX_FIX_ATTEMPTS=1` — максимальное количество попыток исправить блокирующие замечания self-review.
-- `CODEX_SANDBOX=danger-full-access` — **широкие права из текущего шаблона**, а не безопасный production default. Для корпоративного использования требуется изоляция агента и секретов.
-- `CODEX_MODEL` и `CODEX_PROFILE`, если нужен явный выбор Codex-конфигурации.
-- `TRACKER_IMAGE_CONTEXT_ENABLED=true` для передачи screenshot-вложений Tracker в Codex.
-- `TASK_TRACKER_PROVIDER=yandex|internal` - источник runtime-состояния задач.
-- `TASK_INTAKE_MODE=standalone|yandex_integration|hybrid|system_only|ai_proposed` для internal tracker.
-- `YANDEX_SYNC_ENABLED=true|false` для импорта и зеркалирования Yandex через internal tracker.
-- `TASK_TRACKER_DATABASE_URL=postgres://...` для production internal tracker.
-- `TASK_TRACKER_UI_ENABLED=true|false`, `TASK_TRACKER_UI_STATIC_DIR=...`, `TASK_TRACKER_SYSTEM_TOKEN` и trusted proxy headers для human UI/API.
-- `AI_PROPOSALS_ENABLED`, `AUTO_EXECUTE_LOW_RISK_ENABLED` и лимиты `AI_PROPOSAL_*` для AI-created proposals.
-- `WORKER_RUN_ONCE=true|false`
-- `WORKER_CONFIG_FILE=/workspace/worker.config.yaml` для fleet mode.
-
-Для Codex CLI `0.149.1` глобальные флаги вроде `--search` и `--ask-for-approval never` должны находиться в `CODEX_CLI_ARGS_JSON`, например:
-
-```json
-["--search", "--ask-for-approval", "never"]
-```
-
-`CODEX_EXEC_ARGS_JSON` предназначен только для аргументов уровня `codex exec`, например:
-
-```json
-["--add-dir", "/workspace/shared"]
-```
-
-Если задача Yandex Tracker содержит изображения, воркер скачивает подходящие вложения во временную директорию и передаёт их Codex через `--image`. В промпте указывается, какие вложения были использованы, а какие пропущены.
-
-Полная таблица переменных окружения находится в [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md).
-
-## Провайдеры задач
-
-Воркер поддерживает два источника runtime-состояния:
-
-- `TASK_TRACKER_PROVIDER=yandex` - прямой режим совместимости. Очередь, статусы, вопросы, MR metadata и leases хранятся в Yandex Tracker через статусы и structured comments.
-- `TASK_TRACKER_PROVIDER=internal` - внутренний task tracker. Каноническая задача, lifecycle, leases, decisions, agent runs, validation results и MR records хранятся во внутренней модели. Для production используйте `TASK_TRACKER_STORAGE=postgres`, примените `npm run tracker:migrate`, затем запускайте `npm run preflight`.
-
-Для internal provider `TASK_INTAKE_MODE` задает, откуда появляются задачи:
-
-- `standalone` - задачи создаются напрямую во внутреннем tracker через UI/API.
-- `yandex_integration` - Yandex bridge импортирует задачи из Yandex и зеркалит важные обновления обратно.
-- `hybrid` - разрешены и native/internal задачи, и импорт из Yandex.
-- `system_only` - задачи создает service account или внешняя automation-система.
-- `ai_proposed` - AI создает proposals, а выполнение контролируется policy и approval.
-
-`YANDEX_SYNC_ENABLED=true` допустим только для `yandex_integration` или `hybrid` и требует обычные Yandex credentials. Внутренний tracker не считает GitLab merge сам по себе бизнес-приемкой: merged MR переводит задачу в `human_testing`, а `done` наступает после ручного принятия внешней или внутренней задачи.
-
-## Режимы работы
-
-`TASK_MODE` управляет маршрутизацией задач:
-
-- `auto` - режим по умолчанию; воркер следует структурированному `AI_ANALYSIS`.
-- `implement` - принудительно запускает реализацию.
-- `decompose` - просит Codex разложить задачу на подзадачи Tracker.
-- `analyze_only` - сохраняет анализ и останавливается.
-- `human` - переводит задачу в ручное удержание.
-
-### Предварительная проверка постановки задач
-
-`TASK_INTAKE_REVIEW_ENABLED=true` включает отдельный intake-режим для задач с тегом `TASK_INTAKE_REVIEW_TAG`, по умолчанию `ai_task_analysis`. В этом режиме воркер проверяет качество постановки задачи и пишет комментарий `AI TASK REVIEW:` с одним из результатов:
-
-- `ready` - постановка достаточно понятна для разработки.
-- `needs_clarification` - автору нужно ответить на конкретные вопросы.
-- `needs_decomposition` - задача слишком крупная для одного изменения.
-- `reject_as_invalid` - задача не подходит для AI-разработчика в текущем виде.
-
-Первый релиз работает только через комментарии: воркер не меняет описание задачи, не добавляет `ai_dev`, не переводит статус, не создает ветку и не открывает merge request.
-
-Для ручной отладки одной задачи задайте:
-
-```env
-TARGET_ISSUE_KEY=FRONTEND-42
-WORKER_RUN_ONCE=true
-```
-
-В этом режиме воркер загружает только указанную задачу и не сканирует очередь.
-
-## Команды человека
-
-Когда Codex задает вопрос, воркер переводит задачу в ожидание ответа и сохраняет `threadId`. Для возобновления нужна явная команда в новом человеческом комментарии или через internal UI/API:
-
-- `/resume` или `/resume continue` - продолжить с новым контекстом.
-- `/resume A` - выбрать вариант из предложенных Codex options.
-- `/resume freeform: <ответ>` - передать произвольный ответ; строки после команды также попадут в ответ.
-- `/skip` - пропустить текущую задачу без продолжения реализации.
-- `/cancel` - отменить обработку задачи.
-
-Обычный комментарий без slash-команды не возобновляет задачу. Это защищает воркер от случайного продолжения после обсуждений, не адресованных AI.
-
-## Telegram Assistant
-
-Telegram Assistant — дополнительный интерфейс к задачам внутреннего трекера. Он позволяет узнать статус, согласовать создание задачи и ответы на вопросы ИИ, задать вопрос по проекту через Codex и подписаться на события. Запись идёт через внутренний `TaskTrackerClient`, а не через human HTTP API; для создания задач требуется `TASK_TRACKER_PROVIDER=internal`.
-
-Доверенные пользователи личных чатов могут подтвердить low/medium-risk задачи. Бот определяет профиль репозитория, заполняет `repositoryName`, `repoPathKey`, `baseBranch` и `queue`, после чего утверждённая задача попадает в `ready` и обрабатывается обычной очередью `InternalWorkerOrchestrator`. High-risk задачи и заявки из Business/Profile требуют согласования owner/admin.
-
-Режим `TELEGRAM_DIGITAL_TWIN_*` предназначен для Telegram Business/Secretary: долговременные сессии Codex по контактам, ответы от имени владельца и ограниченная история действий. Он требует явного согласия владельца, контроля доступа, шифрования audit, политики хранения и должен оставаться выключенным по умолчанию.
-
-Для Assistant используется `TELEGRAM_ASSISTANT_BOT_TOKEN`, для канала alerts — отдельно `TELEGRAM_BOT_TOKEN`. Разрешения чтения задаются allowlists чатов и пользователей; для записи нужны `TELEGRAM_DEVELOPER_USER_IDS`, `TELEGRAM_OPERATOR_USER_IDS` или `TELEGRAM_ADMIN_USER_IDS`. Групповой режим по умолчанию ограничивает сообщения упоминаниями и ответами.
-
-Подробнее — в [Telegram intake](docs/TELEGRAM_TASK_INTAKE.md), [Docker](docs/LOCAL_DOCKER_RUN.md) и [observability](docs/OBSERVABILITY_RUNBOOK.md).
-
-## Проверки качества
-
-Перед публикацией merge request воркер проверяет наличие изменений в целевом репозитории и запускает настроенные проверки качества в порядке:
+## Структура репозитория
 
 ```text
-typecheck -> lint -> tests -> build -> security_scan -> sast -> coverage -> visual_regression
+src/
+  app.ts, config.ts, index.ts       # запуск и конфигурация
+  domain/
+    orchestrator.ts                 # прямой Yandex runtime
+    internalWorkerOrchestrator.ts   # internal task runtime
+    fleetOrchestrator.ts            # multi-repository Yandex runtime
+    taskTracker/                    # статусы, планы, leases, proposals, policy
+    projectManager/                 # анализ, цели, strategy, replanning
+    telegramAssistant/              # intents, task intake, Digital Twin
+    qualityGates.ts                 # проверки целевого проекта
+    memoryStore.ts                  # локальная память репозиториев
+  integrations/
+    codex/, git/, gitlab/, tracker/
+    internalTracker/                # PostgreSQL, миграции, cleanup
+    yandexBridge/, telegram/
+  observability/                    # HTTP, metrics, timeline, human API
+web/                                # Angular/PrimeNG console
+tests/                              # Vitest unit и smoke
+scripts/                            # миграции и Codex utilities
+config/                             # пример карты статусов Yandex
+docs/                               # руководства по архитектуре и эксплуатации
 ```
 
-`TEST_COMMAND` и `LINT_COMMAND` имеют значения по умолчанию. Остальные проверки включаются только если задана соответствующая переменная с командой. Любой ненулевой exit code блокирует публикацию и передается обратно в Codex fix prompt вместе с stdout/stderr.
+## Безопасность и текущие ограничения
 
-При `CODEX_SELF_REVIEW_ENABLED=true` в поддерживающем этот режим конвейере Codex выполняет `codex exec review` после локальных проверок и до публикации MR. Блокирующие замечания могут попасть в цикл исправлений. Это **не заменяет независимое ревью GitLab** и не является обязательным gate для всех runtime-режимов.
+**Это важная часть оценки готовности платформы к корпоративному развёртыванию.**
 
-### Завершение задачи после ревью
+1. **Sandbox:** в текущем шаблоне используется `CODEX_SANDBOX=danger-full-access`. Для выполнения недоверенных задач это не безопасное значение по умолчанию. Команды Codex должны работать в изолированной среде, без доступа к лишним файлам, сети и хосту.
+2. **Секреты:** запуск дочерних процессов через shell может наследовать переменные окружения воркера. Не допускайте доступа агента к production-токенам GitLab, Tracker, БД и секретам окружения без отдельного разграничения полномочий.
+3. **Доступ к UI/API:** есть роли `viewer/developer/operator/admin`, но права и project scope должны быть проверены для вашего сценария. Trusted proxy headers безопасны только если backend недоступен напрямую и proxy удаляет подставленные клиентом заголовки.
+4. **MR и проверки:** обязательность quality gates зависит от конфигурации целевого проекта. Self-review опционален и не заменяет независимое ревью. Merge — отдельное человеческое или внешнее действие; после merge требуется приёмка.
+5. **Нет встроенного автодеплоя:** merge MR сам по себе не вызывает deployment controller, health checks или revert через AI-Developer Worker.
+6. **Нет корпоративного MCP gateway и проверенного BugLens/Sentry intake:** это отдельные расширения, а не функции текущего `main`.
+7. **AI runtime:** рабочий executor связан с **Codex CLI**; произвольное переключение Codex ↔ Claude с переносимой execution-сессией не реализовано.
+8. **Инфраструктура:** текущий Compose локально ориентирован; полнофункциональное server-only развёртывание с URL-first clone, SSO/TLS и отдельными executor containers описано как план.
+9. **Локальная память:** `MEMORY_ENABLED` не заменяет единую корпоративную базу знаний и может содержать устаревший контекст.
 
-Для задачи в логическом `review` воркер периодически сверяет состояние GitLab MR. Merge подтверждает доставку кода, но **не означает приёмку человеком**. В direct Yandex статус остаётся логическим `review` (обычно внешнее «Тестируется»). Во внутреннем трекере задача переходит в `human_testing` и становится `done` только после положительной ручной приёмки. Закрытый без merge MR переводит задачу в удержание человеком; открытые MR продолжают обслуживаться циклом комментариев.
-
-## Fleet, memory и observability
-
-Fleet mode включается через `WORKER_CONFIG_FILE` и позволяет одному процессу обслуживать несколько репозиториев. Координация между воркерами выполняется через Tracker-комментарии `AI LEASE:`.
-
-Repository memory по умолчанию выключена. При `MEMORY_ENABLED=true` prompts получают компактный repository context из approved rules, manual knowledge и похожих failure entries. Перед production-включением запустите `npm run memory:validate`.
-
-Observability по умолчанию выключена. При `OBSERVABILITY_ENABLED=true` воркер поднимает HTTP-сервер для `/healthz`, `/readyz`, `/metrics` и опциональных оповещений.
-
-Для `TASK_TRACKER_PROVIDER=internal` production mode используйте PostgreSQL, примените `npm run tracker:migrate`, затем `npm run preflight`. Human workflow UI включается через `TASK_TRACKER_UI_ENABLED=true`; Angular UI будет на `/tasks` при configured `TASK_TRACKER_UI_STATIC_DIR`, JSON API начинается с `/api`, а write actions требуют trusted proxy role headers или `TASK_TRACKER_SYSTEM_TOKEN`.
-
-Для локальной разработки UI сначала поднимите Node observability/API server на `127.0.0.1:9464`, затем выполните:
-
-```bash
-npm --prefix web ci
-npm run web:dev
-```
-
-Angular dev server будет доступен на `http://127.0.0.1:4200/tasks` и проксирует `/api` в Node server. Production bundle собирается командой `npm run web:build` в `web/dist/task-tracker-console/browser`.
-
-Docker по умолчанию собирает Angular console в image и задает `TASK_TRACKER_UI_STATIC_DIR=/workspace/web/dist/task-tracker-console/browser`. Старый embedded task UI удален: если UI включен без static assets, `/tasks` возвращает явную ошибку, а не fallback HTML. Bearer auth остается задачей backend/service-client или reverse proxy; browser app не хранит bearer tokens.
+Эти ограничения не отменяют уже реализованные функции, но определяют необходимый уровень контроля при использовании в production.
 
 ## Документация
 
-Актуальный указатель по всем руководствам: [docs/README.md](docs/README.md).
+Единый каталог: **[docs/README.md](docs/README.md)**. Основные разделы:
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - карта runtime-потоков, модульных границ и точек изменения.
-- [docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md) - все переменные окружения и источники значений.
-- [docs/FLEET_OPERATIONAL_RUNBOOK.md](docs/FLEET_OPERATIONAL_RUNBOOK.md) - fleet config, leases и операционная координация.
-- [docs/MEMORY_LIFECYCLE.md](docs/MEMORY_LIFECYCLE.md) - lifecycle repository memory.
-- [docs/OBSERVABILITY_RUNBOOK.md](docs/OBSERVABILITY_RUNBOOK.md) - metrics, probes и alerts.
-- [docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md](docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md) - PostgreSQL migrations, retention, backup/restore и rollback для internal tracker.
-- [docs/LOCAL_DOCKER_RUN.md](docs/LOCAL_DOCKER_RUN.md) - локальный Docker-запуск и prerequisites.
-- [docs/WINDOWS_POWERSHELL_QUICKSTART.md](docs/WINDOWS_POWERSHELL_QUICKSTART.md) - команды для Windows PowerShell.
-- [web/README.md](web/README.md) - локальная разработка и сборка Angular human console.
-- [docs/CODEX_AUTH_TROUBLESHOOTING.md](docs/CODEX_AUTH_TROUBLESHOOTING.md) - диагностика Codex auth, включая `refresh_token_reused`.
-- [docs/CODEX_CLI_UPDATE_RUNBOOK.md](docs/CODEX_CLI_UPDATE_RUNBOOK.md) - обновление Codex CLI и compatibility checks.
-- [compose.yaml](compose.yaml) - Compose-конфигурация.
-- [AGENTS.md](AGENTS.md) - правила для участников и coding conventions.
+| Что нужно | Куда перейти |
+| --- | --- |
+| Разобраться в runtime и модулях | [Архитектура](docs/ARCHITECTURE.md) |
+| Настроить переменные окружения | [Полный справочник конфигурации](docs/ENV_CONFIGURATION.md) |
+| Развернуть PostgreSQL-трекер | [PostgreSQL runbook](docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md) |
+| Запустить несколько репозиториев | [Fleet](docs/FLEET_OPERATIONAL_RUNBOOK.md) |
+| Использовать Telegram intake | [Telegram](docs/TELEGRAM_TASK_INTAKE.md) |
+| Понять хранение контекста | [Repository memory](docs/MEMORY_LIFECYCLE.md) |
+| Настроить HTTP, метрики и alerts | [Observability](docs/OBSERVABILITY_RUNBOOK.md) |
+| Настроить локальный Docker и Windows | [Docker](docs/LOCAL_DOCKER_RUN.md) · [PowerShell](docs/WINDOWS_POWERSHELL_QUICKSTART.md) |
+| Решить проблему авторизации Codex | [Auth troubleshooting](docs/CODEX_AUTH_TROUBLESHOOTING.md) |
+| Обновить Codex CLI | [CLI update runbook](docs/CODEX_CLI_UPDATE_RUNBOOK.md) |
+| Разрабатывать UI | [Angular console](web/README.md) |
+| Понять планы развития | [Дорожная карта](product_roadmap.md) · [архив исторических планов](docs/superpowers/README.md) |
 
-## Важные замечания
+## Область проекта и история
 
-- Не коммитьте `.env`, `.codex-home/` и любое состояние Codex auth.
-- В Docker используйте отдельный writable `CODEX_HOME` volume.
-- Целевой репозиторий должен иметь рабочие credentials для `git fetch`, `git pull` и `git push`.
-- Если remote целевого репозитория использует SSH, воркер может переписать `origin` на HTTPS и использовать `GIT_REPOSITORY_TOKEN` или `GITLAB_TOKEN`.
-- Для commit внутри Docker задайте `GIT_AUTHOR_NAME` и `GIT_AUTHOR_EMAIL` либо настройте `user.name` и `user.email` в целевом checkout.
-- Не открывайте `TASK_TRACKER_UI_BIND_HOST=0.0.0.0` без trusted reverse proxy или bearer/system tokens; `localhost` auth mode предназначен только для локальной разработки.
-- Dockerfile устанавливает `git`, `curl`, `jq`, `ripgrep`, `openssh-client` и зафиксированную версию `@openai/codex@0.149.1`.
-- Не передавайте токены GitLab и Tracker в доступное агенту окружение без изоляции: shell-процессы могут наследовать переменные хоста.
-- В репозитории нет обязательного CI workflow для этой ветки; наличие локальных тестов не гарантирует, что они пройдут автоматически при каждом MR.
-- `CODEX_API_KEY` можно использовать как прямой источник неинтерактивной аутентификации. Если есть только `OPENAI_API_KEY`, заранее сохраните его в `CODEX_HOME` через `printenv OPENAI_API_KEY | codex login --with-api-key`.
+В `main` сохранено универсальное ядро AI-разработки. Эксперименты по поиску конкурентов Wildberries/Ozon вынесены в ветку [`archive/competitor-research-2026`](https://github.com/Absens/AI-Developer-Worker/tree/archive/competitor-research-2026), чтобы не связывать движок инженерных задач с конкретным маркетплейсным продуктом.
+
+Новые функции желательно добавлять как отдельные доменные компоненты и интеграции, с явной политикой доступа, тестами и документированными эксплуатационными последствиями. Требования к изменениям кода — в [AGENTS.md](AGENTS.md).
+
