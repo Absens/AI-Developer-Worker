@@ -42,29 +42,6 @@ export {
   type RouteTelegramIntentOptions,
 } from "./intentRouter.js";
 export {
-  buildCompetitorResearchFallbackTelegramResponse,
-  buildCompetitorResearchHtmlReport,
-  buildCompetitorResearchOutputSchema,
-  buildCompetitorResearchPrompt,
-  buildCompetitorResearchReportFileName,
-  buildCompetitorResearchTelegramResponse,
-  COMPETITOR_RESEARCH_OUTPUT_SCHEMA,
-  extractWildberriesProductReference,
-  extractMarketplaceProductReference,
-  extractOzonProductReference,
-  parseCompetitorResearchOutput,
-  type BuildCompetitorResearchHtmlReportInput,
-  type BuildCompetitorResearchTelegramResponseOptions,
-  type CompetitorResearchComparison,
-  type CompetitorResearchCompetitor,
-  type CompetitorResearchContent,
-  type WildberriesProductReference,
-  type MarketplaceProductReference,
-  type MarketplaceProductResearchPort,
-  type OzonProductReference,
-  type VerifiedMarketplaceProduct,
-} from "./competitorResearch.js";
-export {
   canHandleBusinessMessage,
   type BusinessMessagePolicy,
 } from "./profileAutomation.js";
@@ -100,8 +77,6 @@ export {
   type AnswerProjectQuestionInput,
   type AnswerProjectQuestionResult,
   type AssistantSource,
-  type ResearchMarketplaceCompetitorsInput,
-  type ResearchMarketplaceCompetitorsResult,
   type TelegramAssistantCodexServiceOptions,
 } from "./assistantCodex.js";
 export {

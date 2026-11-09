@@ -90,7 +90,6 @@ export interface TelegramDigitalTwinTurn {
 export type TelegramIntentName =
   | "task_status"
   | "project_question"
-  | "competitor_research"
   | "create_task_draft"
   | "answer_ai_question"
   | "subscribe_task"

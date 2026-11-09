@@ -19,7 +19,6 @@ export type {
   TelegramDeleteWebhookInput,
   TelegramFetch,
   TelegramGetUpdatesOptions,
-  TelegramSendDocumentInput,
   TelegramSendMessageInput,
   TelegramSetWebhookInput,
 } from "./client.js";

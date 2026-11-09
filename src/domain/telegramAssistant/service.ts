@@ -6,7 +6,6 @@ import type {
   TelegramAnswerCallbackQueryInput,
   TelegramClient,
   TelegramMessage,
-  TelegramSendDocumentInput,
   TelegramSendMessageInput,
   TelegramUpdate,
 } from "../../integrations/telegram/index.js";
@@ -59,18 +58,8 @@ import {
 import type {
   AnswerProjectQuestionResult,
   AssistantSource,
-  ResearchMarketplaceCompetitorsResult,
   TelegramAssistantCodexService,
 } from "./assistantCodex.js";
-import {
-  buildCompetitorResearchFallbackTelegramResponse,
-  buildCompetitorResearchHtmlReport,
-  buildCompetitorResearchReportFileName,
-  buildCompetitorResearchTelegramResponse,
-  extractMarketplaceProductReference,
-  isCompetitorResearchSourceVerified,
-  type MarketplaceProductReference,
-} from "./competitorResearch.js";
 import { encryptTelegramAuditText } from "./auditCrypto.js";
 import type { TelegramAssistantProjectSourceProvider } from "./projectSources.js";
 import type {
@@ -107,14 +96,11 @@ export interface TelegramAssistantServiceOptions {
   taskTracker?: TaskTrackerClient;
   assistantCodex?: Partial<Pick<
     TelegramAssistantCodexService,
-    | "answerProjectQuestion"
-    | "answerAsDigitalTwin"
-    | "researchMarketplaceCompetitors"
+    "answerProjectQuestion" | "answerAsDigitalTwin"
   >>;
   projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   repositories: RepositoryProfile[];
-  telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery"> &
-    Partial<Pick<TelegramClient, "sendDocument">>;
+  telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   notificationRouter?: Pick<TelegramNotificationRouter, "scanSubscribedTasks">;
   observability?: Pick<
     ObservabilityTelemetry,
@@ -194,15 +180,6 @@ const ANSWER_QUESTION_CONFIRMATION_UNAVAILABLE_MESSAGE =
 const ANSWER_RECORDED_MESSAGE = "Ответ записан. Задача продолжит работу.";
 const TASK_CREATION_DAILY_LIMIT_MESSAGE = "Дневной лимит создания задач исчерпан.";
 const PROJECT_QA_DAILY_LIMIT_MESSAGE = "Дневной лимит проектного Q&A исчерпан.";
-const COMPETITOR_RESEARCH_STARTED_MESSAGE =
-  "Начал поиск и анализ конкурентов. Отчёт придёт в этот чат после завершения.";
-const COMPETITOR_RESEARCH_UNAVAILABLE_MESSAGE =
-  "Исследование конкурентов сейчас недоступно.";
-const COMPETITOR_RESEARCH_FAILED_MESSAGE =
-  "Не удалось завершить исследование конкурентов. Попробуй повторить запрос позже.";
-const COMPETITOR_RESEARCH_DOCUMENT_FAILED_MESSAGE =
-  "Не удалось отправить HTML-файл. Ниже полный отчёт текстом.";
-const MAX_COMPETITOR_RESEARCH_FAILURE_REASON_CHARS = 1000;
 const TASK_SENT_TO_OWNER_APPROVAL_MESSAGE =
   "Задача отправлена owner/admin на подтверждение запуска.";
 const TASK_OWNER_APPROVAL_UNAVAILABLE_MESSAGE =
@@ -213,43 +190,17 @@ const MAX_PROJECT_SOURCE_FILE_CHARS = 8_000;
 const MAX_TASK_SOURCE_COUNT = 5;
 const EXECUTABLE_DRAFT_TEXT_CANCEL_PATTERN = /^(?:нет|отмена|cancel|не\s+надо)$/iu;
 
-const buildCompetitorResearchSourceUnverifiedMessage = (
-  failureReason: string,
-  reference: MarketplaceProductReference,
-): string => {
-  const message =
-    `Не удалось подтвердить точный товар по исходной карточке ${reference.marketplace === "wildberries" ? "Wildberries" : "Ozon"}. ` +
-    "Анализ остановлен, чтобы не подобрать конкурентов для неверного товара.";
-  const normalizedReason = failureReason.trim().slice(
-    0,
-    MAX_COMPETITOR_RESEARCH_FAILURE_REASON_CHARS,
-  );
-  return normalizedReason
-    ? `${message}\n\nПричина: ${normalizedReason}`
-    : message;
-};
-
-const inferAssistantTurnIntent = (
-  input: TelegramInboundMessage | undefined,
-): "project_question" | "competitor_research" =>
-  extractMarketplaceProductReference(input?.text ?? input?.redactedText ?? "")
-    ? "competitor_research"
-    : "project_question";
-
 export class TelegramAssistantService {
   private readonly store: TelegramAssistantStore;
   private readonly config: TelegramAssistantConfig;
   private readonly taskTracker?: TaskTrackerClient;
   private readonly assistantCodex?: Partial<Pick<
     TelegramAssistantCodexService,
-    | "answerProjectQuestion"
-    | "answerAsDigitalTwin"
-    | "researchMarketplaceCompetitors"
+    "answerProjectQuestion" | "answerAsDigitalTwin"
   >>;
   private readonly projectSourceProvider?: TelegramAssistantProjectSourceProvider;
   private readonly repositories: RepositoryProfile[];
-  private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery"> &
-    Partial<Pick<TelegramClient, "sendDocument">>;
+  private readonly telegram: Pick<TelegramClient, "sendMessage" | "answerCallbackQuery">;
   private readonly notificationRouter?: Pick<
     TelegramNotificationRouter,
     "scanSubscribedTasks"
@@ -668,11 +619,7 @@ export class TelegramAssistantService {
     );
     if (activeTurn) {
       if (intent.name === "reject_action") {
-        await this.cancelActiveAssistantTurn(
-          message,
-          activeTurn.id,
-          inferAssistantTurnIntent(activeTurn.input),
-        );
+        await this.cancelActiveAssistantTurn(message, activeTurn.id);
         return undefined;
       }
       await this.enqueueMessage(message);
@@ -704,14 +651,6 @@ export class TelegramAssistantService {
 
     if (intent.name === "project_question") {
       return this.prepareProjectQuestionTurn(
-        message,
-        intent.rawText ?? message.text ?? "",
-        options,
-      );
-    }
-
-    if (intent.name === "competitor_research") {
-      return this.prepareCompetitorResearchTurn(
         message,
         intent.rawText ?? message.text ?? "",
         options,
@@ -1012,11 +951,7 @@ export class TelegramAssistantService {
     );
     if (activeTurn) {
       if (intent.name === "reject_action") {
-        await this.cancelActiveAssistantTurn(
-          message,
-          activeTurn.id,
-          inferAssistantTurnIntent(activeTurn.input),
-        );
+        await this.cancelActiveAssistantTurn(message, activeTurn.id);
         return undefined;
       }
       await this.enqueueMessage(message);
@@ -1034,10 +969,6 @@ export class TelegramAssistantService {
       } else if (policy.shouldAutoReply && !policy.canReply) {
         await this.notifyOwnerBusinessReplyUnavailable(connection, message);
       }
-      return undefined;
-    }
-
-    if (intent.name === "competitor_research") {
       return undefined;
     }
 
@@ -1965,248 +1896,6 @@ export class TelegramAssistantService {
     return completed !== undefined;
   }
 
-  private async prepareCompetitorResearchTurn(
-    message: TelegramInboundMessage,
-    text: string,
-    options: MessageProcessingOptions = {},
-  ): Promise<AfterConversationLockOperation | undefined> {
-    const reference = extractMarketplaceProductReference(text);
-    if (
-      message.source === "business" ||
-      !reference ||
-      !this.isProjectQaEnabledForMessage(message) ||
-      !this.assistantCodex?.researchMarketplaceCompetitors
-    ) {
-      await this.sendPlainMessage(message, COMPETITOR_RESEARCH_UNAVAILABLE_MESSAGE);
-      return undefined;
-    }
-    if (
-      message.userId !== undefined &&
-      await this.isCodexQaRateLimited(message.userId)
-    ) {
-      await this.sendPlainMessage(message, PROJECT_QA_DAILY_LIMIT_MESSAGE);
-      this.incrementMetric("telegram_rate_limited_total", { direction: "inbound" });
-      return undefined;
-    }
-
-    const now = new Date().toISOString();
-    const turnId = buildAssistantTurnId(message);
-    await this.store.startAssistantTurn({
-      id: turnId,
-      conversationKey: message.conversationKey,
-      status: "running",
-      startedAt: now,
-      input: toPersistableInboundMessage(message),
-    });
-
-    try {
-      await this.sendPlainMessage(message, COMPETITOR_RESEARCH_STARTED_MESSAGE);
-    } catch (error) {
-      await this.store.completeAssistantTurnIfRunning(turnId, {
-        status: "failed",
-        diagnostic: redactSecrets(errorToMessage(error)),
-      });
-      throw error;
-    }
-
-    return {
-      runInBackground: true,
-      run: async () => {
-        await this.runCompetitorResearchTurn(
-          message,
-          turnId,
-          reference,
-          options.drainAfterProjectTurn !== false,
-        );
-      },
-    };
-  }
-
-  private async runCompetitorResearchTurn(
-    message: TelegramInboundMessage,
-    turnId: string,
-    reference: MarketplaceProductReference,
-    drainAfterCompletion: boolean,
-  ): Promise<void> {
-    try {
-      const result = await this.assistantCodex?.researchMarketplaceCompetitors?.(
-        reference,
-      );
-      if (!result) {
-        const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
-          status: "failed",
-          diagnostic: COMPETITOR_RESEARCH_UNAVAILABLE_MESSAGE,
-        });
-        if (completed) {
-          await this.sendPlainMessage(
-            message,
-            COMPETITOR_RESEARCH_UNAVAILABLE_MESSAGE,
-          );
-        }
-        return;
-      }
-
-      if (
-        result.timedOut !== true &&
-        !isCompetitorResearchSourceVerified(result, reference)
-      ) {
-        const diagnostic = redactSecrets(
-          result.sourceVerification.failureReason ||
-            `Playwright не подтвердил исходную карточку ${reference.marketplace === "wildberries" ? "Wildberries" : "Ozon"}.`,
-        );
-        const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
-          status: "failed",
-          ...(result.threadId ? { threadId: result.threadId } : {}),
-          diagnostic,
-        });
-        if (!completed) {
-          return;
-        }
-        this.incrementMetric("telegram_codex_turns_total", {
-          intent: "competitor_research",
-          outcome: "unverified",
-        });
-        await this.sendPlainMessage(
-          message,
-          buildCompetitorResearchSourceUnverifiedMessage(diagnostic, reference),
-        );
-        if (drainAfterCompletion) {
-          await this.drainQueuedMessages(message.conversationKey);
-        }
-        return;
-      }
-
-      const completed = await this.completeCompetitorResearchTurn(turnId, result);
-      if (!completed) {
-        return;
-      }
-      this.incrementMetric("telegram_codex_turns_total", {
-        intent: "competitor_research",
-        outcome: result.timedOut === true ? "failed" : "success",
-      });
-
-      if (result.timedOut === true) {
-        await this.sendTelegramResponse(
-          message,
-          buildCompetitorResearchTelegramResponse(result.summary, reference, {
-            reportDelivery: "none",
-          }),
-        );
-      } else {
-        const documentDeliveryAvailable = this.telegram.sendDocument !== undefined;
-        await this.sendTelegramResponse(
-          message,
-          buildCompetitorResearchTelegramResponse(result.summary, reference, {
-            reportDelivery: documentDeliveryAvailable ? "html" : "text",
-            competitors: result.competitors,
-          }),
-        );
-
-        if (documentDeliveryAvailable) {
-          const documentSent = await this.trySendCompetitorResearchDocument(
-            message,
-            result,
-            reference,
-          );
-          if (!documentSent) {
-            await this.sendPlainMessage(
-              message,
-              COMPETITOR_RESEARCH_DOCUMENT_FAILED_MESSAGE,
-            );
-            await this.sendTelegramResponse(
-              message,
-              buildCompetitorResearchFallbackTelegramResponse(
-                result.report,
-                reference,
-              ),
-            );
-          }
-        } else {
-          await this.sendTelegramResponse(
-            message,
-            buildCompetitorResearchFallbackTelegramResponse(
-              result.report,
-              reference,
-            ),
-          );
-        }
-      }
-      if (drainAfterCompletion) {
-        await this.drainQueuedMessages(message.conversationKey);
-      }
-    } catch (error) {
-      const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
-        status: "failed",
-        diagnostic: redactSecrets(errorToMessage(error)),
-      });
-      if (!completed) {
-        return;
-      }
-      this.incrementMetric("telegram_codex_turns_total", {
-        intent: "competitor_research",
-        outcome: "failure",
-      });
-      await this.sendPlainMessage(message, COMPETITOR_RESEARCH_FAILED_MESSAGE);
-      if (drainAfterCompletion) {
-        await this.drainQueuedMessages(message.conversationKey);
-      }
-      throw error;
-    }
-  }
-
-  private async trySendCompetitorResearchDocument(
-    message: TelegramInboundMessage,
-    result: ResearchMarketplaceCompetitorsResult,
-    reference: MarketplaceProductReference,
-  ): Promise<boolean> {
-    if (!this.telegram.sendDocument) {
-      return false;
-    }
-
-    try {
-      await this.sendDocument({
-        chatId: String(message.chatId),
-        fileName: buildCompetitorResearchReportFileName(reference),
-        content: buildCompetitorResearchHtmlReport({
-          reference,
-          sourceVerification: result.sourceVerification,
-          competitors: result.competitors,
-          summary: result.summary,
-          report: result.report,
-          generatedAt: new Date().toISOString(),
-        }),
-        mimeType: "text/html; charset=utf-8",
-        caption: `Полный конкурентный анализ ${reference.marketplace === "wildberries" ? "WB" : "Ozon"} · ${reference.productId}`,
-        ...(message.messageId ? { replyToMessageId: message.messageId } : {}),
-        ...(message.businessConnectionId
-          ? { businessConnectionId: message.businessConnectionId }
-          : {}),
-      });
-      return true;
-    } catch (error) {
-      this.logger?.warn("Telegram competitor research document delivery failed.", {
-        conversationKey: message.conversationKey,
-        productId: reference.productId,
-        error: redactSecrets(errorToMessage(error)),
-      });
-      return false;
-    }
-  }
-
-  private async completeCompetitorResearchTurn(
-    turnId: string,
-    result: ResearchMarketplaceCompetitorsResult,
-  ): Promise<boolean> {
-    const completed = await this.store.completeAssistantTurnIfRunning(turnId, {
-      status: result.timedOut === true ? "failed" : "completed",
-      ...(result.threadId ? { threadId: result.threadId } : {}),
-      ...(result.timedOut === true
-        ? { diagnostic: "Competitor research Codex timed out." }
-        : {}),
-    });
-    return completed !== undefined;
-  }
-
   private async prepareDigitalTwinTurn(
     message: TelegramInboundMessage,
     connection: TelegramBusinessConnectionRecord,
@@ -2599,7 +2288,6 @@ export class TelegramAssistantService {
   private async cancelActiveAssistantTurn(
     message: TelegramInboundMessage,
     turnId: string,
-    intent: "project_question" | "competitor_research",
   ): Promise<void> {
     const now = new Date().toISOString();
     const cancelled = await this.store.completeAssistantTurnIfRunning(turnId, {
@@ -2610,7 +2298,7 @@ export class TelegramAssistantService {
       return;
     }
     this.incrementMetric("telegram_codex_turns_total", {
-      intent,
+      intent: "project_question",
       outcome: "cancelled",
     });
     const cancelledQueued = await this.store.cancelQueuedMessages(message.conversationKey, {
@@ -3462,27 +3150,6 @@ export class TelegramAssistantService {
     }
 
     return encryptTelegramAuditText(value, { key, keyId });
-  }
-
-  private async sendDocument(
-    input: TelegramSendDocumentInput,
-  ): Promise<TelegramMessage> {
-    if (!this.telegram.sendDocument) {
-      throw new Error("Telegram sendDocument is unavailable.");
-    }
-
-    try {
-      const sent = await this.telegram.sendDocument(input);
-      this.incrementMetric("telegram_documents_sent_total", { outcome: "success" });
-      return sent;
-    } catch (error) {
-      this.incrementMetric("telegram_documents_sent_total", { outcome: "failure" });
-      if (error instanceof TelegramRetryAfterError) {
-        this.incrementMetric("telegram_rate_limited_total", { direction: "outbound" });
-        await waitForTelegramRetryAfter(error.retryAfterSeconds);
-      }
-      throw error;
-    }
   }
 
   private async sendMessage(
