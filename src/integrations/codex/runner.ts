@@ -2,7 +2,6 @@ import type {
   AppConfig,
   ClarificationQuestion,
   CodexExecution,
-  CodexMcpToolCall,
   CodexOutputSchema,
   CodexProgressEvent,
   CodexReviewRunOptions,
@@ -103,7 +102,6 @@ interface CodexEvent {
 interface CodexJsonlState {
   threadId?: string;
   errors: string[];
-  mcpToolCalls: CodexMcpToolCall[];
   stdoutRemainder: string;
   stderrRemainder: string;
 }
@@ -112,7 +110,6 @@ type CodexRunnerMode = "new" | "resume" | "review";
 
 const createCodexJsonlState = (): CodexJsonlState => ({
   errors: [],
-  mcpToolCalls: [],
   stdoutRemainder: "",
   stderrRemainder: "",
 });
@@ -418,28 +415,6 @@ const withoutSandboxArgs = (args: readonly string[]): string[] => {
   return filtered;
 };
 
-const withWebSearchArg = (
-  args: readonly string[],
-  enabled: boolean | undefined,
-): string[] => {
-  const result = [...args];
-  if (enabled === true && !result.includes("--search")) {
-    result.push("--search");
-  }
-  return result;
-};
-
-const withPlaywrightMcpArg = (
-  args: readonly string[],
-  enabled: boolean | undefined,
-): string[] => {
-  const result = [...args];
-  if (enabled === true) {
-    result.push("--config", "mcp_servers.playwright.enabled=true");
-  }
-  return result;
-};
-
 const writeOutputSchemaFile = async (
   tempDir: string,
   outputSchema: CodexOutputSchema | undefined,
@@ -477,39 +452,7 @@ const summarizeEvent = (
 
   return {
     ...summary,
-    ...(preview ? { preview: sanitizeProgressMessage(preview, MAX_LOG_LINE_LENGTH) } : {}),
-  };
-};
-
-const extractMcpToolCall = (event: CodexEvent): CodexMcpToolCall | undefined => {
-  if (event.type !== "item.completed") {
-    return undefined;
-  }
-
-  const item = isRecord(event.item) ? event.item : undefined;
-  if (item?.type !== "mcp_tool_call") {
-    return undefined;
-  }
-
-  const server = typeof item.server === "string" ? item.server.trim() : "";
-  const tool = typeof item.tool === "string" ? item.tool.trim() : "";
-  const status = typeof item.status === "string" ? item.status.trim() : "";
-  if (!server || !tool || !status) {
-    return undefined;
-  }
-
-  const errorValue = item.error;
-  const error = typeof errorValue === "string"
-    ? errorValue.trim()
-    : isRecord(errorValue) && typeof errorValue.message === "string"
-      ? errorValue.message.trim()
-      : "";
-
-  return {
-    server,
-    tool,
-    status,
-    ...(error ? { error: redactSecrets(error) } : {}),
+    ...(preview ? { preview } : {}),
   };
 };
 
@@ -523,11 +466,6 @@ const logParsedStdoutEvent = (
 ): void => {
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     state.threadId = event.thread_id;
-  }
-
-  const mcpToolCall = extractMcpToolCall(event);
-  if (mcpToolCall) {
-    state.mcpToolCalls.push(mcpToolCall);
   }
 
   if (event.type === "turn.failed" || event.type === "error") {
@@ -636,8 +574,6 @@ export class CliCodexRunner implements CodexRunner {
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
       outputSchema: options.outputSchema,
-      webSearch: options.webSearch,
-      playwrightMcp: options.playwrightMcp,
     });
   }
 
@@ -653,8 +589,6 @@ export class CliCodexRunner implements CodexRunner {
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
       outputSchema: options.outputSchema,
-      webSearch: options.webSearch,
-      playwrightMcp: options.playwrightMcp,
     });
   }
 
@@ -672,8 +606,6 @@ export class CliCodexRunner implements CodexRunner {
       imagePaths: options.imagePaths ?? [],
       sandbox: options.sandbox,
       outputSchema: options.outputSchema,
-      webSearch: options.webSearch,
-      playwrightMcp: options.playwrightMcp,
     });
   }
 
@@ -768,8 +700,6 @@ export class CliCodexRunner implements CodexRunner {
     sandbox?: CodexSandbox;
     review?: { baseBranch: string; title?: string };
     outputSchema?: CodexOutputSchema;
-    webSearch?: boolean;
-    playwrightMcp?: boolean;
   }): Promise<CodexExecution> {
     const tempDir = await mkdtemp(join(tmpdir(), "codex-runner-"));
     const lastMessagePath = join(tempDir, "last-message.txt");
@@ -801,13 +731,9 @@ export class CliCodexRunner implements CodexRunner {
         input.mode === "review" && input.review
           ? this.buildReviewArgs(lastMessagePath, input.review, outputSchemaPath)
           : this.buildBaseArgs(lastMessagePath, input.sandbox, outputSchemaPath);
-      const configuredCodexCliArgs = input.sandbox
+      const codexCliArgs = input.sandbox
         ? withoutSandboxArgs(this.config.codexCliArgs)
         : this.config.codexCliArgs;
-      const codexCliArgs = withPlaywrightMcpArg(
-        withWebSearchArg(configuredCodexCliArgs, input.webSearch),
-        input.playwrightMcp,
-      );
       if (input.mode === "resume" && input.threadId) {
         args.push("resume");
         appendImageArgs(args, input.imagePaths);
@@ -901,9 +827,6 @@ export class CliCodexRunner implements CodexRunner {
         },
         ...(finalMessage ? { finalMessage } : {}),
         ...(jsonlState.threadId ? { threadId: jsonlState.threadId } : {}),
-        ...(jsonlState.mcpToolCalls.length > 0
-          ? { mcpToolCalls: jsonlState.mcpToolCalls }
-          : {}),
         ...(clarification
           ? {
               clarification,

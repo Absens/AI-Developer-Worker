@@ -61,12 +61,6 @@ Copy-Item .env.example .env
 | `LOCK_REDIS_URL` | Нет | Не задано | Зарезервировано для будущего Redis lock backend. |
 | `LOCK_POSTGRES_URL` | Нет | Не задано | Зарезервировано для будущего PostgreSQL lock backend. |
 | `CODEX_HOME` | Нет | `~/.codex` на текущей машине | Используйте writable Codex auth directory. В Docker обычно это должен быть путь смонтированного volume, например `/codex-home`. |
-| `PLAYWRIGHT_MCP_ENABLED` | Нет | `false` | Управляет только наличием managed Playwright MCP block в `${CODEX_HOME}/config.toml`. Стандартный `compose.yaml` переопределяет значение на `true` для `worker`, но сервер в block остаётся `enabled = false`; runner включает его per-run только для competitor research. Прямые и non-Compose запуски остаются без браузера, пока оператор не подключит MCP endpoint явно. |
-| `PLAYWRIGHT_MCP_URL` | Нет | `http://playwright:8931/mcp` | Streamable HTTP endpoint Playwright MCP. Разрешены только HTTP(S) URL без embedded credentials. Startup script сохраняет весь пользовательский Codex config вне managed block. |
-| `OZON_RESEARCH_URL` | Нет | Не задано | Bounded HTTP endpoint Ozon research broker. Compose задаёт `http://ozon-research:8933`. Raw Playwright MCP и storage state остаются в отдельной dedicated non-published Docker network с egress; worker/Codex к ней не подключены. |
-| `OZON_STORAGE_STATE_HOST_DIR` | Для рабочего Ozon | `${USERPROFILE}`/`${HOME}` `/.ai-developer/ozon-anonymous` | Абсолютный каталог хоста вне репозитория с анонимным `storage-state.json`. Bootstrap принимает только явно заданный абсолютный внешний каталог. Compose монтирует его только для чтения в dedicated Ozon sidecar. |
-| `OZON_BOOTSTRAP_CANARY_URL` | Только bootstrap | Не задано | Точная каноническая карточка `https://www.ozon.ru/product/<slug>-<sku>/`, проверяемая до сохранения анонимного состояния. |
-| `OZON_STATE_CANDIDATE_FILE` | Только импорт из extension | Не задано | Абсолютный путь вне репозитория к локальному JSON, экспортированному `tools/ozon-state-exporter`. Импорт ограничивает размер и состав, запрещает внешние домены и account-like имена и не активирует состояние до canary. |
 | `CODEX_CLI_COMMAND` | Нет | `codex` | Укажите executable, который запускает Codex CLI. Оставьте `codex`, если не нужен wrapper launcher. |
 | `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`; для Codex CLI `0.149.1` предпочитайте `never` или `on-request`, а не deprecated `on-failure`. |
 | `CODEX_MODEL` | Нет | Не задано | Необязательное явное имя модели Codex, если нужны воспроизводимые запуски. |
@@ -397,93 +391,6 @@ goal-to-task proposal generation.
 | `PROJECT_MANAGER_REPOSITORY_SCAN_MAX_FILES` | `200` | Maximum files for the future repository scan path. |
 | `PROJECT_MANAGER_REQUIRE_HUMAN_GOAL_APPROVAL` | `true` | Keeps PM goals behind human approval. In PM-2, approval only changes goal state. |
 
-## Playwright MCP browser runtime
-
-Wildberries source-card identity is normally verified before Codex starts. The
-worker reads the public CDN upstream map, selects only an allowlisted
-`basket-NN.wbbasket.ru` shard, fetches `card.json`, and requires its `nm_id` to
-match the requested article exactly. This needs no token, proxy or additional
-environment variable. When Wildberries blocks `detail.aspx` with HTTP 403/498,
-successful CDN verification still lets competitor research continue.
-
-Playwright remains enabled for research and is also the fail-closed fallback if
-the CDN route or payload cannot be verified.
-
-Ozon research has no CDN fallback. For regular `/product/<slug>-<sku>/` links,
-the worker uses `OZON_RESEARCH_URL` and requires the bounded broker plus dedicated browser
-to return the exact card's Product JSON-LD. An anti-bot challenge, HTTP 403,
-redirect, missing JSON-LD or SKU mismatch fails closed before Codex is called.
-No personal browser cookies or search snippets are used as a substitute.
-The same `TELEGRAM_CODEX_TIMEOUT_SECONDS` budget covers the complete Ozon flow,
-including worker-owned browser verification before and after Codex.
-
-To warm an anonymous Ozon session, close any authenticated assumptions and run:
-
-```powershell
-$env:OZON_STORAGE_STATE_HOST_DIR = "C:\absolute\path\outside\developer\ozon"
-$env:OZON_BOOTSTRAP_CANARY_URL = "https://www.ozon.ru/product/example-3085863400/"
-npm run ozon:bootstrap
-```
-
-The command launches a fresh visible Chrome context. Do not sign in. Complete a
-challenge if shown and press Enter only after the card loads. The script saves no
-state unless the browser-side composer API returns HTTP 200, non-empty widgets
-and the exact primary Product JSON-LD SKU. Account-like cookie/local-storage
-names reject the save, and cookie values are never printed. Mount the resulting
-directory read-only and recreate the `ozon-playwright` sidecar to reload it. A
-state created by host Chrome can remain bound to that fingerprint; successful
-bootstrap is therefore not proof that Linux Chromium will pass. Keep Ozon
-fail-closed until a sidecar canary succeeds.
-
-If the same signed-out Ozon card already opens in a trusted Chrome profile, load
-`tools/ozon-state-exporter` through `chrome://extensions` as an unpacked extension.
-Its manifest is limited to Ozon hosts, and its popup has no network transport.
-After signing out of Ozon, export from a canonical product card and import locally:
-
-```powershell
-$env:OZON_STATE_CANDIDATE_FILE = "C:\Users\you\Downloads\ozon-storage-state-candidate.json"
-$env:OZON_STORAGE_STATE_HOST_DIR = "C:\absolute\path\outside\developer\ozon"
-$env:OZON_BOOTSTRAP_CANARY_URL = "https://www.ozon.ru/product/example-3085863400/"
-npm run ozon:import-state
-```
-
-The candidate is treated as sensitive even though authenticated-looking state is
-rejected. Do not send or commit it. The importer resolves the real file path,
-enforces a 512 KiB limit and a bounded Ozon-only schema, opens a fresh visible
-Chrome context with that state, and atomically replaces `storage-state.json` only
-after the same exact-card canary succeeds. It logs counts and status, never values.
-
-Refreshing is transactional: a failed canary or anonymous-state gate does not
-create or replace `storage-state.json`; an existing last-known-good state remains
-in place. A successful refresh writes a temporary file in the same directory and
-atomically renames it over the previous state.
-
-The worker image does not install Chromium or `@playwright/mcp`. The standard
-`compose.yaml` runs pinned non-published browser sidecars; no browser port is
-published to the host. The generic endpoint is
-`http://playwright:8931/mcp`. The worker entrypoint updates only the delimited
-`AI_WORKER_PLAYWRIGHT_MCP` block in `${CODEX_HOME}/config.toml` and preserves all
-other profiles and MCP servers.
-
-The worker-facing Ozon endpoint is the bounded broker at
-`http://ozon-research:8933`. The raw `http://ozon-playwright:8932/mcp` endpoint
-uses a shared context and read-only `/ozon-state/storage-state.json`, but exists
-only on the dedicated `ozon-browser` network. That network has external egress
-for Ozon, while worker/Codex are not members. The broker accepts only canonical
-Ozon card URLs and returns bounded public inspection data. Worker/Codex are not
-attached to that browser network, so arbitrary model tools cannot access state.
-
-The managed Codex server is configured with `enabled = false` and `required =
-true`. `CliCodexRunner` enables it with a one-run `--config` override only for
-marketplace competitor research, so developer tasks, project Q&A, reviews and
-Digital Twin runs do not receive browser tools. When enabled for that run, it
-uses automatic approval only for its explicit allowlist and exposes navigation,
-waiting, accessibility snapshot, network inspection, screenshot and close. It
-does not expose click, form-fill, file-upload or arbitrary browser-code tools. If
-the sidecar is unavailable, standard Compose keeps the worker from starting;
-direct/non-Compose deployments must provide their own compatible endpoint before
-setting `PLAYWRIGHT_MCP_ENABLED=true`.
-
 ## Telegram Assistant
 
 Telegram Assistant is disabled by default. When enabled, it starts a Bot API
@@ -515,32 +422,15 @@ owner/admin approval; see
 [docs/TELEGRAM_TASK_INTAKE.md](TELEGRAM_TASK_INTAKE.md)
 before enabling this as an auto-execution intake channel.
 
-With `TELEGRAM_PROJECT_QA_ENABLED=true`, an allowed private user or configured
-group may send a Wildberries product-card URL matching `/catalog/<numeric-id>/`
-or a regular Ozon URL matching `/product/<slug>-<sku>/`. The assistant
-immediately acknowledges the request and starts asynchronous read-only research.
-Wildberries normally uses worker-owned CDN verification with audited Playwright
-as its fallback; Ozon requires worker-owned inspection through its dedicated
-Playwright MCP sidecar. Web search and competitor analysis are allowed only after exact product
-identity is confirmed.
-
-The runner records successful Playwright `mcp_tool_call` events from Codex JSONL;
-a structured `verified` claim without successful `browser_navigate` plus
-`browser_snapshot` or `browser_network_request` is rejected. Unverified runs mark
-the assistant turn failed and send only the verification diagnostic—no summary
-or HTML report. Competitor research shares the project-Q&A daily limit and
-timeout settings, supports Wildberries and regular Ozon product links, and deliberately
-ignores Telegram Business/Profile automation messages for this intent.
-
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `TELEGRAM_ASSISTANT_ENABLED` | `false` | Enables Telegram Assistant configuration. When `true`, `TELEGRAM_ASSISTANT_BOT_TOKEN` is required. Production also requires non-empty chat, user, or role-specific allowlists. |
 | `TELEGRAM_ASSISTANT_BOT_TOKEN` | Not set | Bot token for Telegram Assistant only. Do not confuse it with alert sink `TELEGRAM_BOT_TOKEN`. |
 | `TELEGRAM_ASSISTANT_MODE` | `polling` | Assistant delivery mode: `polling` or `webhook`. |
 | `TELEGRAM_ASSISTANT_POLL_INTERVAL_SECONDS` | `2` | Polling interval when mode is `polling`. Positive integer. |
-| `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used for Telegram project Q&A and Wildberries competitor research. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
+| `TELEGRAM_CODEX_MODEL` | Not set | Optional Codex model override used only for Telegram project Q&A. Falls back to `CODEX_MODEL` when unset. Set only to a model accepted by the active Codex auth. |
 | `TELEGRAM_CONFIRM_WRITE_ACTIONS` | `true` | Requires confirmation before task creation, ready transitions and Telegram-recorded AI question answers. |
-| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands and Wildberries-link competitor research in the base assistant. Both count against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
+| `TELEGRAM_PROJECT_QA_ENABLED` | `false` | Enables project Q&A commands in the base assistant. Counts against `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT`. |
 | `TELEGRAM_TASK_CREATION_ENABLED` | `true` | Enables executable task draft sessions, pending create-task actions and direct task writes. Requires `TASK_TRACKER_PROVIDER=internal` and write-capable role IDs. Set to `false` to block all Telegram task creation before draft or pending-action state is created. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | Empty list | Comma-separated Telegram chat IDs allowed to use the assistant. |
 | `TELEGRAM_ALLOWED_USER_IDS` | Empty list | Comma-separated Telegram user IDs allowed to use the assistant. |
@@ -550,8 +440,8 @@ ignores Telegram Business/Profile automation messages for this intent.
 | `TELEGRAM_GROUP_MODE` | `mentions_and_replies` | Group chat handling: `private_only`, `mentions_and_replies`, or `all_messages`. |
 | `TELEGRAM_DEFAULT_REPOSITORY` | Not set | Optional default repository name for assistant-created work. |
 | `TELEGRAM_USER_TASK_CREATION_DAILY_LIMIT` | `20` | Per-user daily task creation limit. Positive integer. |
-| `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Per-user daily Codex limit shared by project Q&A and competitor research. Positive integer. |
-| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for assistant-triggered project Q&A and competitor-research Codex runs. Positive integer. |
+| `TELEGRAM_USER_CODEX_QA_DAILY_LIMIT` | `50` | Per-user daily Codex QA limit. Positive integer. |
+| `TELEGRAM_CODEX_TIMEOUT_SECONDS` | `120` | Timeout for assistant-triggered Codex QA runs. Positive integer. |
 | `TELEGRAM_CODEX_MAX_CONTEXT_CHARS` | `12000` | Maximum context characters sent to Codex from assistant conversations. Positive integer. |
 | `TELEGRAM_MAX_QUEUED_MESSAGES_PER_CHAT` | `20` | Maximum queued messages retained per chat. Positive integer. |
 | `TELEGRAM_CONVERSATION_RETENTION_DAYS` | `14` | Conversation retention window. Positive integer. |

@@ -1,5 +1,4 @@
 import type { TelegramIntent } from "./types.js";
-import { extractMarketplaceProductReference } from "./competitorResearch.js";
 
 export interface RouteTelegramIntentOptions {
   projectQaEnabled?: boolean;
@@ -48,12 +47,6 @@ export const routeTelegramIntent = (
     return buildIntent("approve_action", rawText, {
       confidence: 1,
       safetyLevel: "confirm_write",
-    });
-  }
-  if (extractMarketplaceProductReference(rawText)) {
-    return buildIntent("competitor_research", rawText, {
-      confidence: 1,
-      safetyLevel: "read_only",
     });
   }
   if (options.projectQaEnabled === true) {
