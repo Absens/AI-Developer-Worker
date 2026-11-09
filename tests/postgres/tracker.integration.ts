@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   assertInternalTrackerOperational,
   listInternalTrackerMigrations,
-  listInternalTrackerMigrationStatus,
+  getInternalTrackerMigrationStatus,
   runInternalTrackerMigrations,
 } from "../../src/integrations/internalTracker/migrations.js";
 import type { ClaimedTask } from "../../src/domain/taskTracker/types.js";
@@ -32,18 +32,21 @@ describe("real PostgreSQL migrations and operational checks", () => {
   it("migrates an empty schema with the production runner and is idempotent", async () => {
     const f = await start(false);
     const migrations = listInternalTrackerMigrations();
+    const versions = migrations.map((entry) => entry.version);
     expect(migrations.length).toBeGreaterThan(0);
-    const before = await listInternalTrackerMigrationStatus(f.db);
-    expect(before).toHaveLength(migrations.length);
-    expect(before.every((entry) => !entry.applied)).toBe(true);
+    expect(await getInternalTrackerMigrationStatus(f.db)).toEqual({
+      tableExists: false, applied: [], pending: versions, missing: versions,
+    });
 
-    expect(await runInternalTrackerMigrations(f.db)).toEqual(migrations.map((entry) => entry.version));
+    expect((await runInternalTrackerMigrations(f.db)).map((entry) => entry.version)).toEqual(versions);
     await expect(assertInternalTrackerOperational(f.db)).resolves.toBeUndefined();
     const applied = await f.db.query("SELECT version, checksum, applied_at FROM internal_tracker_schema_migrations ORDER BY version");
     expect(applied.rows.map((row) => ({ version: row.version, checksum: row.checksum }))).toEqual(
       migrations.map(({ version, checksum }) => ({ version, checksum })),
     );
-    expect((await listInternalTrackerMigrationStatus(f.db)).every((entry) => entry.applied)).toBe(true);
+    expect(await getInternalTrackerMigrationStatus(f.db)).toEqual({
+      tableExists: true, applied: versions, pending: [], missing: [],
+    });
     expect(await runInternalTrackerMigrations(f.db)).toEqual([]);
     expect((await f.db.query("SELECT version, checksum, applied_at FROM internal_tracker_schema_migrations ORDER BY version")).rows).toEqual(applied.rows);
   });

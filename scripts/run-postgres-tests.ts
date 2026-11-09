@@ -96,7 +96,6 @@ export const runPostgresTests = async (): Promise<void> => {
       join(root, "node_modules/vitest/vitest.mjs"),
       "run", "--config", "vitest.postgres.config.ts",
       "--reporter=default", "--reporter=json", `--outputFile=${reportFile}`,
-      "--forbid-only",
     ], { cwd: root, env: process.env, stdio: "inherit", timeout: 180_000 });
     if (result.error || result.signal || result.status !== 0) {
       throw new Error("PostgreSQL integration test process failed or timed out.");
