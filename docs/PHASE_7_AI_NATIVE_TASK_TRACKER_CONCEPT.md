@@ -1,4 +1,7 @@
-# Phase 7 - AI-native Task Tracker Concept
+# Концепция AI-native Task Tracker (этап 7)
+
+> **Историческая концепция (28 апреля 2026 года).** Это исходный проектный документ, а не актуальный runtime-контракт. После него внутренний трекер развивался. Для фактической модели используйте [архитектуру](ARCHITECTURE.md), [runbook PostgreSQL](INTERNAL_TRACKER_POSTGRES_RUNBOOK.md) и исходный код.
+
 
 _Актуально на 2026-04-28._
 
