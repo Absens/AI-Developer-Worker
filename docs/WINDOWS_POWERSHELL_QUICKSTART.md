@@ -9,7 +9,7 @@
 ```powershell
 docker version
 codex login status
-``
+```
 
 Результат `Logged in` на хосте **не заменяет** отдельную авторизацию контейнера. Репозиторий, с которым будет работать агент, должен быть реальным git clone с fetch/push доступом.
 
@@ -18,7 +18,7 @@ codex login status
 ```powershell
 Set-Location C:\work\AI-Developer-Worker
 docker build -t ai-developer-worker .
-``
+```
 
 Замените путь на фактический. Docker-образ собирает backend и Angular-консоль.
 
@@ -28,7 +28,7 @@ docker build -t ai-developer-worker .
 docker volume create codex-home
 docker run --rm -it --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/codex-home" ai-developer-worker login --device-auth
 docker run --rm --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/codex-home" ai-developer-worker login status
-``
+```
 
 Авторизация должна происходить в **томе воркера**, а не через совместное использование хостового `auth.json`.
 
@@ -37,7 +37,7 @@ docker run --rm --entrypoint codex -e CODEX_HOME=/codex-home -v "codex-home:/cod
 ```powershell
 Copy-Item .env.example .env
 notepad .env
-``
+```
 
 Для режима Yandex проверьте `TRACKER_TOKEN`, `TRACKER_ORG_ID`, `TRACKER_STATUS_MAP_FILE`, `TRACKER_DEFAULT_QUEUE`. Для GitLab — `GITLAB_URL`, `GITLAB_TOKEN`, `GITLAB_PROJECT_ID`. Также задайте `WORKER_ID`, `TEST_COMMAND`, `LINT_COMMAND` и `CODEX_CLI_COMMAND`.
 
@@ -45,7 +45,7 @@ notepad .env
 
 ```powershell
 $TargetRepo = "C:\work\my-target-repository"
-``
+```
 
 Если его remote использует SSH и воркер должен переключиться на HTTPS, задайте в `.env` `GIT_REPOSITORY_URL`, `GIT_REPOSITORY_USERNAME=oauth2` и `GIT_REPOSITORY_TOKEN`. Не добавляйте реальный token в README, скриншоты или историю команд.
 
@@ -61,7 +61,7 @@ docker run --rm `
   -v "codex-home:/codex-home" `
   -v "$($TargetRepo):/workspace/project" `
   ai-developer-worker
-``
+```
 
 В этом примере символ переноса строки PowerShell — обратная кавычка, а не `\`. Проверяйте, что после символа переноса нет пробелов.
 
@@ -77,7 +77,7 @@ docker run --rm `
   -v "codex-home:/codex-home" `
   -v "$($TargetRepo):/workspace/project" `
   ai-developer-worker
-``
+```
 
 ## Альтернатива: Docker Compose
 
@@ -87,14 +87,14 @@ docker run --rm `
 HOST_CODEX_HOME=C:/Users/YOUR_USER/.codex
 TARGET_REPO_PATH=C:/work/my-target-repository
 REPO_PATH=/workspace/project
-``
+```
 
 ```powershell
 docker compose build
 docker compose run --rm --entrypoint codex worker login --device-auth
 docker compose run --rm --entrypoint codex worker login status
 docker compose up --build
-``
+```
 
 Для внутреннего PostgreSQL-трекера `compose.yaml` содержит `postgres` и `migrate`. Если включён `TASK_TRACKER_PROVIDER=internal`, убедитесь в доступности БД и корректной конфигурации UI/auth. При `OBSERVABILITY_ENABLED=true` и включённой консоли локальный интерфейс может быть доступен по `http://localhost:9464/tasks`.
 
