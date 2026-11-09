@@ -49,7 +49,7 @@ describe("Git execution environment boundary", () => {
       expect(env.GIT_CONFIG_PARAMETERS).toBeUndefined();
       expect(env.GIT_AUTHOR_EMAIL).toBe("worker@example.test");
       const network = String(command).match(/^git (fetch|pull|push|ls-remote)(?:\s|$)/);
-      if (network) {
+      if (network?.[1]) {
         networkNames.add(network[1]);
         expect(env.GIT_CONFIG_COUNT).toBe("1");
         expect(env.GIT_CONFIG_KEY_0).toBe("http.https://gitlab.example.test/.extraheader");
@@ -82,7 +82,10 @@ describe("Git execution environment boundary", () => {
     vi.stubEnv("PROJECT_TEST_SECRET", "not-for-git");
     successfulCommands("/tmp/test-remote.git");
     await new RepositoryGitService(config, new Logger()).hasChanges();
-    const env = shell.run.mock.calls[0][1].env;
+    expect(shell.run).toHaveBeenCalledTimes(1);
+    const call = shell.run.mock.calls[0];
+    if (!call) throw new Error("Expected a Git command to be executed.");
+    const env = call[1].env;
     expect(env.GIT_TEST_TOOL_SETTING).toBe("allowed");
     expect(env.PROJECT_TEST_SECRET).toBeUndefined();
   });
