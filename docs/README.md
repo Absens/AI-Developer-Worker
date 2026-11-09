@@ -11,6 +11,7 @@
 | Что делает система, как начать | [README проекта](../README.md) |
 | Из каких модулей состоит и как идёт задача | [Архитектура](ARCHITECTURE.md) |
 | Как проверять PR и защитить main | [CI и обязательные проверки](CI_RUNBOOK.md) |
+| Что блокирует публикацию и как перепроверяется существующий MR | [Политика валидации](VALIDATION_POLICY.md) |
 | Какие переменные получают Codex, Git и команды проекта | [Профили окружения и миграция](EXECUTION_ENVIRONMENT.md) |
 | Что нужно для локального Docker | [Запуск в Docker](LOCAL_DOCKER_RUN.md) |
 | Пошаговый запуск в PowerShell | [Windows PowerShell](WINDOWS_POWERSHELL_QUICKSTART.md) |
