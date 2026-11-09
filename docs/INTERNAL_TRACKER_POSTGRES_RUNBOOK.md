@@ -1,22 +1,20 @@
-# Internal Tracker PostgreSQL Runbook
+# Внутренний трекер: PostgreSQL и эксплуатация
 
-Phase 7H makes `TASK_TRACKER_PROVIDER=internal` a PostgreSQL-backed mode for
-continuous self-hosted operation. `TASK_TRACKER_PROVIDER=yandex` remains the
-rollback path and does not require this database.
+В production-режиме `TASK_TRACKER_PROVIDER=internal` состояние задач и выполнение очереди хранятся в PostgreSQL. Режим `yandex` остаётся отдельным вариантом runtime и не требует этой БД.
 
-## Enable Internal Mode
-
-Use PostgreSQL storage in production:
+## Включение
 
 ```env
 TASK_TRACKER_PROVIDER=internal
 TASK_TRACKER_STORAGE=postgres
-TASK_TRACKER_DATABASE_URL=postgres://tracker:tracker@postgres:5432/ai_developer_tasks
+TASK_TRACKER_DATABASE_URL=postgres://tracker:YOUR_PASSWORD@postgres:5432/ai_developer_tasks
 TASK_INTAKE_MODE=standalone
 YANDEX_SYNC_ENABLED=false
 ```
 
-For Yandex as source/mirror instead of direct runtime state:
+Указанный URL **пример**. Включайте отдельного пользователя и надёжный пароль; значение `tracker:tracker` из демонстрационного `compose.yaml` нельзя оставлять для внешне доступной production-БД.
+
+Если Yandex выступает источником/зеркалом задач:
 
 ```env
 TASK_INTAKE_MODE=yandex_integration
@@ -26,22 +24,20 @@ TRACKER_ORG_ID=...
 TRACKER_STATUS_MAP_FILE=./config/trackerStatusMap.example.json
 ```
 
-## Migrations
+Также поддерживаются `hybrid`, `system_only` и `ai_proposed`; настройку смотрите в [ENV_CONFIGURATION.md](ENV_CONFIGURATION.md).
 
-Run migrations before preflight or startup:
+## Миграции и preflight
+
+Перед первым запуском и после обновления версии:
 
 ```bash
 npm run tracker:migrate
 npm run preflight
 ```
 
-Preflight fails if the database is unreachable, migration metadata is missing,
-any migration is pending, required tables/indexes are absent, or `SKIP LOCKED`
-claim support is unavailable.
+Preflight выявляет недоступность базы, отсутствующую метаинформацию миграций, ожидающие миграции, отсутствие обязательных таблиц/индексов и поддержки атомарного `FOR UPDATE SKIP LOCKED` для claim очереди.
 
-## Retention And Cleanup
-
-Defaults:
+## Хранение и очистка
 
 ```env
 TASK_TRACKER_RETENTION_RAW_LOG_DAYS=30
@@ -54,74 +50,47 @@ TASK_TRACKER_METRICS_ENABLED=true
 TASK_TRACKER_REDACTION_ENABLED=true
 ```
 
-Cleanup removes expired raw log and validation artifact metadata, old released
-leases, and stale proposals. Compact task history remains in `tasks`,
-`task_events`, `task_decisions`, revisions, comments, and summaries.
+Cleanup удаляет устаревшие сырые логи, метаданные validation artifacts, старые released leases и неактуальные proposals. Краткая история задач и решений остаётся в `tasks`, `task_events`, `task_decisions` и связанных таблицах.
 
-## Auth Alignment
+## Доступ к UI/API
 
-If the task UI/API is bound outside localhost, preflight requires auth:
+Для интерфейса за пределами localhost необходима настроенная авторизация. Используйте `TASK_TRACKER_SYSTEM_TOKEN` / `TASK_TRACKER_AGENT_TOKEN` и проверенную конфигурацию reverse proxy. Не совмещайте `TASK_TRACKER_HUMAN_AUTH_MODE=localhost` с публичным `TASK_TRACKER_UI_BIND_HOST=0.0.0.0`.
 
-- `TASK_TRACKER_SYSTEM_TOKEN` and `TASK_TRACKER_AGENT_TOKEN` for the internal
-  tracker UI/API.
-- Do not use `TASK_TRACKER_HUMAN_AUTH_MODE=localhost` with
-  `TASK_TRACKER_UI_BIND_HOST=0.0.0.0`.
+## Резервные копии
 
-## Backup
-
-Use database-native backups. Example from the host or a maintenance container:
+Создавайте бэкапы встроенными средствами PostgreSQL, храните их отдельно от основного сервера и периодически проверяйте восстановление.
 
 ```bash
-pg_dump "$TASK_TRACKER_DATABASE_URL" \
-  --format=custom \
-  --file=ai-developer-tasks-$(date +%Y%m%d%H%M%S).dump
+pg_dump "$TASK_TRACKER_DATABASE_URL" --format=custom --file=ai-developer-tasks.dump
 ```
 
-For Docker Compose:
+Для демонстрационного Compose:
 
 ```bash
-docker compose exec postgres pg_dump \
-  -U tracker \
-  -d ai_developer_tasks \
-  --format=custom \
-  --file=/tmp/ai-developer-tasks.dump
+docker compose exec postgres pg_dump -U tracker -d ai_developer_tasks --format=custom --file=/tmp/ai-developer-tasks.dump
 docker compose cp postgres:/tmp/ai-developer-tasks.dump ./ai-developer-tasks.dump
 ```
 
-## Restore
+## Восстановление
 
-Restore into an empty database, then run preflight:
+Восстанавливайте в заранее подготовленную пустую/изолированную базу: `--clean` удаляет существующие объекты и данные.
 
 ```bash
-pg_restore \
-  --clean \
-  --if-exists \
-  --dbname "$TASK_TRACKER_DATABASE_URL" \
-  ai-developer-tasks.dump
+pg_restore --clean --if-exists --dbname "$TASK_TRACKER_DATABASE_URL" ai-developer-tasks.dump
 npm run preflight
 ```
 
-For Compose:
+Для Compose (после остановки воркера и проверки целевой БД):
 
 ```bash
 docker compose cp ./ai-developer-tasks.dump postgres:/tmp/ai-developer-tasks.dump
-docker compose exec postgres pg_restore \
-  --clean \
-  --if-exists \
-  -U tracker \
-  -d ai_developer_tasks \
-  /tmp/ai-developer-tasks.dump
+docker compose exec postgres pg_restore --clean --if-exists -U tracker -d ai_developer_tasks /tmp/ai-developer-tasks.dump
 docker compose run --rm worker npm run preflight
 ```
 
-## Rollback
+## Откат режима
 
-Rollback does not require deleting internal tracker data:
+Можно временно вернуться к `TASK_TRACKER_PROVIDER=yandex`, отключив internal cleanup/metrics. **Не удаляйте PostgreSQL volume**, пока не завершены перенос задач, сверка статусов и сохранение audit history.
 
-```env
-TASK_TRACKER_PROVIDER=yandex
-TASK_TRACKER_CLEANUP_ENABLED=false
-TASK_TRACKER_METRICS_ENABLED=false
-```
+Подробнее о миграциях — [README схемы](../src/integrations/internalTracker/migrations/README.md).
 
-Keep the PostgreSQL volume intact until you no longer need task audit history.

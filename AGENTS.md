@@ -1,51 +1,66 @@
-# Repository Guidelines
+# Правила работы с репозиторием
 
-## Project Structure & Module Organization
+Этот файл предназначен для разработчиков и ИИ-агентов, которые изменяют `AI-Developer-Worker`. Рабочий язык документации и объяснений — **русский**. Названия типов, методов, переменных окружения, файлов, команд, имена веток и тексты протоколов остаются на языке исходного кода.
 
-This repository contains a Node.js/TypeScript worker that polls Yandex Tracker or an internal task tracker, runs Codex CLI, validates a target repository, and opens GitLab merge requests. It also includes an observability/human API surface, an Angular internal tracker console, Telegram Assistant support, and Project Manager automation.
+## Назначение и границы проекта
 
-- `src/` runtime code
-- `src/domain/` orchestration and prompt building
-- `src/domain/taskTracker/` internal task tracker domain contracts and policies
-- `src/domain/projectManager/` Project Manager analysis, goals, replanning, and proposal logic
-- `src/domain/telegramAssistant/` Telegram Assistant dialogue and notification workflows
-- `src/integrations/` Tracker, internal tracker, Yandex bridge, GitLab, Git, Telegram, and Codex adapters
-- `src/observability/` health/readiness, metrics, alerts, event storage, and human task API
-- `src/utils/` shared helpers such as shell execution, retry, and logging
-- `tests/` Vitest unit and smoke tests
-- `web/` Angular human console for internal task tracker workflows
-- `scripts/` operational helpers, including Codex auth bootstrap
-- `docs/` runbooks for Docker and Windows/PowerShell usage
-- `docs/ARCHITECTURE.md` architecture map for runtime flows, module boundaries, and common change paths
+Это Node.js/TypeScript-система для выполнения инженерных задач из Yandex Tracker или собственного task tracker: Codex CLI анализирует и меняет целевой репозиторий, воркер запускает quality gates и создаёт MR в GitLab. Дополнительно есть HTTP API/observability, Angular-консоль, Telegram Assistant и Project Manager Agent.
 
-## Build, Test, and Development Commands
+**Не возвращайте поиск конкурентов Wildberries/Ozon в универсальное ядро.** Весь удалённый эксперимент сохранён в `archive/competitor-research-2026`. Новые специализированные продуктовые исследования требуют отдельного обсуждения границ и, предпочтительно, отдельного модуля или репозитория.
 
-- `npm install` installs dependencies
-- `npm run typecheck` runs strict TypeScript checks without emitting files
-- `npm test` runs the full Vitest suite
-- `npm run test:smoke` runs the end-to-end smoke test with mock Tracker/GitLab and real git flow
-- `npm run build` builds the production bundle into `dist/`
-- `npm run dev` starts the worker with `tsx`
-- `npm run preflight` checks config, Codex auth, git, Tracker, GitLab, and target commands without processing the queue
-- `npm run tracker:migrate` applies PostgreSQL migrations for the internal task tracker
-- `npm run verify:codex-cli` checks the installed Codex CLI contract expected by the worker
-- `npm run web:typecheck`, `npm run web:test`, `npm run web:build`, and `npm run web:e2e` validate the Angular console
-- `npm run bootstrap:codex-home` copies an existing Codex auth directory into a target path or mounted volume
+## Где искать код
 
-## Coding Style & Naming Conventions
+- `src/index.ts` и `src/app.ts` — запуск и wiring приложения.
+- `src/config.ts` — конфигурация runtime.
+- `src/domain/` — оркестрация, промпты, маршрутизация, quality gates.
+- `src/domain/taskTracker/` — доменная модель внутреннего трекера, политики, события.
+- `src/domain/projectManager/` — анализ проектов, цели, предложения и replanning.
+- `src/domain/telegramAssistant/` — диалоги и управление задачами через Telegram.
+- `src/integrations/` — адаптеры Codex, Git, GitLab, Tracker, PostgreSQL и Telegram.
+- `src/observability/` — health/readiness, метрики, события, API для людей.
+- `src/utils/` — shell, retry, логирование и утилиты.
+- `tests/` — Vitest и smoke-тесты.
+- `web/` — Angular/PrimeNG интерфейс.
+- `scripts/` — миграции и эксплуатационные утилиты.
+- `docs/` — текущие руководства; начинайте с [указателя](docs/README.md).
 
-Use TypeScript with ES modules, 2-space indentation, semicolons, and explicit types on public interfaces. Prefer small modules and keep business logic in `src/domain/`, not in transport or shell adapters. Use `PascalCase` for classes, `camelCase` for functions and variables, and kebab-free filenames like `promptBuilder.ts` or `commentProtocol.ts`.
+## Команды проверки
 
-There is no formatter configured yet; keep style consistent with the existing codebase and run `npm run typecheck` before submitting changes.
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run test:smoke
+npm run build
+npm run verify:codex-cli
 
-## Testing Guidelines
+npm --prefix web ci
+npm run web:typecheck
+npm run web:test
+npm run web:build
+npm run web:e2e
+```
 
-Tests use Vitest. Add unit tests next to the affected behavior in `tests/*.test.ts`. Use descriptive names such as `codexAuth.test.ts` or `worker.smoke.test.ts`. For runtime or auth changes, prefer both a focused unit test and a smoke-path assertion when feasible.
+Тесты E2E требуют соответствующего браузерного окружения; для реального preflight нужны корректные доступы к GitLab, Tracker и Codex. Не отмечайте непроведённые проверки как успешные.
 
-## Commit & Pull Request Guidelines
+## Стиль изменений
 
-Current history uses short imperative commit messages, for example `Update environment configuration and documentation for Docker setup`. Follow that style, keep subject lines concise, and group related changes in one commit. If a change affects worker behavior, mention Tracker/GitLab/Codex impact in the PR description and include exact verification commands, for example `npm test` and `npm run build`.
+- TypeScript с ES Modules, отступ 2 пробела, точки с запятой; явные типы для публичных контрактов.
+- Классы — `PascalCase`, функции и переменные — `camelCase`, имена файлов — по существующему стилю (например, `promptBuilder.ts`).
+- Доменная логика — в `src/domain/`, интеграции и shell-адаптеры не должны определять бизнес-политику.
+- Добавляйте узкие unit-тесты в `tests/*.test.ts`, а при изменении orchestration или auth — smoke-сценарий.
+- Делайте небольшие, логически целостные коммиты. В PR указывайте последствия для Tracker/GitLab/Codex, миграций, переменных окружения и точные выполненные проверки.
 
-## Security & Configuration Tips
+## Контроль безопасности
 
-Do not commit `.env`, `.codex-home/`, or any Codex auth state. In Docker, prefer a dedicated writable `CODEX_HOME` volume over binding the host `~/.codex` directly. Validate `TRACKER_STATUS_MAP_FILE`, `CODEX_CLI_COMMAND`, `TEST_COMMAND`, `LINT_COMMAND`, and any optional quality gate commands against the real target repository before running the worker continuously.
+- Не коммитьте `.env`, OAuth-сессии, `auth.json`, токены, дампы баз или приватные данные.
+- Для постоянного запуска Codex используйте отдельный writable `CODEX_HOME`; не делите один `auth.json` между хостом и несколькими контейнерами.
+- Значение `CODEX_SANDBOX=danger-full-access` в примере конфигурации **не означает, что оно допустимо для недоверенного кода**. Перед автономной работой нужно изолировать процессы, файлы, сеть и секреты.
+- Проверяйте команды целевого репозитория (`TEST_COMMAND`, `LINT_COMMAND` и т. д.) до запуска воркера.
+- Не сливайте и не деплойте изменения автоматически без явно согласованной политики.
+- Учитывайте, что `TASK_TRACKER_PROVIDER=internal` и `yandex` имеют разные состояния задач и сценарии восстановления.
+
+## Документация
+
+Изменяя поведение системы, правьте соответствующие runbook-и в том же PR. Объяснения пишите по-русски, но не переводите идентификаторы API, значения enum, ключи конфигурации и исполняемые команды. Исторические `docs/superpowers/plans` и `specs` не следует переписывать как актуальное описание реализации.
+

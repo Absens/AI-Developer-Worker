@@ -1,17 +1,15 @@
-# Memory Lifecycle Runbook
+# Память проектов: хранение, проверка и очистка
 
-Phase 5 memory is a local, file-backed repository knowledge store. It is disabled by default and is advisory when enabled: current Tracker instructions, current repository files, and fresh human comments remain authoritative.
+Подсистема memory хранит знания о целевых репозиториях в локальных файлах. По умолчанию она **выключена** и при включении носит рекомендательный характер: текущие файлы репозитория, задания Tracker и новые комментарии человека имеют приоритет над памятью.
 
-## Storage Layout
+## Структура
 
-Set `MEMORY_DIR` to a writable directory outside the target repository:
+Укажите writable каталог **вне** целевого git checkout:
 
 ```env
 MEMORY_ENABLED=true
 MEMORY_DIR=/workspace/ai-developer-memory
 ```
-
-The worker stores one directory per sanitized `RepositoryProfile.name`:
 
 ```text
 MEMORY_DIR/
@@ -24,28 +22,24 @@ MEMORY_DIR/
       review-learning.jsonl
 ```
 
-The repository key is based on the profile name, not `repoPath`, so memory survives checkout path changes. Fleet startup rejects repository names that normalize to the same key.
+Идентификатор памяти основан на нормализованном `RepositoryProfile.name`, а не `repoPath`: изменения пути checkout не ломают привязку. Если имена двух профилей дают одинаковый ключ, fleet startup завершается ошибкой.
 
-## Validation
-
-Run:
+## Валидация
 
 ```bash
 npm run memory:validate
 ```
 
-The command checks JSON schemas, JSONL rows, duplicate prompt rule IDs, and prompt rule `sourceEntryIds`. It does not require Tracker or GitLab credentials.
+Проверяются схемы JSON, строки JSONL, уникальность ID правил и ссылки `sourceEntryIds`. Токены Tracker/GitLab не нужны.
 
-Runtime behavior:
+- При `MEMORY_STRICT=false` повреждённая память конкретного репозитория отключается с предупреждением.
+- При `MEMORY_STRICT=true` обработка задачи блокируется при невалидной памяти.
 
-- `MEMORY_STRICT=false` disables memory for only the corrupted repository and logs `WARN`.
-- `MEMORY_STRICT=true` fails task processing when memory is invalid.
+## Знания и правила
 
-## Manual Knowledge And Rules
+`knowledge.json` содержит компактные устойчивые факты: архитектуру, точки входа, соглашения, особенности тестирования и известные ловушки. Не помещайте туда секреты и устаревающие догадки.
 
-`knowledge.json` contains structured sections such as architecture map, entry points, code patterns, test strategy, known pitfalls, and conventions. Add only concise, durable repository facts.
-
-`prompt-rules.json` contains manual or learned rules. Only `approved` rules affect prompts by default:
+`prompt-rules.json` — ручные и выученные правила. По умолчанию влияют на промпты только записи с `approvalState: "approved"`. Пример:
 
 ```json
 [
@@ -65,12 +59,15 @@ Runtime behavior:
 ]
 ```
 
-Set `MEMORY_INCLUDE_DRAFT_RULES=true` only for controlled experiments. Draft rules are otherwise ignored.
+`MEMORY_INCLUDE_DRAFT_RULES=true` используйте только в контролируемом эксперименте: иначе черновики игнорируются.
 
-## Failure Memory
+## Память ошибок
 
-When implementation validation still fails after automated fix attempts are exhausted, the worker appends a compact entry to `failures.jsonl`. Future analysis and implementation prompts include similar failures only when repository, task type, and prompt profile match.
+Если все автоматические попытки исправления исчерпаны и quality gates не пройдены, воркер добавляет краткую запись в `failures.jsonl`. Аналогичные ошибки включаются в будущий контекст только при совпадении репозитория, типа задачи и профиля промпта.
 
-## Cleanup
+## Очистка
 
-To reset memory for one repository, stop the worker and remove that repository directory under `MEMORY_DIR/repositories/`. To clear only repeated failure hints, truncate `failures.jsonl` and keep `knowledge.json` plus approved `prompt-rules.json`.
+Остановите воркер. Чтобы сбросить память одного проекта, удалите только `MEMORY_DIR/repositories/<repository-key>/`. Чтобы очистить неудачные попытки, достаточно обнулить `failures.jsonl`, сохранив `knowledge.json` и утверждённые правила.
+
+Локальная memory **не равна** общей корпоративной памяти и не синхронизируется автоматически между серверами.
+

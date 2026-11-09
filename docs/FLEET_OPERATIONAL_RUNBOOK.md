@@ -1,8 +1,8 @@
-# Fleet Operational Runbook
+# Запуск нескольких репозиториев (fleet mode)
 
-Phase 3 adds opt-in fleet mode through `WORKER_CONFIG_FILE`. When the variable is absent, the worker keeps the legacy single-repository `.env` profile.
+Режим fleet включается через `WORKER_CONFIG_FILE`. Если переменная не задана, используется профиль одного репозитория из `.env`. Для каждого репозитория можно настроить отдельную очередь, целевую ветку, GitLab project ID и команды проверок.
 
-## Minimal YAML Config
+## Пример YAML-конфигурации
 
 ```yaml
 worker:
@@ -72,7 +72,9 @@ repositories:
     lintCommand: golangci-lint run
 ```
 
-Start with:
+Это **пример**, не готовый файл для реальных сервисов: названия очередей, пути и команды должны соответствовать вашей инфраструктуре. `compose.yaml` из репозитория монтирует один target checkout — для нескольких профилей обеспечьте доступность всех `repoPath`.
+
+Запуск:
 
 ```bash
 WORKER_CONFIG_FILE=/workspace/worker.config.yaml npm run dev
@@ -85,29 +87,13 @@ $env:WORKER_CONFIG_FILE = "C:\workspace\worker.config.yaml"
 npm run dev
 ```
 
-## Routing
+## Маршрутизация и приоритет
 
-The fleet orchestrator fetches candidates for every repository `queues` and `tags` pair. A Tracker issue routes to a repository when its queue key matches the profile and, when returned by Tracker, its tags intersect the profile tags.
+Воркер запрашивает кандидатов по `queues` и `tags` каждого профиля. Если подходит несколько задач, оценка учитывает приоритет Tracker, просрочку и дедлайн, boost по компонентам/тегам и ручные `manualOverrideTags`. При равенстве по умолчанию выбирается более старая задача. Если lease получить не удаётся, выбирается следующий кандидат.
 
-If more than one eligible issue exists, selection uses deterministic scoring:
+## Блокировки и координация
 
-- Tracker priority weight.
-- Deadline boost for overdue or due-today issues.
-- Configured tag and component boosts.
-- Manual override tags such as `ai_priority`.
-- Oldest `createdAt` tie-break by default.
-
-If the highest-scored candidate cannot acquire a lease, the worker tries the next candidate in the sorted list.
-
-## Coordination
-
-The MVP lock backend is Tracker comments. Each active task writes structured `AI LEASE:` comments with:
-
-- task lease for the issue key;
-- repository lease keyed by normalized `repoPath`;
-- `expiresAt`, `heartbeatAt`, worker id, repository name, and token.
-
-Defaults:
+В режиме прямого Yandex Tracker используется механизм комментариев `AI LEASE:` с токеном, `worker id`, задачей, репозиторием, `expiresAt` и `heartbeatAt`.
 
 ```env
 LOCK_BACKEND=tracker
@@ -115,33 +101,18 @@ LOCK_TTL_SECONDS=900
 LOCK_HEARTBEAT_SECONDS=60
 ```
 
-For a single worker process, `LOCK_BACKEND=none` disables task and repository locks and stops writing `AI LEASE:` comments to Tracker. Do not use `none` when multiple workers can process the same queue or mutate the same checkout.
+`LOCK_BACKEND=none` подходит только для одного воркера без конкурирующего доступа к checkout. `redis` и `postgres` в этом legacy-механизме зарезервированы и не реализованы. **Не путайте** их с атомарными PostgreSQL lease внутреннего task tracker.
 
-`LOCK_BACKEND=redis` and `LOCK_BACKEND=postgres` are reserved and fail fast until those backends are implemented.
+- Каждый запущенный воркер должен иметь уникальный `WORKER_ID` / `worker.id`.
+- Для каждого checkout задавайте стабильный `repoPath`; общий путь требует сериализации.
+- Блокировки через комментарии Tracker не равны атомарной транзакции; контролируйте TTL и heartbeat.
+- Просроченный lease перестаёт блокировать работу; released lease считается неактивным.
 
-## Operational Caveats
+## Восстановление из статуса review
 
-- Use a unique `worker.id` or `WORKER_ID` per running process.
-- Use one stable `repoPath` per checkout. If two profiles intentionally point at the same checkout, the repository lease serializes work.
-- Tracker comment locks are durable across process restarts, but not a strongly atomic distributed transaction. Keep TTL short enough for recovery and heartbeat shorter than TTL.
-- Expired `AI LEASE:` comments do not block acquisition. Released lease comments make the latest lease inactive immediately.
-- Legacy `AI STATUS:` comments remain readable in single-repository orchestration, but fleet scheduling uses leases as the coordination source.
+После merge MR внутренняя задача переходит в `human_testing`, а не сразу в `done`. Для принятия нужен человеческий сигнал. Если задача застряла в `review`, проверьте запись `AI MR` / `merge_request_records`, права токена на чтение closed/merged MR, привязку source branch/IID, работающий polling и соответствие статуса `Тестируется` карте `TRACKER_STATUS_MAP_FILE`.
 
-## Review Recovery
-
-When a task is in logical `review`, the worker reconciles the stored GitLab merge request before claiming new implementation work. A merged MR moves internal tasks to `human_testing` and keeps Yandex in `Тестируется`; it does not mark the task resolved. A human resolving the Yandex task is the acceptance signal that moves the internal task to `done`.
-
-If tasks remain in `review` after humans merge their MRs, check:
-
-1. The task has an `AI MR` comment or internal `merge_request_records` entry.
-2. The GitLab token can read merged and closed MRs, not only opened MRs.
-3. The MR source branch or IID still matches the stored task metadata.
-4. The worker poll loop is running for the repository profile that owns the task.
-5. The `review` logical status in `TRACKER_STATUS_MAP_FILE` includes the Yandex status `Тестируется`.
-
-## Validation
-
-Recommended checks after changing fleet config:
+## Проверка изменений
 
 ```bash
 npm run typecheck
@@ -149,3 +120,6 @@ npm test
 npm run test:smoke
 npm run build
 ```
+
+См. также [архитектуру](ARCHITECTURE.md) и [переменные окружения](ENV_CONFIGURATION.md).
+

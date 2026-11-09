@@ -1,22 +1,21 @@
-# Internal Tracker Migrations
+# Миграции внутреннего трекера
 
-Phase 7A adds the core PostgreSQL schema skeleton. Phase 7B adds the atomic
-queue tables for `task_leases` and persisted `idempotency_keys`. Later Phase 7
-migrations add worker runtime records, Yandex bridge state, AI proposals, and
-Phase 7H operational hardening indexes/cleanup metadata.
+Миграции PostgreSQL создают схему internal task tracker. Ранние этапы `Phase 7A/7B` добавляют базовые таблицы, атомарную очередь `task_leases` и `idempotency_keys`. Последующие миграции покрывают execution records, интеграцию с Yandex, AI proposals и индексы/метаданные очистки.
 
-Apply migrations with:
+## Применение
 
 ```bash
 npm run tracker:migrate
+npm run preflight
 ```
 
-The runner stores applied versions in `internal_tracker_schema_migrations`.
-Production preflight fails when this metadata is missing, any migration is
-pending, required indexes are absent, or transactional `FOR UPDATE SKIP LOCKED`
-claim support is unavailable.
+Номера применённых миграций хранятся в `internal_tracker_schema_migrations`. Production preflight обнаруживает отсутствие истории миграций, невыполненные миграции, недостающие индексы и отсутствие транзакционного `FOR UPDATE SKIP LOCKED`.
 
-Stale queue recovery is implemented by treating expired unreleased leases as
-inactive and eagerly marking them released inside the PostgreSQL claim
-transaction before new leases are inserted. The partial unique indexes therefore
-protect only active lease rows.
+## Восстановление очереди
+
+Expired, но ещё не released lease не должен навсегда блокировать очередь. В PostgreSQL claim-транзакции такие leases помечаются released до вставки нового lease. Частичные уникальные индексы защищают только активные записи.
+
+**Не редактируйте уже применённые миграции.** Добавляйте новую миграцию и проверяйте совместимость со старой схемой, резервное копирование и порядок rollout.
+
+Эксплуатационные инструкции — [PostgreSQL runbook](../../../../docs/INTERNAL_TRACKER_POSTGRES_RUNBOOK.md).
+
