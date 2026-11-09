@@ -28,7 +28,7 @@ export const taskInput = (id: string, repository = "repo-a"): CreateTaskInput =>
 
 export const createPostgresFixture = async (migrate = true) => {
   const connectionString = requireTestDatabaseUrl(process.env);
-  const schema = `pg_ci_${randomUUID().replaceAll("-", "")}`;
+  const schema = `ai_ci_${randomUUID().replaceAll("-", "")}`;
   const admin = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 5_000 });
   const pools = new Set<Pool>();
   // Only lease time is controlled. PostgreSQL transactions, constraints and locks are real.
