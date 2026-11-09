@@ -890,17 +890,7 @@ export class InternalWorkerOrchestrator {
     const hasUncommittedChanges = await context.git.hasChanges();
     const hasCommittedDiff = await context.git.hasDiffFromBase();
 
-    if (existingMr && !hasUncommittedChanges && hasCommittedDiff) {
-      await this.taskTracker.setStatus(task.id, "validating", "Reusing existing validated MR state.");
-      await this.workflow.recordTaskStep(task.id, {
-        kind: "validate",
-        status: "skipped",
-        outputSummary: "Existing merge request and branch diff were reused.",
-      });
-      await this.publishExisting(context, task.id, branch, existingMr);
-      return "processed";
-    }
-
+    // An open MR is not validation evidence: reused branches must pass current checks.
     if (!hasUncommittedChanges && !hasCommittedDiff) {
       const memoryContext = await this.buildMemoryContext(context, {
         taskId: task.id,
@@ -1664,30 +1654,6 @@ export class InternalWorkerOrchestrator {
       summary: this.formatValidationSummary(validation),
     });
     return validation;
-  }
-
-  private async publishExisting(
-    context: InternalExecutionContext,
-    taskId: string,
-    branch: string,
-    mergeRequest: MergeRequestInfo,
-  ): Promise<void> {
-    await this.workflow.recordMergeRequest(taskId, {
-      workerId: this.config.workerId,
-      mergeRequest,
-      branch,
-      outcome: "reused",
-    });
-    await this.taskTracker.setStatus(taskId, "review", `Merge Request ready: ${mergeRequest.url}`);
-    this.telemetry.recordMergeRequest({
-      workerId: this.config.workerId,
-      repositoryName: context.profile.name,
-      issueKey: taskId,
-      branch,
-      mergeRequestUrl: mergeRequest.url,
-      mergeRequestIid: mergeRequest.iid,
-      outcome: "reused",
-    });
   }
 
   private async publish(

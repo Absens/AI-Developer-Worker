@@ -22,6 +22,7 @@ interface QualityGateRunOptions {
 }
 
 const LOG_OUTPUT_LIMIT = 2_000;
+const REQUIRED_GATE_IDS = ["lint", "tests"] as const;
 
 const trimOptional = (value: string | undefined): string => value?.trim() ?? "";
 
@@ -71,7 +72,9 @@ const commandFailureDiagnostic = (
   result: ProcessResult,
 ): string =>
   [
-    `Quality gate "${gate.label}" (${gate.id}) failed with exit code ${result.exitCode}.`,
+    result.timedOut
+      ? `Quality gate "${gate.label}" (${gate.id}) timed out.`
+      : `Quality gate "${gate.label}" (${gate.id}) failed with exit code ${result.exitCode}.`,
     `Command: ${gate.command}`,
     gate.id === "build"
       ? "Build is not a test failure, but it blocks publishing."
@@ -103,13 +106,13 @@ export const buildQualityGates = (config: AppConfig): QualityGate[] => [
   {
     id: "lint",
     label: "Lint",
-    command: config.lintCommand,
+    command: trimOptional(config.lintCommand),
     required: true,
   },
   {
     id: "tests",
     label: "Tests",
-    command: config.testCommand,
+    command: trimOptional(config.testCommand),
     required: true,
   },
   {
@@ -150,8 +153,21 @@ export const buildQualityGates = (config: AppConfig): QualityGate[] => [
 export const hasFailedQualityGate = (results: QualityGateResult[]): boolean =>
   results.some((result) => result.status === "failed");
 
-export const qualityGatesPassed = (results: QualityGateResult[]): boolean =>
-  !hasFailedQualityGate(results);
+export const qualityGatesPassed = (results: QualityGateResult[]): boolean => {
+  const byId = new Map(results.map((result) => [result.id, result]));
+  if (byId.size !== results.length) {
+    return false;
+  }
+  if (!REQUIRED_GATE_IDS.every((id) => byId.get(id)?.status === "passed")) {
+    return false;
+  }
+
+  return results.every((result) =>
+    result.status === "passed"
+      ? Boolean(trimOptional(result.command))
+      : result.status === "skipped" && !trimOptional(result.command),
+  );
+};
 
 export const qualityGateStatus = (
   results: QualityGateResult[],
@@ -284,38 +300,43 @@ export const runQualityGates = async (
     }
 
     if (!gate.command) {
-      const skipped = buildSkippedResult(
-        gate,
-        gate.required
-          ? "no command configured"
-          : "not configured",
-      );
-      results.push(skipped);
-      logGateResult(options.logger, skipped);
+      const result: QualityGateResult = {
+        ...buildSkippedResult(
+          gate,
+          gate.required ? "required gate has no command configured" : "not configured",
+        ),
+        status: gate.required ? "failed" : "skipped",
+      };
+      results.push(result);
+      logGateResult(options.logger, result);
+      if (result.status === "failed") {
+        failedGate = result;
+      }
       continue;
     }
 
     const startedAt = Date.now();
     const processResult = await commandRunner(gate.command, { cwd: options.cwd });
     const durationMs = Date.now() - startedAt;
+    const passed = processResult.exitCode === 0 && !processResult.timedOut;
     const baseResult: QualityGateResult = {
       id: gate.id,
       label: gate.label,
       command: gate.command,
-      status: processResult.exitCode === 0 ? "passed" : "failed",
+      status: passed ? "passed" : "failed",
       exitCode: processResult.exitCode,
       stdout: processResult.stdout,
       stderr: processResult.stderr,
       durationMs,
       ...(gate.artifactPath ? { artifactPath: gate.artifactPath } : {}),
       diagnostic:
-        processResult.exitCode === 0
+        passed
           ? `${gate.label} passed.`
           : commandFailureDiagnostic(gate, processResult),
     };
 
     const result =
-      processResult.exitCode === 0 && gate.id === "coverage"
+      passed && gate.id === "coverage"
         ? evaluateCoverageResult(gate, processResult, config, options.cwd, baseResult)
         : baseResult;
 
