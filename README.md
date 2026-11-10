@@ -73,7 +73,7 @@ flowchart TD
     O -.-> WY
 ```
 
-Основные технологии: **Node.js 22+, TypeScript, Codex CLI, PostgreSQL, Git/GitLab, Angular 20 + PrimeNG, Vitest**. Playwright используется в браузерных E2E-тестах веб-консоли. В `Dockerfile` зафиксирован `@openai/codex@0.149.1` — это версия репозитория, не обязательно последняя upstream.
+Основные технологии: **Node.js 22+, TypeScript, Codex CLI, PostgreSQL, Git/GitLab, Angular 20 + PrimeNG, Vitest**. Playwright используется в браузерных E2E-тестах веб-консоли. В `Dockerfile` зафиксирован `@openai/codex@0.167.0`.
 
 ### Режимы источников задач
 

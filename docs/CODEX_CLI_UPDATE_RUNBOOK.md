@@ -2,7 +2,7 @@
 
 При изменении версии `@openai/codex` недостаточно пересобрать Docker: важны auth, формат JSONL, `exec`, `resume`, `review` и обработка ошибок. Эта инструкция описывает процедуру обновления без потери совместимости воркера.
 
-**Версия, зафиксированная в текущем `Dockerfile`: `@openai/codex@0.149.1`.** Она была проверена в рамках проекта 24 августа 2026 года. Это **не утверждение**, что на сегодняшний день версия последняя или лучшая. В production используйте конкретную проверенную версию, а не `@latest`.
+В `Dockerfile` зафиксирован `@openai/codex@0.167.0`. Для воспроизводимых production-сборок указывайте точную проверенную версию.
 
 ## На какие контракты опирается воркер
 
@@ -31,7 +31,7 @@
 ### 1. Сверьте установленную и целевую версии
 
 ```bash
-npm view @openai/codex version
+npm view @openai/codex@latest version
 codex --version
 codex --help
 codex exec --help
@@ -40,7 +40,7 @@ codex exec review --help
 codex login status --help
 ```
 
-Перед bump прочитайте upstream release notes — особенно изменения MCP, песочницы, авторизации и non-interactive JSONL. Исторические заметки по версиям 0.130–0.149 сохранены в [официальном changelog Codex](https://developers.openai.com/codex/changelog).
+Перед обновлением проверьте изменения MCP, песочницы, авторизации и non-interactive JSONL в [официальном журнале релизов Codex](https://learn.chatgpt.com/docs/changelog).
 
 ### 2. Выполните статическую проверку контракта
 
@@ -51,7 +51,7 @@ npm run verify:codex-cli
 При проверке конкретной версии через npm launcher:
 
 ```bash
-CODEX_CLI_COMMAND=npx CODEX_CLI_ARGS_JSON='["-y","@openai/codex@0.149.1"]' npm run verify:codex-cli
+CODEX_CLI_COMMAND=npx CODEX_CLI_ARGS_JSON='["-y","@openai/codex@0.167.0"]' npm run verify:codex-cli
 ```
 
 Проверьте наличие `exec`, `exec resume`, `review`, `--json`, `--output-last-message`, `--sandbox`, `--model`, `--profile`, `--image` и всех флагов ревью. Набор актуален для существующего в репозитории контракта; в новой версии CLI он может отличаться.
@@ -99,7 +99,9 @@ codex exec resume <threadId> "continue"
 | `CODEX_MODEL`, `CODEX_PROFILE` | Выбор модели/профиля |
 | `CODEX_QUESTION_MARKER` | Маркер уточняющего вопроса |
 
-Для CLI 0.149.1 глобальные аргументы могут выглядеть как `["--search","--ask-for-approval","never"]`. Не используйте deprecated `on-failure` без проверки нового CLI. Пример `CODEX_EXEC_ARGS_JSON`: `["--add-dir","/workspace/shared"]`.
+Пример `CODEX_CLI_ARGS_JSON` — `["--search","--ask-for-approval","never"]`. Пример `CODEX_EXEC_ARGS_JSON` — `["--add-dir","/workspace/shared"]`.
+
+При `CODEX_PROFILE=ci` Codex загружает `$CODEX_HOME/ci.config.toml` поверх базового `config.toml`. Если настройки ещё хранятся в секции `[profiles.ci]`, перенесите их в отдельный файл профиля и удалите из базового файла старую секцию и строку `profile = "ci"`. В Docker файл профиля должен быть в `CODEX_HOME` воркера. [Настройка профилей в OpenAI Docs](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles).
 
 ## Обязательные проверки перед выпуском
 
@@ -114,26 +116,38 @@ npx vitest run tests/codexAuth.test.ts tests/codexRunner.test.ts tests/orchestra
 Сборка и статическая проверка контейнера для версии, зафиксированной в репозитории:
 
 ```bash
-docker build --build-arg CODEX_CLI_VERSION=0.149.1 -t ai-developer-worker:codex-0.149.1 .
-docker run --rm --entrypoint codex ai-developer-worker:codex-0.149.1 --version
-docker run --rm --entrypoint codex ai-developer-worker:codex-0.149.1 exec --help
-docker run --rm --entrypoint npm ai-developer-worker:codex-0.149.1 run verify:codex-cli
+docker build -t ai-developer-worker:codex-0.167.0 .
+docker run --rm --entrypoint codex ai-developer-worker:codex-0.167.0 --version
+docker run --rm --entrypoint codex ai-developer-worker:codex-0.167.0 exec --help
+docker run --rm --entrypoint npm ai-developer-worker:codex-0.167.0 run verify:codex-cli
 ```
 
 Live-контракт с реальной авторизацией запускайте только в одноразовой изолированной среде:
 
 ```bash
-docker run --rm -e CODEX_CONTRACT_LIVE=1 -e CODEX_HOME=/tmp/codex-home -v codex-home:/tmp/codex-home --entrypoint npm ai-developer-worker:codex-0.149.1 run verify:codex-cli
+docker run --rm -e CODEX_CONTRACT_LIVE=1 -e CODEX_HOME=/tmp/codex-home -v codex-home:/tmp/codex-home --entrypoint npm ai-developer-worker:codex-0.167.0 run verify:codex-cli
 ```
+
+## Диагностика таймаутов Codex в Docker
+
+При повторных таймаутах или алерте `codex_timeouts_repeated` запустите команду из каталога Compose-проекта с работающим сервисом `worker`.
+
+```bash
+docker compose exec -T worker codex doctor --network-only --json
+```
+
+Команда использует окружение и `CODEX_HOME` запущенного контейнера. В JSON-отчёте смотрите `overallStatus` и `checks`, чтобы различить проблемы конфигурации, сетевого окружения, HTTP-доступа к провайдеру и WebSocket Responses. Флаг `--network-only` доступен с Codex CLI `0.166.0`. [Справочник Codex CLI](https://learn.chatgpt.com/docs/cli/reference#codex-doctor)
+
+Если `doctor` проходит, а воркер продолжает получать таймауты, проверьте, что необходимые переменные прокси, TLS и адреса провайдера входят в `WORKER_CODEX_ENV_ALLOWLIST`. Воркер фильтрует окружение дочернего процесса Codex. [Окружение запуска воркера](EXECUTION_ENVIRONMENT.md)
 
 ## Риски и откат
 
 Самые частые поломки после обновления: новый exit code `login status`, несовместимые JSONL event types, пустой `--output-last-message`, другой порядок аргументов `resume`, новые разрешения sandbox, интерактивный first-run setup и несовместимый `review`.
 
-Обратная сборка на предыдущей зафиксированной версии (исторический пример):
+Сборка с предыдущей зафиксированной версией:
 
 ```bash
-docker build --build-arg CODEX_CLI_VERSION=0.142.0 -t ai-developer-worker:codex-0.142.0 .
+docker build --build-arg CODEX_CLI_VERSION=0.149.1 -t ai-developer-worker:codex-0.149.1 .
 ```
 
 Использовать предыдущую версию в production можно **только если она всё ещё поддерживается и проверена**. Решение о выпуске принимается по результатам тестов, а не по факту успешной Docker-сборки.
