@@ -64,9 +64,9 @@ Copy-Item .env.example .env
 | `LOCK_POSTGRES_URL` | Нет | Не задано | Зарезервировано для будущего PostgreSQL lock backend. |
 | `CODEX_HOME` | Нет | `~/.codex` на текущей машине | Используйте writable Codex auth directory. В Docker обычно это должен быть путь смонтированного volume, например `/codex-home`. |
 | `CODEX_CLI_COMMAND` | Нет | `codex` | Укажите executable, который запускает Codex CLI. Оставьте `codex`, если не нужен wrapper launcher. |
-| `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив launcher/global аргументов Codex, передаваемых перед `exec`. Используйте для flags вроде `--search` или `--ask-for-approval never`; для Codex CLI `0.149.1` предпочитайте `never` или `on-request`, а не deprecated `on-failure`. |
+| `CODEX_CLI_ARGS_JSON` | Нет | `[]` | JSON-массив аргументов launcher или глобальных флагов Codex, передаваемых перед `exec`, например `["--search","--ask-for-approval","never"]`. |
 | `CODEX_MODEL` | Нет | Не задано | Необязательное явное имя модели Codex, если нужны воспроизводимые запуски. |
-| `CODEX_PROFILE` | Нет | Не задано | Необязательное имя profile из локальной конфигурации Codex. |
+| `CODEX_PROFILE` | Нет | Не задано | Необязательное имя профиля из файла `$CODEX_HOME/<имя>.config.toml`. |
 | `CODEX_SANDBOX` | Нет | `danger-full-access` | Варианты: `read-only`, `workspace-write`, `danger-full-access`. Значение по умолчанию даёт агенту широкие права и **не рекомендовано для недоверенного кода / корпоративного production** без изоляции файлов, сети и секретов. |
 | `CODEX_EXEC_ARGS_JSON` | Нет | `[]` | JSON-массив дополнительных аргументов, которые принимает `codex exec --help`, например `--add-dir /workspace/shared`. Не помещайте сюда launcher/global flags. |
 | `CODEX_SELF_REVIEW_ENABLED` | Нет | `false` | When `true`, run `codex exec review` after quality gates and before publishing a merge request. Blocking findings are sent through the Codex fix loop. |
