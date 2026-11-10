@@ -1,3 +1,4 @@
+import { isExecutionInProgress } from "../domain/taskTracker/recovery.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
@@ -84,6 +85,7 @@ type CommandName =
   | "hold"
   | "cancel"
   | "retry"
+  | "recover-abandoned"
   | "force-reanalysis"
   | "approve-decomposition"
   | "approve-proposal"
@@ -102,6 +104,7 @@ const COMMAND_ROLE: Record<CommandName, TaskTrackerHumanRole> = {
   hold: "operator",
   cancel: "developer",
   retry: "operator",
+  "recover-abandoned": "operator",
   "force-reanalysis": "operator",
   "approve-decomposition": "developer",
   "approve-proposal": "developer",
@@ -1434,6 +1437,12 @@ export class TaskTrackerHumanApi {
     auth: AuthContext,
     body: Record<string, unknown>,
   ): Promise<void> {
+    if (["mark-ready", "resume", "hold", "cancel", "retry"].includes(command)) {
+      const current = await tracker.getTask(taskId);
+      if (isExecutionInProgress(current.status)) {
+        throw new HttpApiError(409, "Stop the executor and use recover-abandoned before changing an executing task.");
+      }
+    }
     if (command === "mark-ready") {
       await tracker.markReady(taskId, optionalString(body.reason));
       return;
@@ -1452,6 +1461,16 @@ export class TaskTrackerHumanApi {
     }
     if (command === "retry") {
       await tracker.setStatus(taskId, "ready", optionalString(body.reason) ?? "Task queued for retry.");
+      return;
+    }
+    if (command === "recover-abandoned") {
+      const task = await tracker.getTask(taskId);
+      if (body.expectedStatus !== task.status) throw new Error("Task state changed; refresh before recovery.");
+      await tracker.recoverAbandonedTask(taskId, {
+        actor: auth.actor, expectedStatus: task.status,
+        previousExecutorStopped: body.previousExecutorStopped === true,
+        reason: optionalString(body.reason) ?? "",
+      });
       return;
     }
     if (command === "force-reanalysis") {

@@ -797,7 +797,15 @@ export interface AgentTaskContext {
   decisions: TaskDecision[];
 }
 
+export interface RecoverAbandonedTaskInput {
+  actor: TaskActor;
+  expectedStatus: TaskStatus;
+  previousExecutorStopped: boolean;
+  reason: string;
+}
+
 export interface TaskTrackerClient {
+  recoverAbandonedTask(taskId: string, input: RecoverAbandonedTaskInput): Promise<TaskRecord>;
   listTasks(input?: ListTasksInput): Promise<TaskRecord[]>;
   listActiveLeases(): Promise<TaskLeaseRecord[]>;
   createTask(input: CreateTaskInput): Promise<TaskRecord>;

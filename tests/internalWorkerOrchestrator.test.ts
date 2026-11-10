@@ -826,7 +826,7 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
     expect(updated.reviewMetadata).toHaveLength(0);
   });
 
-  it("recovers stale fixing_review tasks without an active lease", async () => {
+  it("requires confirmed executor stop before recovering stale fixing_review work", async () => {
     const tracker = new InMemoryTaskTrackerClient();
     const task = await tracker.createTask(baseTaskInput({ id: "internal-stale-review-fix" }));
     await tracker.recordMergeRequest(task.id, {
@@ -879,6 +879,14 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
     const codex = new FakeCodexRunner(git);
     const orchestrator = createOrchestrator(tracker, gitlab, codex, git);
 
+    expect(await orchestrator.runOnce()).toBe("idle");
+    expect((await tracker.getTask(task.id)).status).toBe("fixing_review");
+    expect(codex.initialCalls).toBe(0);
+    expect(git.pushes).toEqual([]);
+    await tracker.recoverAbandonedTask(task.id, {
+      actor: human, expectedStatus: "fixing_review", previousExecutorStopped: true,
+      reason: "Operator confirmed old executor stopped.",
+    });
     const outcome = await orchestrator.runOnce();
     const updated = await tracker.getTask(task.id);
 
@@ -1044,5 +1052,37 @@ describe("InternalWorkerOrchestrator review reconciliation", () => {
         }),
       ]),
     );
+  });
+});
+
+describe("InternalWorkerOrchestrator same-timestamp clarification recovery", () => {
+  it.each([false, true])("uses the answered thread and falls back after failed resume (explicit question ID: %s)", async (explicitId) => {
+    const tracker = new InMemoryTaskTrackerClient({ now: () => new Date("2026-11-10T00:00:00Z") });
+    const task = await tracker.createTask(baseTaskInput({ id: "equal-time-answer" }));
+    await tracker.setStatus(task.id, "claimed");
+    await tracker.setStatus(task.id, "awaiting_human");
+    await tracker.askClarification(task.id, {
+      workerId: "worker-1", summary: "Need input", blockingReason: "Missing choice",
+      question: "Continue?", options: [], resumeHint: "/resume", threadId: "original-thread",
+    });
+    const question = (await tracker.getTask(task.id)).comments.find((comment) => comment.kind === "question")!;
+    await tracker.recordHumanAnswer(task.id, {
+      author: human, body: "/resume", ...(explicitId ? { questionId: question.id } : {}),
+    });
+    const git = new FakeGitService();
+    const codex = new FakeCodexRunner(git);
+    const resume = vi.spyOn(codex, "runResume").mockResolvedValue({
+      process: { exitCode: 1, stdout: "", stderr: "Thread unavailable" },
+    });
+    const fresh = vi.spyOn(codex, "runInitial").mockImplementation(async () => {
+      git.hasUncommittedChanges = true;
+      return { process: { exitCode: 0, stdout: "", stderr: "" }, finalMessage: "Implemented." };
+    });
+    const orchestrator = createOrchestrator(tracker, new FakeGitLabService(), codex, git);
+    await orchestrator.runOnce();
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(resume.mock.calls[0]?.[0]).toBe("original-thread");
+    expect(fresh).toHaveBeenCalledTimes(1);
+    expect((await tracker.getTask(task.id)).status).toBe("review");
   });
 });

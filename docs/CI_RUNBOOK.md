@@ -9,11 +9,12 @@ Workflow: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 | `Backend` | Node.js 22, `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
 | `Angular` | `npm ci` в корне и `npm --prefix web ci`, ChromeHeadless, Angular typecheck/unit tests/build |
 | `Browser E2E` | Оба lockfile, Chromium с системными зависимостями, production build Angular и Playwright против существующего mock API |
-| **`CI required`** | Успешен, только когда все три job завершились с `success` |
+| `PostgreSQL integration` | Одноразовый PostgreSQL 16, миграции, конкурентные claims/leases и переподключение через `npm run test:postgres` |
+| **`CI required`** | Успешен, только когда все четыре job завершились с `success` |
 
-`npm test` уже включает `tests/worker.smoke.test.ts` и Telegram smoke; отдельный повтор того же smoke-набора не нужен. Браузерные тесты используют `web/e2e/mock-console-server.mjs`, а не production API. CI не проверяет реальную авторизацию Codex, живой GitLab/Yandex или production PostgreSQL и не заменяет эксплуатационный preflight.
+`npm test` уже включает `tests/worker.smoke.test.ts` и Telegram smoke; отдельный повтор того же smoke-набора не нужен. Браузерные тесты используют `web/e2e/mock-console-server.mjs`, а не production API. PostgreSQL-тесты используют настоящую одноразовую БД, но CI не проверяет реальную авторизацию Codex, живой GitLab/Yandex или production PostgreSQL и не заменяет эксплуатационный preflight. Подробности и локальный запуск: [PostgreSQL integration tests](POSTGRES_INTEGRATION_TESTS.md).
 
-Результаты `failure`, `cancelled`, `skipped`, отсутствующий job или некорректный JSON не считаются успехом. Контракт workflow и 68 комбинаций gate проверяются в [`tests/ciWorkflow.test.ts`](../tests/ciWorkflow.test.ts).
+Результаты `failure`, `cancelled`, `skipped`, отсутствующий job или некорректный JSON не считаются успехом. Контракт workflow, все 256 комбинаций четырёх зависимостей и некорректные результаты проверяются в [`tests/ciWorkflow.test.ts`](../tests/ciWorkflow.test.ts). PostgreSQL wiring дополнительно проверяется в [`tests/postgresCiContract.test.ts`](../tests/postgresCiContract.test.ts).
 
 ## Когда запускается
 
@@ -26,15 +27,17 @@ Path-фильтров нет: документационный PR также п�
 
 ## Окружение и безопасность
 
-GitHub-hosted `ubuntu-24.04`, Node.js 22. Только `contents: read`, `persist-credentials: false`; actions закреплены полным SHA. У завершающего job нет разрешений и нет checkout. Не используются `pull_request_target`, secrets, preflight, запуск воркера или обращения к платным моделям. Для PR из fork могут потребоваться обычные разрешения запуска Actions со стороны владельца.
+GitHub-hosted `ubuntu-24.04`, Node.js 22. Только `contents: read`, `persist-credentials: false`; actions закреплены полным SHA. У завершающего job нет разрешений и нет checkout. Не используются `pull_request_target`, production secrets, запуск воркера или обращения к платным моделям. Для PR из fork могут потребоваться обычные разрешения запуска Actions со стороны владельца.
+
+PostgreSQL service создаётся только для своего job, имеет отдельную тестовую базу и демонстрационные credentials. Прежде чем запускать интеграционные тесты, Actions проверяет `pg_isready`. Каждый тест использует отдельную случайную схему. Отсутствие БД или пропуск dedicated tests считается ошибкой.
 
 Время каждого job ограничено. Npm cache содержит скачанные пакеты, а не `node_modules`; установка выполняется через lockfile. Версии приложения и зависимостей этим PR не обновляются.
 
 ## Диагностика сбоя
 
-Откройте Actions → CI → проблемный job/step. `CI required` выводит состояния всех трёх зависимостей; он не скрывает исходную причину. При ошибке E2E сохраняется artifact `browser-e2e-<run_id>-<run_attempt>` с HTML-отчётом, trace и скриншотами из `web/playwright-report/` и `web/test-results/`. Срок хранения — 7 дней; скрытые файлы и весь checkout не загружаются.
+Откройте Actions → CI → проблемный job/step. `CI required` выводит состояния всех четырёх зависимостей; он не скрывает исходную причину. При ошибке E2E сохраняется artifact `browser-e2e-<run_id>-<run_attempt>` с HTML-отчётом, trace и скриншотами из `web/playwright-report/` и `web/test-results/`. Срок хранения — 7 дней; скрытые файлы и весь checkout не загружаются.
 
-При падении проверки исправляйте причину; не добавляйте `continue-on-error`, `|| true` или исключения тестов ради зелёного статуса. Отсутствие Chrome или невозможность загрузить Chromium — ошибка окружения, а не причина пропускать тесты.
+При падении проверки исправляйте причину; не добавляйте `continue-on-error`, `|| true` или исключения тестов ради зелёного статуса. Отсутствие Chrome, невозможность загрузить Chromium или недоступность тестовой PostgreSQL — ошибки окружения, а не причины пропускать тесты.
 
 ## Как включить защиту main
 
@@ -44,7 +47,7 @@ GitHub-hosted `ubuntu-24.04`, Node.js 22. Только `contents: read`, `persis
 
 1. Settings → Rules → Rulesets: создайте активное правило для `refs/heads/main` (или эквивалентное Branch protection).
 2. Включите **Require a pull request before merging** и **Require status checks to pass**.
-3. Добавьте точное имя проверки **`CI required`**, источник — GitHub Actions. Не переименовывайте его без синхронного обновления ruleset.
+3. Добавьте точное имя проверки **`CI required`**, источник — GitHub Actions. Не переименовывайте его без синхронного обновления ruleset. PostgreSQL теперь входит в его зависимости; отдельное имя в ruleset не требуется.
 4. Включите **Require branches to be up to date before merging**, запрет force-push и удаления `main`. Проверьте bypass-список: обход правил не должен быть случайно доступен всем.
 5. Обязательное одобрение reviewer включайте только при наличии второго участника. Для единственного владельца обязательный чужой approval заблокирует его собственные PR.
 
@@ -60,6 +63,8 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+PostgreSQL: запустите отдельный контейнер и явно задайте тестовый URL по [инструкции](POSTGRES_INTEGRATION_TESTS.md), затем `npm run test:postgres`. Обычный `npm test` не заменяет эту проверку.
 
 Frontend:
 
@@ -80,11 +85,11 @@ npm --prefix web run e2e -- --reporter=list,html --forbid-only
 Только контракт CI:
 
 ```bash
-npx vitest run tests/ciWorkflow.test.ts
+npx vitest run tests/ciWorkflow.test.ts tests/postgresCiContract.test.ts tests/postgresTestRunner.test.ts
 ```
 
 Это проверки самого AI-Developer. Quality gates чужих целевых репозиториев, изоляция executor и SHA-bound validation — отдельные изменения, не часть этого этапа.
 
 ## Источники
 
-[GitHub: required status checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks), [Playwright CI](https://playwright.dev/docs/ci-intro). Контроль зависимых job использует `always()` + проверку каждого `needs.*.result`.
+[GitHub: required status checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks), [GitHub: PostgreSQL service containers](https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers), [Playwright CI](https://playwright.dev/docs/ci-intro). Контроль зависимых job использует `always()` + проверку каждого `needs.*.result`.

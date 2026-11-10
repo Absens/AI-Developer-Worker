@@ -36,7 +36,7 @@ interface Workflow {
 
 const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const workflow = parse(source) as Workflow;
-const requiredJobs = ["backend", "web", "web_e2e"];
+const requiredJobs = ["backend", "web", "web_e2e", "postgres"];
 const job = (id: string): Job => {
   const found = workflow.jobs[id];
   if (!found) throw new Error(`Missing CI job: ${id}`);
@@ -54,11 +54,19 @@ const runGate = (results: string) => spawnSync(process.execPath, ["--input-type=
 });
 
 const statuses = ["success", "failure", "cancelled", "skipped"];
-const gateCases = statuses.flatMap((backend) => statuses.flatMap((web) => statuses.map((web_e2e) => ({
-  label: `${backend}/${web}/${web_e2e}`,
-  results: { backend: { result: backend }, web: { result: web }, web_e2e: { result: web_e2e } },
-  success: [backend, web, web_e2e].every((result) => result === "success"),
-}))));
+interface GateCase {
+  label: string;
+  results: Record<string, { result: string }>;
+  success: boolean;
+}
+// Exercise all 4^4 combinations, including PostgreSQL failures/skips/cancellation.
+const gateCases = requiredJobs.reduce<GateCase[]>((cases, id) =>
+  cases.flatMap((entry) => statuses.map((status) => ({
+    label: `${entry.label}/${id}=${status}`,
+    results: { ...entry.results, [id]: { result: status } },
+    success: entry.success && status === "success",
+  }))),
+[{ label: "", results: {}, success: true }]);
 
 describe("CI foundation contract", () => {
   it("runs on main PRs, main pushes, merge queues and manual dispatch without path filters", () => {
@@ -75,7 +83,7 @@ describe("CI foundation contract", () => {
   it("uses read-only permissions, SHA-pinned official actions and no production secrets", () => {
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(source).not.toMatch(/secrets\./);
-    expect(Object.keys(workflow.jobs).sort()).toEqual(["backend", "required", "web", "web_e2e"]);
+    expect(Object.keys(workflow.jobs).sort()).toEqual(["backend", "postgres", "required", "web", "web_e2e"]);
     for (const [id, current] of Object.entries(workflow.jobs)) {
       expect(current["runs-on"]).toBe("ubuntu-24.04");
       expect(current["timeout-minutes"]).toBeGreaterThan(0);
@@ -117,7 +125,7 @@ describe("CI foundation contract", () => {
     expect(setup?.with?.["node-version"]).toBe("22");
     expect(setup?.with?.cache).toBe("npm");
     const files = String(setup?.with?.["cache-dependency-path"]).trim().split(/\s+/);
-    expect(files).toEqual(id === "backend" ? ["package-lock.json"] : ["package-lock.json", "web/package-lock.json"]);
+    expect(files).toEqual(["backend", "postgres"].includes(id) ? ["package-lock.json"] : ["package-lock.json", "web/package-lock.json"]);
   });
 
   it("runs real Chromium E2E against the existing mock server and forbids test.only", () => {
@@ -150,7 +158,7 @@ describe("CI foundation contract", () => {
     expect(result.status).toBe(success ? 0 : 1);
   });
 
-  it.each(["{}", "null", "{", '{"backend":{"result":"success"},"web":{"result":"success"}}'])(
+  it.each(["{}", "null", "{", '{"backend":{"result":"success"},"web":{"result":"success"}}', '{"backend":{"result":"success"},"web":{"result":"success"},"web_e2e":{"result":"success"}}'])(
     "rejects missing or malformed job results: %s",
     (input) => {
       const result = runGate(input);

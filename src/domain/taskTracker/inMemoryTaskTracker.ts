@@ -1,3 +1,4 @@
+import { latestUnambiguousQuestion } from "./clarification.js";
 import { randomUUID } from "node:crypto";
 
 import { buildAgentTaskContext } from "./agentContext.js";
@@ -37,6 +38,7 @@ import {
   taskMatchesRepositoryProfile,
   taskMatchesTarget,
 } from "./queueEligibility.js";
+import { assertRecoveryConfirmation, isExecutionInProgress } from "./recovery.js";
 import { assertValidTaskStatusTransition } from "./status.js";
 import { redactSecrets } from "../../observability/redaction.js";
 import type {
@@ -72,6 +74,7 @@ import type {
   QualityGateRun,
   RejectProposalInput,
   ReleaseLeaseInput,
+  RecoverAbandonedTaskInput,
   ReviewMetadataRecord,
   ReviewMetadataRecordInput,
   TaskActor,
@@ -904,6 +907,28 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     return clone(task);
   }
 
+  async recoverAbandonedTask(taskId: string, input: RecoverAbandonedTaskInput): Promise<TaskRecord> {
+    assertRecoveryConfirmation(input);
+    const task = this.requireTask(taskId);
+    if (task.status !== input.expectedStatus) throw new Error("Task state changed; refresh before recovery.");
+    const key = repositoryLeaseKeyForTask(task);
+    const now = this.now();
+    if ([...this.leases.values()].some((lease) => isLeaseActiveAt(lease, now) &&
+      (lease.taskId === taskId || (lease.kind === "repository" && lease.leaseKey === key)))) {
+      throw new Error("Cannot recover a task while its checkout has active leases.");
+    }
+    const from = task.status;
+    task.status = from === "fixing_review" ? "review" : "ready";
+    task.updatedAt = now.toISOString();
+    task.events.push({
+      id: `evt_${randomUUID()}`, taskId, kind: "task_status_changed", source: input.actor.owner,
+      actor: clone(input.actor), message: input.reason,
+      payload: { from, to: task.status, previousExecutorStopped: true, recovery: "operator_confirmed" },
+      createdAt: task.updatedAt,
+    });
+    return clone(task);
+  }
+
   async markReady(taskId: string, reason?: string): Promise<void> {
     const task = this.requireTask(taskId);
     assertReadyFields(task);
@@ -1161,11 +1186,12 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
 
   async recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void> {
     const task = this.requireTask(taskId);
+    const questionId = input.questionId ?? latestUnambiguousQuestion(task.comments)?.id;
     const createdAt = this.nowIso();
     const record: HumanAnswerRecord = this.redact({
       id: `answer_${randomUUID()}`,
       taskId,
-      ...(input.questionId ? { questionId: input.questionId } : {}),
+      ...(questionId ? { questionId: questionId } : {}),
       author: clone(input.author),
       body: input.body,
       ...(input.command ? { command: clone(input.command) } : {}),
@@ -1181,9 +1207,9 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       payload: clone(record) as unknown as Record<string, unknown>,
       createdAt,
     }));
-    if (input.questionId) {
+    if (questionId) {
       const question = task.clarificationQuestions.find(
-        (candidate) => candidate.id === input.questionId,
+        (candidate) => candidate.id === questionId,
       );
       if (question) {
         question.status = "answered";
@@ -1195,7 +1221,7 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       kind: "human_answer_recorded",
       source: input.author.owner,
       actor: clone(input.author),
-      payload: { questionId: input.questionId },
+      payload: { questionId: questionId },
       createdAt,
     }));
     task.updatedAt = createdAt;
@@ -1911,6 +1937,11 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     }
 
     const repositoryLeaseKey = repositoryLeaseKeyForTask(task);
+    if ([...this.tasks.values()].some((other) => other.id !== task.id &&
+      other.repositoryName && other.repoPathKey && isExecutionInProgress(other.status) &&
+      repositoryLeaseKeyForTask(other) === repositoryLeaseKey)) {
+      return false;
+    }
     return !activeLeases.some(
       (lease) => lease.kind === "repository" && lease.leaseKey === repositoryLeaseKey,
     );
@@ -1950,6 +1981,11 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     }
 
     const repositoryLeaseKey = repositoryLeaseKeyForTask(task);
+    if ([...this.tasks.values()].some((other) => other.id !== task.id &&
+      other.repositoryName && other.repoPathKey && isExecutionInProgress(other.status) &&
+      repositoryLeaseKeyForTask(other) === repositoryLeaseKey)) {
+      return false;
+    }
     return !activeLeases.some(
       (lease) => lease.kind === "repository" && lease.leaseKey === repositoryLeaseKey,
     );

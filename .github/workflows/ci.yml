@@ -114,10 +114,45 @@ jobs:
           retention-days: 7
           include-hidden-files: false
 
+  postgres:
+    name: PostgreSQL integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ai_developer_ci_test
+          POSTGRES_USER: tracker
+          POSTGRES_PASSWORD: tracker
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tracker -d ai_developer_ci_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable service credentials, not application or production credentials.
+      TASK_TRACKER_TEST_DATABASE_URL: postgresql://tracker:tracker@127.0.0.1:5432/ai_developer_ci_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Real PostgreSQL migrations, concurrency and recovery
+        run: npm run test:postgres
+
   required:
     name: CI required
     if: ${{ always() }}
-    needs: [backend, web, web_e2e]
+    needs: [backend, web, web_e2e, postgres]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -127,7 +162,7 @@ jobs:
           CI_JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           node --input-type=module <<'NODE'
-          const required = ["backend", "web", "web_e2e"];
+          const required = ["backend", "web", "web_e2e", "postgres"];
           const results = JSON.parse(process.env.CI_JOB_RESULTS ?? "{}");
           let failed = false;
           for (const job of required) {

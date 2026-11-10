@@ -1,3 +1,4 @@
+import { answerToQuestion, latestUnambiguousQuestion } from "./taskTracker/clarification.js";
 import type {
   AppConfig,
   ClarificationQuestion,
@@ -271,7 +272,28 @@ const latestAnalysisDecision = (
   };
 };
 
+class ExecutionLeaseUnavailableError extends Error {}
+
 export class InternalWorkerOrchestrator {
+  private readonly executionClaims = new Map<string, ClaimedTask>();
+
+  private async assertExecutionLease(taskId: string): Promise<void> {
+    const claim = this.executionClaims.get(taskId);
+    if (!claim) throw new ExecutionLeaseUnavailableError("No execution claim available.");
+    try {
+      const active = await this.taskTracker.listActiveLeases();
+      for (const expected of [claim.taskLease, claim.repositoryLease]) {
+        if (!active.some((lease) => lease.leaseId === expected.leaseId &&
+          lease.workerId === expected.workerId && lease.token === expected.token)) {
+          throw new ExecutionLeaseUnavailableError("Execution lease lost; operator recovery is required.");
+        }
+      }
+    } catch (error) {
+      if (error instanceof ExecutionLeaseUnavailableError) throw error;
+      throw new ExecutionLeaseUnavailableError("Cannot confirm execution ownership; publication is blocked.");
+    }
+  }
+
   private shuttingDown = false;
   private wakeSleep: (() => void) | undefined;
   private readonly workflow: AgentWorkflowService;
@@ -505,12 +527,10 @@ export class InternalWorkerOrchestrator {
             });
             continue;
           }
-          await this.taskTracker.setStatus(
-            task.id,
-            "review",
-            "Recovering stale review fix after inactive lease.",
-          );
-          task = await this.taskTracker.getTask(task.id);
+          this.logger.warn("Abandoned review execution requires confirmed executor stop before recovery.", {
+            taskId: task.id,
+          });
+          continue;
         }
 
         if (await this.reconcileReviewTask(task)) {
@@ -654,6 +674,10 @@ export class InternalWorkerOrchestrator {
         await this.syncExternalMirror(claim.task.id);
         return handled;
       } catch (error) {
+        if (error instanceof ExecutionLeaseUnavailableError) {
+          this.logger.warn(error.message, { taskId: claim.task.id });
+          return false;
+        }
         const message = error instanceof Error ? error.message : String(error);
         if (error instanceof TemporaryIntegrationError || isDirtyRepositorySwitchError(error)) {
           const retryReason =
@@ -727,9 +751,11 @@ export class InternalWorkerOrchestrator {
       });
     }, this.config.coordination.lockHeartbeatMs);
 
+    this.executionClaims.set(claim.task.id, claim);
     try {
       return await run();
     } finally {
+      this.executionClaims.delete(claim.task.id);
       clearInterval(interval);
       await Promise.allSettled([
         this.workflow.releaseLease(taskLease.leaseId, {
@@ -768,6 +794,10 @@ export class InternalWorkerOrchestrator {
       );
       return outcome;
     } catch (error) {
+      if (error instanceof ExecutionLeaseUnavailableError) {
+        this.logger.warn(error.message, { taskId: claim.task.id });
+        return "waiting";
+      }
       if (error instanceof TemporaryIntegrationError) {
         this.logger.error("Temporary integration error while processing internal task.", {
           taskId: issue.key,
@@ -824,6 +854,7 @@ export class InternalWorkerOrchestrator {
     const resumeContext = this.resolveResumeContext(task.comments);
     const codexOptions: CodexRunOptions = { imagePaths: imageContext?.imagePaths ?? [] };
 
+    await this.assertExecutionLease(task.id);
     await this.taskTracker.setStatus(task.id, "analyzing", "Internal task analysis started.");
     await this.workflow.recordTaskStep(task.id, { kind: "analyze", status: "running" });
 
@@ -885,6 +916,7 @@ export class InternalWorkerOrchestrator {
     issue = taskToIssue(task);
     comments = commentsForPrompt(task.comments);
     const promptProfile = this.selectProfile(context.config, issue, analysisDecision);
+    await this.assertExecutionLease(task.id);
     const branch = await context.git.checkoutTaskBranch(task.id);
     const existingMr = await context.gitlab.findOpenMergeRequestByBranch(branch);
     const hasUncommittedChanges = await context.git.hasChanges();
@@ -1109,6 +1141,7 @@ export class InternalWorkerOrchestrator {
         },
       });
 
+      await this.assertExecutionLease(task.id);
       const checkedOutBranch = await context.git.checkoutBranch(branch);
       const headBefore = await context.git.getHeadSha();
       const diffFromBase = await context.git.getDiffFromBase();
@@ -1217,6 +1250,7 @@ export class InternalWorkerOrchestrator {
 
       if (await context.git.hasChanges()) {
         const commitChangedFiles = await context.git.getChangedFilesFromBase();
+        await this.assertExecutionLease(task.id);
         await context.git.commit(
           buildCommitMessage({
             issue,
@@ -1233,13 +1267,16 @@ export class InternalWorkerOrchestrator {
         );
       }
 
+      await this.assertExecutionLease(task.id);
       await context.git.push(checkedOutBranch);
       const validationSummary = this.formatValidationSummary(validation);
       const replyBody = formatReviewReplyBody(headAfter, validationSummary);
       for (const discussion of pendingDiscussions) {
+        await this.assertExecutionLease(task.id);
         await context.gitlab.replyToDiscussion(mergeRequest.iid, discussion.id, replyBody);
       }
 
+      await this.assertExecutionLease(task.id);
       await this.workflow.recordReviewMetadata(task.id, {
         metadata: mergeReviewMetadata({
           worker: this.config.workerId,
@@ -1308,17 +1345,11 @@ export class InternalWorkerOrchestrator {
   }
 
   private resolveResumeContext(comments: TaskComment[]): InternalResumeContext | undefined {
-    const latestQuestion = comments
-      .filter((comment) => comment.kind === "question")
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .at(-1);
+    const latestQuestion = latestUnambiguousQuestion(comments);
     if (!latestQuestion) {
       return undefined;
     }
-    const answer = comments
-      .filter((comment) => comment.kind === "answer" && comment.createdAt > latestQuestion.createdAt)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .at(-1);
+    const answer = answerToQuestion(comments, latestQuestion);
     if (!answer?.body) {
       return undefined;
     }
@@ -1635,10 +1666,12 @@ export class InternalWorkerOrchestrator {
       });
       return validation;
     }
+    await this.assertExecutionLease(taskId);
     const gates = await runQualityGates(context.config, {
       cwd: context.config.repoPath,
       logger: this.logger,
     });
+    await this.assertExecutionLease(taskId);
     const validation: ValidationResult = {
       changed: true,
       testsPassed: qualityGateStatus(gates, "tests") === "passed",
@@ -1665,6 +1698,7 @@ export class InternalWorkerOrchestrator {
     validation: ValidationResult,
     implementationSummary?: string,
   ): Promise<void> {
+    await this.assertExecutionLease(taskId);
     await this.recordWorkflowEvent(context, taskId, {
       type: "publish_started",
       status: "info",
@@ -1673,16 +1707,19 @@ export class InternalWorkerOrchestrator {
     });
     if (await context.git.hasChanges()) {
       const changedFiles = await context.git.getChangedFilesFromBase();
+      await this.assertExecutionLease(taskId);
       await context.git.commit(
         buildCommitMessage({ issue, changedFiles, summary: implementationSummary }),
       );
     }
+    await this.assertExecutionLease(taskId);
     await context.git.push(branch);
     const changedFiles = await context.git.getChangedFilesFromBase();
     let mergeRequest = existingMr ?? (await context.gitlab.findOpenMergeRequestByBranch(branch));
     const outcome: "created" | "reused" = mergeRequest ? "reused" : "created";
     const validationSummary = this.formatValidationSummary(validation);
     if (!mergeRequest) {
+      await this.assertExecutionLease(taskId);
       mergeRequest = await context.gitlab.createMergeRequest({
         sourceBranch: branch,
         targetBranch: context.config.baseBranch,
@@ -1699,6 +1736,7 @@ export class InternalWorkerOrchestrator {
         }),
       });
     }
+    await this.assertExecutionLease(taskId);
     await this.workflow.recordMergeRequest(taskId, {
       workerId: this.config.workerId,
       mergeRequest,
@@ -1743,7 +1781,9 @@ export class InternalWorkerOrchestrator {
           });
         });
     };
+    await this.assertExecutionLease(taskId);
     const execution = await run(observer);
+    await this.assertExecutionLease(taskId);
     await observerFlush;
     const completedAt = new Date().toISOString();
     this.telemetry.recordCodexRun({
