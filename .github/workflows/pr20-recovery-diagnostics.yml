@@ -7,61 +7,27 @@ permissions:
 jobs:
   inspect:
     if: github.repository == 'Absens/AI-Developer-Worker' && github.event.pull_request.number == 20 && github.event.pull_request.head.ref == 'test/postgres-integration-ci'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Inspect source around failing recovery contracts
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - name: Export tracked source and lockfile-installed tooling
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-          tests = list(Path('tests').rglob('*.ts'))
-          for path in tests:
-              source = path.read_text()
-              if 'falls back to a fresh internal session' in source:
-                  lines = source.splitlines()
-                  for index, line in enumerate(lines):
-                      if 'falls back to a fresh internal session' in line:
-                          print(f'=== FALLBACK TEST {path} ===')
-                          for i in range(max(0,index-20), min(len(lines),index+100)):
-                              print(f'{i+1}: {lines[i]}')
-          requests = {
-              'src/domain/internalWorkerOrchestrator.ts': [
-                  ('private resolveResumeContext', 65),
-                  ('private async withLeaseHeartbeat', 80),
-              ],
-              'src/integrations/internalTracker/postgresTaskTracker.ts': [
-                  ('async claimTask(', 150),
-                  ('private async releaseExpired', 65),
-                  ('async recordHumanAnswer(', 90),
-                  ('async answerClarification(', 90),
-              ],
-              'src/domain/taskTracker/inMemoryTaskTracker.ts': [
-                  ('async claimTask(', 100),
-                  ('async recordHumanAnswer(', 70),
-                  ('async answerClarification(', 70),
-              ],
-          }
-          for name, needles in requests.items():
-              path=Path(name)
-              if not path.exists():
-                  print(f'MISSING {name}')
-                  continue
-              data=path.read_bytes(); lines=data.decode().splitlines()
-              print(f'=== FILE {name} bytes={len(data)} sha256={hashlib.sha256(data).hexdigest()} ===')
-              for needle,count in needles:
-                  found=[i for i,l in enumerate(lines) if needle in l]
-                  print(f'MATCH {needle}: {[i+1 for i in found]}')
-                  for index in found:
-                      for i in range(index,min(len(lines), index+count)):
-                          print(f'{i+1}: {lines[i]}')
-          print('=== TASK TRACKER FILES ===')
-          for path in Path('src').rglob('*.ts'):
-              source=path.read_text()
-              if 'force-reanalysis' in source or 'forceReanalysis' in source:
-                  print(path)
-          PY
+          mkdir -p /tmp/pr20-export
+          git archive HEAD | gzip > /tmp/pr20-export/source.tar.gz
+          tar -czf /tmp/pr20-export/tooling.tar.gz node_modules
+          git rev-parse HEAD > /tmp/pr20-export/source-head.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr20-debug-checkout
+          path: /tmp/pr20-export/
+          retention-days: 1
+          if-no-files-found: error
