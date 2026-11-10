@@ -1,3 +1,4 @@
+import { latestUnambiguousQuestion } from "../../domain/taskTracker/clarification.js";
 import { randomUUID } from "node:crypto";
 
 import type { QueryResult, QueryResultRow } from "pg";
@@ -24,6 +25,7 @@ import {
   repositoryLeaseKeyForTask,
   taskLeaseKeyForTask,
 } from "../../domain/taskTracker/queueEligibility.js";
+import { assertRecoveryConfirmation, EXECUTION_TASK_STATUSES } from "../../domain/taskTracker/recovery.js";
 import { assertValidTaskStatusTransition } from "../../domain/taskTracker/status.js";
 import { redactSecrets } from "../../observability/redaction.js";
 import {
@@ -72,6 +74,7 @@ import type {
   QualityGateRun,
   RejectProposalInput,
   ReleaseLeaseInput,
+  RecoverAbandonedTaskInput,
   ReviewMetadataRecord,
   ReviewMetadataRecordInput,
   TaskActor,
@@ -1218,6 +1221,36 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     });
   }
 
+  async recoverAbandonedTask(taskId: string, input: RecoverAbandonedTaskInput): Promise<TaskRecord> {
+    assertRecoveryConfirmation(input);
+    return this.withTransaction(async (client) => {
+      const locked = await client.query<{ status: TaskStatus }>(
+        "SELECT status FROM tasks WHERE id = $1 FOR UPDATE", [taskId],
+      );
+      const from = locked.rows[0]?.status;
+      if (!from) throw new TaskNotFoundError(taskId);
+      if (from !== input.expectedStatus) throw new Error("Task state changed; refresh before recovery.");
+      const task = await this.getTaskUsing(client, taskId);
+      const now = this.nowIso();
+      const active = await client.query(
+        `SELECT 1 FROM task_leases
+         WHERE released_at IS NULL AND expires_at > $3
+           AND (task_id = $1 OR (kind = 'repository' AND lease_key = $2)) LIMIT 1`,
+        [taskId, repositoryLeaseKeyForTask(task), now],
+      );
+      if (active.rows.length) throw new Error("Cannot recover a task while its checkout has active leases.");
+      const to: TaskStatus = from === "fixing_review" ? "review" : "ready";
+      await client.query("UPDATE tasks SET status = $2, updated_at = $3 WHERE id = $1", [taskId, to, now]);
+      await this.insertEvent(client, {
+        id: `evt_${randomUUID()}`, taskId, kind: "task_status_changed", source: input.actor.owner,
+        actor: clone(input.actor), message: input.reason,
+        payload: { from, to, previousExecutorStopped: true, recovery: "operator_confirmed" },
+        createdAt: now,
+      });
+      return this.getTaskUsing(client, taskId);
+    });
+  }
+
   async markReady(taskId: string, reason?: string): Promise<void> {
     const task = await this.getTask(taskId);
     assertReadyFields(task);
@@ -1577,12 +1610,14 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
   }
 
   async recordHumanAnswer(taskId: string, input: HumanAnswerInput): Promise<void> {
+    const current = await this.getTask(taskId);
+    const questionId = input.questionId ?? latestUnambiguousQuestion(current.comments)?.id;
     await this.appendComment(taskId, {
       kind: "answer",
       author: clone(input.author),
       body: input.body,
       payload: {
-        ...(input.questionId ? { questionId: input.questionId } : {}),
+        ...(questionId ? { questionId: questionId } : {}),
         ...(input.command ? { command: input.command } : {}),
       },
     });
@@ -1590,7 +1625,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       kind: "human_answer_recorded",
       source: input.author.owner,
       actor: clone(input.author),
-      payload: { questionId: input.questionId },
+      payload: { questionId: questionId },
     });
     const task = await this.getTask(taskId);
     if (
@@ -3662,6 +3697,13 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
             AND t.status IN ('ready', 'claimed')
             AND t.repository_name IS NOT NULL
             AND t.repo_path_key IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks running
+            WHERE running.id <> t.id
+              AND running.status IN (${EXECUTION_TASK_STATUSES.map((status) => `'${status}'`).join(", ")})
+              AND lower(replace(trim(coalesce(running.repo_path_key, running.repository_name)), chr(92), '/'))
+                = lower(replace(trim(coalesce(t.repo_path_key, t.repository_name)), chr(92), '/'))
+          )
             AND NOT EXISTS (
               SELECT 1
               FROM task_proposals proposal
@@ -3742,6 +3784,13 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
           AND t.status = 'review'
           AND t.repository_name IS NOT NULL
           AND t.repo_path_key IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks running
+            WHERE running.id <> t.id
+              AND running.status IN (${EXECUTION_TASK_STATUSES.map((status) => `'${status}'`).join(", ")})
+              AND lower(replace(trim(coalesce(running.repo_path_key, running.repository_name)), chr(92), '/'))
+                = lower(replace(trim(coalesce(t.repo_path_key, t.repository_name)), chr(92), '/'))
+          )
           AND NOT EXISTS (
             SELECT 1
             FROM task_proposals proposal

@@ -148,7 +148,66 @@ describe("real PostgreSQL claim concurrency", () => {
 });
 
 describe("real PostgreSQL lease lifecycle", () => {
-  it("reclaims expired work and rejects stale credentials for the new leases", async () => {
+  it("persists a question ID for a same-timestamp human answer across connections", async () => {
+    const f = await start();
+    const a = f.newWorker("question-worker");
+    const b = f.newWorker("reader");
+    await a.tracker.createTask(taskInput("answer-link"));
+    await a.tracker.askClarification("answer-link", {
+      workerId: a.workerId, threadId: "resume-thread", summary: "Need input", blockingReason: "Missing choice",
+      question: "Continue?", options: [], resumeHint: "/resume",
+    });
+    await a.tracker.recordHumanAnswer("answer-link", { author: human, body: "/resume" });
+    const task = await b.tracker.getTask("answer-link");
+    const question = task.comments.find((comment) => comment.kind === "question")!;
+    const answer = task.comments.find((comment) => comment.kind === "answer")!;
+    expect(answer.createdAt).toBe(question.createdAt);
+    expect(answer.payload).toMatchObject({ questionId: question.id });
+  });
+
+  it("serializes concurrent operator recoveries and accepts only one confirmation", async () => {
+    const f = await start();
+    const a = f.newWorker("operator-a");
+    const b = f.newWorker("operator-b");
+    await a.tracker.createTask(taskInput("recover-once"));
+    claimed(await a.claim("repo-a", "recover-once", 10));
+    await a.tracker.setStatus("recover-once", "analyzing");
+    f.advance(11_000);
+    const input = { actor: human, expectedStatus: "analyzing" as const, previousExecutorStopped: true, reason: "Verified shutdown." };
+    const results = await Promise.allSettled([
+      a.tracker.recoverAbandonedTask("recover-once", input),
+      b.tracker.recoverAbandonedTask("recover-once", input),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await a.tracker.getTask("recover-once")).status).toBe("ready");
+  });
+
+  it("automatically reclaims a claim that never entered an execution stage", async () => {
+    const f = await start();
+    const a = f.newWorker("before-start");
+    const b = f.newWorker("replacement");
+    await a.tracker.createTask(taskInput("not-started"));
+    const old = claimed(await a.claim("repo-a", "not-started", 10));
+    f.advance(11_000);
+    const fresh = claimed(await b.claim("repo-a", "not-started", 60));
+    expect(fresh.task.id).toBe(old.task.id);
+    expect(leaseIds(fresh)).not.toEqual(leaseIds(old));
+  });
+
+  it("refuses operator recovery while valid leases exist and rolls back the attempted change", async () => {
+    const f = await start();
+    const a = f.newWorker("running");
+    await a.tracker.createTask(taskInput("still-owned"));
+    claimed(await a.claim("repo-a", "still-owned", 60));
+    await a.tracker.setStatus("still-owned", "analyzing");
+    await expect(a.tracker.recoverAbandonedTask("still-owned", {
+      actor: human, expectedStatus: "analyzing", previousExecutorStopped: true, reason: "test",
+    })).rejects.toThrow(/active leases/);
+    expect((await a.tracker.getTask("still-owned")).status).toBe("analyzing");
+  });
+
+  it("recovers started work only after confirmed executor stop and rejects stale credentials", async () => {
     const f = await start();
     const a = f.newWorker("previous-worker");
     const b = f.newWorker("new-worker");
@@ -156,6 +215,18 @@ describe("real PostgreSQL lease lifecycle", () => {
     const old = claimed(await a.claim("repo-a", "expiring", 10));
     await a.tracker.setStatus("expiring", "analyzing", "Simulated interrupted work");
     f.advance(11_000);
+    // Expiration alone must not authorize two processes in the same checkout.
+    await a.tracker.createTask(taskInput("same-checkout"));
+    expect(await b.claim("repo-a", "expiring", 60)).toBeNull();
+    expect(await b.claim("repo-a", "same-checkout", 60)).toBeNull();
+    const recovery = {
+      actor: human, expectedStatus: "analyzing" as const,
+      previousExecutorStopped: true, reason: "Operator verified executor and child processes stopped.",
+    };
+    await expect(b.tracker.recoverAbandonedTask("expiring", { ...recovery, previousExecutorStopped: false })).rejects.toThrow();
+    const recovered = await b.tracker.recoverAbandonedTask("expiring", recovery);
+    expect(recovered.status).toBe("ready");
+    expect(recovered.events.at(-1)?.payload).toMatchObject({ recovery: "operator_confirmed", previousExecutorStopped: true });
     const current = claimed(await b.claim("repo-a", "expiring", 60));
     expect(current.task.status).toBe("claimed");
     expect(leaseIds(current)).not.toEqual(leaseIds(old));

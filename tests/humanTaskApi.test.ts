@@ -2034,3 +2034,30 @@ describe("Phase 7F human task API", () => {
     expect(diagnostic.latestFailedAgentRun.diagnostic.length).toBeLessThan(1300);
   });
 });
+
+describe("abandoned execution recovery authorization", () => {
+  it("requires operator role, explicit stopped confirmation and matching current state", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "abandoned-api" }));
+    await tracker.setStatus(task.id, "claimed");
+    await tracker.setStatus(task.id, "analyzing");
+    const { baseUrl } = await createServer(tracker);
+    const command = `/api/tasks/${task.id}/commands/recover-abandoned`;
+    const body = { expectedStatus: "analyzing", previousExecutorStopped: true, reason: "Operator verified process shutdown." };
+    const request = (headers: Record<string, string>, value: object) => requestJson(baseUrl, command, {
+      method: "POST", headers, body: JSON.stringify(value),
+    });
+    expect((await request(developerHeaders, body)).status).toBe(403);
+    expect((await request(operatorHeaders, { ...body, previousExecutorStopped: false })).status).toBeGreaterThanOrEqual(400);
+    expect((await request(operatorHeaders, { ...body, expectedStatus: "implementing" })).status).toBeGreaterThanOrEqual(400);
+    for (const action of ["mark-ready", "resume", "hold", "cancel", "retry"]) {
+      expect((await requestJson(baseUrl, `/api/tasks/${task.id}/commands/${action}`, {
+        method: "POST", headers: operatorHeaders, body: JSON.stringify({ reason: "Cannot bypass recovery" }),
+      })).status).toBe(409);
+    }
+    expect((await tracker.getTask(task.id)).status).toBe("analyzing");
+    const recovered = await request(operatorHeaders, body);
+    expect(recovered.status).toBe(200);
+    expect((await tracker.getTask(task.id)).status).toBe("ready");
+  });
+});

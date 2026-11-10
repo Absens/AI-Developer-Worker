@@ -252,7 +252,7 @@ const recoveredTask = async (overrides: Partial<AppConfig> = {}) => {
     tracker,
     new Logger(),
   );
-  return { directory, config, tracker, orchestrator, writes };
+  return { directory, config, tracker, orchestrator, writes, git };
 };
 
 describe("existing MR recovery must validate current code", () => {
@@ -306,5 +306,27 @@ describe("existing MR recovery must validate current code", () => {
     expect(task.qualityGateRuns.at(-1)?.status).toBe("failed");
     expect(task.mergeRequests).toHaveLength(0);
     expect(fixture.writes).toEqual([]);
+  });
+});
+
+describe("lost execution ownership", () => {
+  it("never publishes or marks failure after the validation step loses its lease", async () => {
+    const f = await recoveredTask();
+    const originalHasChanges = f.git.hasChanges;
+    let calls = 0;
+    f.git.hasChanges = async () => {
+      calls += 1;
+      if (calls === 2) {
+        for (const lease of await f.tracker.listActiveLeases()) {
+          await f.tracker.releaseLease(lease.leaseId, { workerId: lease.workerId, token: lease.token });
+        }
+      }
+      return originalHasChanges.call(f.git);
+    };
+    expect(await f.orchestrator.runOnce()).toBe("waiting");
+    const task = await f.tracker.getTask(taskId);
+    expect(task.status).toBe("validating");
+    expect(task.mergeRequests).toHaveLength(0);
+    expect(f.writes).toEqual([]);
   });
 });
