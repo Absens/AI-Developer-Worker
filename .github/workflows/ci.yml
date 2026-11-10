@@ -133,7 +133,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # Disposable service credentials, not application or production secrets.
+      # Disposable service credentials, not application or production credentials.
       TASK_TRACKER_TEST_DATABASE_URL: postgresql://tracker:tracker@127.0.0.1:5432/ai_developer_ci_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
