@@ -1,3 +1,4 @@
+import type { ManagedSettingsService } from "../domain/settings/service.js";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -28,6 +29,7 @@ export interface TelegramWebhookRoute {
 }
 
 interface ObservabilityServerInput {
+  settings?: ManagedSettingsService;
   config: ObservabilityConfig;
   metrics: MetricsRegistry;
   state: WorkerStateRegistry;
@@ -216,6 +218,7 @@ export class ObservabilityHttpServer {
       config: input.config.taskTrackerUi,
       taskTracker: input.taskTracker,
       projectManager: input.projectManager,
+      settings: input.settings,
       state: input.state,
       repositories: input.repositories,
     });

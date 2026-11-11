@@ -1,3 +1,4 @@
+import type { ManagedSettingsService } from "../domain/settings/service.js";
 import type {
   ObservabilityConfig,
   RepositoryProfile,
@@ -135,6 +136,7 @@ class RuntimeObservabilityService implements ObservabilityService {
     taskTracker?: TaskTrackerClient,
     projectManager?: ProjectManagerApiDependencies,
     telegramWebhook?: TelegramWebhookRoute,
+    settings?: ManagedSettingsService,
   ) {
     this.metrics = new InMemoryMetricsRegistry();
     this.events = new InMemoryEventStore(config, this.metrics, logger);
@@ -153,6 +155,7 @@ class RuntimeObservabilityService implements ObservabilityService {
       taskTracker,
       projectManager,
       telegramWebhook,
+      settings,
     });
     this.metrics.setGauge("ai_developer_build_info", {
       version: process.env.npm_package_version ?? "unknown",
@@ -463,6 +466,7 @@ export const createObservabilityService = (
   taskTracker?: TaskTrackerClient,
   projectManager?: ProjectManagerApiDependencies,
   telegramWebhook?: TelegramWebhookRoute,
+  settings?: ManagedSettingsService,
 ): ObservabilityService => {
   const resolved = config ?? defaultObservabilityConfig();
   if (!resolved.enabled && !resolved.taskTrackerUi.enabled) {
@@ -475,5 +479,6 @@ export const createObservabilityService = (
     taskTracker,
     projectManager,
     telegramWebhook,
+    settings,
   );
 };

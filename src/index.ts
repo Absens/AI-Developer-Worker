@@ -1,15 +1,20 @@
+import { buildManagedApplication } from "./managedApplication.js";
 import { buildApplication, runApplicationRuntime } from "./app.js";
 import { formatPreflightReport, hasPreflightFailures } from "./domain/preflight.js";
 import { Logger } from "./utils/logger.js";
 
 const main = async (): Promise<void> => {
-  const application = buildApplication();
+  const application = process.env.MANAGED_SETTINGS_ENABLED === "true"
+    ? await buildManagedApplication()
+    : buildApplication();
   const { config, preflight } = application;
-  if (config.preflightOnly) {
-    const checks = await preflight.run();
-    console.log(formatPreflightReport(checks));
-    if (hasPreflightFailures(checks)) {
-      process.exitCode = 1;
+  if ("preflightOnly" in config && config.preflightOnly) {
+    try {
+      const checks = await preflight.run();
+      console.log(formatPreflightReport(checks));
+      if (hasPreflightFailures(checks)) process.exitCode = 1;
+    } finally {
+      if (process.env.MANAGED_SETTINGS_ENABLED === "true") await application.cleanup.stop();
     }
     return;
   }

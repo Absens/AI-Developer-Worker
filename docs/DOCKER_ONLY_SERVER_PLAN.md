@@ -1,5 +1,7 @@
 # План серверного развёртывания только в Docker
 
+**Дополнение:** первый ограниченный вариант без host checkout реализован в opt-in managed mode: [MANAGED_SETTINGS.md](MANAGED_SETTINGS.md). Этот исторический план шире реализации; SSO, изолированные executor containers и полный перенос интеграций по-прежнему не следует считать готовыми.
+
 > **Статус: проектное предложение, не реализованный runbook.** В текущем `main` основной `compose.yaml` требует `HOST_CODEX_HOME` и `TARGET_REPO_PATH` и монтирует локальный checkout. Описанные ниже `compose.server.yaml`, `RepositoryWorkspaceService` и URL-first fleet config **пока не считаются доступными функциями**. Для действующего запуска используйте [локальный Docker runbook](LOCAL_DOCKER_RUN.md).
 
 ## Цель

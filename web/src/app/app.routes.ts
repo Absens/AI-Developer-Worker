@@ -1,3 +1,4 @@
+import { SettingsPageComponent } from './pages/settings-page.component';
 import { Routes } from '@angular/router';
 
 import { CreateTaskPageComponent } from './pages/create-task-page.component';
@@ -16,6 +17,7 @@ export const routes: Routes = [
   { path: 'operations', component: OperationsPageComponent, title: 'Operations' },
   { path: 'goals', component: GoalsPageComponent, title: 'Project goals' },
   { path: 'goals/:goalId', component: GoalDetailPageComponent, title: 'Project goal detail' },
+  { path: 'settings', component: SettingsPageComponent, title: 'Настройки и проекты' },
   { path: ':taskId', component: TaskDetailPageComponent, title: 'Task detail' },
   { path: '**', component: NotFoundPageComponent, title: 'Not found' },
 ];

@@ -1,5 +1,8 @@
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { SettingsApiService } from '../services/settings-api.service';
+import { ProjectCatalogEntry } from '../models/settings.dto';
 import { CommonModule } from '@angular/common';
-import { Component, inject, signal } from '@angular/core';
+import { Component, DestroyRef, effect, inject, signal } from '@angular/core';
 import {
   AbstractControl,
   FormControl,
@@ -8,7 +11,7 @@ import {
   ValidationErrors,
   Validators,
 } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -55,6 +58,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
   selector: 'app-create-task-page',
   imports: [
     ButtonModule,
+    RouterLink,
     CommonModule,
     DialogModule,
     InputTextModule,
@@ -137,6 +141,12 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
 
         <div class="form-section">
           <h2>Маршрутизация</h2>
+          @if (session.session()?.capabilities?.['managedProjects']) {
+            <label class="field"><span>Проект</span>
+              <p-select data-testid="managed-project-select" formControlName="repositoryName" [options]="managedProjects()" optionLabel="name" optionValue="id" placeholder="Выберите включённый проект" (onChange)="selectManagedProject()" />
+            </label>
+            @if (!managedProjects().length) { <p class="muted">Нет включённых проектов. Администратор может <a routerLink="/settings">подключить проект в настройках</a>.</p> }
+          } @else {
           <div class="field-grid">
             <label class="field">
               <span>Репозиторий</span>
@@ -159,6 +169,7 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
               <input pInputText data-testid="create-priority" formControlName="priority" placeholder="normal" />
             </label>
           </div>
+          }
         </div>
 
         <div class="form-section">
@@ -268,9 +279,17 @@ const listTextValidator = (control: AbstractControl<string>): ValidationErrors |
   `,
 })
 export class CreateTaskPageComponent {
+  private readonly settingsApi = inject(SettingsApiService);
+  private readonly destroy = inject(DestroyRef);
+  protected readonly managedProjects = signal<ProjectCatalogEntry[]>([]);
+  protected selectManagedProject(): void {
+    const item = this.managedProjects().find(project => project.id === this.form.controls.repositoryName.value);
+    if (item) this.form.patchValue({ repositoryName: item.id, repoPathKey: item.id, baseBranch: item.baseBranch, queue: item.queue, tags: item.tags.join(',') });
+  }
+
   private readonly taskApi = inject(TaskApiService);
   private readonly router = inject(Router);
-  private readonly session = inject(SessionService);
+  protected readonly session = inject(SessionService);
   private readonly messages = inject(MessageService);
 
   protected readonly templates: TemplateOption[] = [
@@ -351,10 +370,18 @@ export class CreateTaskPageComponent {
 
   constructor() {
     this.applyTemplate();
+    effect(() => {
+      if (!this.session.session()?.capabilities?.['managedProjects']) return;
+      this.form.controls.repositoryName.setValue('');
+      this.settingsApi.catalog().pipe(takeUntilDestroyed(this.destroy)).subscribe({
+        next: result => this.managedProjects.set(result.projects),
+        error: () => this.error.set('Не удалось загрузить список проектов.'),
+      });
+    });
   }
 
   protected canCreateTask(): boolean {
-    return canUseCapability(this.session.session(), 'canCreateTask');
+    return canUseCapability(this.session.session(), 'canCreateTask') && (!this.session.session()?.capabilities?.['managedProjects'] || this.managedProjects().some(project => project.id === this.form.controls.repositoryName.value));
   }
 
   protected applyTemplate(): void {

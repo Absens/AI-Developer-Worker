@@ -1,3 +1,6 @@
+import { FormsModule } from '@angular/forms';
+import { InputTextModule } from 'primeng/inputtext';
+import { AdminCredentialService } from './services/admin-credential.service';
 import { Component, computed, inject } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { ButtonModule } from 'primeng/button';
@@ -22,6 +25,7 @@ interface NavItem {
 @Component({
   selector: 'app-root',
   imports: [
+    FormsModule, InputTextModule,
     ButtonModule,
     ConfirmDialogModule,
     MessageModule,
@@ -37,8 +41,18 @@ interface NavItem {
   styleUrl: './app.scss'
 })
 export class App {
+  protected adminToken = '';
+  private readonly credential = inject(AdminCredentialService);
+  protected login(): void {
+    this.credential.set(this.adminToken);
+    this.adminToken = '';
+    this.sessionService.load();
+  }
+  protected logout(): void { this.credential.clear(); this.sessionService.clear(); this.sessionService.load(); }
+
   protected readonly sessionService = inject(SessionService);
   protected readonly navItems: NavItem[] = [
+    { label: 'Настройки', icon: 'pi pi-cog', route: '/settings', testId: 'nav-settings', capability: 'canManageSettings' },
     { label: 'Очередь', icon: 'pi pi-list', route: '/', testId: 'nav-queue', capability: 'canReadTasks' },
     {
       label: 'Создать',

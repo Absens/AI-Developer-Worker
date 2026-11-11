@@ -109,7 +109,7 @@ const DEFAULT_TRACKER_IMAGE_CONTEXT_CONFIG: TrackerImageContextConfig = {
   maxBytes: 10 * 1024 * 1024,
 };
 
-interface InternalExecutionContext {
+export interface InternalExecutionContext {
   profile: RepositoryWorkerContext["profile"];
   config: AppConfig;
   git: GitService;
@@ -307,6 +307,7 @@ export class InternalWorkerOrchestrator {
     memoryStore?: MemoryStore,
     private readonly telemetry: ObservabilityTelemetry = noopObservability,
     private readonly yandexBridges: YandexBridge[] = [],
+    private readonly resolveExecutionContext?: (context: InternalExecutionContext, task: TaskRecord) => Promise<InternalExecutionContext>,
   ) {
     this.workflow = new AgentWorkflowService(taskTracker);
     this.memoryStore = memoryStore ?? (
@@ -783,6 +784,8 @@ export class InternalWorkerOrchestrator {
     });
 
     try {
+      await this.assertExecutionLease(claim.task.id);
+      if (this.resolveExecutionContext) context = await this.resolveExecutionContext(context, await this.taskTracker.getTask(claim.task.id));
       await this.syncExternalMirror(claim.task.id);
       const outcome = await this.processTask(context, claim);
       await this.syncExternalMirror(claim.task.id);
@@ -1095,6 +1098,8 @@ export class InternalWorkerOrchestrator {
     mergeRequest: MergeRequestInfo,
   ): Promise<boolean> {
     const task = await this.taskTracker.getTask(claim.task.id);
+    await this.assertExecutionLease(task.id);
+    if (this.resolveExecutionContext) context = await this.resolveExecutionContext(context, task);
     const previousMetadata = latestReviewMetadataForMergeRequest(
       task.reviewMetadata,
       mergeRequest.iid,

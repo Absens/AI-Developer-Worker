@@ -1,4 +1,5 @@
-import { provideHttpClient } from '@angular/common/http';
+import { adminCredentialInterceptor } from './services/admin-credential.service';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import {
   ApplicationConfig,
   provideBrowserGlobalErrorListeners,
@@ -16,7 +17,7 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideZoneChangeDetection({ eventCoalescing: true }),
-    provideHttpClient(),
+    provideHttpClient(withInterceptors([adminCredentialInterceptor])),
     provideAnimationsAsync(),
     providePrimeNG({
       ripple: true,

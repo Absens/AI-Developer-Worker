@@ -27,6 +27,8 @@ export class SessionService {
   readonly error = computed(() => this.state().error);
   readonly apiPath = computed(() => this.state().session?.apiPath || '/api');
 
+  clear(): void { this.state.set({ loading: false }); }
+
   load(): void {
     if (this.state().loading) {
       return;
