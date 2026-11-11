@@ -2246,7 +2246,7 @@ const loadStatusMapFromFile = (
   return parseStatusMap(rawValue);
 };
 
-export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
+export const loadConfig = (env: NodeJS.ProcessEnv = process.env, options: { allowUnconfiguredRepository?: boolean } = {}): AppConfig => {
   const taskTracker = parseTaskTrackerConfig(env);
   const usesYandex = taskTrackerUsesYandex(taskTracker);
   const trackerStatusMap = usesYandex
@@ -2297,12 +2297,12 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
       env.TRACKER_PARENT_LINK_TYPE?.trim() || DEFAULT_TRACKER_PARENT_LINK_TYPE,
     trackerBlockedByLinkType:
       env.TRACKER_BLOCKED_BY_LINK_TYPE?.trim() || DEFAULT_TRACKER_BLOCKED_BY_LINK_TYPE,
-    gitlabUrl: requireEnv(env, "GITLAB_URL").replace(/\/+$/, ""),
-    gitlabToken: requireEnv(env, "GITLAB_TOKEN"),
-    gitlabProjectId: requireEnv(env, "GITLAB_PROJECT_ID"),
+    gitlabUrl: (options.allowUnconfiguredRepository ? "" : requireEnv(env, "GITLAB_URL")).replace(/\/+$/, ""),
+    gitlabToken: options.allowUnconfiguredRepository ? "" : requireEnv(env, "GITLAB_TOKEN"),
+    gitlabProjectId: options.allowUnconfiguredRepository ? "" : requireEnv(env, "GITLAB_PROJECT_ID"),
     gitRemoteName: env.GIT_REMOTE_NAME?.trim() || "origin",
     gitRepositoryToken:
-      env.GIT_REPOSITORY_TOKEN?.trim() || requireEnv(env, "GITLAB_TOKEN"),
+      options.allowUnconfiguredRepository ? "" : env.GIT_REPOSITORY_TOKEN?.trim() || requireEnv(env, "GITLAB_TOKEN"),
     gitRepositoryUsername: env.GIT_REPOSITORY_USERNAME?.trim() || "oauth2",
     ...(env.GIT_REPOSITORY_URL?.trim()
       ? { gitRepositoryUrl: env.GIT_REPOSITORY_URL.trim() }
@@ -2556,8 +2556,9 @@ const parsePriorityQueueConfig = (
 const buildSingleRepositoryFleetConfig = (
   config: AppConfig,
   env: NodeJS.ProcessEnv,
+  empty = false,
 ): GlobalWorkerConfig => {
-  const repositories: RepositoryProfile[] = [
+  const repositories: RepositoryProfile[] = empty ? [] : [
     {
       name: "default",
       repoPath: config.repoPath,
@@ -2604,7 +2605,7 @@ const buildSingleRepositoryFleetConfig = (
         : {}),
     },
   ];
-  validateRepositoryProfiles(repositories);
+  if (!empty) validateRepositoryProfiles(repositories);
 
   return {
     taskTracker: config.taskTracker,
@@ -3327,3 +3328,7 @@ export const buildRepositoryRuntimeConfig = (
       }
     : {}),
 });
+
+/** Bootstrap only: no fake repository and no credentials are required before setup. */
+export const loadUnconfiguredManagedFleet = (env: NodeJS.ProcessEnv): GlobalWorkerConfig =>
+  buildSingleRepositoryFleetConfig(loadConfig(env, { allowUnconfiguredRepository: true }), env, true);

@@ -9,3 +9,5 @@ web/.angular
 web/test-results
 web/playwright-report
 web/dev-server.log
+
+.env.managed

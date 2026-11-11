@@ -14,6 +14,7 @@
         <span class="console-user">{{ session.user.displayName || session.user.id }}</span>
         <p-tag [value]="authModeLabel()" [severity]="authModeSeverity()" />
         <p-tag [value]="session.role" severity="info" />
+        @if(session.authMode === 'bearer') { <button pButton type="button" label="Выйти" severity="secondary" (click)="logout()" ></button> }
       } @else {
         <span class="console-user">Сессия загружается</span>
       }
@@ -38,6 +39,14 @@
 
     <main class="console-main">
       @if (sessionService.error(); as error) {
+        @if(!sessionService.session()) {
+          <form class="surface" (ngSubmit)="login()" data-testid="admin-login" style="padding:1rem; margin-bottom:1rem">
+            <h2>Вход администратора</h2>
+            <p>Для защищённого запуска введите токен администратора из конфигурации развёртывания. Он остаётся только в памяти вкладки.</p>
+            <label>Токен администратора <input pInputText type="password" name="adminToken" [(ngModel)]="adminToken" autocomplete="off" required /></label>
+            <button pButton type="submit" label="Войти" [disabled]="sessionService.loading()" ></button>
+          </form>
+        }
         <p-message data-testid="session-error" severity="error" [text]="error" />
         <button
           pButton
@@ -56,7 +65,7 @@
         </div>
       }
 
-      <router-outlet />
+      @if (sessionService.session()) { <router-outlet /> }
     </main>
   </div>
 </div>

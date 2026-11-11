@@ -36,7 +36,7 @@ const forbidden = (
 ): boolean => {
   const name = key.toUpperCase();
   if (/^(?:__PROTO__|CONSTRUCTOR|PROTOTYPE)$/.test(name)) return true;
-  if (/^(?:GITLAB_|TRACKER_|TASK_TRACKER_|TELEGRAM_|WORKER_|ALERT_|SLACK_|YANDEX_)/.test(name)) return true;
+  if (/^(?:GITLAB_|TRACKER_|TASK_TRACKER_|TELEGRAM_|WORKER_|ALERT_|SLACK_|YANDEX_|SETTINGS_|MANAGED_)/.test(name)) return true;
   if (name === "GIT_REPOSITORY_TOKEN") return true;
   if (INJECTION_VARIABLES.has(name) || /^(?:LD_|DYLD_)/.test(name)) return true;
   if (name.startsWith("GIT_CONFIG")) {

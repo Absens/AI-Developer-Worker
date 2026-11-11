@@ -1,5 +1,7 @@
 # Архитектура AI Developer Worker
 
+**Managed mode:** при `MANAGED_SETTINGS_ENABLED=true` bootstrap и runtime находятся в `src/managedApplication.ts`, настройки проектов — в PostgreSQL. UI работает без исходного repository profile; действуют отдельные границы первого выпуска. См. [MANAGED_SETTINGS.md](MANAGED_SETTINGS.md). Описание env/fleet ниже остаётся для прежнего режима.
+
 Этот документ описывает **текущие** модули, runtime-режимы и поток данных проекта. Для установки и эксплуатации используйте [указатель документации](README.md). Отдельные исторические планы в `docs/superpowers/` не гарантируют фактической реализации.
 
 ## Назначение и границы

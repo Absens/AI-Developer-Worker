@@ -108,6 +108,14 @@ const runProcess = async (options: InternalCommandOptions): Promise<ProcessResul
       });
     });
 
+    // A short-lived CLI may close its input before consuming all of the prompt.
+    // Keep the child's exit code/output authoritative instead of emitting an
+    // unhandled stream error. Never include stdin (which may be sensitive) in diagnostics.
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EPIPE") return;
+      child.kill("SIGTERM");
+      reject(new TemporaryIntegrationError("Failed to write child process input.", error));
+    });
     if (options.stdin) {
       child.stdin.write(options.stdin);
     }

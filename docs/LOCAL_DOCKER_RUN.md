@@ -1,5 +1,7 @@
 # Локальный запуск в Docker
 
+**Для настройки проектов через UI** предусмотрены отдельные `compose.managed.yaml` и [MANAGED_SETTINGS.md](MANAGED_SETTINGS.md). Руководство ниже описывает прежний bind-mount env/fleet запуск.
+
 Этот документ описывает локальный запуск AI Developer Worker. Для Windows-команд см. [PowerShell quickstart](WINDOWS_POWERSHELL_QUICKSTART.md).
 
 **Коротко:** просто собрать образ недостаточно. Нужны авторизованный Codex, реальные git credentials целевого репозитория, корректный `.env` и работающие команды quality gates.

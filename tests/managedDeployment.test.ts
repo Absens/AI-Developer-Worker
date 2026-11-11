@@ -1,0 +1,31 @@
+import { afterEach, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { parse } from "yaml";
+const directories: string[] = [];
+afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+it("generates distinct keys without echoing or overwriting them", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "managed-env-test-")); directories.push(cwd);
+  const script = resolve("scripts/init-managed-env.mjs");
+  const first = spawnSync(process.execPath, [script, "https://gitlab.test"], { cwd, encoding: "utf8" });
+  expect(first.status).toBe(0);
+  const source = readFileSync(join(cwd, ".env.managed"), "utf8");
+  const values = Object.fromEntries(source.split("\n").filter(line => line.includes("=")).map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+  expect(Buffer.from(values.SETTINGS_ENCRYPTION_KEY ?? "", "base64")).toHaveLength(32);
+  expect(values.TASK_TRACKER_SYSTEM_TOKEN).toHaveLength(64); expect(values.POSTGRES_PASSWORD).toHaveLength(64);
+  expect(first.stdout).not.toContain(values.TASK_TRACKER_SYSTEM_TOKEN);
+  expect(first.stdout).not.toContain(values.SETTINGS_ENCRYPTION_KEY);
+  if (process.platform !== "win32") expect(statSync(join(cwd, ".env.managed")).mode & 0o777).toBe(0o600);
+  const second = spawnSync(process.execPath, [script, "https://gitlab.test"], { cwd, encoding: "utf8" });
+  expect(second.status).toBe(1); expect(readFileSync(join(cwd, ".env.managed"), "utf8")).toBe(source);
+});
+it("keeps managed Compose private and independent of host checkouts", () => {
+  const raw = readFileSync("compose.managed.yaml", "utf8"); const config = parse(raw);
+  expect(config.services.worker.ports).toEqual(["127.0.0.1:9464:9464"]);
+  expect(config.services.postgres.ports).toBeUndefined();
+  expect(config.services.worker.restart).toBe("no");
+  expect(config.services.worker.environment.TASK_TRACKER_HUMAN_AUTH_MODE).toBe("bearer");
+  expect(raw).not.toContain("TARGET_REPO_PATH"); expect(raw).not.toContain("HOST_CODEX_HOME");
+});

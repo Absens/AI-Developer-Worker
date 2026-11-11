@@ -1,0 +1,45 @@
+# Initial managed-mode deployment. No host checkout, no shared host Codex auth.
+# Run: docker compose --env-file .env.managed -f compose.managed.yaml up --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ai_developer_tasks
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a generated PostgreSQL password}
+    volumes:
+      - managed-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U tracker -d ai_developer_tasks"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  worker:
+    build: .
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9464:9464"
+    environment:
+      MANAGED_SETTINGS_ENABLED: "true"
+      TASK_TRACKER_DATABASE_URL: postgresql://tracker:${POSTGRES_PASSWORD}@postgres:5432/ai_developer_tasks
+      TASK_TRACKER_HUMAN_AUTH_MODE: bearer
+      TASK_TRACKER_SYSTEM_TOKEN: ${TASK_TRACKER_SYSTEM_TOKEN:?Set a generated admin token of at least 32 characters}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:?Set a 32-byte base64 encryption key}
+      SETTINGS_GITLAB_ORIGINS: ${SETTINGS_GITLAB_ORIGINS:?Set allowed GitLab HTTPS origins}
+      SETTINGS_WORKSPACE_ROOT: /workspace/repos
+      OBSERVABILITY_HOST: 0.0.0.0
+      OBSERVABILITY_PORT: "9464"
+      CODEX_HOME: /codex-home
+      CODEX_SANDBOX: workspace-write
+      CODEX_API_KEY: ${CODEX_API_KEY:-}
+      WORKER_ID: managed-worker-1
+    volumes:
+      - managed-workspaces:/workspace/repos
+      - managed-codex:/codex-home
+volumes:
+  managed-postgres:
+  managed-workspaces:
+  managed-codex:

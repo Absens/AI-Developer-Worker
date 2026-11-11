@@ -1,3 +1,6 @@
+import type { ManagedSettingsService } from "../domain/settings/service.js";
+import { SettingsError } from "../domain/settings/types.js";
+import { handleManagedSettingsRequest } from "./managedSettingsApi.js";
 import { isExecutionInProgress } from "../domain/taskTracker/recovery.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -47,6 +50,7 @@ import { redactSecrets } from "./redaction.js";
 import type { WorkerStateRegistry } from "./state.js";
 
 interface TaskTrackerHumanApiInput {
+  settings?: ManagedSettingsService;
   config: TaskTrackerUiConfig;
   taskTracker?: TaskTrackerClient;
   projectManager?: ProjectManagerApiDependencies;
@@ -328,6 +332,7 @@ const summarizeTask = (
 };
 
 const responseForError = (error: unknown): { statusCode: number; message: string } => {
+  if (error instanceof SettingsError) return { statusCode: error.status, message: error.message };
   if (error instanceof HttpApiError) {
     return { statusCode: error.statusCode, message: error.message };
   }
@@ -376,6 +381,7 @@ export class TaskTrackerHumanApi {
       return false;
     }
     return (
+      path === `${apiPath}/settings` || path.startsWith(`${apiPath}/settings/`) || path === `${apiPath}/project-catalog` ||
       path === `${apiPath}/session` ||
       path === `${apiPath}/tasks` ||
       path === `${apiPath}/tasks:bulk-create` ||
@@ -401,6 +407,33 @@ export class TaskTrackerHumanApi {
       if (request.method === "GET" && route === "/session") {
         const auth = this.requireAuth(request, "viewer");
         json(response, 200, this.buildSession(auth));
+        return;
+      }
+
+      if (route === "/project-catalog" && request.method === "GET") {
+        this.requireAuth(request, "viewer");
+        json(response, 200, { managed: Boolean(this.input.settings), projects: this.input.settings ? await this.input.settings.catalog() : [] });
+        return;
+      }
+      if (route === "/settings" || route.startsWith("/settings/")) {
+        const auth = this.requireAuth(request, "admin");
+        if (!this.input.settings) throw new HttpApiError(404, "Управляемый режим не включён. Настройки этой установки задаются окружением.");
+        if (request.method !== "GET") {
+          if (!headerValue(request, "content-type")?.toLowerCase().startsWith("application/json")) throw new HttpApiError(415, "Ожидается application/json.");
+          const origin = headerValue(request, "origin");
+          if (headerValue(request, "sec-fetch-site") === "cross-site" || (origin && (() => {
+            try { return new URL(origin).host !== headerValue(request, "host"); } catch { return true; }
+          })())) throw new HttpApiError(403, "Запрос настроек с другого origin запрещён.");
+        }
+        try {
+          const result = await handleManagedSettingsRequest(this.input.settings, request.method ?? "GET", route, url, auth.actor.id,
+            request.method === "GET" ? undefined : await this.readJson(request));
+          json(response, result.status, result.body);
+        } catch (error) {
+          if (error instanceof SettingsError) throw error;
+          if (error instanceof HttpApiError) throw new HttpApiError(error.statusCode, "Некорректный запрос настроек. Проверьте JSON и размер запроса.");
+          throw new HttpApiError(503, "Не удалось обработать настройки. Проверьте состояние БД и исполнителя.");
+        }
         return;
       }
 
@@ -957,6 +990,8 @@ export class TaskTrackerHumanApi {
       role: auth.role,
       authMode: this.input.config.authMode,
       capabilities: {
+        canManageSettings: Boolean(this.input.settings) && canRole("admin"),
+        managedProjects: Boolean(this.input.settings),
         canReadTasks: canRole("viewer"),
         canCreateTask: canRole("developer"),
         canUpdateTask: canRole("developer"),
@@ -1357,6 +1392,12 @@ export class TaskTrackerHumanApi {
         ? { owner: "external_source", id: "system" }
         : auth.actor;
     const createdBy = parseActor(body.createdBy, fallbackActor);
+    if (this.input.settings) {
+      const selected = (await this.input.settings.catalog()).find(project => project.id === body.repositoryName);
+      if (!selected) throw new HttpApiError(400, "Выберите включённый и подготовленный проект.");
+      body = { ...body, repositoryName: selected.id, repoPathKey: selected.id, baseBranch: selected.baseBranch, queue: selected.queue, tags: [...new Set([...selected.tags, ...(optionalStringArray(body.tags) ?? [])])] };
+    }
+
     const input: CreateTaskInput = {
       ...(optionalString(body.id) ? { id: optionalString(body.id) } : {}),
       title: requiredString(body.title, "title"),
