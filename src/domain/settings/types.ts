@@ -15,9 +15,16 @@ export interface ProjectDefinition {
   lintCommand: string;
   buildCommand?: string;
   typeCheckCommand?: string;
+  securityScanCommand?: string;
+  sastCommand?: string;
+  coverageCommand?: string;
+  coverageReportFile?: string;
+  minCoveragePercent?: number;
+  visualRegressionCommand?: string;
   model?: string;
   timeoutSeconds: number;
   maxFixAttempts: number;
+  maxReviewFixAttempts?: number;
 }
 export interface ActiveProject {
   revision: number;

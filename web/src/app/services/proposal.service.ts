@@ -10,8 +10,10 @@ import { mapProposalListResponse } from './task-mappers';
 export class ProposalService {
   private readonly api = inject(ApiClient);
 
-  list(supervisorStatus?: string): Observable<ProposalListResponseDto> {
-    const params = supervisorStatus ? new HttpParams().set('supervisorStatus', supervisorStatus) : undefined;
+  list(supervisorStatus?: string, repositoryName?: string): Observable<ProposalListResponseDto> {
+    let params = new HttpParams();
+    if (supervisorStatus) params = params.set('supervisorStatus', supervisorStatus);
+    if (repositoryName) params = params.set('repositoryName', repositoryName);
     return this.api.get<unknown>('/proposals', params).pipe(map(mapProposalListResponse));
   }
 

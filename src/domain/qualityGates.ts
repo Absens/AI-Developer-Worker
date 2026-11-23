@@ -1,5 +1,14 @@
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type {
   AppConfig,
@@ -38,6 +47,52 @@ const truncateForLog = (value: string): string => {
 const resolveReportPath = (cwd: string, reportFile: string): string =>
   isAbsolute(reportFile) ? reportFile : resolve(cwd, reportFile);
 
+const pathIsInside = (directory: string, candidate: string): boolean => {
+  const path = relative(directory, candidate);
+  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+};
+
+const readManagedCoverageReport = (cwd: string, reportFile: string): string | undefined => {
+  try {
+    const checkout = resolve(cwd);
+    const candidate = resolve(checkout, reportFile);
+    if (
+      isAbsolute(reportFile) ||
+      !pathIsInside(checkout, candidate) ||
+      relative(checkout, realpathSync(checkout)) !== ""
+    ) {
+      return undefined;
+    }
+
+    const report = realpathSync(candidate);
+    if (!pathIsInside(checkout, report) || !lstatSync(report).isFile()) {
+      return undefined;
+    }
+
+    const file = openSync(
+      report,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      // Validate the opened object and compare it with the current path before reading.
+      const opened = fstatSync(file, { bigint: true });
+      const currentPath = realpathSync(report);
+      if (!pathIsInside(checkout, currentPath) || !opened.isFile()) {
+        return undefined;
+      }
+      const current = lstatSync(currentPath, { bigint: true });
+      if (!current.isFile() || opened.dev !== current.dev || opened.ino !== current.ino) {
+        return undefined;
+      }
+      return readFileSync(file, "utf8");
+    } finally {
+      closeSync(file);
+    }
+  } catch {
+    return undefined;
+  }
+};
+
 const formatPercent = (value: number): string =>
   Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 
@@ -46,6 +101,10 @@ const parseCoveragePercent = (rawValue: string): number | undefined => {
   try {
     parsed = JSON.parse(rawValue);
   } catch {
+    return undefined;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
     return undefined;
   }
 
@@ -185,7 +244,22 @@ const evaluateCoverageResult = (
   let rawCoverage = "";
   let source = "stdout";
 
-  if (config.coverageReportFile) {
+  if (config.coverageReportFile && config.coverageReportWorkspaceOnly) {
+    source = "the configured managed coverage report";
+    const report = readManagedCoverageReport(cwd, config.coverageReportFile);
+    if (report === undefined) {
+      return {
+        ...baseResult,
+        status: "failed",
+        diagnostic: [
+          `Quality gate "${gate.label}" (${gate.id}) failed.`,
+          `Command: ${gate.command}`,
+          "Coverage report must be a readable regular file inside the managed checkout.",
+        ].join("\n\n"),
+      };
+    }
+    rawCoverage = report;
+  } else if (config.coverageReportFile) {
     const reportPath = resolveReportPath(cwd, config.coverageReportFile);
     source = reportPath;
     if (!existsSync(reportPath)) {

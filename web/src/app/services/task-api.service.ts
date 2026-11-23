@@ -6,6 +6,7 @@ import {
   AgentContextPreviewResponseDto,
   CreateTaskRequestDto,
   CreateTaskResponseDto,
+  CommandResponseDto,
   TaskDetailResponseDto,
   TaskListResponseDto,
   TaskStatusDto,
@@ -14,6 +15,7 @@ import {
 import { ApiClient } from './api-client.service';
 import {
   mapCreateTaskResponse,
+  mapCommandResponse,
   mapEvent,
   mapTaskDetailResponse,
   mapTaskListResponse,
@@ -21,12 +23,22 @@ import {
 
 export interface TaskListFilters {
   status?: TaskStatusDto[];
+  search?: string;
+  cursor?: string;
   repository?: string;
   queue?: string;
   priority?: string;
   worker?: string;
   tag?: string;
   limit?: number;
+}
+
+export interface DraftRevisionRequest {
+  title: string;
+  description: string;
+  acceptanceCriteria: string[];
+  expectedRevisionNumber: number;
+  expectedStatus: 'new';
 }
 
 @Injectable({ providedIn: 'root' })
@@ -55,6 +67,12 @@ export class TaskApiService {
 
   createTask(request: CreateTaskRequestDto): Observable<CreateTaskResponseDto> {
     return this.api.post<CreateTaskRequestDto, unknown>('/tasks', request).pipe(map(mapCreateTaskResponse));
+  }
+
+  updateDraftRevision(taskId: string, request: DraftRevisionRequest): Observable<CommandResponseDto> {
+    return this.api.post<DraftRevisionRequest, unknown>(
+      `/tasks/${encodeURIComponent(taskId)}/revisions`, request,
+    ).pipe(map(mapCommandResponse));
   }
 
   getEvents(taskId: string): Observable<TimelineEventDto[]> {

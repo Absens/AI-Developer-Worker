@@ -44,6 +44,60 @@ it("validates required checks instead of accepting whitespace and arbitrary work
   expect(validateDefinition(definition).baseBranch).toBe("main");
 });
 
+describe("optional project quality gates and review settings", () => {
+  it("normalizes commands and preserves zero and fractional numeric values", () => {
+    const settings = {
+      securityScanCommand: "npm run scan",
+      sastCommand: "npm run sast",
+      coverageCommand: "npm run coverage",
+      visualRegressionCommand: "npm run visual",
+      coverageReportFile: "coverage/summary.json",
+      minCoveragePercent: 82.5,
+      maxReviewFixAttempts: 0,
+    };
+    expect(validateDefinition({ ...definition, ...settings, coverageCommand: " npm run coverage " }))
+      .toEqual({ ...definition, ...settings });
+    expect(validateDefinition({ ...definition, coverageCommand: "coverage", minCoveragePercent: 0 }))
+      .toHaveProperty("minCoveragePercent", 0);
+    expect(validateDefinition({ ...definition, coverageCommand: "coverage", minCoveragePercent: 100 }))
+      .toHaveProperty("minCoveragePercent", 100);
+  });
+
+  it("leaves legacy definitions unchanged and omits blank optional values", () => {
+    expect(validateDefinition(definition)).toEqual(definition);
+    expect(validateDefinition({
+      ...definition,
+      securityScanCommand: " ", sastCommand: "", coverageCommand: "", coverageReportFile: "",
+      visualRegressionCommand: "", minCoveragePercent: null, maxReviewFixAttempts: null,
+    })).toEqual(definition);
+  });
+
+  it.each([NaN, Infinity, -0.01, 100.01, "80", true])("rejects invalid coverage threshold %s", minCoveragePercent => {
+    expect(() => validateDefinition({ ...definition, coverageCommand: "coverage", minCoveragePercent }))
+      .toThrow("Минимальное покрытие");
+  });
+
+  it.each([-1, 1.5, 6, "0", false])("rejects invalid review attempt limit %s", maxReviewFixAttempts => {
+    expect(() => validateDefinition({ ...definition, maxReviewFixAttempts })).toThrow("Значение лимита");
+  });
+
+  it("requires a coverage command for a report or threshold, including a threshold of zero", () => {
+    expect(() => validateDefinition({ ...definition, coverageReportFile: "coverage/summary.json" }))
+      .toThrow("Укажите команду");
+    expect(() => validateDefinition({ ...definition, coverageCommand: " ", minCoveragePercent: 0 }))
+      .toThrow("Укажите команду");
+  });
+
+  it.each([
+    "/tmp/coverage.json", "C:/coverage.json", "C:coverage.json", "coverage\\summary.json",
+    "../coverage.json", "coverage/../summary.json", "coverage/./summary.json", "./coverage.json",
+    "coverage//summary.json", "coverage/", ".", "coverage:summary.json",
+  ])("rejects a noncanonical report path %s", coverageReportFile => {
+    expect(() => validateDefinition({ ...definition, coverageCommand: "coverage", coverageReportFile }))
+      .toThrow("относительный путь");
+  });
+});
+
 it("boots with no connections/projects and never serializes stored tokens", async () => {
   const f = fixture();
   expect((await f.service.view()).projects).toEqual([]);

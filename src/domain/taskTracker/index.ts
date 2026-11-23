@@ -24,6 +24,7 @@ export {
   TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
+  TaskWriteConflictError,
 } from "./errors.js";
 export { InMemoryTaskTrackerClient } from "./inMemoryTaskTracker.js";
 export {
@@ -118,6 +119,7 @@ export type {
   TaskRevisionInput,
   TaskSource,
   TaskStatus,
+  TaskStatusChangeInput,
   TaskStep,
   TaskStepKind,
   TaskStepRecordInput,

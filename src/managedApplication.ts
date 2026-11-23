@@ -18,9 +18,49 @@ import { CliCodexRunner } from "./integrations/codex/runner.js";
 import { RepositoryGitService } from "./integrations/git/service.js";
 import { GitLabApiClient } from "./integrations/gitlab/client.js";
 import { createObservabilityService } from "./observability/service.js";
-import type { AppConfig, RepositoryProfile } from "./models/types.js";
+import type { AppConfig, GlobalWorkerConfig, RepositoryProfile } from "./models/types.js";
 import { checkManagedExecutor } from "./domain/settings/executorReadiness.js";
 import { Logger } from "./utils/logger.js";
+
+export const buildManagedProjectRuntimeConfig = (
+  fleet: GlobalWorkerConfig,
+  repoPath: string,
+  snapshot: ManagedExecutionSnapshot,
+): { profile: RepositoryProfile; config: AppConfig } => {
+  const definition = snapshot.active.definition;
+  const profile: RepositoryProfile = {
+    name: snapshot.project.id,
+    repoPath,
+    gitlabProjectId: definition.gitlabProjectId,
+    gitRemoteName: "origin",
+    gitRepositoryUrl: snapshot.active.cloneUrl,
+    baseBranch: definition.baseBranch,
+    queues: ["MANAGED"],
+    tags: ["ai_dev"],
+    testCommand: definition.testCommand,
+    lintCommand: definition.lintCommand,
+    buildCommand: definition.buildCommand,
+    typeCheckCommand: definition.typeCheckCommand,
+    securityScanCommand: definition.securityScanCommand,
+    sastCommand: definition.sastCommand,
+    coverageCommand: definition.coverageCommand,
+    visualRegressionCommand: definition.visualRegressionCommand,
+    coverageReportFile: definition.coverageReportFile,
+    minCoveragePercent: definition.minCoveragePercent,
+  };
+  const config: AppConfig = {
+    ...buildRepositoryRuntimeConfig(fleet, profile),
+    gitlabUrl: snapshot.connection.origin,
+    gitlabToken: snapshot.connection.token,
+    gitRepositoryToken: snapshot.connection.token,
+    codexModel: definition.model || fleet.codex.model,
+    codexTimeoutMs: definition.timeoutSeconds * 1000,
+    maxFixAttempts: definition.maxFixAttempts,
+    maxReviewFixAttempts: definition.maxReviewFixAttempts ?? definition.maxFixAttempts,
+    coverageReportWorkspaceOnly: true,
+  };
+  return { profile, config };
+};
 
 export const buildManagedApplication = async (env: NodeJS.ProcessEnv = process.env): Promise<ApplicationRuntime & {
   preflight: { run(): Promise<{ name: string; status: "pass" | "warn" | "fail"; details: string }[]> };
@@ -38,19 +78,7 @@ export const buildManagedApplication = async (env: NodeJS.ProcessEnv = process.e
   const profiles: RepositoryProfile[] = [];
   const observability = createObservabilityService(fleet.observability, logger, profiles, tracker, undefined, undefined, settings);
   const context = (snapshot: ManagedExecutionSnapshot): InternalExecutionContext => {
-    const definition = snapshot.active.definition;
-    const profile: RepositoryProfile = {
-      name: snapshot.project.id, repoPath: workspace.pathFor(snapshot.project.id), gitlabProjectId: definition.gitlabProjectId,
-      gitRemoteName: "origin", gitRepositoryUrl: snapshot.active.cloneUrl, baseBranch: definition.baseBranch,
-      queues: ["MANAGED"], tags: ["ai_dev"], testCommand: definition.testCommand, lintCommand: definition.lintCommand,
-      buildCommand: definition.buildCommand, typeCheckCommand: definition.typeCheckCommand,
-    };
-    const config: AppConfig = {
-      ...buildRepositoryRuntimeConfig(fleet, profile),
-      gitlabUrl: snapshot.connection.origin, gitlabToken: snapshot.connection.token, gitRepositoryToken: snapshot.connection.token,
-      codexModel: definition.model || fleet.codex.model, codexTimeoutMs: definition.timeoutSeconds * 1000,
-      maxFixAttempts: definition.maxFixAttempts, maxReviewFixAttempts: definition.maxFixAttempts,
-    };
+    const { profile, config } = buildManagedProjectRuntimeConfig(fleet, workspace.pathFor(snapshot.project.id), snapshot);
     return { profile, config, git: new RepositoryGitService(config, logger), gitlab: new GitLabApiClient(config, logger), codex: new CliCodexRunner(config, logger) };
   };
   const checkExecutor = async (path: string): Promise<void> => {

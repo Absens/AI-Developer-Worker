@@ -54,6 +54,14 @@ test.describe.serial('task tracker console production flows', () => {
     await expect(page.getByTestId('proposals-page')).toBeVisible();
     await expect(page.getByTestId('proposal-row-pm-goal-task-pm-goal-low-risk-1')).toBeVisible();
     await expect(page.getByTestId('proposal-project-goals')).toContainText('Stabilize task intake');
+    await page.getByTestId('proposals-repository').click();
+    await page.getByRole('option', { name: 'developer', exact: true }).click();
+    await expect(page).toHaveURL(/repositoryName=developer/);
+    const proposalLink = page.getByRole('link', { name: 'Goal-derived intake guardrails task' });
+    await proposalLink.click();
+    await page.getByTestId('task-back-to-proposals').click();
+    await expect(page).toHaveURL(/repositoryName=developer/);
+    await expect(proposalLink).toBeFocused();
     await page.getByTestId('proposal-approve-pm-goal-task-pm-goal-low-risk-1').click();
     await expect(page.getByTestId('proposal-reason')).toBeFocused();
     await page.getByTestId('proposal-reason').fill('Goal work is scoped and low risk.');
@@ -124,6 +132,9 @@ test.describe.serial('task tracker console production flows', () => {
     );
     await expect(page.getByTestId('goals-strategy-summary')).toContainText('Связанные цели');
     await expect(page.getByTestId('goals-strategy-summary')).toContainText('Вопросы человеку');
+    await expect(page.getByTestId('goals-run-strategy')).toBeDisabled();
+    await page.getByTestId('goals-repository').click();
+    await page.getByRole('option', { name: 'developer', exact: true }).click();
     await page.getByTestId('goals-strategy-brief').fill('Focus on operator confidence.');
     await page.getByTestId('goals-run-strategy').click();
     await expect(page.getByTestId('goals-strategy-summary')).toContainText(
@@ -134,6 +145,7 @@ test.describe.serial('task tracker console production flows', () => {
       .filter({ hasText: 'Improve validation trust' });
     await expect(strategyGoalRow).toHaveCount(1);
     await expect(strategyGoalRow).toBeVisible();
+    await expect(page.getByTestId('goals-created-goals').getByRole('link', { name: 'Improve validation trust' })).toBeVisible();
 
     await operator.close();
   });
@@ -173,6 +185,15 @@ test.describe.serial('task tracker console production flows', () => {
     await page.getByTestId('create-draft').click();
     await expect(page).toHaveURL(/\/tasks\/created-draft-/);
     await expect(page.getByTestId('task-detail')).toContainText('Draft task from Playwright');
+    await page.getByTestId('edit-task-draft').click();
+    await page.getByTestId('draft-criteria').fill('The revised task appears in the console.');
+    await page.getByTestId('draft-save').click();
+    await expect(page.getByTestId('task-detail')).toContainText('The revised task appears in the console.');
+    await page.reload();
+    await expect(page.getByTestId('task-detail')).toContainText('The revised task appears in the console.');
+    await page.getByTestId('command-mark-ready').click();
+    await page.getByTestId('command-confirm').click();
+    await expect(page.getByTestId('edit-task-draft')).toHaveCount(0);
 
     await page.getByTestId('nav-create').click();
     await fillCreateForm(page, 'Ready task from Playwright');
@@ -189,10 +210,16 @@ test.describe.serial('task tracker console production flows', () => {
     await page.getByTestId('command-confirm').click();
     await expect(page.getByTestId('task-detail')).toContainText('Готова');
 
+    await page.goto('/tasks/acceptance-task');
+    await page.getByTestId('command-accept-result').click();
+    await page.getByTestId('command-reason').fill('Проверены критерии в тестовом окружении.');
+    await page.getByTestId('command-confirm').click();
+    await expect(page.getByTestId('task-detail')).toContainText('Завершена');
+
     await page.goto('/tasks/proposals');
     await expect(page.getByTestId('proposals-page')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Предложения' })).toBeVisible();
-    await expect(page.getByText('Статус супервизора')).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Статус проверки' })).toBeVisible();
     await page.getByTestId('proposal-approve-proposal-approve-task').click();
     await expect(page.getByTestId('proposal-reason')).toBeFocused();
     await page.getByTestId('proposal-reason').fill('Safe documentation task.');
@@ -211,6 +238,21 @@ test.describe.serial('task tracker console production flows', () => {
     await opsPage.goto('/tasks/operations');
     await expect(opsPage.getByTestId('operations-page')).toBeVisible();
     await expect(opsPage.getByText('Пульс воркеров')).toBeVisible();
+    await expect(opsPage.getByTestId('operation-attention-failed-task')).toHaveCount(1);
+    await opsPage.getByTestId('operations-repository').selectOption('developer');
+    await opsPage.getByTestId('operation-queue-failed').click();
+    await expect(opsPage).toHaveURL(/status=failed/);
+    await expect(opsPage).toHaveURL(/repository=developer/);
+    await expect(opsPage.getByTestId('task-row-failed-task')).toBeVisible();
+    await opsPage.goBack();
+    const diagnostics = opsPage.getByTestId('operation-details-failed-task').first();
+    await diagnostics.click();
+    const dialog = opsPage.getByRole('dialog', { name: 'Детали диагностики' });
+    await expect(dialog.getByRole('heading', { name: 'Fix validation failure' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Закрыть диагностику' })).toBeFocused();
+    await opsPage.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(diagnostics).toBeFocused();
     await opsPage.getByTestId('operation-retry-failed-task').first().click();
     await expect(opsPage.getByTestId('operation-reason')).toBeFocused();
     await opsPage.getByTestId('operation-reason').fill('Retry after validation fix.');
@@ -304,6 +346,7 @@ test.describe.serial('task tracker console production flows', () => {
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/tasks/operations');
+    await expect(page.getByRole('heading', { name: 'Пульс воркеров' })).toBeVisible();
     const desktop = await page.screenshot({
       path: testInfo.outputPath('desktop-operations.png'),
       fullPage: true,
@@ -312,8 +355,7 @@ test.describe.serial('task tracker console production flows', () => {
 
     await page.setViewportSize({ width: 760, height: 860 });
     await page.goto('/tasks');
-    await expect(page.locator('.queue-empty-summary')).toBeVisible();
-    await expect(page.locator('.queue-empty-summary')).toContainText('Назначена');
+    await expect(page.getByTestId('task-row-ready-task')).toBeVisible();
     const renderedQueueGroups = page.locator('.surface.queue-group');
     const renderedQueueGroupCount = await renderedQueueGroups.count();
     expect(renderedQueueGroupCount).toBeGreaterThan(0);
@@ -367,6 +409,7 @@ test.describe.serial('task tracker console production flows', () => {
     await page.keyboard.press('Escape');
 
     await page.goto('/tasks/operations');
+    await expect(page.getByRole('heading', { name: 'Пульс воркеров' })).toBeVisible();
     await request.post('/api/e2e/fail-next-operations');
     await page.getByTestId('operations-refresh').click();
     await expect(page.getByText('Показан последний успешный снимок')).toBeVisible();
@@ -379,4 +422,158 @@ test.describe.serial('task tracker console production flows', () => {
     await mkdir(testInfo.outputDir, { recursive: true });
     await developer.close();
   });
+});
+
+test('keeps strategy results and created goals scoped to the selected repository', async ({ page }) => {
+  await page.context().setExtraHTTPHeaders(roleHeaders('operator'));
+  const analysis = (id: string, repositoryName: string, summary: string) => ({
+    id,
+    repositoryName,
+    analysisKind: 'strategy',
+    summary,
+    createdAt: '2026-04-29T08:00:00.000Z',
+  });
+  const alphaResult = 'Completed Alpha strategy';
+  const betaResult = 'Latest Beta strategy';
+  const lateAlphaResult = 'Late Alpha strategy';
+  let releaseLateRun!: () => void;
+  let completeLateRoute!: () => void;
+  const lateRun = new Promise<void>((resolve) => { releaseLateRun = resolve; });
+  const lateRoute = new Promise<void>((resolve) => { completeLateRoute = resolve; });
+  let runCount = 0;
+
+  await page.route('**/api/repository-directory', route => route.fulfill({
+    json: { repositories: [{ id: 'alpha', name: 'Repo Alpha' }, { id: 'beta', name: 'Repo Beta' }] },
+  }));
+  await page.route('**/api/project-manager/analyses**', route => route.fulfill({
+    json: {
+      analyses: new URL(route.request().url()).searchParams.get('repositoryName') === 'beta'
+        ? [analysis('beta-history', 'beta', betaResult)]
+        : [],
+    },
+  }));
+  await page.route('**/api/project-manager/runs', async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ mode: 'strategy', repositoryName: 'alpha' });
+    const late = ++runCount === 2;
+    if (late) await lateRun;
+    try {
+      await route.fulfill({
+        json: {
+          result: {
+            run: { status: 'completed', proposedGoalIds: [late ? 'goal-alpha-late' : 'goal-alpha'] },
+            analysis: analysis(late ? 'alpha-late' : 'alpha-result', 'alpha', late ? lateAlphaResult : alphaResult),
+          },
+        },
+      });
+    } finally {
+      if (late) completeLateRoute();
+    }
+  });
+
+  const repository = page.getByTestId('goals-repository');
+  const run = page.getByTestId('goals-run-strategy');
+  const result = page.getByTestId('goals-strategy-summary');
+  const selectRepository = async (label: string, id: string) => {
+    await repository.click();
+    await page.getByRole('option', { name: label, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`repositoryName=${id}`));
+  };
+  const expectBetaResult = async () => {
+    await expect(result.locator('summary')).toContainText('Repo Beta');
+    await expect(result).toContainText(betaResult);
+    await expect(page.getByText(alphaResult, { exact: true })).toBeHidden();
+    await expect(page.getByTestId('strategy-goal-link-goal-alpha')).toBeHidden();
+  };
+
+  try {
+    await page.goto('/tasks/goals?repositoryName=alpha');
+    await expect(repository).toContainText('Repo Alpha');
+    await run.click();
+    await expect(page.getByText(alphaResult, { exact: true })).toBeVisible();
+    await expect(page.getByTestId('strategy-goal-link-goal-alpha')).toBeVisible();
+
+    await selectRepository('Repo Beta', 'beta');
+    await expectBetaResult();
+
+    await selectRepository('Repo Alpha', 'alpha');
+    await run.click();
+    await expect.poll(() => runCount).toBe(2);
+    await selectRepository('Repo Beta', 'beta');
+    await expectBetaResult();
+    releaseLateRun();
+    await lateRoute;
+    await expect(run).not.toHaveClass(/p-button-loading/);
+    await expectBetaResult();
+    await expect(page.getByText(lateAlphaResult, { exact: true })).toBeHidden();
+    await expect(page.getByTestId('strategy-goal-link-goal-alpha-late')).toBeHidden();
+  } finally {
+    releaseLateRun();
+  }
+});
+
+test('filters and opens tasks on a narrow screen without reloading the list', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const listRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/tasks') {
+      listRequests.push(request.url());
+    }
+  });
+  await page.goto('/tasks/?repository=developer');
+  await expect(page.getByTestId('task-row-ready-task')).toBeVisible();
+
+  const menu = page.getByRole('button', { name: 'Меню', exact: true });
+  await menu.press('Enter');
+  await expect(page.getByTestId('nav-queue')).toHaveAttribute('aria-current', 'location');
+  await page.getByRole('button', { name: 'Закрыть меню' }).press('Enter');
+  const search = page.getByTestId('queue-search');
+  await search.fill('ready queue item');
+  await expect(page.getByTestId('task-row-long-title-task')).toBeHidden();
+  await expect(page).toHaveURL(/search=ready/);
+  expect(listRequests).toHaveLength(2);
+
+  const task = page.getByTestId('task-row-ready-task');
+  await task.press('Enter');
+  await expect(task).toBeHidden();
+  await expect(page.getByTestId('task-detail')).toContainText('Implement ready queue item');
+  await expect(page.getByTestId('queue-back')).toBeFocused();
+  await page.getByTestId('queue-back').press('Enter');
+  await expect(task).toBeFocused();
+  await expect(search).toHaveValue('ready queue item');
+  await expect(page).toHaveURL(/repository=developer/);
+  expect(listRequests).toHaveLength(2);
+
+  await task.press('Enter');
+  await expect(page).toHaveURL(/selected=ready-task/);
+  await page.goBack();
+  await expect(task).toBeFocused();
+  await expect(search).toHaveValue('ready queue item');
+
+  await task.press('Enter');
+  await page.getByTestId('queue-open-task').click();
+  await expect(page).toHaveURL(/\/tasks\/ready-task\?/);
+  await menu.click();
+  await expect(page.getByTestId('nav-queue')).toHaveAttribute('aria-current', 'location');
+});
+
+test('keeps the page within the viewport at 320 pixels', async ({ browser }) => {
+  const { page, close } = await newRolePage(browser, 'operator');
+  await page.setViewportSize({ width: 320, height: 800 });
+  const screens = [
+    ['/', page.getByTestId('task-row-ready-task')],
+    ['/long-title-task', page.getByTestId('task-detail')],
+    ['/new', page.getByTestId('create-title')],
+    ['/proposals', page.getByRole('combobox', { name: 'Статус проверки' })],
+    ['/goals', page.getByTestId('goal-row-pm-goal-low-risk')],
+    ['/goals/pm-goal-low-risk', page.getByRole('heading', { name: 'Stabilize task intake', exact: true })],
+    ['/operations', page.getByRole('heading', { name: 'Пульс воркеров', exact: true })],
+  ] as const;
+
+  for (const [path, loaded] of screens) {
+    await page.goto(`/tasks${path}`);
+    await expect(loaded).toBeVisible();
+    const fits = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    expect(fits, path).toBe(true);
+  }
+  await close();
 });

@@ -554,6 +554,7 @@ export interface AppConfig {
   coverageCommand?: string;
   minCoveragePercent?: number;
   coverageReportFile?: string;
+  coverageReportWorkspaceOnly?: boolean;
   visualRegressionCommand?: string;
   visualRegressionArtifactsDir?: string;
   runOnce: boolean;

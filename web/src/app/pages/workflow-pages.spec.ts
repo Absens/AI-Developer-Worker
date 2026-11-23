@@ -177,7 +177,7 @@ describe('QueuePageComponent', () => {
     expect(text).toContain('Выберите задачу');
   });
 
-  it('renders task groups first and summarizes empty queue groups', async () => {
+  it('shows waiting tasks first and only renders groups containing tasks', async () => {
     const http = await configure([QueuePageComponent]);
     loadSession(http, viewerSession);
 
@@ -185,21 +185,18 @@ describe('QueuePageComponent', () => {
     fixture.detectChanges();
 
     http.expectOne((entry) => entry.url === '/api/tasks').flush({
-      tasks: [readyTask],
+      tasks: [readyTask, awaitingTaskDetail.summary],
       role: 'viewer',
       generatedAt: '2026-04-29T08:00:00.000Z',
     });
     fixture.detectChanges();
 
     const groups = [...(fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('.surface.queue-group')];
-    expect(groups.length).toBe(1);
-    expect(groups[0]?.querySelector('h2')?.textContent?.trim()).toBe('Готова');
-    expect(groups[0]?.textContent).toContain('Implement ready queue item');
-
-    const summary = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.queue-empty-summary');
-    expect(summary?.textContent).toContain('Пустые группы');
-    expect(summary?.textContent).toContain('Новая');
-    expect(summary?.textContent).toContain('Ошибка');
+    expect(groups.length).toBe(2);
+    expect(groups[0]?.querySelector('h2')?.textContent?.trim()).toBe('Ждет человека');
+    expect(groups[0]?.textContent).toContain('Need API decision');
+    expect(groups[1]?.querySelector('h2')?.textContent?.trim()).toBe('Готова');
+    expect(groups[1]?.textContent).toContain('Implement ready queue item');
   });
 });
 
@@ -232,7 +229,7 @@ describe('TaskDetailPanelComponent', () => {
     fixture.detectChanges();
 
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
-    expect(text).toContain('Предпросмотр контекста');
+    expect(text).toContain('Контекст агента');
     expect(text).not.toContain('Отменить');
     expect(text).not.toContain('Поставить на паузу');
   });
@@ -254,7 +251,7 @@ describe('TaskDetailPanelComponent', () => {
     expect(text).toContain('Цели проекта');
     expect(text).toContain(projectGoal.title);
     expect(text).toContain(projectGoal.desiredOutcome);
-    expect(element.querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
+    expect(element.querySelector(`a[href^="/goals/${projectGoal.id}"]`)).not.toBeNull();
   });
 
   it('renders allowlisted agent context preview fields', async () => {
@@ -397,6 +394,65 @@ describe('TaskDetailPanelComponent', () => {
 
     http.expectNone('/api/tasks/ready-task/commands/hold');
   });
+
+  it('attaches the selected option to its question and displays the saved answer', async () => {
+    const http = await configure([TaskDetailPanelComponent]);
+    loadSession(http, developerSession);
+
+    const fixture = TestBed.createComponent(TaskDetailPanelComponent);
+    fixture.componentRef.setInput('taskId', 'awaiting-task');
+    const secondQuestion = {
+      ...awaitingTaskDetail.task.clarificationQuestions[0],
+      id: 'question-2',
+      summary: 'Deployment window',
+      question: 'When can we deploy?',
+      options: ['On Tuesday'],
+    };
+    const detail = {
+      ...awaitingTaskDetail,
+      task: {
+        ...awaitingTaskDetail.task,
+        clarificationQuestions: [...awaitingTaskDetail.task.clarificationQuestions, secondQuestion],
+      },
+    };
+    http.expectOne('/api/tasks/awaiting-task').flush(detail);
+    fixture.detectChanges();
+
+    const host = fixture.nativeElement as HTMLElement;
+    host.querySelector<HTMLButtonElement>('[data-testid="answer-option-On Tuesday"]')?.click();
+    fixture.detectChanges();
+    host.querySelector<HTMLButtonElement>('[data-testid="answer-button"]')?.click();
+    const answer = http.expectOne('/api/tasks/awaiting-task/answers');
+    expect(answer.request.body).toEqual({ questionId: 'question-2', body: 'On Tuesday' });
+
+    const updatedTask = {
+      ...detail.task,
+      humanAnswers: [{
+        id: 'answer-1',
+        questionId: 'question-2',
+        body: 'On Tuesday',
+        createdAt: '2026-04-29T08:01:00.000Z',
+      }],
+    };
+    answer.flush({ task: updatedTask });
+    http.expectOne('/api/tasks/awaiting-task').flush({ ...detail, task: updatedTask });
+    fixture.detectChanges();
+    expect(host.querySelector('[data-testid="task-saved-answer"]')?.textContent).toContain('On Tuesday');
+    expect(host.textContent).toContain('Use v1 or v2?');
+  });
+
+  it('cancels the previous detail request when the selected task changes', async () => {
+    const http = await configure([TaskDetailPanelComponent]);
+    loadSession(http, developerSession);
+    const fixture = TestBed.createComponent(TaskDetailPanelComponent);
+    fixture.componentRef.setInput('taskId', 'awaiting-task');
+    const previous = http.expectOne('/api/tasks/awaiting-task');
+    fixture.componentRef.setInput('taskId', 'ready-task');
+    expect(previous.cancelled).toBeTrue();
+    http.expectOne('/api/tasks/ready-task').flush(readyTaskDetail);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Implement ready queue item');
+  });
 });
 
 describe('CreateTaskPageComponent', () => {
@@ -505,7 +561,7 @@ describe('ProposalsPageComponent', () => {
     const element = fixture.nativeElement as HTMLElement;
     expect(element.textContent).toContain(projectGoal.title);
     expect(element.textContent).toContain(projectGoal.desiredOutcome);
-    expect(element.querySelector(`a[href="/goals/${projectGoal.id}"]`)).not.toBeNull();
+    expect(element.querySelector(`a[href^="/goals/${projectGoal.id}"]`)).not.toBeNull();
   });
 });
 
@@ -727,6 +783,10 @@ describe('GoalsPageComponent', () => {
     )!;
     brief.value = 'Focus on operator confidence.';
     brief.dispatchEvent(new Event('input'));
+    const repository = fixture.nativeElement.querySelector('[data-testid="goals-repository"]') as HTMLInputElement;
+    repository.value = 'developer';
+    repository.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
     (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('[data-testid="goals-run-strategy"]')!.click();
 
     const request = http.expectOne('/api/project-manager/runs');
@@ -1086,7 +1146,7 @@ describe('OperationsPageComponent', () => {
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
     expect(text).toContain('Ждет человека');
     expect(text).toContain('Need API choice.');
-    expect(text).toContain('Примерно');
+    expect(text).toContain('Ждёт 15 мин 0 с');
     expect(text).toContain('Ответить');
   });
 

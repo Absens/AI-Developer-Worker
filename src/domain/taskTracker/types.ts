@@ -122,6 +122,8 @@ export interface TaskRevision {
 export interface TaskRevisionInput {
   owner: TaskFieldOwner;
   author: TaskActor;
+  expectedStatus?: TaskStatus;
+  expectedRevisionNumber?: number;
   title?: string;
   description?: string;
   humanSummary?: string;
@@ -133,6 +135,12 @@ export interface TaskRevisionInput {
   externalRevisionId?: string;
   requiresReanalysis?: boolean;
   reason?: string;
+}
+
+export interface TaskStatusChangeInput {
+  expectedStatus?: TaskStatus;
+  expectedRevisionNumber?: number;
+  actor?: TaskActor;
 }
 
 export interface ExternalTaskFieldUpdateInput {
@@ -729,6 +737,9 @@ export interface ReleaseLeaseInput {
 export interface ListTasksInput {
   statuses?: TaskStatus[];
   repositoryName?: string;
+  search?: { text: string; repositoryNames: string[] };
+  proposal?: { supervisorStatus?: string };
+  after?: { updatedAt: string; id: string };
   queue?: string;
   priority?: string;
   workerId?: string;
@@ -819,14 +830,14 @@ export interface TaskTrackerClient {
     input: ExternalTaskFieldUpdateInput,
   ): Promise<TaskRecord>;
   attachExternalRef(taskId: string, input: TaskExternalRefInput): Promise<TaskRecord>;
-  markReady(taskId: string, reason?: string): Promise<void>;
+  markReady(taskId: string, reason?: string, input?: TaskStatusChangeInput): Promise<void>;
   getTask(taskId: string): Promise<TaskRecord>;
   findTaskByExternalRef(provider: string, externalKey: string): Promise<TaskRecord | null>;
   getAgentTaskContext(taskId: string): Promise<AgentTaskContext>;
   appendEvent(taskId: string, input: TaskEventInput): Promise<void>;
   appendEventOnce(taskId: string, input: TaskEventInput): Promise<boolean>;
   appendComment(taskId: string, input: CommentInput): Promise<void>;
-  setStatus(taskId: string, status: TaskStatus, reason?: string): Promise<void>;
+  setStatus(taskId: string, status: TaskStatus, reason?: string, input?: TaskStatusChangeInput): Promise<void>;
   recordDecision(taskId: string, input: TaskDecisionInput): Promise<TaskDecision>;
   recordAnalysis(taskId: string, decision: TaskAnalysisDecision): Promise<void>;
   recordTaskStep(taskId: string, input: TaskStepRecordInput): Promise<void>;

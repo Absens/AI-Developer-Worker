@@ -35,6 +35,34 @@ it("accepts only one of two independent concurrent settings revisions", async ()
   expect((await a.read()).revision).toBe(1);
   expect((await f.db.query("SELECT * FROM managed_settings_audit")).rows).toHaveLength(1);
 });
+it("persists pending and applied project checks separately across new connections", async () => {
+  const f = await start();
+  const first = service(new PostgresSettingsStore(f.newPool()));
+  await first.addConnection({ name: "test", origin: "https://gitlab.test", token: "fake-token" }, 0, "administrator");
+  const { connections: [connection] } = await first.view();
+  const definition = {
+    name: "Project checks", connectionId: connection!.id, gitlabProjectId: "42", baseBranch: "main",
+    testCommand: "test", lintCommand: "lint", maxFixAttempts: 2,
+  };
+  await first.saveProject(undefined, definition, 1, "administrator");
+  const { projects: [project] } = await first.view();
+  await first.setEnabled(project!.id, true, 2, "administrator");
+  await first.applyPending(project!.id);
+
+  const checks = { coverageCommand: "coverage", coverageReportFile: "coverage/coverage-summary.json", minCoveragePercent: 82.5, maxReviewFixAttempts: 0 };
+  await first.saveProject(project!.id, { ...definition, ...checks }, (await first.view()).revision, "administrator");
+  await f.closePools();
+
+  const reopened = service(new PostgresSettingsStore(f.newPool()));
+  const pending = (await reopened.view()).projects[0]!;
+  expect(pending).toMatchObject({ status: "pending", revision: 2, desired: checks, active: { revision: 1 } });
+  expect(pending.active?.definition).not.toHaveProperty("coverageCommand");
+  await reopened.applyPending(project!.id);
+  await f.closePools();
+
+  const applied = await service(new PostgresSettingsStore(f.newPool())).executionSnapshot(project!.id);
+  expect(applied?.active).toMatchObject({ revision: 2, definition: checks });
+});
 it("serializes preparation and execution of a project across independent worker connections", async () => {
   const f = await start(); const a = new PostgresSettingsStore(f.newPool()); const b = new PostgresSettingsStore(f.newPool());
   let release!: () => void; let enter!: () => void;

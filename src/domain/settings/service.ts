@@ -3,6 +3,46 @@ import { TokenCipher } from "./tokenCipher.js";
 import { object, revision, string, validateDefinition, validateOrigin } from "./validation.js";
 import { SettingsError, type ManagedProject, type SettingsDocument, type SettingsGateway, type SettingsStore, type SettingsWorkspace } from "./types.js";
 
+interface ManagedCatalogProject {
+  id: string;
+  name: string;
+  repositoryName: string;
+  repoPathKey: string;
+  baseBranch: string;
+  queue: string;
+  tags: string[];
+  repositoryPath?: string;
+  gitlabHost?: string;
+}
+
+export type RepositoryDirectoryEntry = Pick<ManagedCatalogProject, "id" | "name" | "gitlabHost" | "repositoryPath">;
+
+const repositoryLocation = (
+  cloneUrl: string,
+  origin: string | undefined,
+): { repositoryPath: string; gitlabHost: string } | undefined => {
+  let url: URL;
+  try {
+    url = new URL(cloneUrl);
+  } catch {
+    return undefined;
+  }
+
+  if (
+    url.protocol !== "https:" || url.origin !== origin || url.username || url.password ||
+    url.search || url.hash || !url.pathname.endsWith(".git")
+  ) {
+    return undefined;
+  }
+
+  const repositoryPath = url.pathname.slice(1, -4);
+  const parts = repositoryPath.split("/");
+  if (parts.length < 2 || parts.some(part => !part)) {
+    return undefined;
+  }
+  return { repositoryPath, gitlabHost: url.host };
+};
+
 export class ManagedSettingsService {
   constructor(
     readonly store: SettingsStore,
@@ -120,10 +160,33 @@ export class ManagedSettingsService {
     }
   }
 
-  async catalog() {
-    return (await this.store.read()).projects.filter(p => p.enabled && p.active).map(p => ({
-      id: p.id, name: p.desired.name, repositoryName: p.id, repoPathKey: p.id,
-      baseBranch: p.active!.definition.baseBranch, queue: "MANAGED", tags: ["ai_dev"],
+  async catalog(): Promise<ManagedCatalogProject[]> {
+    const { connections, projects } = await this.store.read();
+    const origins = new Map(connections.map(connection => [connection.id, connection.origin]));
+    return projects.flatMap(({ id, desired, active, enabled }) => {
+      if (!enabled || !active) {
+        return [];
+      }
+      return [{
+        id,
+        name: desired.name,
+        repositoryName: id,
+        repoPathKey: id,
+        baseBranch: active.definition.baseBranch,
+        queue: "MANAGED",
+        tags: ["ai_dev"],
+        ...repositoryLocation(active.cloneUrl, origins.get(active.definition.connectionId)),
+      }];
+    });
+  }
+
+  async repositoryDirectory(): Promise<RepositoryDirectoryEntry[]> {
+    const { connections, projects } = await this.store.read();
+    const origins = new Map(connections.map(({ id, origin }) => [id, origin]));
+    return projects.map(({ id, desired, active }) => ({
+      id,
+      name: desired.name,
+      ...(active ? repositoryLocation(active.cloneUrl, origins.get(active.definition.connectionId)) : undefined),
     }));
   }
 

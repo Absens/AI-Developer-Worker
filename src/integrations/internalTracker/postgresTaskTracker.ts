@@ -38,6 +38,7 @@ import {
   TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
+  TaskWriteConflictError,
 } from "../../domain/taskTracker/errors.js";
 import type {
   AgentTaskContext,
@@ -95,6 +96,7 @@ import type {
   TaskRevision,
   TaskRevisionInput,
   TaskStatus,
+  TaskStatusChangeInput,
   TaskStep,
   TaskStepRecordInput,
   TaskTrackerClient,
@@ -495,6 +497,29 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     }
     if (input.repositoryName) {
       clauses.push(`t.repository_name = ${addParam(input.repositoryName)}`);
+    }
+    if (input.search) {
+      const term = addParam(input.search.text);
+      const repositories = addParam(input.search.repositoryNames);
+      clauses.push(`(
+        strpos(lower(t.id), lower(${term})) > 0
+        OR strpos(lower(t.title), lower(${term})) > 0
+        OR strpos(lower(t.repository_name), lower(${term})) > 0
+        OR t.repository_name = ANY(${repositories}::text[])
+      )`);
+    }
+    if (input.proposal) {
+      const statusClause = input.proposal.supervisorStatus
+        ? `AND proposal.supervisor_status = ${addParam(input.proposal.supervisorStatus)}`
+        : "";
+      clauses.push(`EXISTS (
+        SELECT 1 FROM task_proposals proposal WHERE proposal.task_id = t.id ${statusClause}
+      )`);
+    }
+    if (input.after) {
+      const updatedAt = addParam(input.after.updatedAt);
+      const id = addParam(input.after.id);
+      clauses.push(`(t.updated_at < ${updatedAt} OR (t.updated_at = ${updatedAt} AND t.id > ${id}))`);
     }
     if (input.queue) {
       clauses.push(`t.queue = ${addParam(input.queue)}`);
@@ -980,10 +1005,24 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     input: TaskRevisionInput,
   ): Promise<TaskRecord> {
     return this.withTransaction(async (client) => {
+      const locked = await client.query<{ status: TaskStatus }>(
+        "SELECT status FROM tasks WHERE id = $1 FOR UPDATE",
+        [taskId],
+      );
+      const status = locked.rows[0]?.status;
+      if (!status) {
+        throw new TaskNotFoundError(taskId);
+      }
+      if (input.expectedStatus !== undefined && status !== input.expectedStatus) {
+        throw new TaskWriteConflictError(taskId, "status", input.expectedStatus, status);
+      }
       const task = await this.getTaskUsing(client, taskId);
       const previous = task.revisions.at(-1);
       if (!previous) {
         throw new Error(`Task ${taskId} has no previous revision.`);
+      }
+      if (input.expectedRevisionNumber !== undefined && previous.revisionNumber !== input.expectedRevisionNumber) {
+        throw new TaskWriteConflictError(taskId, "revision", input.expectedRevisionNumber, previous.revisionNumber);
       }
 
       const createdAt = this.nowIso();
@@ -1251,10 +1290,10 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     });
   }
 
-  async markReady(taskId: string, reason?: string): Promise<void> {
+  async markReady(taskId: string, reason?: string, input?: TaskStatusChangeInput): Promise<void> {
     const task = await this.getTask(taskId);
     assertReadyFields(task);
-    await this.setStatus(taskId, "ready", reason ?? "Task marked ready.");
+    await this.setStatus(taskId, "ready", reason ?? "Task marked ready.", input);
   }
 
   async getTask(taskId: string): Promise<TaskRecord> {
@@ -1384,7 +1423,7 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
     });
   }
 
-  async setStatus(taskId: string, status: TaskStatus, reason?: string): Promise<void> {
+  async setStatus(taskId: string, status: TaskStatus, reason?: string, input: TaskStatusChangeInput = {}): Promise<void> {
     await this.withTransaction(async (client) => {
       const result = await client.query<{ status: TaskStatus }>(
         "SELECT status FROM tasks WHERE id = $1 FOR UPDATE",
@@ -1393,6 +1432,19 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
       const current = result.rows[0]?.status;
       if (!current) {
         throw new TaskNotFoundError(taskId);
+      }
+      if (input.expectedStatus !== undefined && current !== input.expectedStatus) {
+        throw new TaskWriteConflictError(taskId, "status", input.expectedStatus, current);
+      }
+      if (input.expectedRevisionNumber !== undefined) {
+        const latest = await client.query<{ revision_number: number }>(
+          "SELECT revision_number FROM task_revisions WHERE task_id = $1 ORDER BY revision_number DESC LIMIT 1",
+          [taskId],
+        );
+        const currentRevision = latest.rows[0]?.revision_number ?? 0;
+        if (currentRevision !== input.expectedRevisionNumber) {
+          throw new TaskWriteConflictError(taskId, "revision", input.expectedRevisionNumber, currentRevision);
+        }
       }
       if (current === status) {
         return;
@@ -1409,7 +1461,8 @@ export class PostgresTaskTrackerClient implements TaskTrackerClient {
         id: `evt_${randomUUID()}`,
         taskId,
         kind: "task_status_changed",
-        source: "worker_agent",
+        source: input.actor?.owner ?? "worker_agent",
+        ...(input.actor ? { actor: clone(input.actor) } : {}),
         message: reason ?? `Task status changed from ${current} to ${status}.`,
         payload: { from: current, to: status },
         createdAt,

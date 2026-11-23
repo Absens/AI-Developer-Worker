@@ -222,6 +222,74 @@ describe("Phase 7F human task API", () => {
     }
   });
 
+  it("revises and accepts a task with role and concurrency checks", async () => {
+    const tracker = new InMemoryTaskTrackerClient();
+    const task = await tracker.createTask(baseTaskInput({ id: "approval-flow", status: "new" }));
+    const { baseUrl } = await createServer(tracker);
+    const revise = (description: string, headers = developerHeaders) => requestJson(
+      baseUrl, `/api/tasks/${task.id}/revisions`, {
+        method: "POST", headers,
+        body: JSON.stringify({ description, expectedStatus: "new", expectedRevisionNumber: 1 }),
+      },
+    );
+    expect((await revise("Viewer edit", viewerHeaders)).status).toBe(403);
+    const edits = await Promise.all([revise("First edit"), revise("Second edit")]);
+    expect(edits.map(({ status }) => status).sort()).toEqual([200, 409]);
+    expect((await tracker.getTask(task.id)).revisions).toHaveLength(2);
+
+    const accept = (expectedRevisionNumber: number | undefined, headers = developerHeaders) => requestJson(
+      baseUrl, `/api/tasks/${task.id}/commands/accept-result`, {
+        method: "POST", headers,
+        body: JSON.stringify({ reason: "Критерии проверены", expectedStatus: "human_testing", expectedRevisionNumber }),
+      },
+    );
+    expect((await accept(2)).status).toBe(409);
+    await tracker.markReady(task.id);
+    for (const status of ["claimed", "analyzing", "validating", "review", "human_testing"] as const) {
+      await tracker.setStatus(task.id, status);
+    }
+    expect((await accept(2, viewerHeaders)).status).toBe(403);
+    expect((await accept(undefined)).status).toBe(400);
+    expect((await accept(2.5)).status).toBe(400);
+
+    const criteriaEdit = await requestJson(baseUrl, `/api/tasks/${task.id}/revisions`, {
+      method: "POST", headers: developerHeaders,
+      body: JSON.stringify({ acceptanceCriteria: ["Новый критерий приёмки."] }),
+    });
+    expect(criteriaEdit.status).toBe(200);
+    expect((await tracker.getTask(task.id)).status).toBe("human_testing");
+    expect((await accept(2)).status).toBe(409);
+    const results = await Promise.all([accept(3), accept(3)]);
+    expect(results.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const accepted = await tracker.getTask(task.id);
+    expect(accepted.status).toBe("done");
+    expect(accepted.events.at(-1)).toMatchObject({
+      kind: "task_status_changed",
+      actor: { id: "dev-1", owner: "human" },
+      message: "Критерии проверены",
+      payload: { from: "human_testing", to: "done" },
+    });
+  });
+
+  it("follows its own cursor when the page ends with a long accepted task ID", async () => {
+    const { baseUrl } = await createServer();
+    const id = "a".repeat(900);
+    for (const taskId of ["normal", id]) {
+      const created = await requestJson(baseUrl, "/api/tasks", {
+        method: "POST", headers: developerHeaders,
+        body: JSON.stringify({ id: taskId, title: "Pagination fixture", description: "Task body", status: "new" }),
+      });
+      expect(created.status).toBe(201);
+    }
+    const first = await requestJson(baseUrl, "/api/tasks?limit=1", { headers: viewerHeaders });
+    expect(first.body.tasks).toMatchObject([{ id }]);
+    expect(first.body.nextCursor.length).toBeGreaterThan(1024);
+    const next = await requestJson(baseUrl, `/api/tasks?limit=1&cursor=${first.body.nextCursor}`, { headers: viewerHeaders });
+    expect(next.status).toBe(200);
+    expect(next.body.tasks).toMatchObject([{ id: "normal" }]);
+    expect(next.body.nextCursor).toBeUndefined();
+  });
+
   it("serves read endpoints without falling back to the removed embedded task UI", async () => {
     const tracker = new InMemoryTaskTrackerClient();
     const task = await tracker.createTask(baseTaskInput({ id: "task-read" }));
