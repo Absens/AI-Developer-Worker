@@ -73,14 +73,40 @@ it("pins configuration for resume/review, while fresh tasks get a newer revision
   const original = (await f.service.executionSnapshot(f.id))!;
   await pinManagedTaskConfiguration(tracker, task, original, "worker");
   const document = await f.store.read();
-  await f.service.saveProject(f.id, { ...document.projects[0]!.desired, baseBranch: "develop", testCommand: "changed-tests" }, document.revision, "admin");
+  const newSettings = {
+    securityScanCommand: "scan",
+    sastCommand: "static-analysis",
+    coverageCommand: "coverage",
+    coverageReportFile: "coverage/summary.json",
+    minCoveragePercent: 72.5,
+    visualRegressionCommand: "visual",
+    maxReviewFixAttempts: 0,
+  };
+  await f.service.saveProject(f.id, {
+    ...document.projects[0]!.desired, baseBranch: "develop", testCommand: "changed-tests", ...newSettings,
+  }, document.revision, "admin");
   await f.service.applyPending(f.id);
   const changed = (await f.service.executionSnapshot(f.id))!;
   const resumed = await pinManagedTaskConfiguration(tracker, await tracker.getTask(task.id), changed, "worker");
   expect(resumed.active.definition.baseBranch).toBe("main");
   expect(resumed.active.definition.testCommand).toBe("test");
   expect(resumed.active.revision).toBe(1);
+  expect(resumed.active.definition).not.toHaveProperty("coverageCommand");
+  expect(resumed.active.definition).not.toHaveProperty("maxReviewFixAttempts");
   expect(JSON.stringify((await tracker.getTask(task.id)).events)).not.toContain("secret-test-token");
   const fresh = await tracker.createTask({ title: "Fresh task", description: "New config", createdBy: { owner: "human", id: "admin" } });
-  expect((await pinManagedTaskConfiguration(tracker, fresh, changed, "worker")).active.revision).toBe(2);
+  const pinnedFresh = await pinManagedTaskConfiguration(tracker, fresh, changed, "worker");
+  expect(pinnedFresh.active.revision).toBe(2);
+  expect(pinnedFresh.active.definition).toMatchObject(newSettings);
+
+  const applied = await f.store.read();
+  await f.service.saveProject(f.id, {
+    ...applied.projects[0]!.desired, coverageCommand: "new-coverage", minCoveragePercent: 80, maxReviewFixAttempts: 3,
+  }, applied.revision, "admin");
+  await f.service.applyPending(f.id);
+  const latest = (await f.service.executionSnapshot(f.id))!;
+  expect(latest.active.definition.minCoveragePercent).toBe(80);
+  const resumedFresh = await pinManagedTaskConfiguration(tracker, await tracker.getTask(fresh.id), latest, "worker");
+  expect(resumedFresh.active.revision).toBe(2);
+  expect(resumedFresh.active.definition).toMatchObject(newSettings);
 });

@@ -26,7 +26,14 @@ export const validateOrigin = (value: unknown, allowed: string[]): string => {
 };
 export const validateDefinition = (input: unknown): ProjectDefinition => {
   const body = object(input);
-  const fields = ["name", "connectionId", "gitlabProjectId", "baseBranch", "testCommand", "lintCommand", "buildCommand", "typeCheckCommand", "model", "timeoutSeconds", "maxFixAttempts"];
+  const optionalStrings = [
+    "buildCommand", "typeCheckCommand", "securityScanCommand", "sastCommand", "coverageCommand",
+    "coverageReportFile", "visualRegressionCommand", "model",
+  ] as const;
+  const fields = [
+    "name", "connectionId", "gitlabProjectId", "baseBranch", "testCommand", "lintCommand",
+    "timeoutSeconds", "maxFixAttempts", "maxReviewFixAttempts", "minCoveragePercent", ...optionalStrings,
+  ];
   if (Object.keys(body).some(key => !fields.includes(key))) throw new SettingsError(400, "Неизвестные поля настроек проекта.");
   const baseBranch = string(body.baseBranch, "baseBranch");
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(baseBranch) || /\.\.|\/\/|\/$|\.$|\.lock$/.test(baseBranch)) {
@@ -34,18 +41,42 @@ export const validateDefinition = (input: unknown): ProjectDefinition => {
   }
   const gitlabProjectId = string(body.gitlabProjectId, "gitlabProjectId", 20);
   if (!/^[1-9][0-9]*$/.test(gitlabProjectId)) throw new SettingsError(400, "Нужен числовой ID GitLab-проекта.");
-  const boundedInt = (value: unknown, fallback: number, min: number, max: number): number => {
-    const result = value ?? fallback;
-    if (typeof result !== "number" || !Number.isInteger(result) || result < min || result > max) throw new SettingsError(400, "Значение лимита вне допустимого диапазона.");
-    return result;
+  const boundedInt = (value: unknown, min: number, max: number): number => {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      throw new SettingsError(400, "Значение лимита вне допустимого диапазона.");
+    }
+    return value;
   };
   const result: ProjectDefinition = {
     name: string(body.name, "name", 120), connectionId: string(body.connectionId, "connectionId", 80), gitlabProjectId, baseBranch,
     testCommand: string(body.testCommand, "testCommand", 4000), lintCommand: string(body.lintCommand, "lintCommand", 4000),
-    timeoutSeconds: boundedInt(body.timeoutSeconds, 1800, 30, 7200), maxFixAttempts: boundedInt(body.maxFixAttempts, 2, 0, 5),
+    timeoutSeconds: boundedInt(body.timeoutSeconds ?? 1800, 30, 7200),
+    maxFixAttempts: boundedInt(body.maxFixAttempts ?? 2, 0, 5),
   };
-  for (const key of ["buildCommand", "typeCheckCommand", "model"] as const) {
-    if (body[key] !== undefined && body[key] !== "") result[key] = string(body[key], key, key === "model" ? 120 : 4000);
+  for (const key of optionalStrings) {
+    const value = body[key];
+    if (value === undefined || (typeof value === "string" && !value.trim())) continue;
+    result[key] = string(value, key, key === "model" ? 120 : 4000);
+  }
+
+  const minCoverage = body.minCoveragePercent;
+  if (minCoverage !== undefined && minCoverage !== null) {
+    if (typeof minCoverage !== "number" || !Number.isFinite(minCoverage) || minCoverage < 0 || minCoverage > 100) {
+      throw new SettingsError(400, "Минимальное покрытие должно быть числом от 0 до 100.");
+    }
+    result.minCoveragePercent = minCoverage;
+  }
+  if (body.maxReviewFixAttempts !== undefined && body.maxReviewFixAttempts !== null) {
+    result.maxReviewFixAttempts = boundedInt(body.maxReviewFixAttempts, 0, 5);
+  }
+  if ((result.coverageReportFile || result.minCoveragePercent !== undefined) && !result.coverageCommand) {
+    throw new SettingsError(400, "Укажите команду проверки покрытия.");
+  }
+  if (result.coverageReportFile) {
+    const path = result.coverageReportFile;
+    if (/[\\:]/.test(path) || path.split("/").some(part => !part || part === "." || part === "..")) {
+      throw new SettingsError(400, "Укажите относительный путь к отчёту о покрытии через / внутри репозитория.");
+    }
   }
   return result;
 };

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -189,6 +189,7 @@ describe("quality gates", () => {
         coverageCommand: "coverage-command",
         minCoveragePercent: 80,
         coverageReportFile: "coverage/coverage-summary.json",
+        coverageReportWorkspaceOnly: true,
       }),
       {
         cwd: repoPath,
@@ -222,6 +223,63 @@ describe("quality gates", () => {
     const coverage = results.find((result) => result.id === "coverage");
     expect(coverage?.status).toBe("failed");
     expect(formatQualityGateDiagnostics(results)).toContain("79.9% is below");
+  });
+
+  it("rejects a managed report redirected by a link to a neighboring directory", async () => {
+    const tmp = createTempDir();
+    const repoPath = join(tmp, "checkout");
+    const external = join(tmp, "checkout-other");
+    mkdirSync(repoPath);
+    mkdirSync(external);
+    symlinkSync(external, join(repoPath, "coverage"), process.platform === "win32" ? "junction" : "dir");
+    const externalReport = join(external, "summary.json");
+    writeFileSync(externalReport, JSON.stringify({ total: { lines: { pct: 90 } } }));
+
+    const managed = createConfig(repoPath, {
+      coverageCommand: "coverage-command",
+      coverageReportFile: "coverage/summary.json",
+      coverageReportWorkspaceOnly: true,
+      visualRegressionCommand: "visual-command",
+    });
+    const commands: string[] = [];
+    const results = await runQualityGates(managed, { cwd: repoPath, commandRunner: successfulRunner(commands) });
+
+    expect(commands).toEqual(["lint-command", "test-command", "coverage-command"]);
+    expect(results.find(({ id }) => id === "coverage")).toMatchObject({
+      status: "failed",
+      diagnostic: expect.stringContaining("readable regular file inside the managed checkout"),
+    });
+    expect(results.find(({ id }) => id === "visual_regression")?.status).toBe("skipped");
+    expect(formatQualityGateDiagnostics(results)).not.toContain(externalReport);
+
+    const legacyResults = await runQualityGates(createConfig(repoPath, {
+      coverageCommand: "coverage-command",
+      coverageReportFile: externalReport,
+    }), { cwd: repoPath, commandRunner: successfulRunner() });
+    expect(legacyResults.find(({ id }) => id === "coverage")).toMatchObject({ status: "passed", coveragePercent: 90 });
+  });
+
+  it("fails managed coverage for a directory or a malformed report", async () => {
+    const repoPath = createTempDir();
+    mkdirSync(join(repoPath, "not-a-report"));
+    writeFileSync(join(repoPath, "invalid.json"), "null");
+    const config = createConfig(repoPath, {
+      coverageCommand: "coverage-command",
+      coverageReportWorkspaceOnly: true,
+    });
+    const options = { cwd: repoPath, commandRunner: successfulRunner() };
+
+    const directory = await runQualityGates({ ...config, coverageReportFile: "not-a-report" }, options);
+    expect(directory.find(({ id }) => id === "coverage")).toMatchObject({
+      status: "failed",
+      diagnostic: expect.stringContaining("readable regular file"),
+    });
+
+    const malformed = await runQualityGates({ ...config, coverageReportFile: "invalid.json" }, options);
+    expect(malformed.find(({ id }) => id === "coverage")).toMatchObject({
+      status: "failed",
+      diagnostic: expect.stringContaining("could not be parsed"),
+    });
   });
 
   it("fails coverage with an actionable diagnostic when the report is missing", async () => {
