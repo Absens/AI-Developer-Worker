@@ -8,10 +8,14 @@ import { ButtonModule } from 'primeng/button';
   template: `
     <section class="page">
       <header class="page__header">
-        <h1>Страница не найдена</h1>
-        <p>Такого раздела консоли нет.</p>
+        <div>
+          <h1>Страница не найдена</h1>
+          <p>Проверьте адрес или вернитесь в очередь задач.</p>
+        </div>
       </header>
-      <a pButton routerLink="/" icon="pi pi-list" label="К очереди"></a>
+      <div class="action-bar">
+        <a pButton routerLink="/" icon="pi pi-list" label="К очереди"></a>
+      </div>
     </section>
   `,
 })

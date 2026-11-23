@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 
-import { CommandResponseDto } from '../models/human-api.dto';
+import { CommandResponseDto, TaskStatusDto } from '../models/human-api.dto';
 import { ApiClient } from './api-client.service';
 import { mapCommandResponse } from './task-mappers';
 
@@ -12,6 +12,7 @@ export type TaskCommandName =
   | 'approve-decomposition'
   | 'approve-proposal'
   | 'reject-proposal'
+  | 'accept-result'
   | 'hold'
   | 'retry'
   | 'force-reanalysis';
@@ -19,6 +20,8 @@ export type TaskCommandName =
 export interface TaskCommandRequest {
   reason?: string;
   approve?: boolean;
+  expectedStatus?: TaskStatusDto;
+  expectedRevisionNumber?: number;
 }
 
 @Injectable({ providedIn: 'root' })

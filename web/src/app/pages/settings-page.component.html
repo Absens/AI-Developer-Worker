@@ -1,94 +1,305 @@
-<section class="page" data-testid="settings-page">
+<section class="page settings-page" data-testid="settings-page">
   <header class="page__header">
-    <h1>Настройки и проекты</h1>
-    <p>Подключите GitLab, выберите репозиторий и включите выполнение. Перезапуск системы не нужен.</p>
+    <div>
+      <h1>Настройки и проекты</h1>
+      <p>Управляйте подключениями GitLab и проектами, доступными исполнителю.</p>
+    </div>
+    <button pButton type="button" icon="pi pi-refresh" label="Обновить состояние" severity="secondary"
+      (click)="refresh()" [disabled]="busy() || refreshing()"></button>
   </header>
-  @if (error()) { <p-message severity="error" [text]="error()" data-testid="settings-error" /> }
-  @if (notice()) { <p-message severity="success" [text]="notice()" data-testid="settings-notice" /> }
-  <div class="settings-actions"><button pButton type="button" label="Обновить состояние" severity="secondary" (click)="refresh()" [disabled]="busy()" ></button></div>
+
+  @if (error()) {
+    <div tabindex="-1" data-testid="settings-error">
+      <p-message severity="error" [text]="error()" />
+    </div>
+  }
+  @if (notice()) {
+    <div role="status"><p-message severity="success" [text]="notice()" data-testid="settings-notice" /></div>
+  }
+  @if (!view() && refreshing()) {
+    <p class="muted" role="status">Загружаем настройки…</p>
+  }
+
   @if (view(); as settings) {
     @if (!settings.projects.length) {
-      <section class="surface settings-panel" data-testid="setup-empty">
+      <section class="surface settings-panel setup-overview" data-testid="setup-empty">
         <h2>Первоначальная настройка</h2>
-        <p class="hint">Сначала сохраните подключение, затем добавьте первый проект. Интерфейс остаётся доступным, даже когда исполнитель ещё не авторизован.</p>
-        <p class="muted">Codex использует отдельный CODEX_HOME или API-ключ из окружения сервера. При включении проекта система проверит доступность локального исполнителя. Это не проверка реального ответа модели.</p>
+        @if (!settings.connections.length) {
+          <p>Подключите GitLab, чтобы выбрать репозиторий для первого проекта.</p>
+        } @else {
+          <p>GitLab подключён. Добавьте проект, затем включите его для выполнения задач.</p>
+        }
       </section>
     }
-    <div class="settings-grid">
-      <section class="surface settings-panel">
-        <h2>Подключения GitLab</h2>
+
+    <div class="settings-columns" [class.settings-columns--setup]="!settings.connections.length">
+      <section class="surface settings-panel" aria-labelledby="settings-gitlab-heading">
+        <header class="settings-section-header">
+          <h2 id="settings-gitlab-heading">GitLab</h2>
+        </header>
+
         @for (item of settings.connections; track item.id) {
-          <div class="settings-panel" data-testid="connection-card">
-            <strong>{{ item.name }}</strong><p class="muted">{{ item.origin }}</p>
-            <p-tag value="Токен сохранён" severity="success" />
-            <div class="settings-actions"><button pButton type="button" severity="secondary" label="Заменить токен" (click)="beginRotation(item.id)" [disabled]="busy()" ></button></div>
+          <article class="settings-card" data-testid="connection-card">
+            <div class="settings-card-header">
+              <div>
+                <h3>{{ item.name }}</h3>
+                <p class="muted">{{ item.origin }}</p>
+              </div>
+              <p-tag [value]="item.credentialConfigured ? 'Токен сохранён' : 'Нужен токен'"
+                [severity]="item.credentialConfigured ? 'success' : 'warn'" />
+            </div>
             @if (rotating() === item.id) {
-              <form (ngSubmit)="rotate()">
-                <label class="field"><span>Новый токен (сначала будет проверен)</span><input pInputText type="password" name="rotationToken" [(ngModel)]="rotationToken" required autocomplete="off" /></label>
-                <button pButton type="submit" label="Проверить и заменить" [disabled]="busy()" ></button>
-                <button pButton type="button" severity="secondary" label="Отмена" (click)="rotating.set(undefined); rotationToken = ''" ></button>
+              <form class="settings-form" ngNativeValidate (ngSubmit)="rotate()">
+                <label class="field">
+                  <span>Новый токен доступа</span>
+                  <input pInputText id="settings-rotation-token" type="password" name="rotationToken"
+                    [(ngModel)]="rotationToken" required autocomplete="off" />
+                </label>
+                <div class="action-bar">
+                  <button pButton type="submit" label="Проверить и заменить" [disabled]="busy()"></button>
+                  <button pButton type="button" severity="secondary" label="Отмена"
+                    (click)="cancelRotation(rotationButton)" [disabled]="busy()"></button>
+                </div>
               </form>
             }
-          </div>
+            <button #rotationButton pButton type="button" severity="secondary" label="Заменить токен"
+              (click)="beginRotation(item.id)" [disabled]="busy()" [hidden]="rotating() === item.id"></button>
+          </article>
         }
-        <form (ngSubmit)="connect()" data-testid="connection-form">
-          <label class="field"><span>Название подключения</span><input pInputText name="connectionName" [(ngModel)]="connection.name" required maxlength="120" /></label>
-          <label class="field"><span>Сервер GitLab</span><select name="connectionOrigin" [(ngModel)]="connection.origin" required>@for (origin of settings.allowedOrigins; track origin) { <option [value]="origin">{{ origin }}</option> }</select></label>
-          <label class="field"><span>Токен доступа</span><input pInputText type="password" name="connectionToken" [(ngModel)]="connection.token" required autocomplete="off" /></label>
-          <small class="muted">Токен не возвращается в интерфейс. Адреса серверов разрешаются при развёртывании.</small>
-          <div class="settings-actions"><button pButton type="submit" label="Проверить и подключить" [disabled]="busy()" data-testid="connect-gitlab" ></button></div>
-        </form>
+
+        @if (settings.allowedOrigins.length) {
+          <details class="settings-disclosure" [open]="!settings.connections.length">
+            <summary>Подключить GitLab</summary>
+            <form class="settings-form" ngNativeValidate (ngSubmit)="connect()" data-testid="connection-form">
+              <label class="field">
+                <span>Название подключения</span>
+                <input pInputText name="connectionName" [(ngModel)]="connection.name" required maxlength="120"
+                  placeholder="Например, GitLab команды" />
+              </label>
+              <label class="field">
+                <span>Сервер GitLab</span>
+                <select name="connectionOrigin" [(ngModel)]="connection.origin" required>
+                  @for (origin of settings.allowedOrigins; track origin) {
+                    <option [value]="origin">{{ origin }}</option>
+                  }
+                </select>
+              </label>
+              <label class="field">
+                <span>Токен доступа</span>
+                <input pInputText type="password" name="connectionToken" [(ngModel)]="connection.token"
+                  required autocomplete="off" aria-describedby="settings-token-note" />
+              </label>
+              <small id="settings-token-note">Токен сохранится после проверки доступа к GitLab.</small>
+              <div class="action-bar">
+                <button pButton type="submit" label="Проверить и подключить" [disabled]="busy()"
+                  data-testid="connect-gitlab"></button>
+              </div>
+            </form>
+          </details>
+        } @else {
+          <p class="muted">Чтобы добавить подключение, укажите разрешённый адрес GitLab в конфигурации развёртывания.</p>
+        }
       </section>
-      <section class="surface settings-panel">
-        <h2>Проекты</h2>
-        <p class="muted">Сохранение и применение — разные этапы. Текущая задача использует закреплённую конфигурацию, новая — последнюю применённую.</p>
-        <button pButton type="button" label="Добавить проект" icon="pi pi-plus" (click)="startProject()" [disabled]="!settings.connections.length || busy()" data-testid="add-project" ></button>
+
+      <section class="surface settings-panel" aria-labelledby="settings-projects-heading" [hidden]="!settings.connections.length">
+        <header class="settings-section-header">
+          <div>
+            <h2 id="settings-projects-heading">Проекты</h2>
+            @if (settings.projects.length) {
+              <p class="muted">Исполнитель применяет изменения между запусками задач.</p>
+            }
+          </div>
+          <button #addProjectButton pButton type="button" label="Добавить проект" icon="pi pi-plus"
+            (click)="startProject(undefined, addProjectButton)" [disabled]="!settings.connections.length || busy() || editing()"
+            id="settings-add-project" data-testid="add-project"></button>
+        </header>
+
+        @if (editing()) {
+          <section class="settings-card project-editor" data-testid="project-editor" aria-labelledby="settings-editor-heading">
+            <h3 id="settings-editor-heading" tabindex="-1">{{ projectId ? 'Настройки проекта' : 'Новый проект' }}</h3>
+            <form class="settings-form" ngNativeValidate (ngSubmit)="saveProject()">
+              <div class="settings-fields">
+                <label class="field">
+                  <span>Подключение GitLab</span>
+                  <select name="projectConnection" [(ngModel)]="project.connectionId" (change)="loadRepositories()"
+                    [disabled]="!!projectId" required>
+                    <option value="">Выберите подключение</option>
+                    @for (item of settings.connections; track item.id) {
+                      <option [value]="item.id">{{ item.name }}</option>
+                    }
+                  </select>
+                </label>
+                @if (!projectId) {
+                  <div class="field repository-field">
+                    <label class="field-label" for="settings-project-repository">Репозиторий</label>
+                    <select id="settings-project-repository" name="projectRepository" [(ngModel)]="project.gitlabProjectId"
+                      (change)="selectRepository()" [disabled]="!project.connectionId || !repositories().length" required>
+                      <option value="">Выберите репозиторий</option>
+                      @for (item of repositories(); track item.id) {
+                        <option [value]="item.id">{{ item.name }}</option>
+                      }
+                    </select>
+                    @if (repositoriesLoading()) {
+                      <small role="status">Загружаем репозитории…</small>
+                    } @else {
+                      @if (repositoryError()) {
+                        <p-message severity="error" text="Не удалось загрузить репозитории." />
+                        <button pButton type="button" severity="secondary" label="Повторить" (click)="loadRepositories(nextPage() ?? 1)"></button>
+                      } @else if (project.connectionId && !repositories().length) {
+                        <small role="status">Для этого подключения нет доступных репозиториев.</small>
+                      }
+                      @if (nextPage(); as page) {
+                        @if (!repositoryError()) {
+                          <button pButton type="button" label="Ещё репозитории" severity="secondary" (click)="loadRepositories(page)"></button>
+                        }
+                      }
+                    }
+                  </div>
+                }
+                <label class="field">
+                  <span>Название проекта</span>
+                  <input pInputText name="projectName" [(ngModel)]="project.name" required maxlength="120" />
+                </label>
+                <label class="field">
+                  <span>Базовая ветка</span>
+                  <input pInputText name="baseBranch" [(ngModel)]="project.baseBranch" required />
+                </label>
+              </div>
+              <fieldset>
+                <legend>Команды проверок</legend>
+                <p class="muted">Укажите команды, которые исполнитель должен запустить в этом репозитории при обработке задачи.</p>
+                <div class="settings-fields">
+                  <label class="field">
+                    <span>Тесты</span>
+                    <input pInputText name="testCommand" [(ngModel)]="project.testCommand" required />
+                  </label>
+                  <label class="field">
+                    <span>Линтер</span>
+                    <input pInputText name="lintCommand" [(ngModel)]="project.lintCommand" required />
+                  </label>
+                </div>
+              </fieldset>
+              <details #checkFields class="settings-disclosure" data-testid="project-optional-checks">
+                <summary>Дополнительные проверки</summary>
+                <div class="settings-disclosure__body">
+                  <p class="muted">Заполните команды для проверок, которые нужны этому проекту.</p>
+                  <div class="settings-fields">
+                    <label class="field"><span>Сборка</span><input pInputText name="buildCommand" maxlength="4000" [(ngModel)]="project.buildCommand" /></label>
+                    <label class="field"><span>Проверка типов</span><input pInputText name="typeCheckCommand" maxlength="4000" [(ngModel)]="project.typeCheckCommand" /></label>
+                    <label class="field"><span>Проверка безопасности</span><input pInputText name="securityScanCommand" maxlength="4000" [(ngModel)]="project.securityScanCommand" /></label>
+                    <label class="field"><span>Статический анализ безопасности (SAST)</span><input pInputText name="sastCommand" maxlength="4000" [(ngModel)]="project.sastCommand" /></label>
+                    <label class="field"><span>Проверка визуальных изменений</span><input pInputText name="visualRegressionCommand" maxlength="4000" [(ngModel)]="project.visualRegressionCommand" /></label>
+                  </div>
+                  <fieldset class="settings-disclosure__body">
+                    <legend>Покрытие тестами</legend>
+                    <label class="field">
+                      <span>Команда проверки покрытия</span>
+                      <input pInputText name="coverageCommand" maxlength="4000" [(ngModel)]="project.coverageCommand" />
+                    </label>
+                    @if (project.coverageCommand?.trim()) {
+                      <div class="settings-fields">
+                        <div class="field">
+                          <label class="field-label" for="settings-coverage-report">Путь к отчёту покрытия</label>
+                          <input pInputText id="settings-coverage-report" name="coverageReportFile" [(ngModel)]="project.coverageReportFile"
+                            placeholder="coverage/coverage-summary.json" aria-describedby="settings-coverage-report-hint" />
+                          <small id="settings-coverage-report-hint">Путь к JSON-сводке Istanbul или Vitest от корня репозитория, с прямыми слэшами. Пустое поле использует вывод команды.</small>
+                        </div>
+                        <div class="field">
+                          <label class="field-label" for="settings-coverage-minimum">Минимальное покрытие строк, %</label>
+                          <input pInputText id="settings-coverage-minimum" type="number" name="minCoveragePercent" [(ngModel)]="project.minCoveragePercent"
+                            min="0" max="100" step="any" aria-describedby="settings-coverage-minimum-hint" (invalid)="checkFields.open = true" />
+                          <small id="settings-coverage-minimum-hint">От 0 до 100, можно с дробной частью. Пустое поле отключает проверку порога.</small>
+                        </div>
+                      </div>
+                    }
+                  </fieldset>
+                </div>
+              </details>
+              <details #runnerFields class="settings-disclosure" data-testid="project-runner-settings">
+                <summary>Параметры исполнителя</summary>
+                <div class="settings-fields">
+                  <label class="field"><span>Модель</span><input pInputText name="model" maxlength="120" [(ngModel)]="project.model" placeholder="Настройка исполнителя" /></label>
+                  <label class="field"><span>Тайм-аут Codex, сек.</span><input pInputText type="number" name="timeoutSeconds" [(ngModel)]="project.timeoutSeconds" min="30" max="7200" required (invalid)="runnerFields.open = true" /></label>
+                  <label class="field"><span>Попытки исправления после проверок</span><input pInputText type="number" name="maxFixAttempts" [(ngModel)]="project.maxFixAttempts" min="0" max="5" required (invalid)="runnerFields.open = true" /></label>
+                  <div class="field">
+                    <label class="field-label" for="settings-review-attempts">Повторные исправления после ревью</label>
+                    <input pInputText id="settings-review-attempts" type="number" name="maxReviewFixAttempts" [(ngModel)]="project.maxReviewFixAttempts"
+                      min="0" max="5" aria-describedby="settings-review-attempts-hint" (invalid)="runnerFields.open = true" />
+                    <small id="settings-review-attempts-hint">Если оставить пустым, используется лимит исправлений после проверок. Значение 0 отключает повторные попытки.</small>
+                  </div>
+                </div>
+              </details>
+              <div class="action-bar">
+                <button pButton type="submit" label="Сохранить настройки"
+                  [disabled]="busy() || (!projectId && !project.gitlabProjectId)" data-testid="save-project"></button>
+                <button pButton type="button" severity="secondary" label="Отмена" (click)="closeProject()" [disabled]="busy()"></button>
+              </div>
+            </form>
+          </section>
+        }
+
+        @if (!settings.projects.length && !editing()) {
+          <p class="muted">{{ settings.connections.length ? 'Проекты пока не добавлены.' : 'Добавление станет доступно после подключения GitLab.' }}</p>
+        }
         @for (item of settings.projects; track item.id) {
-          <article class="settings-panel" data-testid="project-card">
-            <div class="project-top"><h3>{{ item.desired.name }}</h3><p-tag [value]="statusLabel(item.status)" [severity]="item.status === 'ready' ? 'success' : item.status === 'error' ? 'danger' : 'info'" /></div>
-            <p>Сохранено: v{{ item.revision }} · Действует: {{ item.active ? 'v' + item.active.revision : 'ещё нет' }}</p>
-            <p class="muted">Ветка: {{ item.desired.baseBranch }} · GitLab ID: {{ item.desired.gitlabProjectId }}</p>
-            @if (item.lastError) { <p-message severity="warn" [text]="item.lastError" /> }
-            <div class="settings-actions">
-              <button pButton type="button" label="Изменить" severity="secondary" (click)="startProject(item)" [disabled]="busy()" ></button>
-              @if (!item.enabled || item.status === 'error') { <button pButton type="button" label="Проверить и включить" (click)="setEnabled(item, true)" [disabled]="busy()" data-testid="enable-project" ></button> }
-              @if (item.enabled) { <button pButton type="button" label="Пауза" severity="secondary" (click)="setEnabled(item, false)" [disabled]="busy()" ></button> }
+          <article class="settings-card" data-testid="project-card">
+            <div class="settings-card-header">
+              <h3>{{ item.desired.name }}</h3>
+              <p-tag [value]="statusLabel(item.status)" [severity]="statusSeverity(item.status)" />
             </div>
+            <dl class="settings-facts">
+              <div><dt>Сохранено</dt><dd>v{{ item.revision }}</dd></div>
+              <div><dt>Применено</dt><dd>{{ item.active ? 'v' + item.active.revision : 'Ожидает настройки' }}</dd></div>
+              <div><dt>GitLab ID</dt><dd>{{ item.desired.gitlabProjectId }}</dd></div>
+              <div class="settings-facts__branch">
+                <dt>Сохранённая ветка</dt>
+                <dd data-testid="settings-saved-branch" [attr.title]="item.desired.baseBranch">{{ item.desired.baseBranch }}</dd>
+              </div>
+              <div class="settings-facts__branch">
+                <dt>Ветка для новых задач</dt>
+                <dd data-testid="settings-active-branch" [attr.title]="item.active ? item.active.definition.baseBranch : null">
+                  {{ item.enabled && item.active ? item.active.definition.baseBranch : 'Недоступна' }}
+                </dd>
+              </div>
+            </dl>
+            @if (item.enabled && item.active && item.active.revision !== item.revision) {
+              <p class="muted">До применения сохранённых настроек новые запуски используют версию v{{ item.active.revision }}.</p>
+            }
+            @if (item.lastError) {
+              <p-message severity="error" [text]="item.lastError" />
+            }
+            <div class="action-bar">
+              @if (item.enabled && item.active && canCreateTask()) {
+                <a pButton routerLink="/new" [queryParams]="{ project: item.id }" label="Создать задачу"
+                  icon="pi pi-plus" data-testid="create-for-project"></a>
+              }
+              <button #editProjectButton pButton type="button" label="Изменить" severity="secondary"
+                (click)="startProject(item, editProjectButton)" [disabled]="busy() || editing()"></button>
+              @if (!item.enabled || item.status === 'error') {
+                <button pButton type="button" label="Проверить и включить" (click)="setEnabled(item, true)"
+                  [disabled]="busy() || editing()" data-testid="enable-project"></button>
+              }
+              @if (item.enabled) {
+                <button pButton type="button" label="Пауза" severity="secondary" (click)="setEnabled(item, false)"
+                  [disabled]="busy() || editing()"></button>
+              }
+            </div>
+            @if (item.active) {
+              <a class="settings-project-queue" routerLink="/" [queryParams]="{ repository: item.id }"
+                data-testid="settings-open-queue">Очередь проекта</a>
+            }
             @for (worker of settings.workers; track worker.workerId + worker.projectId) {
-              @if (worker.projectId === item.id) { <div class="worker-row muted">{{ worker.workerId }} · v{{ worker.revision }} · {{ worker.state }} · {{ worker.updatedAt | date:'short' }} @if(worker.message) { <p>{{ worker.message }}</p> }</div> }
+              @if (worker.projectId === item.id) {
+                <div class="worker-row">
+                  <p>{{ worker.workerId }} · {{ workerLabel(worker.state) }} · v{{ worker.revision }} · {{ worker.updatedAt | date:'dd.MM.yyyy, HH:mm' }}</p>
+                  @if (worker.message) { <p>{{ worker.message }}</p> }
+                </div>
+              }
             }
           </article>
         }
       </section>
     </div>
-    @if (editing()) {
-      <section class="surface settings-panel" data-testid="project-editor">
-        <h2>{{ projectId ? 'Настройки проекта' : 'Новый проект' }}</h2>
-        <form (ngSubmit)="saveProject()">
-          <div class="settings-grid">
-            <label class="field"><span>Подключение</span><select name="projectConnection" [(ngModel)]="project.connectionId" (change)="loadRepositories()" [disabled]="!!projectId" required><option value="">Выберите подключение</option>@for(item of settings.connections; track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select></label>
-            @if (!projectId) {
-              <label class="field"><span>Репозиторий</span><select name="projectRepository" [(ngModel)]="project.gitlabProjectId" (change)="selectRepository()" required><option value="">Выберите репозиторий</option>@for(item of repositories(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select>
-                @if (nextPage(); as page) { <button pButton type="button" label="Ещё репозитории" severity="secondary" (click)="loadRepositories(page)" ></button> }
-              </label>
-            }
-            <label class="field"><span>Название проекта</span><input pInputText name="projectName" [(ngModel)]="project.name" required maxlength="120" /></label>
-            <label class="field"><span>Базовая ветка</span><input pInputText name="baseBranch" [(ngModel)]="project.baseBranch" required /></label>
-            <label class="field"><span>Команда тестов</span><input pInputText name="testCommand" [(ngModel)]="project.testCommand" required /></label>
-            <label class="field"><span>Команда lint</span><input pInputText name="lintCommand" [(ngModel)]="project.lintCommand" required /></label>
-          </div>
-          <p-message severity="warn" text="Команды выполняются на сервере исполнителя. Проверьте их для вашего проекта. Примеры npm не подходят всем репозиториям. При подключении команды не запускаются." />
-          <details><summary>Дополнительные настройки</summary><div class="settings-grid">
-            <label class="field"><span>Сборка (необязательно)</span><input pInputText name="buildCommand" [(ngModel)]="project.buildCommand" /></label>
-            <label class="field"><span>Проверка типов (необязательно)</span><input pInputText name="typeCheckCommand" [(ngModel)]="project.typeCheckCommand" /></label>
-            <label class="field"><span>Модель (пусто — настройка исполнителя)</span><input pInputText name="model" [(ngModel)]="project.model" /></label>
-            <label class="field"><span>Тайм-аут Codex, секунд</span><input pInputText type="number" name="timeoutSeconds" [(ngModel)]="project.timeoutSeconds" min="30" max="7200" required /></label>
-            <label class="field"><span>Попытки исправления</span><input pInputText type="number" name="maxFixAttempts" [(ngModel)]="project.maxFixAttempts" min="0" max="5" required /></label>
-          </div></details>
-          <div class="settings-actions"><button pButton type="submit" label="Сохранить настройки" [disabled]="busy()" data-testid="save-project" ></button><button pButton type="button" severity="secondary" label="Отмена" (click)="editing.set(false)" [disabled]="busy()" ></button></div>
-        </form>
-      </section>
-    }
-    <p class="hint muted">Этот режим управляет подключениями и проектами. Telegram, Yandex bridge и Project Manager пока доступны в прежнем env/fleet-режиме. <a routerLink="/new">Создать задачу</a></p>
+    <p class="settings-next"><a routerLink="/new">Перейти к созданию задачи</a></p>
   }
 </section>

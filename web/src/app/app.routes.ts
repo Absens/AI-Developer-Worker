@@ -11,13 +11,13 @@ import { QueuePageComponent } from './pages/queue-page.component';
 import { TaskDetailPageComponent } from './pages/task-detail-page.component';
 
 export const routes: Routes = [
-  { path: '', component: QueuePageComponent, title: 'Task queue' },
-  { path: 'new', component: CreateTaskPageComponent, title: 'Create task' },
-  { path: 'proposals', component: ProposalsPageComponent, title: 'Proposals' },
-  { path: 'operations', component: OperationsPageComponent, title: 'Operations' },
-  { path: 'goals', component: GoalsPageComponent, title: 'Project goals' },
-  { path: 'goals/:goalId', component: GoalDetailPageComponent, title: 'Project goal detail' },
+  { path: '', component: QueuePageComponent, title: 'Очередь задач' },
+  { path: 'new', component: CreateTaskPageComponent, title: 'Новая задача' },
+  { path: 'proposals', component: ProposalsPageComponent, title: 'Предложения' },
+  { path: 'operations', component: OperationsPageComponent, title: 'Операции' },
+  { path: 'goals', component: GoalsPageComponent, title: 'Цели проекта' },
+  { path: 'goals/:goalId', component: GoalDetailPageComponent, title: 'Цель проекта' },
   { path: 'settings', component: SettingsPageComponent, title: 'Настройки и проекты' },
-  { path: ':taskId', component: TaskDetailPageComponent, title: 'Task detail' },
-  { path: '**', component: NotFoundPageComponent, title: 'Not found' },
+  { path: ':taskId', component: TaskDetailPageComponent, title: 'Задача' },
+  { path: '**', component: NotFoundPageComponent, title: 'Страница не найдена' },
 ];

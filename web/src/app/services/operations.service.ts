@@ -1,3 +1,4 @@
+import { HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 
@@ -9,7 +10,8 @@ import { mapOperationsSnapshot } from './task-mappers';
 export class OperationsService {
   private readonly api = inject(ApiClient);
 
-  snapshot(): Observable<OperationsSnapshotDto> {
-    return this.api.get<unknown>('/operations').pipe(map(mapOperationsSnapshot));
+  snapshot(repository?: string): Observable<OperationsSnapshotDto> {
+    const params = repository ? new HttpParams().set('repository', repository) : undefined;
+    return this.api.get<unknown>('/operations', params).pipe(map(mapOperationsSnapshot));
   }
 }

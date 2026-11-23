@@ -2,70 +2,101 @@
 <p-confirmDialog />
 
 <div class="console-shell" data-testid="console-shell">
-  <p-toolbar styleClass="console-toolbar">
-    <div class="console-toolbar__start">
-      <div>
-        <div class="console-title">Консоль задач</div>
-        <div class="console-subtitle">Операции с участием человека</div>
-      </div>
+  @if (sessionService.session()) {
+    <a class="skip-link" href="#console-main" (click)="$event.preventDefault(); main.focus()">К содержимому</a>
+  }
+
+  <header class="console-toolbar">
+    <div class="console-brand">
+      <span class="console-brand__icon" aria-hidden="true"><i class="pi pi-code"></i></span>
+      <span class="console-title">Консоль задач</span>
     </div>
     <div class="console-toolbar__end">
       @if (sessionService.session(); as session) {
-        <span class="console-user">{{ session.user.displayName || session.user.id }}</span>
-        <p-tag [value]="authModeLabel()" [severity]="authModeSeverity()" />
-        <p-tag [value]="session.role" severity="info" />
-        @if(session.authMode === 'bearer') { <button pButton type="button" label="Выйти" severity="secondary" (click)="logout()" ></button> }
-      } @else {
-        <span class="console-user">Сессия загружается</span>
+        <div class="console-identity">
+          <span class="console-user">{{ session.user.displayName || session.user.id }}</span>
+          <span class="console-role" [title]="authModeLabel()">{{ roleLabels[session.role] }}</span>
+        </div>
+        @if (session.authMode === 'localhost') {
+          <p-tag [value]="authModeLabel()" severity="warn" />
+        }
+        @if (session.authMode === 'bearer') {
+          <button pButton type="button" label="Выйти" severity="secondary" [text]="true" (click)="logout()"></button>
+        }
+        @if (visibleNavItems().length) {
+          <button
+            class="console-menu"
+            type="button"
+            [attr.aria-expanded]="menuOpen()"
+            aria-controls="console-navigation"
+            (click)="menuOpen.set(!menuOpen())"
+          >
+            <i [class]="menuOpen() ? 'pi pi-times' : 'pi pi-bars'" aria-hidden="true"></i>
+            <span>{{ menuOpen() ? 'Закрыть меню' : 'Меню' }}</span>
+          </button>
+        }
       }
     </div>
-  </p-toolbar>
+  </header>
 
-  <div class="console-layout">
-    <nav class="console-nav" aria-label="Навигация по задачам">
-      @for (item of visibleNavItems(); track item.route) {
-        <a
-          class="console-nav__link"
-          [attr.data-testid]="item.testId"
-          [routerLink]="item.route"
-          routerLinkActive="console-nav__link--active"
-          [routerLinkActiveOptions]="{ exact: item.route === '/' }"
-        >
-          <i [class]="item.icon" aria-hidden="true"></i>
-          <span>{{ item.label }}</span>
-        </a>
-      }
-    </nav>
+  <div class="console-layout" [class.console-layout--no-navigation]="!visibleNavItems().length">
+    @if (visibleNavItems().length) {
+      <div class="console-sidebar" [class.console-sidebar--open]="menuOpen()">
+        <nav class="console-nav" id="console-navigation" aria-label="Разделы консоли">
+          @for (item of visibleNavItems(); track item.route) {
+            <a
+              class="console-nav__link"
+              [class.console-nav__link--active]="activeSection() === item.route"
+              [class.console-nav__link--create]="item.route === '/new'"
+              [attr.aria-current]="activeSection() === item.route ? 'location' : null"
+              [attr.data-testid]="item.testId"
+              [routerLink]="item.route"
+              (click)="closeMenu($event, main)"
+            >
+              <i [class]="item.icon" aria-hidden="true"></i>
+              <span>{{ item.label }}</span>
+            </a>
+          }
+        </nav>
+      </div>
+    }
 
-    <main class="console-main">
+    <main class="console-main" #main id="console-main" tabindex="-1">
       @if (sessionService.error(); as error) {
-        @if(!sessionService.session()) {
-          <form class="surface" (ngSubmit)="login()" data-testid="admin-login" style="padding:1rem; margin-bottom:1rem">
-            <h2>Вход администратора</h2>
-            <p>Для защищённого запуска введите токен администратора из конфигурации развёртывания. Он остаётся только в памяти вкладки.</p>
-            <label>Токен администратора <input pInputText type="password" name="adminToken" [(ngModel)]="adminToken" autocomplete="off" required /></label>
-            <button pButton type="submit" label="Войти" [disabled]="sessionService.loading()" ></button>
+        @if (!sessionService.session()) {
+          <form class="surface console-login" (ngSubmit)="login()" data-testid="admin-login">
+            <div class="page__header">
+              <h1>Вход администратора</h1>
+              <p>Введите токен из конфигурации развёртывания. Токен хранится в памяти вкладки.</p>
+            </div>
+            <p-message data-testid="session-error" severity="error" [text]="error" />
+            <label class="field">
+              <span>Токен администратора</span>
+              <input pInputText type="password" name="adminToken" [(ngModel)]="adminToken" autocomplete="off" required />
+            </label>
+            <div class="action-bar">
+              <button pButton type="submit" label="Войти" [disabled]="sessionService.loading()"></button>
+              <button pButton type="button" data-testid="session-retry" label="Повторить подключение" severity="secondary" [text]="true" (click)="retrySession()"></button>
+            </div>
           </form>
+        } @else {
+          <div class="action-bar">
+            <p-message data-testid="session-error" severity="error" [text]="error" />
+            <button pButton type="button" data-testid="session-retry" label="Повторить подключение" severity="secondary" (click)="retrySession()"></button>
+          </div>
         }
-        <p-message data-testid="session-error" severity="error" [text]="error" />
-        <button
-          pButton
-          type="button"
-          data-testid="session-retry"
-          icon="pi pi-refresh"
-          label="Повторить сессию"
-          severity="secondary"
-          (click)="retrySession()"
-        ></button>
       }
 
       @if (sessionService.loading()) {
-        <div class="console-loading" aria-live="polite">
-          <p-progressSpinner ariaLabel="Загрузка сессии" />
+        <div class="console-loading" role="status">
+          <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+          Загружаем сессию…
         </div>
       }
 
-      @if (sessionService.session()) { <router-outlet /> }
+      @if (sessionService.session()) {
+        <router-outlet />
+      }
     </main>
   </div>
 </div>

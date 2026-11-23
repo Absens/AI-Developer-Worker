@@ -5,18 +5,34 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const staticRoot = resolve(__dirname, '..', 'dist', 'task-tracker-console', 'browser');
+const staticRoot = process.env.TASK_TRACKER_UI_STATIC_DIR
+  ? resolve(process.env.TASK_TRACKER_UI_STATIC_DIR)
+  : resolve(__dirname, '..', 'dist', 'task-tracker-console', 'browser');
 const port = Number(process.env.E2E_PORT || 4308);
 const host = '127.0.0.1';
 const now = () => new Date().toISOString();
 const fixedNow = '2026-04-29T08:00:00.000Z';
+const managedPreview = process.env.E2E_MANAGED_PREVIEW === '1';
+const previewProjects = [
+  { id: 'demo-console', name: 'Интерфейс', repositoryPath: 'demo/console', baseBranch: 'main' },
+  { id: 'demo-api', name: 'Сервис API', repositoryPath: 'demo/services/api', baseBranch: 'develop' },
+].map((project) => ({
+  ...project,
+  gitlabHost: 'gitlab.example',
+  repositoryName: project.id,
+  repoPathKey: project.id,
+  queue: 'MANAGED',
+  tags: ['ai_dev'],
+}));
 
 const roleRank = { viewer: 0, developer: 1, operator: 2, admin: 3 };
 const canRole = (role, minimum) => roleRank[role] >= roleRank[minimum];
 const capabilitiesFor = (role, service = 'human') => ({
   canReadTasks: canRole(role, 'viewer'),
+  canReadRepositoryDirectory: canRole(role, 'viewer'),
   canCreateTask: canRole(role, 'developer'),
   canUpdateTask: canRole(role, 'developer'),
+  canAcceptTask: canRole(role, 'developer'),
   canAnswer: canRole(role, 'developer'),
   canResume: canRole(role, 'developer'),
   canCancel: canRole(role, 'developer'),
@@ -51,6 +67,7 @@ const detailTask = (summary, overrides = {}) => ({
   clarificationQuestions: [],
   humanAnswers: [],
   comments: [],
+  revisions: [{ revisionNumber: 1 }],
   events: [
     {
       id: `event-${summary.id}`,
@@ -90,6 +107,8 @@ const createInitialState = () => {
 
   put({ id: 'ready-task', title: 'Implement ready queue item', status: 'ready' });
   put({ id: 'draft-task', title: 'Draft task', status: 'new' });
+  put({ id: 'acceptance-task', title: 'Review the delivered change', status: 'human_testing',
+    mergeRequestUrl: 'https://gitlab.example/mr/2' });
   put(
     {
       id: 'awaiting-task',
@@ -349,7 +368,7 @@ const sessionFor = (request) => {
     String(header(request, 'x-task-tracker-role') || '').toLowerCase(),
   )
     ? String(header(request, 'x-task-tracker-role')).toLowerCase()
-    : 'viewer';
+    : managedPreview ? 'developer' : 'viewer';
   const authMode = ['trusted_proxy', 'bearer', 'localhost'].includes(
     String(header(request, 'x-e2e-auth-mode') || '').toLowerCase(),
   )
@@ -361,7 +380,7 @@ const sessionFor = (request) => {
     user: { id: user, displayName: user, service },
     role,
     authMode,
-    capabilities: capabilitiesFor(role, service),
+    capabilities: { ...capabilitiesFor(role, service), managedProjects: managedPreview },
     apiPath: '/api',
     uiPath: '/tasks',
     generatedAt: now(),
@@ -622,6 +641,17 @@ const handleApi = async (request, response, url) => {
     json(response, 200, sessionFor(request));
     return;
   }
+  if (path === '/api/project-catalog' && request.method === 'GET') {
+    json(response, 200, { managed: managedPreview, projects: managedPreview ? previewProjects : [] });
+    return;
+  }
+  const directory = managedPreview
+    ? [{ id: 'developer', name: 'developer' }, ...previewProjects]
+    : [{ id: 'developer', name: 'developer' }];
+  if (path === '/api/repository-directory' && request.method === 'GET') {
+    json(response, 200, { repositories: directory });
+    return;
+  }
   if (path === '/api/e2e/fail-next-operations' && request.method === 'POST') {
     state.failNextOperations = true;
     json(response, 200, { ok: true });
@@ -629,14 +659,34 @@ const handleApi = async (request, response, url) => {
   }
   if (path === '/api/tasks' && request.method === 'GET') {
     const statuses = url.searchParams.getAll('status');
+    const search = (url.searchParams.get('search') ?? '').toLowerCase();
+    const size = Number(url.searchParams.get('limit') || '100');
+    const cursor = url.searchParams.get('cursor');
+    const after = cursor ? JSON.parse(Buffer.from(cursor, 'base64url').toString()) : null;
     const tasks = [...state.tasks.values()]
       .filter((task) => !statuses.length || statuses.includes(task.status))
       .filter((task) => {
         const repository = url.searchParams.get('repository');
-        return !repository || task.repositoryName === repository;
+        const queue = url.searchParams.get('queue');
+        const priority = url.searchParams.get('priority');
+        return (!repository || task.repositoryName === repository) &&
+          (!queue || task.queue === queue) && (!priority || task.priority === priority);
       })
-      .map(summarize);
-    json(response, 200, { tasks, role: sessionFor(request).role, generatedAt: now() });
+      .filter((task) => {
+        if (!search) return true;
+        const project = directory.find(({ id }) => id === task.repositoryName);
+        return [task.id, task.title, task.repositoryName, project?.name, project?.repositoryPath]
+          .some((value) => value?.toLowerCase().includes(search));
+      })
+      .filter((task) => !after || task.updatedAt < after.updatedAt ||
+        (task.updatedAt === after.updatedAt && task.id > after.id))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || (left.id < right.id ? -1 : 1));
+    const page = tasks.slice(0, size);
+    const last = page.at(-1);
+    const nextCursor = last && tasks.length > size
+      ? Buffer.from(JSON.stringify({ updatedAt: last.updatedAt, id: last.id })).toString('base64url')
+      : undefined;
+    json(response, 200, { tasks: page.map(summarize), nextCursor, role: sessionFor(request).role, generatedAt: now() });
     return;
   }
   if (path === '/api/tasks' && request.method === 'POST') {
@@ -645,6 +695,13 @@ const handleApi = async (request, response, url) => {
       return;
     }
     const body = await readBody(request);
+    const project = managedPreview
+      ? previewProjects.find((entry) => entry.id === body.repositoryName)
+      : undefined;
+    if (managedPreview && !project) {
+      json(response, 400, { status: 'error', error: 'Выберите включённый и подготовленный проект.' });
+      return;
+    }
     state.createdCount += 1;
     const id = body.status === 'ready' ? `created-ready-${state.createdCount}` : `created-draft-${state.createdCount}`;
     const task = detailTask({
@@ -653,13 +710,16 @@ const handleApi = async (request, response, url) => {
       title: body.title,
       description: body.description,
       status: body.status || 'new',
-      repositoryName: body.repositoryName || 'developer',
-      repoPathKey: body.repoPathKey || 'developer',
-      queue: body.queue || 'DEV',
+      repositoryName: project?.repositoryName ?? (body.repositoryName || 'developer'),
+      repoPathKey: project?.repoPathKey ?? (body.repoPathKey || 'developer'),
+      queue: project?.queue ?? (body.queue || 'DEV'),
       priority: body.priority || 'normal',
-      tags: Array.isArray(body.tags) ? body.tags : ['ai_dev'],
+      tags: [...new Set([...(project?.tags ?? []), ...(Array.isArray(body.tags) ? body.tags : ['ai_dev'])])],
       acceptanceCriteria: Array.isArray(body.acceptanceCriteria) ? body.acceptanceCriteria : [],
       updatedAt: now(),
+    }, {
+      baseBranch: project?.baseBranch ?? (body.baseBranch || 'main'),
+      acceptanceCriteria: Array.isArray(body.acceptanceCriteria) ? body.acceptanceCriteria : [],
     });
     state.tasks.set(id, task);
     json(response, 201, { task, idempotent: false });
@@ -667,9 +727,11 @@ const handleApi = async (request, response, url) => {
   }
   if (path === '/api/proposals' && request.method === 'GET') {
     const supervisorStatus = url.searchParams.get('supervisorStatus');
+    const repositoryName = url.searchParams.get('repositoryName');
     const proposals = [...state.tasks.values()]
       .filter((task) => task.proposal)
       .filter((task) => !supervisorStatus || task.proposal.supervisorStatus === supervisorStatus)
+      .filter((task) => !repositoryName || task.repositoryName === repositoryName)
       .map((task) => ({
         ...summarize(task),
         proposal: task.proposal,
@@ -856,7 +918,14 @@ const handleApi = async (request, response, url) => {
       json(response, 503, { status: 'error', error: 'backend unavailable' });
       return;
     }
-    json(response, 200, operationsSnapshot());
+    const repository = url.searchParams.get('repository');
+    const snapshot = operationsSnapshot();
+    if (repository) {
+      for (const key of ['workers', 'leases', 'queueDepth', 'failedTasks', 'repeatedFailures', 'waitingForHuman']) {
+        snapshot[key] = snapshot[key].filter((item) => item.repositoryName === repository);
+      }
+    }
+    json(response, 200, snapshot);
     return;
   }
 
@@ -1041,6 +1110,25 @@ const handleApi = async (request, response, url) => {
     json(response, 200, { task });
     return;
   }
+  if (request.method === 'POST' && suffix === '/revisions') {
+    if (!hasRequiredRole(request, 'developer')) {
+      json(response, 403, { error: 'forbidden' });
+      return;
+    }
+    const body = await readBody(request);
+    const current = task.revisions.at(-1).revisionNumber;
+    if (task.status !== body.expectedStatus || current !== body.expectedRevisionNumber) {
+      json(response, 409, { error: 'Задача изменилась.' });
+      return;
+    }
+    task.title = body.title;
+    task.description = body.description;
+    task.acceptanceCriteria = body.acceptanceCriteria;
+    task.revisions.push({ revisionNumber: current + 1 });
+    task.updatedAt = now();
+    json(response, 200, { task });
+    return;
+  }
   const commandMatch = suffix.match(/^\/commands\/([^/]+)$/);
   if (request.method === 'POST' && commandMatch) {
     const command = commandMatch[1];
@@ -1051,7 +1139,21 @@ const handleApi = async (request, response, url) => {
       json(response, 403, { status: 'error', error: 'forbidden' });
       return;
     }
-    await readBody(request);
+    const body = await readBody(request);
+    if (command === 'accept-result') {
+      if (body.expectedStatus !== 'human_testing' || !Number.isSafeInteger(body.expectedRevisionNumber) ||
+          body.expectedRevisionNumber < 1 || typeof body.reason !== 'string' || !body.reason.trim()) {
+        json(response, 400, { error: 'Укажите итог проверки, статус и ревизию задачи.' });
+        return;
+      }
+      if (task.status !== body.expectedStatus || task.revisions.at(-1)?.revisionNumber !== body.expectedRevisionNumber) {
+        json(response, 409, { error: 'Задача изменилась.' });
+        return;
+      }
+      task.status = 'done';
+      task.events.push({ id: 'accept-result-' + task.id, kind: 'task_status_changed', source: 'human',
+        message: body.reason, createdAt: now() });
+    }
     if (command === 'mark-ready' || command === 'resume' || command === 'retry') {
       task.status = 'ready';
     }

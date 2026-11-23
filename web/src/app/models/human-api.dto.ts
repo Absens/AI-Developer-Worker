@@ -42,6 +42,7 @@ export interface ApiErrorDto {
 
 export interface TaskListResponseDto {
   tasks: TaskSummaryDto[];
+  nextCursor?: string;
   role: SessionRoleDto;
   generatedAt: string;
 }
@@ -108,6 +109,7 @@ export interface TaskDetailResponseDto {
 }
 
 export interface TaskDetailDto extends TaskSummaryDto {
+  revisionNumber?: number;
   description: string;
   humanSummary?: string;
   acceptanceCriteria: string[];
@@ -450,6 +452,7 @@ export interface QueueDepthDto {
 
 export interface OperationTaskDiagnosticDto {
   taskId: string;
+  waitingSince?: string;
   latestFailedAgentRun?: OperationAgentRunSummaryDto;
   latestValidation?: OperationValidationSummaryDto;
   latestQuestion?: OperationQuestionSummaryDto;

@@ -1,7 +1,7 @@
-import { CommonModule } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { CommonModule, DOCUMENT } from '@angular/common';
+import { Component, Injector, OnInit, afterNextRender, inject, signal } from '@angular/core';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Params, RouterLink } from '@angular/router';
 import { MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -19,6 +19,7 @@ import {
   ProjectGoalProposeTasksResponseDto,
 } from '../models/human-api.dto';
 import { ProjectGoalService } from '../services/project-goal.service';
+import { RepositoryDirectoryService } from '../services/repository-directory.service';
 import { SessionService } from '../services/session.service';
 import {
   canUseCapability,
@@ -51,22 +52,28 @@ type ReasonAction = 'reject' | 'stale';
   ],
   template: `
     <section class="page goal-detail-page" data-testid="goal-detail-page">
-      <header class="page__header">
-        <div>
-          <a routerLink="/goals" class="muted-link">← Цели проекта</a>
+      <header class="page__header goal-header">
+        <div class="goal-heading">
+          <a
+            id="goal-return-link"
+            [routerLink]="fromProposals() ? '/proposals' : '/goals'"
+            [queryParams]="backParams()"
+            [attr.data-testid]="fromProposals() ? 'goal-back-to-proposals' : 'goal-back-to-goals'"
+            class="muted-link"
+          ><i class="pi pi-arrow-left" aria-hidden="true"></i> {{ fromProposals() ? 'К предложениям' : 'К целям' }}</a>
           <h1>{{ detail()?.goal?.title || 'Цель проекта' }}</h1>
           @if (goal(); as currentGoal) {
             <div class="tag-row">
               <p-tag [value]="goalStatusLabel(currentGoal.status)" [severity]="goalStatusSeverity(currentGoal.status)" />
               <p-tag [value]="'Приоритет: ' + priorityLabel(currentGoal.priority)" [severity]="prioritySeverity(currentGoal.priority)" />
               <p-tag [value]="'Риск: ' + riskLabel(currentGoal.riskLevel)" [severity]="riskSeverity(currentGoal.riskLevel)" />
-              <p-tag [value]="currentGoal.repositoryName" severity="secondary" />
+              <p-tag [value]="directory.repoLabel(currentGoal.repositoryName)" severity="secondary" />
             </div>
           }
         </div>
 
         @if (goal(); as currentGoal) {
-          <div class="action-bar action-bar--end">
+          <div class="action-bar goal-actions">
             @if (canApprove(currentGoal)) {
               <button
                 pButton
@@ -84,6 +91,7 @@ type ReasonAction = 'reject' | 'stale';
                 icon="pi pi-times"
                 label="Отклонить"
                 severity="danger"
+                [outlined]="true"
                 [disabled]="submitting()"
                 (click)="openReasonDialog('reject')"
               ></button>
@@ -162,15 +170,10 @@ type ReasonAction = 'reject' | 'stale';
           <span>Загрузка цели</span>
         </div>
       } @else if (detail(); as currentDetail) {
-        <div class="detail-grid">
+        <div class="detail-grid goal-detail-grid">
           <article class="surface workflow-detail">
             <section class="detail-section goal-lifecycle">
               <h2>Состояние цели</h2>
-              <div class="tag-row">
-                <p-tag [value]="goalStatusLabel(currentDetail.goal.status)" [severity]="goalStatusSeverity(currentDetail.goal.status)" />
-                <p-tag [value]="'Приоритет: ' + priorityLabel(currentDetail.goal.priority)" [severity]="prioritySeverity(currentDetail.goal.priority)" />
-                <p-tag [value]="'Риск: ' + riskLabel(currentDetail.goal.riskLevel)" [severity]="riskSeverity(currentDetail.goal.riskLevel)" />
-              </div>
               <div class="summary-block">
                 <h3>Следующий шаг</h3>
                 <p>{{ nextStepText(currentDetail.goal) }}</p>
@@ -187,32 +190,6 @@ type ReasonAction = 'reject' | 'stale';
                   <p>{{ currentDetail.goal.staleReason }}</p>
                 </div>
               }
-            </section>
-
-            <section class="detail-section">
-              <h2>Метаданные</h2>
-              <div class="field-grid">
-                <div>
-                  <span class="field-label">ID цели</span>
-                  <span>{{ currentDetail.goal.id }}</span>
-                </div>
-                <div>
-                  <span class="field-label">Source analysis id</span>
-                  <span>{{ currentDetail.goal.sourceAnalysisId }}</span>
-                </div>
-                <div>
-                  <span class="field-label">Source run id</span>
-                  <span>{{ currentDetail.goal.sourceRunId || 'Не указан' }}</span>
-                </div>
-                <div>
-                  <span class="field-label">Создано</span>
-                  <span>{{ formatDate(currentDetail.goal.createdAt) }}</span>
-                </div>
-                <div>
-                  <span class="field-label">Обновлено</span>
-                  <span>{{ formatDate(currentDetail.goal.updatedAt) }}</span>
-                </div>
-              </div>
             </section>
 
             <section class="detail-section">
@@ -293,7 +270,7 @@ type ReasonAction = 'reject' | 'stale';
               @if (currentDetail.linkedTasks.length) {
                 <div class="linked-list">
                   @for (task of currentDetail.linkedTasks; track task.id) {
-                    <a [routerLink]="['/', task.id]" class="linked-row">
+                    <a [id]="'goal-task-' + task.id" [routerLink]="['/', task.id]" [queryParams]="taskContext()" class="linked-row">
                       <span>{{ task.title }}</span>
                       <p-tag [value]="statusLabel(task.status)" [severity]="taskStatusSeverity(task.status)" />
                     </a>
@@ -302,7 +279,7 @@ type ReasonAction = 'reject' | 'stale';
               } @else if (currentDetail.taskLinks.length) {
                 <div class="linked-list">
                   @for (link of currentDetail.taskLinks; track link.id) {
-                    <a [routerLink]="['/', link.taskId]" class="linked-row">
+                    <a [id]="'goal-task-' + link.taskId" [routerLink]="['/', link.taskId]" [queryParams]="taskContext()" class="linked-row">
                       <span>{{ link.taskId }}</span>
                       <p-tag [value]="link.linkType" severity="secondary" />
                     </a>
@@ -318,14 +295,14 @@ type ReasonAction = 'reject' | 'stale';
               @if (currentDetail.auditEvents.length) {
                 <ol class="timeline-list">
                   @for (event of currentDetail.auditEvents; track event.id) {
-                    <li>
+                    <li class="timeline-item">
                       <strong>{{ auditEventLabel(event.kind) }}</strong>
                       @if (event.message) {
                         <p>{{ event.message }}</p>
                       }
                       @if (isReplanClassified(event)) {
-                        <p>Decision: {{ auditPayloadValue(event, 'decision') }}</p>
-                        <p>Rationale: {{ auditPayloadValue(event, 'rationale') }}</p>
+                        <p>Решение: {{ auditPayloadValue(event, 'decision') }}</p>
+                        <p>Обоснование: {{ auditPayloadValue(event, 'rationale') }}</p>
                       }
                       <span class="field-label">
                         {{ formatDate(event.createdAt) }}
@@ -340,6 +317,32 @@ type ReasonAction = 'reject' | 'stale';
                 <p>Аудит пуст.</p>
               }
             </section>
+
+            <details class="goal-metadata">
+              <summary>Метаданные цели</summary>
+              <div class="field-grid">
+                <div>
+                  <span class="field-label">ID цели</span>
+                  <span>{{ currentDetail.goal.id }}</span>
+                </div>
+                <div>
+                  <span class="field-label">ID анализа</span>
+                  <span>{{ currentDetail.goal.sourceAnalysisId }}</span>
+                </div>
+                <div>
+                  <span class="field-label">ID запуска</span>
+                  <span>{{ currentDetail.goal.sourceRunId || 'Не указан' }}</span>
+                </div>
+                <div>
+                  <span class="field-label">Создано</span>
+                  <span>{{ formatDate(currentDetail.goal.createdAt) }}</span>
+                </div>
+                <div>
+                  <span class="field-label">Обновлено</span>
+                  <span>{{ formatDate(currentDetail.goal.updatedAt) }}</span>
+                </div>
+              </div>
+            </details>
           </aside>
         </div>
       }
@@ -350,6 +353,8 @@ type ReasonAction = 'reject' | 'stale';
       [visible]="reasonDialogVisible()"
       (visibleChange)="reasonDialogVisible.set($event)"
       [modal]="true"
+      [draggable]="false"
+      closeAriaLabel="Закрыть"
       [style]="{ width: 'min(560px, 94vw)' }"
     >
       <div class="stack" data-testid="goal-reason-dialog">
@@ -390,6 +395,8 @@ type ReasonAction = 'reject' | 'stale';
       [visible]="replanDialogVisible()"
       (visibleChange)="replanDialogVisible.set($event)"
       [modal]="true"
+      [draggable]="false"
+      closeAriaLabel="Закрыть"
       [style]="{ width: 'min(560px, 94vw)' }"
     >
       <div class="stack" data-testid="goal-replan-dialog">
@@ -425,12 +432,56 @@ type ReasonAction = 'reject' | 'stale';
       </div>
     </p-dialog>
   `,
+  styles: [`
+    .goal-header { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .goal-heading { display: grid; gap: 8px; overflow-wrap: anywhere; }
+    .goal-heading a { color: var(--console-link); justify-self: start; }
+    .goal-actions { justify-content: flex-start; }
+    .goal-detail-grid {
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      align-items: start;
+    }
+    .workflow-detail {
+      display: grid;
+      gap: 20px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .workflow-detail p { margin: 0; }
+    .workflow-detail .timeline-list { list-style: none; padding: 0; margin: 0; }
+    .workflow-detail .linked-row > span { color: var(--console-link); font-weight: 650; }
+    .workflow-detail .evidence-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+    .goal-lifecycle {
+      padding: 12px;
+      border: 1px solid var(--console-border);
+      background: var(--console-panel-muted);
+      border-radius: 8px;
+    }
+    .goal-metadata {
+      border-top: 1px solid var(--console-border);
+      padding-top: 8px;
+    }
+    .goal-metadata summary {
+      color: var(--console-link);
+      cursor: pointer;
+      min-height: 32px;
+      align-content: center;
+    }
+    .goal-metadata .field-grid { margin-top: 8px; }
+
+    @media (max-width: 1030px) {
+      .goal-detail-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+  `],
 })
 export class GoalDetailPageComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly goalsApi = inject(ProjectGoalService);
   private readonly session = inject(SessionService);
   private readonly messages = inject(MessageService);
+  private readonly injector = inject(Injector);
+  private readonly document = inject(DOCUMENT);
+  protected readonly directory = inject(RepositoryDirectoryService);
 
   protected readonly reasonControl = new FormControl<string>('', {
     nonNullable: true,
@@ -450,6 +501,7 @@ export class GoalDetailPageComponent implements OnInit {
   protected readonly pendingReasonAction = signal<ReasonAction | undefined>(undefined);
 
   private readonly goalId = this.route.snapshot.paramMap.get('goalId') ?? '';
+  private pendingTaskFocus = this.route.snapshot.queryParamMap?.get('focusTask') ?? null;
 
   ngOnInit(): void {
     this.load();
@@ -457,6 +509,42 @@ export class GoalDetailPageComponent implements OnInit {
 
   protected goal(): ProjectGoalDto | undefined {
     return this.detail()?.goal;
+  }
+
+  protected fromProposals(): boolean {
+    return this.route.snapshot.queryParamMap?.get('from') === 'proposals';
+  }
+
+  protected backParams(): Params {
+    const id = this.fromProposals() ? this.route.snapshot.queryParamMap?.get('proposal') : this.goalId;
+    return { ...this.listFilters(), ...(id ? { focus: id } : {}) };
+  }
+
+  protected taskContext(): Params {
+    const params = this.route.snapshot.queryParamMap;
+    const fromProposal = this.fromProposals() ? { from: 'proposals', proposal: params?.get('proposal') } : {};
+    return { ...this.listFilters(), ...fromProposal, returnGoal: this.goalId };
+  }
+
+  private listFilters(): Params {
+    const params = this.route.snapshot.queryParamMap;
+    const repository = params?.get('repositoryName');
+    const statusKey = this.fromProposals() ? 'supervisorStatus' : 'status';
+    const status = params?.get(statusKey);
+    return {
+      ...(repository ? { repositoryName: repository } : {}),
+      ...(status ? { [statusKey]: status } : {}),
+    };
+  }
+
+  private restoreTaskFocus(): void {
+    const id = this.pendingTaskFocus;
+    if (!id) return;
+    this.pendingTaskFocus = null;
+    afterNextRender(() => {
+      (this.document.getElementById('goal-task-' + id) ??
+        this.document.getElementById('goal-return-link'))?.focus();
+    }, { injector: this.injector });
   }
 
   protected load(): void {
@@ -470,10 +558,12 @@ export class GoalDetailPageComponent implements OnInit {
       next: (detail) => {
         this.detail.set(detail);
         this.loading.set(false);
+        this.restoreTaskFocus();
       },
       error: (error: unknown) => {
         this.error.set(error instanceof Error ? error.message : String(error));
         this.loading.set(false);
+        this.restoreTaskFocus();
       },
     });
   }

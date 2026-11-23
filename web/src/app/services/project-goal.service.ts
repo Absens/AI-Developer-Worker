@@ -3,6 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 
 import {
+  ProjectAnalysisDto,
   ProjectAnalysisKindDto,
   ProjectAnalysisListResponseDto,
   ProjectGoalCommandResponseDto,
@@ -12,12 +13,28 @@ import {
 } from '../models/human-api.dto';
 import { ApiClient } from './api-client.service';
 import {
+  mapProjectAnalysis,
   mapProjectAnalysisListResponse,
   mapProjectGoalCommandResponse,
   mapProjectGoalDetailResponse,
   mapProjectGoalListResponse,
   mapProjectGoalProposeTasksResponse,
 } from './task-mappers';
+
+interface StrategyRunResponse {
+  result?: {
+    run?: { status?: string; proposedGoalIds?: unknown; diagnostic?: string };
+    analysis?: Record<string, unknown>;
+    strategy?: unknown;
+  };
+}
+
+export interface StrategyRunResult {
+  status?: string;
+  analysis?: ProjectAnalysisDto;
+  goalIds: string[];
+  diagnostic?: string;
+}
 
 @Injectable({ providedIn: 'root' })
 export class ProjectGoalService {
@@ -102,15 +119,25 @@ export class ProjectGoalService {
     );
   }
 
-  runStrategy(repositoryName: string, strategyBrief?: string): Observable<unknown> {
+  runStrategy(repositoryName: string, strategyBrief?: string): Observable<StrategyRunResult> {
     return this.api.post<
       { repositoryName: string; mode: 'strategy'; strategyBrief?: string },
-      unknown
+      StrategyRunResponse
     >('/project-manager/runs', {
       repositoryName,
       mode: 'strategy',
       ...(strategyBrief?.trim() ? { strategyBrief: strategyBrief.trim() } : {}),
-    });
+    }).pipe(map(({ result }) => {
+      const goalIds = result?.run?.proposedGoalIds;
+      return {
+        status: result?.run?.status,
+        analysis: result?.analysis
+          ? mapProjectAnalysis({ ...result.analysis, strategy: result.strategy ?? result.analysis['strategy'] })
+          : undefined,
+        goalIds: Array.isArray(goalIds) ? goalIds.filter((id): id is string => typeof id === 'string' && !!id) : [],
+        diagnostic: result?.run?.diagnostic,
+      };
+    }));
   }
 
   listAnalyses(input: {

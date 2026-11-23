@@ -251,8 +251,10 @@ export const mapEvent = (value: unknown): TimelineEventDto => {
 export const mapTaskDetail = (value: unknown, summary?: TaskSummaryDto): TaskDetailDto => {
   const raw = record(value);
   const base = { ...mapTaskSummary(raw), ...summary };
+  const revisionNumber = records(raw['revisions']).at(-1)?.['revisionNumber'];
   return {
     ...base,
+    ...(typeof revisionNumber === 'number' ? { revisionNumber } : {}),
     description: stringValue(raw['description']),
     ...(optionalString(raw['humanSummary']) ? { humanSummary: optionalString(raw['humanSummary']) } : {}),
     acceptanceCriteria: stringArray(raw['acceptanceCriteria']),
@@ -276,6 +278,7 @@ export const mapTaskListResponse = (value: unknown): TaskListResponseDto => {
   const raw = record(value);
   return {
     tasks: records(raw['tasks']).map(mapTaskSummary),
+    ...(optionalString(raw['nextCursor']) ? { nextCursor: optionalString(raw['nextCursor']) } : {}),
     role: stringValue(raw['role'], 'viewer') as TaskListResponseDto['role'],
     generatedAt: stringValue(raw['generatedAt']),
   };
@@ -711,6 +714,7 @@ export const mapOperationTaskDiagnostic = (value: unknown): OperationTaskDiagnos
   const raw = record(value);
   return {
     taskId: stringValue(raw['taskId']),
+    ...(optionalString(raw['waitingSince']) ? { waitingSince: optionalString(raw['waitingSince']) } : {}),
     ...(mapOperationAgentRun(raw['latestFailedAgentRun'])
       ? { latestFailedAgentRun: mapOperationAgentRun(raw['latestFailedAgentRun']) }
       : {}),
