@@ -4,6 +4,17 @@ export class TaskNotFoundError extends Error {
   }
 }
 
+export class TaskWriteConflictError extends Error {
+  constructor(
+    readonly taskId: string,
+    readonly field: "status" | "revision",
+    readonly expected: string | number,
+    readonly actual: string | number,
+  ) {
+    super(`Task ${taskId} ${field} changed: expected ${expected}, found ${actual}.`);
+  }
+}
+
 export class DuplicateExternalRefError extends Error {
   constructor(
     readonly provider: string,

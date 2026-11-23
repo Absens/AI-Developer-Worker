@@ -1,4 +1,4 @@
-import type { ManagedSettingsService } from "../domain/settings/service.js";
+import type { ManagedSettingsService, RepositoryDirectoryEntry } from "../domain/settings/service.js";
 import { SettingsError } from "../domain/settings/types.js";
 import { handleManagedSettingsRequest } from "./managedSettingsApi.js";
 import { isExecutionInProgress } from "../domain/taskTracker/recovery.js";
@@ -41,6 +41,7 @@ import {
   TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
+  TaskWriteConflictError,
 } from "../domain/taskTracker/index.js";
 import type {
   TaskTrackerHumanRole,
@@ -89,6 +90,7 @@ type CommandName =
   | "hold"
   | "cancel"
   | "retry"
+  | "accept-result"
   | "recover-abandoned"
   | "force-reanalysis"
   | "approve-decomposition"
@@ -108,6 +110,7 @@ const COMMAND_ROLE: Record<CommandName, TaskTrackerHumanRole> = {
   hold: "operator",
   cancel: "developer",
   retry: "operator",
+  "accept-result": "developer",
   "recover-abandoned": "operator",
   "force-reanalysis": "operator",
   "approve-decomposition": "developer",
@@ -332,6 +335,9 @@ const summarizeTask = (
 };
 
 const responseForError = (error: unknown): { statusCode: number; message: string } => {
+  if (error instanceof TaskWriteConflictError) {
+    return { statusCode: 409, message: "Задача изменилась. Обновите карточку и проверьте актуальные данные." };
+  }
   if (error instanceof SettingsError) return { statusCode: error.status, message: error.message };
   if (error instanceof HttpApiError) {
     return { statusCode: error.statusCode, message: error.message };
@@ -383,6 +389,7 @@ export class TaskTrackerHumanApi {
     return (
       path === `${apiPath}/settings` || path.startsWith(`${apiPath}/settings/`) || path === `${apiPath}/project-catalog` ||
       path === `${apiPath}/session` ||
+      path === `${apiPath}/repository-directory` ||
       path === `${apiPath}/tasks` ||
       path === `${apiPath}/tasks:bulk-create` ||
       path === `${apiPath}/proposals` ||
@@ -415,6 +422,11 @@ export class TaskTrackerHumanApi {
         json(response, 200, { managed: Boolean(this.input.settings), projects: this.input.settings ? await this.input.settings.catalog() : [] });
         return;
       }
+      if (route === "/repository-directory" && request.method === "GET") {
+        this.requireAuth(request, "viewer");
+        json(response, 200, { repositories: await this.repositoryDirectory() });
+        return;
+      }
       if (route === "/settings" || route.startsWith("/settings/")) {
         const auth = this.requireAuth(request, "admin");
         if (!this.input.settings) throw new HttpApiError(404, "Управляемый режим не включён. Настройки этой установки задаются окружением.");
@@ -445,9 +457,10 @@ export class TaskTrackerHumanApi {
 
       if (request.method === "GET" && route === "/tasks") {
         const auth = this.requireAuth(request, "viewer");
-        const filters = this.parseListFilters(url);
+        const filters = await this.parseListFilters(url);
+        const pageSize = Math.min(filters.limit ?? 100, 500);
         const [tasks, leases] = await Promise.all([
-          tracker.listTasks(filters),
+          tracker.listTasks({ ...filters, limit: Math.min(pageSize + 1, 500) }),
           tracker.listActiveLeases(),
         ]);
         const workerByTask = new Map(
@@ -456,8 +469,14 @@ export class TaskTrackerHumanApi {
             lease.workerId,
           ]),
         );
+        const page = tasks.slice(0, pageSize);
+        const last = page.at(-1);
+        const hasMore = tasks.length > pageSize || (pageSize === 500 && tasks.length === pageSize);
         json(response, 200, {
-          tasks: tasks.map((task) => summarizeTask(task, workerByTask.get(task.id))),
+          tasks: page.map((task) => summarizeTask(task, workerByTask.get(task.id))),
+          ...(hasMore && last ? {
+            nextCursor: Buffer.from(JSON.stringify({ updatedAt: last.updatedAt, id: last.id })).toString("base64url"),
+          } : {}),
           role: auth.role,
           generatedAt: new Date().toISOString(),
         });
@@ -466,23 +485,21 @@ export class TaskTrackerHumanApi {
 
       if (request.method === "GET" && route === "/operations") {
         this.requireAuth(request, "viewer");
+        const repositoryName = optionalString(url.searchParams.get("repository"));
         const [tasks, leases] = await Promise.all([
-          tracker.listTasks({ limit: 500 }),
+          tracker.listTasks({ repositoryName, limit: 500 }),
           tracker.listActiveLeases(),
         ]);
-        json(response, 200, this.buildOperationsSnapshot(tasks, leases));
+        const selectedLeases = repositoryName ? leases.filter((lease) => lease.repositoryName === repositoryName) : leases;
+        json(response, 200, this.buildOperationsSnapshot(tasks, selectedLeases, repositoryName));
         return;
       }
 
       if (request.method === "GET" && route === "/proposals") {
         const auth = this.requireAuth(request, "viewer");
         const supervisorStatus = optionalString(url.searchParams.get("supervisorStatus"));
-        const tasks = (await tracker.listTasks({ limit: 500 })).filter(
-          (task) =>
-            task.proposal &&
-            (!supervisorStatus ||
-              task.proposal.supervisorStatus === supervisorStatus),
-        );
+        const repositoryName = optionalString(url.searchParams.get("repositoryName"));
+        const tasks = await tracker.listTasks({ repositoryName, proposal: { supervisorStatus }, limit: 500 });
         const projectGoalsByTaskId = await this.projectGoalSummariesByTaskId(
           tasks.map((task) => task.id),
         );
@@ -583,9 +600,16 @@ export class TaskTrackerHumanApi {
       if (request.method === "POST" && suffix === "/revisions") {
         const auth = this.requireAuth(request, "developer");
         const body = requireObject(await this.readJson(request), "request body");
+        const editDraft = body.expectedStatus !== undefined || body.expectedRevisionNumber !== undefined;
+        const expectedRevisionNumber = body.expectedRevisionNumber;
+        if (editDraft && (body.expectedStatus !== "new" || typeof expectedRevisionNumber !== "number" ||
+          !Number.isSafeInteger(expectedRevisionNumber) || expectedRevisionNumber < 1)) {
+          throw new HttpApiError(400, "Укажите статус черновика и номер исходной ревизии.");
+        }
         const task = await tracker.updateTaskRevision(taskId, {
           owner: "human",
           author: auth.actor,
+          ...(editDraft ? { expectedStatus: "new" as const, expectedRevisionNumber: expectedRevisionNumber as number } : {}),
           ...(optionalString(body.title) ? { title: optionalString(body.title) } : {}),
           ...(optionalString(body.description)
             ? { description: optionalString(body.description) }
@@ -993,8 +1017,10 @@ export class TaskTrackerHumanApi {
         canManageSettings: Boolean(this.input.settings) && canRole("admin"),
         managedProjects: Boolean(this.input.settings),
         canReadTasks: canRole("viewer"),
+        canReadRepositoryDirectory: canRole("viewer"),
         canCreateTask: canRole("developer"),
         canUpdateTask: canRole("developer"),
+        canAcceptTask: canRole("developer"),
         canAnswer: canRole("developer"),
         canResume: canRole("developer"),
         canCancel: canRole("developer"),
@@ -1158,11 +1184,30 @@ export class TaskTrackerHumanApi {
     }
   }
 
-  private parseListFilters(url: URL): ListTasksInput {
+  private async repositoryDirectory(): Promise<RepositoryDirectoryEntry[]> {
+    return this.input.settings
+      ? this.input.settings.repositoryDirectory()
+      : this.input.repositories().map((name) => ({ id: name, name }));
+  }
+
+  private async parseListFilters(url: URL): Promise<ListTasksInput> {
     const statuses = url.searchParams.getAll("status") as TaskStatus[];
     const limitRaw = url.searchParams.get("limit");
     const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
+    const search = optionalString(url.searchParams.get("search"));
+    if (search && search.length > 200) {
+      throw new HttpApiError(400, "Поисковый запрос должен содержать до 200 символов.");
+    }
+    const repositoryNames = search ? (await this.repositoryDirectory()).filter((repo) => {
+      const { name, gitlabHost, repositoryPath } = repo;
+      const address = [gitlabHost, repositoryPath].filter(Boolean).join("/");
+      return [name, address].some((value) => value.toLowerCase().includes(search.toLowerCase()));
+    }).map(({ id }) => id) : [];
+    const cursor = optionalString(url.searchParams.get("cursor"));
+    const after = cursor ? this.parseTaskCursor(cursor) : undefined;
     return {
+      ...(search ? { search: { text: search, repositoryNames } } : {}),
+      ...(after ? { after } : {}),
       ...(statuses.length > 0 ? { statuses } : {}),
       ...(url.searchParams.get("repository")
         ? { repositoryName: url.searchParams.get("repository") ?? undefined }
@@ -1181,6 +1226,25 @@ export class TaskTrackerHumanApi {
         : {}),
       ...(Number.isInteger(limit) && limit && limit > 0 ? { limit } : {}),
     };
+  }
+
+  private parseTaskCursor(cursor: string): NonNullable<ListTasksInput["after"]> {
+    if (/^[a-zA-Z0-9_-]+$/.test(cursor)) {
+      try {
+        const { updatedAt, id } = requireObject(
+          JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")),
+          "cursor",
+        );
+        if (typeof id === "string" && id && typeof updatedAt === "string" &&
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(updatedAt) &&
+          new Date(updatedAt).toISOString() === updatedAt) {
+          return { updatedAt, id };
+        }
+      } catch {
+        // Any invalid encoding, JSON or date uses the same client-facing error.
+      }
+    }
+    throw new HttpApiError(400, "Некорректный курсор очереди.");
   }
 
   private parseProjectGoalFilters(url: URL): ListProjectGoalsInput {
@@ -1478,30 +1542,49 @@ export class TaskTrackerHumanApi {
     auth: AuthContext,
     body: Record<string, unknown>,
   ): Promise<void> {
+    let expectedStatus: TaskStatus | undefined;
     if (["mark-ready", "resume", "hold", "cancel", "retry"].includes(command)) {
       const current = await tracker.getTask(taskId);
       if (isExecutionInProgress(current.status)) {
         throw new HttpApiError(409, "Stop the executor and use recover-abandoned before changing an executing task.");
       }
+      expectedStatus = current.status;
     }
     if (command === "mark-ready") {
-      await tracker.markReady(taskId, optionalString(body.reason));
+      await tracker.markReady(taskId, optionalString(body.reason), { expectedStatus });
       return;
     }
     if (command === "resume") {
-      await tracker.setStatus(taskId, "ready", optionalString(body.reason) ?? "Human resumed task.");
+      await tracker.setStatus(taskId, "ready", optionalString(body.reason) ?? "Human resumed task.", { expectedStatus });
       return;
     }
     if (command === "hold") {
-      await tracker.setStatus(taskId, "blocked", optionalString(body.reason) ?? "Task put on hold.");
+      await tracker.setStatus(taskId, "blocked", optionalString(body.reason) ?? "Task put on hold.", { expectedStatus });
       return;
     }
     if (command === "cancel") {
-      await tracker.setStatus(taskId, "cancelled", optionalString(body.reason) ?? "Task cancelled.");
+      await tracker.setStatus(taskId, "cancelled", optionalString(body.reason) ?? "Task cancelled.", { expectedStatus });
       return;
     }
     if (command === "retry") {
-      await tracker.setStatus(taskId, "ready", optionalString(body.reason) ?? "Task queued for retry.");
+      await tracker.setStatus(taskId, "ready", optionalString(body.reason) ?? "Task queued for retry.", { expectedStatus });
+      return;
+    }
+    if (command === "accept-result") {
+      const reason = optionalString(body.reason);
+      if (body.expectedStatus !== "human_testing" || !reason) {
+        throw new HttpApiError(400, "Укажите итог проверки задачи, которая ожидает приёмки.");
+      }
+      const expectedRevisionNumber = body.expectedRevisionNumber;
+      if (typeof expectedRevisionNumber !== "number" ||
+        !Number.isSafeInteger(expectedRevisionNumber) || expectedRevisionNumber < 1) {
+        throw new HttpApiError(400, "Укажите номер проверенной ревизии задачи.");
+      }
+      await tracker.setStatus(taskId, "done", reason, {
+        expectedStatus: "human_testing",
+        expectedRevisionNumber,
+        actor: auth.actor,
+      });
       return;
     }
     if (command === "recover-abandoned") {
@@ -1725,6 +1808,7 @@ export class TaskTrackerHumanApi {
   private buildOperationsSnapshot(
     tasks: TaskRecord[],
     leases: Awaited<ReturnType<TaskTrackerClient["listActiveLeases"]>>,
+    repositoryName?: string,
   ): Record<string, unknown> {
     const workerByTask = new Map(
       leases.filter((lease) => lease.kind === "task").map((lease) => [
@@ -1761,7 +1845,9 @@ export class TaskTrackerHumanApi {
     }
 
     return {
-      workers: this.input.state.listWorkers().map((worker) => {
+      workers: this.input.state.listWorkers()
+        .filter((worker) => !repositoryName || worker.repositoryName === repositoryName)
+        .map((worker) => {
         const taskLease = taskLeaseByWorker.get(worker.workerId);
         return {
           ...worker,
@@ -1794,12 +1880,14 @@ export class TaskTrackerHumanApi {
   private buildOperationTaskDiagnostic(task: TaskRecord): Record<string, unknown> {
     const latestFailure = latestFailedAgentRun(task);
     const latestValidation = latestByCreatedAt(task.qualityGateRuns);
-    const openQuestion = [...task.clarificationQuestions]
-      .reverse()
-      .find((question) => question.status === "open");
+    const openQuestions = task.clarificationQuestions
+      .filter((question) => question.status === "open")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const openQuestion = openQuestions.at(-1);
 
     return {
       taskId: task.id,
+      ...(openQuestions[0] ? { waitingSince: openQuestions[0].createdAt } : {}),
       repeatedValidationFailures:
         task.qualityGateRuns.filter((run) => run.status === "failed").length,
       failedAgentRuns: task.agentRuns.filter((run) => run.status === "failed").length,

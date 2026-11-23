@@ -66,6 +66,10 @@ TASK_TRACKER_SYSTEM_TOKEN=
 
 Для `TASK_TRACKER_PROVIDER=internal` путь `/tasks` обслуживается из Angular bundle. Если assets отсутствуют, UI отдаёт `503`, но JSON API продолжает работать. `index.html` и SPA fallback не кэшируются, versioned JS/CSS получают immutable caching; отсутствующие assets возвращают `404`.
 
+Интерфейс очереди передаёт `search` и фильтры в `GET /api/tasks`. Для следующей страницы передайте полученный `nextCursor` как `cursor` с теми же фильтрами. `GET /api/repository-directory` предоставляет имена и пути для отображения, включая проекты на паузе. `GET /api/project-catalog` используется для выбора проекта при создании задачи.
+
+При редактировании черновика консоль передаёт `expectedStatus=new` и `expectedRevisionNumber` в `POST /api/tasks/<id>/revisions`. Для ручной приёмки доступен `POST /api/tasks/<id>/commands/accept-result` с `expectedStatus=human_testing`, номером проверенной ревизии `expectedRevisionNumber` и текстом `reason`. Ответ `409` означает, что перед повтором надо сверить актуальный статус и критерии приёмки.
+
 Локальная разработка:
 
 ```bash

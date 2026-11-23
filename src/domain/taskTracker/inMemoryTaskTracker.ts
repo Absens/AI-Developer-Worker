@@ -28,6 +28,7 @@ import {
   TaskProposalStateError,
   TaskNotFoundError,
   TaskReadinessError,
+  TaskWriteConflictError,
 } from "./errors.js";
 import {
   activeBlockingDependenciesForTask,
@@ -95,6 +96,7 @@ import type {
   TaskRevision,
   TaskRevisionInput,
   TaskStatus,
+  TaskStatusChangeInput,
   TaskStep,
   TaskStepRecordInput,
   TaskTrackerClient,
@@ -277,12 +279,28 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     );
     const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
     const statuses = input.statuses ? new Set(input.statuses) : undefined;
+    const searchText = input.search?.text.toLowerCase();
+    const matchedRepositories = new Set(input.search?.repositoryNames);
     const tasks = [...this.tasks.values()]
       .filter((task) => {
         if (statuses && !statuses.has(task.status)) {
           return false;
         }
         if (input.repositoryName && task.repositoryName !== input.repositoryName) {
+          return false;
+        }
+        if (searchText && ![task.id, task.title, task.repositoryName].some(
+          (value) => value?.toLowerCase().includes(searchText),
+        ) && !matchedRepositories.has(task.repositoryName ?? "")) {
+          return false;
+        }
+        if (input.proposal && (!task.proposal || (
+          input.proposal.supervisorStatus && input.proposal.supervisorStatus !== task.proposal.supervisorStatus
+        ))) {
+          return false;
+        }
+        if (input.after && (task.updatedAt > input.after.updatedAt ||
+          (task.updatedAt === input.after.updatedAt && task.id <= input.after.id))) {
           return false;
         }
         if (input.queue && task.queue !== input.queue) {
@@ -304,7 +322,8 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
         }
         return true;
       })
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) ||
+        (left.id < right.id ? -1 : Number(left.id > right.id)))
       .slice(0, limit);
 
     return clone(tasks);
@@ -728,12 +747,18 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     input: TaskRevisionInput,
   ): Promise<TaskRecord> {
     const task = this.requireTask(taskId);
+    if (input.expectedStatus !== undefined && task.status !== input.expectedStatus) {
+      throw new TaskWriteConflictError(taskId, "status", input.expectedStatus, task.status);
+    }
     const createdAt = this.nowIso();
     const revisionOwner = requireRevisionOwner(input.owner);
     const previous = task.revisions.at(-1);
 
     if (!previous) {
       throw new Error(`Task ${taskId} has no previous revision.`);
+    }
+    if (input.expectedRevisionNumber !== undefined && previous.revisionNumber !== input.expectedRevisionNumber) {
+      throw new TaskWriteConflictError(taskId, "revision", input.expectedRevisionNumber, previous.revisionNumber);
     }
 
     const revision: TaskRevision = {
@@ -929,10 +954,10 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     return clone(task);
   }
 
-  async markReady(taskId: string, reason?: string): Promise<void> {
+  async markReady(taskId: string, reason?: string, input?: TaskStatusChangeInput): Promise<void> {
     const task = this.requireTask(taskId);
     assertReadyFields(task);
-    await this.setStatus(taskId, "ready", reason ?? "Task marked ready.");
+    await this.setStatus(taskId, "ready", reason ?? "Task marked ready.", input);
   }
 
   async getTask(taskId: string): Promise<TaskRecord> {
@@ -1013,8 +1038,17 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
     task.updatedAt = createdAt;
   }
 
-  async setStatus(taskId: string, status: TaskStatus, reason?: string): Promise<void> {
+  async setStatus(taskId: string, status: TaskStatus, reason?: string, input: TaskStatusChangeInput = {}): Promise<void> {
     const task = this.requireTask(taskId);
+    if (input.expectedStatus !== undefined && task.status !== input.expectedStatus) {
+      throw new TaskWriteConflictError(taskId, "status", input.expectedStatus, task.status);
+    }
+    if (input.expectedRevisionNumber !== undefined) {
+      const currentRevision = task.revisions.at(-1)?.revisionNumber ?? 0;
+      if (currentRevision !== input.expectedRevisionNumber) {
+        throw new TaskWriteConflictError(taskId, "revision", input.expectedRevisionNumber, currentRevision);
+      }
+    }
     if (task.status === status) {
       return;
     }
@@ -1028,7 +1062,8 @@ export class InMemoryTaskTrackerClient implements TaskTrackerClient {
       id: `evt_${randomUUID()}`,
       taskId,
       kind: "task_status_changed",
-      source: "worker_agent",
+      source: input.actor?.owner ?? "worker_agent",
+      ...(input.actor ? { actor: clone(input.actor) } : {}),
       message: reason ?? `Task status changed from ${previousStatus} to ${status}.`,
       payload: { from: previousStatus, to: status },
       createdAt,
