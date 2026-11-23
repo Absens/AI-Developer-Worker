@@ -155,7 +155,7 @@ type GoalStatusFilter = ProjectGoalStatusDto | 'all';
       }
 
       @if (latestStrategy(); as analysis) {
-        <details class="surface strategy-summary" data-testid="goals-strategy-summary" [open]="strategyOpen()">
+        <details class="surface strategy-summary" data-testid="goals-strategy-summary" [open]="!!lastStrategyRun() && strategyOpen()">
           <summary id="goals-strategy-result">
             <strong>Результаты стратегии</strong>
             <span class="muted">{{ directory.repoLabel(analysis.repositoryName) }} · {{ formatDate(analysis.createdAt) }}</span>
@@ -457,10 +457,11 @@ export class GoalsPageComponent implements OnInit {
   protected readonly statusFilter = new FormControl<GoalStatusFilter>('all', { nonNullable: true });
   protected readonly repositoryFilter = new FormControl<string>('', { nonNullable: true });
   private readonly repositoryValue = toSignal(this.repositoryFilter.valueChanges, { initialValue: '' });
+  private readonly selectedRepository = computed(() => this.repositoryValue().trim());
   protected readonly repositoryOptions = computed(() => {
     const options = this.directory.options();
     if (!options.length) return [];
-    const current = this.repositoryValue().trim();
+    const current = this.selectedRepository();
     const fallback = current && !options.some((option) => option.id === current)
       ? [{ id: current, label: this.directory.repoLabel(current) }]
       : [];
@@ -473,8 +474,12 @@ export class GoalsPageComponent implements OnInit {
   protected readonly loading = signal(false);
   protected readonly runningAnalysis = signal(false);
   protected readonly runningStrategy = signal(false);
-  protected readonly strategyAnalyses = signal<ProjectAnalysisDto[]>([]);
-  protected readonly lastStrategyRun = signal<StrategyRunResult | undefined>(undefined);
+  private readonly savedStrategy = signal<{ repositoryName: string; analysis?: ProjectAnalysisDto } | undefined>(undefined);
+  private readonly completedStrategyRun = signal<{ repositoryName: string; result: StrategyRunResult } | undefined>(undefined);
+  protected readonly lastStrategyRun = computed(() => {
+    const run = this.completedStrategyRun();
+    return run?.repositoryName === this.selectedRepository() ? run.result : undefined;
+  });
   protected readonly strategyOpen = signal(false);
   protected readonly error = signal<string | undefined>(undefined);
   protected readonly notice = signal<string | undefined>(undefined);
@@ -534,15 +539,23 @@ export class GoalsPageComponent implements OnInit {
 
   protected loadStrategyAnalyses(): void {
     this.analysesRequest?.unsubscribe();
+    const repositoryName = this.selectedRepository();
     this.analysesRequest = this.goalsApi
       .listAnalyses({
-        repositoryName: this.repositoryFilter.value.trim() || undefined,
+        repositoryName: repositoryName || undefined,
         analysisKind: 'strategy',
       })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (response) => this.strategyAnalyses.set(response.analyses),
-        error: (error: unknown) => this.error.set(this.errorMessage(error)),
+        next: ({ analyses }) => {
+          this.savedStrategy.set({
+            repositoryName,
+            analysis: analyses.find((analysis) => !repositoryName || analysis.repositoryName === repositoryName),
+          });
+        },
+        error: (error: unknown) => {
+          if (repositoryName === this.selectedRepository()) this.error.set(this.errorMessage(error));
+        },
       });
   }
 
@@ -574,7 +587,7 @@ export class GoalsPageComponent implements OnInit {
 
   protected runStrategy(): void {
     if (!this.canRunProjectManager() || this.runningAnalysis() || this.runningStrategy()) return;
-    const repositoryName = this.repositoryFilter.value.trim();
+    const repositoryName = this.selectedRepository();
     if (!repositoryName) {
       this.error.set('Укажите репозиторий для запуска стратегии.');
       return;
@@ -587,25 +600,35 @@ export class GoalsPageComponent implements OnInit {
     this.goalsApi.runStrategy(repositoryName, brief).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (run) => {
         this.runningStrategy.set(false);
+        const selectedRepository = this.selectedRepository();
+        if (repositoryName !== selectedRepository) {
+          if (!selectedRepository && run.status === 'completed') this.load();
+          return;
+        }
         if (run.status !== 'completed') {
           this.error.set(run.diagnostic || 'Не удалось подтвердить завершение стратегии.');
           return;
         }
-        this.lastStrategyRun.set(run);
+        this.completedStrategyRun.set({ repositoryName, result: run });
         this.notice.set('Стратегия завершена.');
         this.strategyOpen.set(true);
         this.load(false);
-        afterNextRender(() => this.document.getElementById('goals-strategy-result')?.focus(), { injector: this.injector });
+        afterNextRender(() => {
+          if (repositoryName === this.selectedRepository()) {
+            this.document.getElementById('goals-strategy-result')?.focus();
+          }
+        }, { injector: this.injector });
       },
       error: (error: unknown) => {
         this.runningStrategy.set(false);
-        this.error.set(this.errorMessage(error));
+        if (repositoryName === this.selectedRepository()) this.error.set(this.errorMessage(error));
       },
     });
   }
 
   protected latestStrategy(): ProjectAnalysisDto | undefined {
-    return this.lastStrategyRun()?.analysis ?? this.strategyAnalyses()[0];
+    const saved = this.savedStrategy();
+    return this.lastStrategyRun()?.analysis ?? (saved?.repositoryName === this.selectedRepository() ? saved.analysis : undefined);
   }
 
   protected createdGoalTitle(id: string, index: number): string {

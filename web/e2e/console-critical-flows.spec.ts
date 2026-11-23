@@ -424,6 +424,93 @@ test.describe.serial('task tracker console production flows', () => {
   });
 });
 
+test('keeps strategy results and created goals scoped to the selected repository', async ({ page }) => {
+  await page.context().setExtraHTTPHeaders(roleHeaders('operator'));
+  const analysis = (id: string, repositoryName: string, summary: string) => ({
+    id,
+    repositoryName,
+    analysisKind: 'strategy',
+    summary,
+    createdAt: '2026-04-29T08:00:00.000Z',
+  });
+  const alphaResult = 'Completed Alpha strategy';
+  const betaResult = 'Latest Beta strategy';
+  const lateAlphaResult = 'Late Alpha strategy';
+  let releaseLateRun!: () => void;
+  let completeLateRoute!: () => void;
+  const lateRun = new Promise<void>((resolve) => { releaseLateRun = resolve; });
+  const lateRoute = new Promise<void>((resolve) => { completeLateRoute = resolve; });
+  let runCount = 0;
+
+  await page.route('**/api/repository-directory', route => route.fulfill({
+    json: { repositories: [{ id: 'alpha', name: 'Repo Alpha' }, { id: 'beta', name: 'Repo Beta' }] },
+  }));
+  await page.route('**/api/project-manager/analyses**', route => route.fulfill({
+    json: {
+      analyses: new URL(route.request().url()).searchParams.get('repositoryName') === 'beta'
+        ? [analysis('beta-history', 'beta', betaResult)]
+        : [],
+    },
+  }));
+  await page.route('**/api/project-manager/runs', async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ mode: 'strategy', repositoryName: 'alpha' });
+    const late = ++runCount === 2;
+    if (late) await lateRun;
+    try {
+      await route.fulfill({
+        json: {
+          result: {
+            run: { status: 'completed', proposedGoalIds: [late ? 'goal-alpha-late' : 'goal-alpha'] },
+            analysis: analysis(late ? 'alpha-late' : 'alpha-result', 'alpha', late ? lateAlphaResult : alphaResult),
+          },
+        },
+      });
+    } finally {
+      if (late) completeLateRoute();
+    }
+  });
+
+  const repository = page.getByTestId('goals-repository');
+  const run = page.getByTestId('goals-run-strategy');
+  const result = page.getByTestId('goals-strategy-summary');
+  const selectRepository = async (label: string, id: string) => {
+    await repository.click();
+    await page.getByRole('option', { name: label, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`repositoryName=${id}`));
+  };
+  const expectBetaResult = async () => {
+    await expect(result.locator('summary')).toContainText('Repo Beta');
+    await expect(result).toContainText(betaResult);
+    await expect(page.getByText(alphaResult, { exact: true })).toBeHidden();
+    await expect(page.getByTestId('strategy-goal-link-goal-alpha')).toBeHidden();
+  };
+
+  try {
+    await page.goto('/tasks/goals?repositoryName=alpha');
+    await expect(repository).toContainText('Repo Alpha');
+    await run.click();
+    await expect(page.getByText(alphaResult, { exact: true })).toBeVisible();
+    await expect(page.getByTestId('strategy-goal-link-goal-alpha')).toBeVisible();
+
+    await selectRepository('Repo Beta', 'beta');
+    await expectBetaResult();
+
+    await selectRepository('Repo Alpha', 'alpha');
+    await run.click();
+    await expect.poll(() => runCount).toBe(2);
+    await selectRepository('Repo Beta', 'beta');
+    await expectBetaResult();
+    releaseLateRun();
+    await lateRoute;
+    await expect(run).not.toHaveClass(/p-button-loading/);
+    await expectBetaResult();
+    await expect(page.getByText(lateAlphaResult, { exact: true })).toBeHidden();
+    await expect(page.getByTestId('strategy-goal-link-goal-alpha-late')).toBeHidden();
+  } finally {
+    releaseLateRun();
+  }
+});
+
 test('filters and opens tasks on a narrow screen without reloading the list', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const listRequests: string[] = [];
